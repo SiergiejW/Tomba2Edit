@@ -1,6 +1,4 @@
-from tombadict import letters as l
-import os
-import sys
+from gui.txtd.tombadict import letters as l
 import struct
 
 MHSIZE = 0x10
