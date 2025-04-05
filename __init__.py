@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 version = "0.0.5"
-
+#test
 def main():
     print(f"Tomba2Edit ver{version}")
     from gui.main_window import MainWindow  # Move the import here to avoid circular import
