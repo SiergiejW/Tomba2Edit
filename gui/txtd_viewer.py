@@ -9,7 +9,7 @@ import gui.txtd.txtd as txtd
 class TXTDViewer(QWidget):
     def __init__(self):
         super().__init__()
-        self.current_data = None  # Store the current TXTD data
+        self.current_data = None
 
         # Create the main layout
         layout = QVBoxLayout()
@@ -27,6 +27,7 @@ class TXTDViewer(QWidget):
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("Select an entry to view its text")
         self.text_edit.setReadOnly(True)
+        self.text_edit.setFontFamily("Courier New")  # Use monospace font for proper alignment
 
         # Add widgets to the splitter
         splitter.addWidget(self.tree)
@@ -90,10 +91,11 @@ class TXTDViewer(QWidget):
                     # For master headers, show summary
                     self.text_edit.setText(f"Master Header with {selected_item.rowCount()} entries")
                 else:
-                    # For entries, show the text
+                    # For entries, show the text with original formatting
                     text = selected_item.data(Qt.ItemDataRole.UserRole)
                     if text:
-                        self.text_edit.setText(text)
+                        # Preserve the original formatting including tabs and newlines
+                        self.text_edit.setPlainText(text)
         except Exception as e:
             print(f"Error in on_tree_selection_changed: {e}")
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")
