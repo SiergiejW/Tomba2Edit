@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox, QTextEdit
 )
@@ -23,11 +23,17 @@ class TXTDViewer(QWidget):
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
 
-        # Create a QTextEdit for text input
+        # Create a QTextEdit for text input with larger font
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("Select an entry to view its text")
         self.text_edit.setReadOnly(True)
-        self.text_edit.setFontFamily("Courier New")  # Use monospace font for proper alignment
+
+        # Configure larger font
+        font = QFont("Courier New", 10)  # Font family and size (12pt)
+        self.text_edit.setFont(font)
+
+        # Optional: Increase the minimum width for better readability
+        self.text_edit.setMinimumWidth(400)
 
         # Add widgets to the splitter
         splitter.addWidget(self.tree)
