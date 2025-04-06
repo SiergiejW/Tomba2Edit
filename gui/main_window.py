@@ -12,13 +12,13 @@ from icons.icons import (icon_window,
                          )
 from main import version
 from gui.txtd_viewer import TXTDViewer
-
+from gui.mdat_viewer import MDATViewer
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Tomba2Edit v{version}")
-        self.resize(800, 600)
+        self.resize(1400, 900)
         self.setWindowIcon(QIcon(icon_window))
 
         # Proceed with icon loading
@@ -266,13 +266,14 @@ class MainWindow(QMainWindow):
         self.tree_view.setHeaderHidden(False)
 
     def setup_widgets(self):
-        self.txtd_viewer = TXTDViewer()  # Create an instance of TXTDViewer
+        self.txtd_viewer = TXTDViewer()
+        self.mdat_viewer = MDATViewer()  # Create an instance of MDATViewer
 
         self.widgets = {
             "Folder": QLabel("This is a folder"),
             "SPRT": QLabel("SPRITE Viewer"),
-            "TXTD": self.txtd_viewer,  # Register the TXTD Viewer widget
-            "MDAT": QLabel("MODEL Viewer"),
+            "TXTD": self.txtd_viewer,
+            "MDAT": self.mdat_viewer,  # Use our new MDAT viewer
             "DEFAULT": QLabel("File Viewer"),
         }
         for widget in self.widgets.values():
@@ -295,8 +296,8 @@ class MainWindow(QMainWindow):
                     id, dat_start, offset = additional_data
                     print(f"ID: {id}, DAT Start: {dat_start}, Offset: {offset}")
 
-                    # Now, pass these parameters to load_txtd_data
-                    file_type = item_name.split('.')[-1] if '.' in item_name else "DEFAULT"
+                    # Determine file type and get appropriate widget
+                    file_type = item_name.split('.')[-1].upper() if '.' in item_name else "DEFAULT"
                     widget = self.widgets.get(file_type, self.widgets["DEFAULT"])
                     self.widgets_area.setCurrentWidget(widget)
 
@@ -305,7 +306,6 @@ class MainWindow(QMainWindow):
                         print(f"File path: {file_path}")
                         if file_path:
                             try:
-                                # Pass the DAT file object here instead of a string path
                                 if self.dat_file:  # Ensure the DAT file is available
                                     print("Loading TXTD data...")
                                     self.txtd_viewer.load_txtd_data(self.dat_file, dat_start, offset)
@@ -314,8 +314,24 @@ class MainWindow(QMainWindow):
                             except Exception as e:
                                 print(f"Error loading TXTD file: {e}")
                                 QMessageBox.critical(self, "Error", f"Failed to load TXTD file: {e}")
+
+                    elif widget == self.widgets["MDAT"]:
+                        try:
+                            if self.dat_file:
+                                print("Loading MDAT data...")
+                                success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
+                                if not success:
+                                    QMessageBox.critical(self, "Error", "Failed to load MDAT data")
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading MDAT file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load MDAT file: {e}")
+
                     else:
-                        print("No additional data found.")
+                        print(f"No specialized viewer for {file_type} files")
+                else:
+                    print("No additional data found.")
         except Exception as e:
             print(f"Error in on_tree_selection_changed: {e}")
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")

@@ -151,15 +151,18 @@ def exportMDAT(drwa_addr, datpath):
                 tri_count, quad_count = struct.unpack("<hh", rom.read(4))
 
                 # Process triangles
-                for _ in range(tri_count):
+                for n in range(tri_count):
                     primitive_block_addr += 7  # Skip header
                     face_idx += process_triangle(primitive_block_addr, face_idx)
                     primitive_block_addr += 36 - 7  # Skip to next primitive
 
                 # Process quads
-                for _ in range(quad_count):
+                for n in range(quad_count):
                     primitive_block_addr += 7  # Skip header
                     face_idx += process_quad(primitive_block_addr, face_idx)
                     primitive_block_addr += 44 - 7  # Skip to next primitive
-    print(model_data)
+    #print(model_data)
     return model_data
+
+exportMDAT(229376+112420, "C:/Users/Patryk/PycharmProjects/Tomba/iso/retail-us/CD/TOMBA2.DAT")
+
