@@ -10,9 +10,10 @@ from icons.icons import (
     icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
     icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB
 )
-from __init__ import version
+from main import version
 from gui.txtd_viewer import TXTDViewer
 from gui.model_viewer import OpenGLShapeWidget
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -20,9 +21,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Tomba2Edit v{version}")
         self.resize(800, 600)
 
-        self.dat_file = None
-
-        # Load icons for file types #QStyle.StandardPixmap.SP_FileDialogDetailedView for builtin
+        # Proceed with icon loading
         self.txtd_icon = QIcon(icon_TXTD)
         self.sprt_icon = QIcon(icon_SPRT)
         self.tanp_icon = QIcon(icon_TANP)
