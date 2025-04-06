@@ -5,6 +5,7 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 
+import gui.mdat.mdat as mdat
 
 class OpenGLShapeWidget(QOpenGLWidget):
     def __init__(self):

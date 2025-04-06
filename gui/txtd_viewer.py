@@ -1,10 +1,13 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QIcon
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox, QTextEdit
 )
 import gui.txtd.txtd as txtd
 
+
+# Import the necessary icons
+from icons.icons import icon_TXTD_master, icon_TXTD_entry
 
 class TXTDViewer(QWidget):
     def __init__(self):
@@ -62,7 +65,7 @@ class TXTDViewer(QWidget):
 
             # Process master headers
             for master_header in self.current_data.get("master_headers", []):
-                master_item = QStandardItem(f"Master Header {master_header['adr']:04X}")
+                master_item = QStandardItem(QIcon(icon_TXTD_master), f"Master Header {master_header['adr']:04X}")
                 master_item.setFlags(master_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.tree_model.appendRow(master_item)
 
@@ -74,7 +77,7 @@ class TXTDViewer(QWidget):
 
                         # Add sub-entries
                         for entry in entry_group.get("entries", []):
-                            entry_item = QStandardItem(f"Entry {entry['adr']:04X}")
+                            entry_item = QStandardItem(QIcon(icon_TXTD_entry), f"Entry {entry['adr']:04X}")
                             entry_item.setData(entry["text"], Qt.ItemDataRole.UserRole)
                             entry_item.setFlags(entry_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                             master_item.appendRow(entry_item)
