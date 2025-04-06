@@ -11,7 +11,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
-
+icon_window = resource_path("icons/tomba/tomba1.ico")
 icon_TXTD = resource_path("icons/graphics/quill.png")
 icon_SPRT = resource_path("icons/graphics/fruit.png")
 icon_TANP = resource_path("icons/tomba/tomba1.png")

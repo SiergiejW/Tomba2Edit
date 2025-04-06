@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
-from icons.icons import (
+from icons.icons import (icon_window,
     icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
     icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB
 )
@@ -20,6 +20,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Tomba2Edit v{version}")
         self.resize(800, 600)
+        self.setWindowIcon(QIcon(icon_window))
 
         # Proceed with icon loading
         self.txtd_icon = QIcon(icon_TXTD)
