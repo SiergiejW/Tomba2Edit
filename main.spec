@@ -1,9 +1,8 @@
 from PyInstaller.utils.hooks import collect_data_files
 
-# Collect all files under the 'icons' directory (including graphics and tomba subdirectories)
+# Collect all files under the 'icons' directory
 icon_files = collect_data_files('icons', include_py_files=False)
 
-# Ensure icons directory is included in the datas section
 a = Analysis(
     ['main.py'],
     pathex=['.'],
@@ -20,6 +19,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# Use absolute path to test
 exe = EXE(
     pyz,
     a.scripts,
@@ -39,4 +39,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=r"C:\Users\Patryk\PycharmProjects\Tomba310\icons\tomba\tomba1.ico",  # Set your icon path here
 )
