@@ -8,7 +8,7 @@ def resource_path(relative_path):
         # PyInstaller creates a temporary folder at runtime and places the app's resources there.
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        base_path = os.path.abspath("icons")
 
     return os.path.join(base_path, relative_path)
 icon_window = resource_path("icons/tomba/tomba1.ico")

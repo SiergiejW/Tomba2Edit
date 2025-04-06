@@ -6,13 +6,12 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
-from icons.icons import (icon_window,
-    icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
-    icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB
-)
+from icons import (icon_window,
+                   icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
+                   icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB
+                   )
 from main import version
 from gui.txtd_viewer import TXTDViewer
-from gui.model_viewer import OpenGLShapeWidget
 
 
 class MainWindow(QMainWindow):
