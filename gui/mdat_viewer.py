@@ -1,7 +1,14 @@
 import numpy as np
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtGui import QVector3D, QMatrix4x4, QVector4D, QOpenGLShaderProgram, QOpenGLShader, QOpenGLVersionProfile, QOpenGLVertexArrayObject, QOpenGLBuffer
+from PyQt6.QtOpenGL import (
+    QOpenGLShaderProgram,
+    QOpenGLShader,
+    QOpenGLVersionProfile,
+    QOpenGLVertexArrayObject,
+    QOpenGLBuffer
+)
+from PyQt6.QtGui import QVector3D, QMatrix4x4, QVector4D
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSlider, QLabel
 from OpenGL import GL
 import gui.mdat.mdat as mdat  # Import the MDAT parser
