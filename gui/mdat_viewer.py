@@ -33,6 +33,7 @@ class MDATViewer(QOpenGLWidget):
 
         # Calculate the absolute address in the DAT file
         address = dat_start + offset
+        print("at",address,f"({dat_start}+{offset})")
 
         try:
             # Parse the MDAT data
