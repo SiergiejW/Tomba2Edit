@@ -294,7 +294,7 @@ class MainWindow(QMainWindow):
                 additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
                 if additional_data:
                     id, dat_start, offset = additional_data
-                    print(f"ID: {id}, DAT Start: {dat_start}, Offset: {offset}")
+                    print(f"ID: {id:X}, DAT Start: {dat_start:X}, Offset: {offset:X}")
 
                     # Determine file type and get appropriate widget
                     file_type = item_name.split('.')[-1].upper() if '.' in item_name else "DEFAULT"

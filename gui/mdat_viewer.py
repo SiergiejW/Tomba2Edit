@@ -33,7 +33,7 @@ class MDATViewer(QOpenGLWidget):
 
         # Calculate the absolute address in the DAT file
         address = dat_start + offset
-        print("at",address,f"({dat_start}+{offset})")
+        print("at",address,f"({dat_start})")
 
         try:
             # Parse the MDAT data
@@ -48,6 +48,8 @@ class MDATViewer(QOpenGLWidget):
         """Initialize OpenGL"""
         GL.glClearColor(0.1, 0.1, 0.1, 1.0)
         GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_CULL_FACE)
+        GL.glCullFace(GL.GL_BACK)
 
         # Initialize shaders
         self.shader_program = QOpenGLShaderProgram()
