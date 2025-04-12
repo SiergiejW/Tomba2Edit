@@ -13,7 +13,7 @@ def exportMDAT(drwa_addr, datpath):
     quads = {40: 0, 42: 0, 44: 0, 45: 0, 46: 0, 47: 0, 56: 0, 58: 1, 60: 0, 62: 1}
     transparent = False
 
-    print(f"Now exporting MDAT from address 0x{drwa_addr:X}")
+    #print(f"Now exporting MDAT from address 0x{drwa_addr:X}")
 
     def short(rom, ind, off):
         rom.seek(ind + off)
@@ -51,7 +51,7 @@ def exportMDAT(drwa_addr, datpath):
                 ind = drwa_addr + (val * 4)
                 rom.seek(ind)
                 num_tris, num_quads = struct.unpack("<hh", rom.read(4))
-                print(f"0x{ind:X}: {num_tris} tris, {num_quads} quads")
+                #print(f"0x{ind:X}: {num_tris} tris, {num_quads} quads")
 
                 # Triangles
                 for _ in range(num_tris):
@@ -59,7 +59,7 @@ def exportMDAT(drwa_addr, datpath):
                     ttype = char(rom, ind, 0)
                     transparent = bool(triangles.get(ttype, 0))
                     label = "transp triangle" if transparent else "triangle"
-                    print(f"   {face} {label} ({ttype})")
+                    #print(f"   {face} {label} ({ttype})")
 
                     v1 = xyz(rom, ind, 17, 15, 13)
                     c1 = vtx(rom, ind, -3, -2, -1, 0, 0, 0)
@@ -84,7 +84,7 @@ def exportMDAT(drwa_addr, datpath):
                     qtype = char(rom, ind, 0)
                     transparent = bool(quads.get(qtype, 0))
                     label = "transp quad" if transparent else "quad"
-                    print(f"   {face} {label} ({qtype})")
+                    #print(f"   {face} {label} ({qtype})")
 
                     v1 = xyz(rom, ind, 33, 31, 29)
                     c1 = vtx(rom, ind, 1, 2, 3, 0, 0, 0)
@@ -108,5 +108,5 @@ def exportMDAT(drwa_addr, datpath):
                     ind += (44 - 7)
             eye += 2
 
-        print(f"Exported from 0x{drwa_addr:X}: {face} faces, {base_idx} base index")
+        #print(f"Exported from 0x{drwa_addr:X}: {face} faces, {base_idx} base index")
         return model_data

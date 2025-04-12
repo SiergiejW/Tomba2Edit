@@ -1,5 +1,5 @@
+# mdat_viewer.py
 import numpy as np
-from PyQt6.QtCore import Qt, QSize, QPoint, QTimer
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -7,11 +7,10 @@ from PyQt6.QtOpenGL import (
     QOpenGLVertexArrayObject,
     QOpenGLBuffer
 )
-from PyQt6.QtGui import QMatrix4x4, QCursor
+from PyQt6.QtGui import QMatrix4x4
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-import math
-
+from functions.camera_controls import CameraControls  # Importing the camera controls class
 
 class MDATViewer(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -23,43 +22,8 @@ class MDATViewer(QOpenGLWidget):
         self.index_buffer = QOpenGLBuffer()
         self.shader_program = QOpenGLShaderProgram()
 
-        # Initialize last_pos for mouse tracking
-        self.last_pos = QPoint()
-
-        # Camera variables
-        self.camera_y = 0.0
-        self.camera_x = 0.0
-        self.camera_z = -5.0
-        self.mouse_sensitivity = 0.1
-        self.camera_speed = 0.1
-        self.camera_speed_min = 0.001
-        self.camera_speed_max = 4.0
-        self.camera_angle_h = 0.0
-        self.camera_angle_v = 0.0
-
-        # Mouse tracking
-        self.display_center = [self.width() // 2, self.height() // 2]
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        # Camera mode
-        self.camera_mode = False
-
-        # Key states
-        self.keys_pressed = {
-            Qt.Key.Key_W: False,
-            Qt.Key.Key_S: False,
-            Qt.Key.Key_A: False,
-            Qt.Key.Key_D: False,
-            Qt.Key.Key_E: False,
-            Qt.Key.Key_Q: False,
-            Qt.Key.Key_Shift: False,
-        }
-
-        # Timer for smooth movement
-        self.key_timer = QTimer()
-        self.key_timer.timeout.connect(self.handle_key_movement)
-        self.key_timer.start(16)
+        # Initialize the camera controls
+        self.camera_controls = CameraControls(self)
 
     def load_mdat_data(self, dat_file_path, dat_start, offset):
         """Load MDAT data from the DAT file"""
@@ -123,7 +87,7 @@ class MDATViewer(QOpenGLWidget):
 
     def resizeGL(self, w, h):
         """Handle window resize"""
-        self.display_center = [w // 2, h // 2]
+        self.camera_controls.display_center = [w // 2, h // 2]
         GL.glViewport(0, 0, w, h)
 
     def paintGL(self):
@@ -138,9 +102,9 @@ class MDATViewer(QOpenGLWidget):
         projection.perspective(45.0, self.width() / self.height(), 0.1, 100.0)
 
         view = QMatrix4x4()
-        view.rotate(self.camera_angle_v, 1.0, 0.0, 0.0)
-        view.rotate(self.camera_angle_h, 0.0, 1.0, 0.0)
-        view.translate(self.camera_x, self.camera_y, self.camera_z)
+        view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
+        view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
+        view.translate(self.camera_controls.camera_x, self.camera_controls.camera_y, self.camera_controls.camera_z)
 
         model_view_projection = projection * view
 
@@ -207,95 +171,16 @@ class MDATViewer(QOpenGLWidget):
         self.shader_program.release()
 
     def wheelEvent(self, event):
-        """Handle mouse wheel"""
-        if self.camera_mode:
-            scroll_amount = event.angleDelta().y() / 120
-            self.camera_speed = max(self.camera_speed_min,
-                                    min(self.camera_speed_max,
-                                        self.camera_speed + scroll_amount * 0.005))
-        else:
-            self.camera_z += event.angleDelta().y() * 0.01
-        self.update()
+        self.camera_controls.wheelEvent(event)
 
     def mousePressEvent(self, event):
-        """Toggle camera mode"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.camera_mode = not self.camera_mode
-            if self.camera_mode:
-                self.setCursor(QCursor(Qt.CursorShape.BlankCursor))
-                QCursor.setPos(self.mapToGlobal(QPoint(*self.display_center)))
-            else:
-                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
-        self.last_pos = event.pos()
+        self.camera_controls.mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        """Handle mouse movement"""
-        if self.camera_mode:
-            pos = event.position()
-            dx = pos.x() - self.display_center[0]
-            dy = pos.y() - self.display_center[1]
-
-            self.camera_angle_h += dx * self.mouse_sensitivity
-            self.camera_angle_v = max(-89.0, min(89.0,
-                                                 self.camera_angle_v + dy * self.mouse_sensitivity))
-
-            QCursor.setPos(self.mapToGlobal(QPoint(*self.display_center)))
-        else:
-            dx = event.pos().x() - self.last_pos.x()
-            dy = event.pos().y() - self.last_pos.y()
-
-            if event.buttons() & Qt.MouseButton.LeftButton:
-                self.camera_angle_h += dx
-                self.camera_angle_v = max(-89.0, min(89.0, self.camera_angle_v + dy))
-
-        self.last_pos = event.pos()
-        self.update()
+        self.camera_controls.mouseMoveEvent(event)
 
     def keyPressEvent(self, event):
-        """Handle key presses"""
-        if event.key() in self.keys_pressed:
-            self.keys_pressed[event.key()] = True
+        self.camera_controls.keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        """Handle key releases"""
-        if event.key() in self.keys_pressed:
-            self.keys_pressed[event.key()] = False
-
-    def handle_key_movement(self):
-        """Handle camera movement"""
-        if not self.camera_mode:
-            return
-
-        speed_multiplier = 4.0 if self.keys_pressed[Qt.Key.Key_Shift] else 1.0
-        current_speed = self.camera_speed * speed_multiplier
-
-        h_rad = -math.radians(self.camera_angle_h)
-        v_rad = math.radians(self.camera_angle_v)
-
-        forward_x = -math.sin(h_rad) * math.cos(v_rad)
-        forward_y = -math.sin(v_rad)
-        forward_z = -math.cos(h_rad) * math.cos(v_rad)
-
-        right_x = -math.cos(h_rad)
-        right_z = math.sin(h_rad)
-
-        if self.keys_pressed[Qt.Key.Key_W]:
-            self.camera_x -= forward_x * current_speed
-            self.camera_y -= forward_y * current_speed
-            self.camera_z -= forward_z * current_speed
-        if self.keys_pressed[Qt.Key.Key_S]:
-            self.camera_x += forward_x * current_speed
-            self.camera_y += forward_y * current_speed
-            self.camera_z += forward_z * current_speed
-        if self.keys_pressed[Qt.Key.Key_A]:
-            self.camera_x -= right_x * current_speed
-            self.camera_z -= right_z * current_speed
-        if self.keys_pressed[Qt.Key.Key_D]:
-            self.camera_x += right_x * current_speed
-            self.camera_z += right_z * current_speed
-        if self.keys_pressed[Qt.Key.Key_Q]:
-            self.camera_y += current_speed
-        if self.keys_pressed[Qt.Key.Key_E]:
-            self.camera_y -= current_speed
-
-        self.update()
+        self.camera_controls.keyReleaseEvent(event)

@@ -156,7 +156,6 @@ class MainWindow(QMainWindow):
                     id = sdat_pointers[i][0]
                     offset = sdat_pointers[i][1]
                     filetype = self.id_convert(DAT, id, hex(dat_start + offset))
-                    print(filetype)
                     file_item = QStandardItem(file_icon, f"{id}-{offset:04X}.{filetype}")
 
                     # Store the additional data in the UserRole (or another role)
