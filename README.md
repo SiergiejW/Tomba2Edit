@@ -5,7 +5,7 @@ Based on reverse-engineered research by Tomba Club<br>
 Check out our [discord](discord.com/invite/WcAb5kf) and [Youtube](https://www.youtube.com/@TombaClub).<br>
 
 ## Installation
-Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)
+Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)<br>
 Project uses PyQt6, struct, numpy, OpenGL, Pillow Python libraries.
 
 ## How to use:<br>
@@ -14,11 +14,11 @@ The script will search for files named TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG and di
 
 ## Controls 
 **Camera movement:**<br>
-To enter free camera mode, click on any 3D space.
+To enter free camera mode, click on any 3D space.<br>
 WASD   - Move camera<br>
 QE     - Move up/down<br>
 Scroll - Camera speed<br>
 Shift  - Faster camera movement
 
 ## Wiki
-Check out our [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.
+Check out our [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.<br>
