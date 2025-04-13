@@ -98,7 +98,7 @@ def parse_idx_file(main_window, cd_folder):
             vram_item = QStandardItem(folder_icon, f"{chunk_index:02X}_VRAM")
             vram_item.setFlags(vram_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             area_item.appendRow(vram_item)
-            vram_file_item = QStandardItem(file_icon, f"{chunk_index:02X}.vram")
+            vram_file_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.vram")
             vram_file_item.setFlags(vram_file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             vram_item.appendRow(vram_file_item)
 

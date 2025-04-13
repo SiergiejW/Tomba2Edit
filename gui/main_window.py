@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (
 )
 from icons.icons import (icon_window,
                          icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
-                         icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB
+                         icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB,
+                         icon_VRAM,
                          )
 from main import version
 from gui.txtd_viewer import TXTDViewer
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
         self.bgmp_icon = QIcon(icon_BGMP)
         self.betp_icon = QIcon(icon_BETP)
         self.alfd_icon = QIcon(icon_ALFD)
+        self.vram_icon = QIcon(icon_VRAM)
 
         self.folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
         self.file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
