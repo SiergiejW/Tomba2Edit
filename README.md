@@ -1,7 +1,6 @@
 # Tomba2Edit
 ## Introduction
-A tool for currently previewing, with plans for exporting and repacking Tomba 2 files.<br>
-Based on reverse-engineered research by Tomba Club<br>
+A tool for currently previewing, with plans for exporting and repacking Tomba 2 files. Based on reverse-engineered research by Tomba Club.<br>
 Check out our [discord](discord.com/invite/WcAb5kf) and [Youtube](https://www.youtube.com/@TombaClub). Visit out [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.<br>
 
 ## Installation
