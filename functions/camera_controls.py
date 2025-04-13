@@ -92,7 +92,17 @@ class CameraControls:
                                     min(self.camera_speed_max,
                                         self.camera_speed + scroll_amount * 0.005))
         else:
-            self.camera_z += event.angleDelta().y() * 0.01
+            scroll_amount = event.angleDelta().y() / 120
+            h_rad = -math.radians(self.camera_angle_h)
+            v_rad = math.radians(self.camera_angle_v)
+
+            forward_x = -math.sin(h_rad) * math.cos(v_rad)
+            forward_y = -math.sin(v_rad)
+            forward_z = -math.cos(h_rad) * math.cos(v_rad)
+
+            self.camera_x -= forward_x * scroll_amount * 0.1
+            self.camera_y -= forward_y * scroll_amount * 0.1
+            self.camera_z -= forward_z * scroll_amount * 0.1
         self.widget.update()
 
     def mousePressEvent(self, event):
