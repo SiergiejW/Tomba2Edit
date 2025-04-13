@@ -1,10 +1,9 @@
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QPushButton, QSizePolicy
+    QPushButton, QSizePolicy, QApplication
 )
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QPainter
-from PyQt6.QtWidgets import QApplication  # For QWIDGETSIZE_MAX
 from PIL import Image
 import io
 import struct
@@ -17,6 +16,7 @@ class VRAMViewer(QWidget):
         self.original_pixmap = None
         self.drag_start_pos = None
         self.scroll_start_pos = None
+        self.pending_zoom = None
 
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -89,9 +89,22 @@ class VRAMViewer(QWidget):
             self.info_label.setText(f"Error loading VRAM: {str(e)}")
             return False
 
-    def update_pixmap(self):
+    def update_pixmap(self, preserve_position=True, immediate=False):
         if not self.original_pixmap:
             return
+
+        scroll_area = self.scroll_area
+        h_scroll = scroll_area.horizontalScrollBar()
+        v_scroll = scroll_area.verticalScrollBar()
+
+        # Calculate current center position if preserving
+        if preserve_position and not self.is_stretched and h_scroll.maximum() > 0 and v_scroll.maximum() > 0:
+            old_center_x = h_scroll.value() + h_scroll.pageStep() / 2
+            old_center_y = v_scroll.value() + v_scroll.pageStep() / 2
+            old_center_ratio_x = old_center_x / h_scroll.maximum()
+            old_center_ratio_y = old_center_y / v_scroll.maximum()
+        else:
+            preserve_position = False
 
         if self.is_stretched:
             # Stretched mode - scale to fit viewport
@@ -100,14 +113,12 @@ class VRAMViewer(QWidget):
             self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
             viewport_size = self.scroll_area.viewport().size()
-            scaled_pixmap = self.original_pixmap.scaled(
+            self.image_label.setPixmap(self.original_pixmap.scaled(
                 viewport_size,
                 Qt.AspectRatioMode.IgnoreAspectRatio,
                 Qt.TransformationMode.FastTransformation
-            )
-            self.image_label.setPixmap(scaled_pixmap)
+            ))
             self.image_label.setFixedSize(viewport_size)
-            self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         else:
             # Original/Zoom mode
             self.scroll_area.setWidgetResizable(False)
@@ -118,72 +129,78 @@ class VRAMViewer(QWidget):
             self.image_label.setMaximumSize(16777215, 16777215)
             self.image_label.setMinimumSize(0, 0)
 
-            # Apply current zoom
+            # Calculate new size first
             if self.zoom_factor == 1.0:
-                # Original size
-                self.image_label.setPixmap(self.original_pixmap)
-                self.image_label.resize(self.original_pixmap.size())
+                new_size = self.original_pixmap.size()
             else:
-                # Zoomed size
-                scaled = self.original_pixmap.scaled(
+                new_size = QSize(
                     int(self.original_pixmap.width() * self.zoom_factor),
-                    int(self.original_pixmap.height() * self.zoom_factor),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.FastTransformation
-                )
-                self.image_label.setPixmap(scaled)
-                self.image_label.resize(scaled.size())
+                    int(self.original_pixmap.height() * self.zoom_factor))
 
-            self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
-            # Force update of scrollbar ranges before positioning
+            # Phase 1: Resize container first
+            self.image_label.resize(new_size)
             QApplication.processEvents()
+
+            # Phase 2: Then update pixmap in one atomic operation
+            if self.zoom_factor == 1.0:
+                new_pixmap = self.original_pixmap
+            else:
+                new_pixmap = self.original_pixmap.scaled(
+                    new_size,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation)
+
+            self.image_label.setPixmap(new_pixmap)
+
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        # Restore position if needed (with deferred adjustment)
+        if preserve_position:
+            def deferred_scroll():
+                QApplication.processEvents()
+                new_h_max = h_scroll.maximum()
+                new_v_max = v_scroll.maximum()
+                if new_h_max > 0 and new_v_max > 0:
+                    target_x = old_center_ratio_x * new_h_max - h_scroll.pageStep() / 2
+                    target_y = old_center_ratio_y * new_v_max - v_scroll.pageStep() / 2
+                    h_scroll.setValue(int(max(0, min(new_h_max, target_x))))
+                    v_scroll.setValue(int(max(0, min(new_v_max, target_y))))
+
+            if immediate:
+                deferred_scroll()
+            else:
+                QTimer.singleShot(0, deferred_scroll)
 
     def reset_zoom(self):
         self.is_stretched = False
         self.zoom_factor = 1.0
-        self.update_pixmap()
+        self.update_pixmap(preserve_position=False)
+        # Reset to top-left
+        self.scroll_area.horizontalScrollBar().setValue(0)
+        self.scroll_area.verticalScrollBar().setValue(0)
 
     def set_stretched(self):
         self.is_stretched = True
-        self.zoom_factor = 1.0  # Reset zoom when entering stretched mode
-        self.update_pixmap()
+        self.zoom_factor = 1.0
+        self.update_pixmap(preserve_position=False)
 
     def zoom_by(self, direction):
         if self.is_stretched:
-            self.is_stretched = False  # Exit stretched mode when zooming
+            self.is_stretched = False
 
-        # Get current scroll positions (as ratios of total possible scroll)
-        scroll_area = self.scroll_area
-        h_scroll = scroll_area.horizontalScrollBar()
-        v_scroll = scroll_area.verticalScrollBar()
-
-        # Calculate current center position (0-1 range)
-        if h_scroll.maximum() > 0:
-            center_x = h_scroll.value() / h_scroll.maximum()
-        else:
-            center_x = 0.5
-
-        if v_scroll.maximum() > 0:
-            center_y = v_scroll.value() / v_scroll.maximum()
-        else:
-            center_y = 0.5
-
-        # Apply zoom change
         zoom_change = 0.25 if direction > 0 else -0.25
         new_zoom = max(0.1, min(10.0, self.zoom_factor + zoom_change))
 
         if new_zoom != self.zoom_factor:
             self.zoom_factor = new_zoom
-            self.update_pixmap()
-
-            # Restore center position after zoom
-            h_scroll.setValue(int(center_x * h_scroll.maximum()))
-            v_scroll.setValue(int(center_y * v_scroll.maximum()))
+            # First update with immediate position restore
+            self.update_pixmap(preserve_position=True, immediate=True)
+            # Then do a deferred perfect position adjustment
+            self.update_pixmap(preserve_position=True, immediate=False)
 
     def resizeEvent(self, event):
         if self.is_stretched:
-            self.update_pixmap()
+            self.update_pixmap(preserve_position=False)
         super().resizeEvent(event)
 
     def process_vram(self, img_data):
@@ -239,6 +256,7 @@ class ZoomableLabel(QLabel):
         self.parent_viewer = parent_viewer
         self.drag_start_pos = None
         self.scroll_start_pos = None
+        self.last_pos = None
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and not self.parent_viewer.is_stretched:
@@ -248,6 +266,7 @@ class ZoomableLabel(QLabel):
                 scroll_area.horizontalScrollBar().value(),
                 scroll_area.verticalScrollBar().value()
             )
+            self.last_pos = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
@@ -255,19 +274,24 @@ class ZoomableLabel(QLabel):
         if (self.drag_start_pos is not None and
                 self.scroll_start_pos is not None and
                 not self.parent_viewer.is_stretched):
-            delta = event.pos() - self.drag_start_pos
+            # Calculate incremental movement
+            delta = event.pos() - self.last_pos
+            self.last_pos = event.pos()
+
             scroll_area = self.parent_viewer.scroll_area
             scroll_bar_h = scroll_area.horizontalScrollBar()
             scroll_bar_v = scroll_area.verticalScrollBar()
 
-            scroll_bar_h.setValue(self.scroll_start_pos.x() - delta.x())
-            scroll_bar_v.setValue(self.scroll_start_pos.y() - delta.y())
+            # Apply smooth scrolling
+            scroll_bar_h.setValue(scroll_bar_h.value() - delta.x())
+            scroll_bar_v.setValue(scroll_bar_v.value() - delta.y())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = None
             self.scroll_start_pos = None
+            self.last_pos = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
 
