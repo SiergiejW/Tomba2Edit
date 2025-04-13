@@ -14,6 +14,7 @@ from main import version
 from gui.txtd_viewer import TXTDViewer
 from gui.mdat_viewer import MDATViewer
 from functions.idx_parser import parse_idx_file
+from gui.vram_viewer import VRAMViewer
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -150,13 +151,15 @@ class MainWindow(QMainWindow):
 
     def setup_widgets(self):
         self.txtd_viewer = TXTDViewer()
-        self.mdat_viewer = MDATViewer()  # Create an instance of MDATViewer
+        self.mdat_viewer = MDATViewer()
+        self.vram_viewer = VRAMViewer()  # Add this line
 
         self.widgets = {
             "Folder": QLabel("This is a folder"),
             "SPRT": QLabel("SPRITE Viewer"),
             "TXTD": self.txtd_viewer,
-            "MDAT": self.mdat_viewer,  # Use our new MDAT viewer
+            "MDAT": self.mdat_viewer,
+            "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
         }
         for widget in self.widgets.values():
@@ -170,10 +173,46 @@ class MainWindow(QMainWindow):
                 selected_index = selected_indexes[0]
                 selected_item = self.tree_view.model().itemFromIndex(selected_index)
                 item_name = selected_item.data(Qt.ItemDataRole.DisplayRole)
-                print(f"Selected Item Index: {selected_index}")
-                print(f"Item Name: {item_name}")
+                print(f"Selected Item: {item_name}")
 
-                # Retrieve the additional data (id, dat_start, offset)
+                # Check if this is a VRAM file
+                if item_name.endswith('.vram'):
+                    # Get the parent item to find the AREA index
+                    parent = selected_item.parent()
+                    if parent:
+                        grandparent = parent.parent()
+                        if grandparent:
+                            area_name = grandparent.text()
+                        else:
+                            area_name = parent.text()
+
+                        # Extract the area number (handle cases like "AREA_07 (18)")
+                        if area_name.startswith('AREA_'):
+                            area_part = area_name.split('_')[1].split()[0]  # Gets "07" from "AREA_07 (18)"
+                            try:
+                                chunk_index = int(area_part, 16)
+                                # Load the VRAM data
+                                img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+                                with open(img_path, "rb") as IMG:
+                                    IDX_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                                    with open(IDX_path, "rb") as IDX:
+                                        chunk_size = 0x800
+                                        IDX.seek(chunk_index * chunk_size)
+                                        img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                                        IMG.seek(img_start)
+                                        imgdata = IMG.read(img_end - img_start)
+
+                                        # Show VRAM viewer
+                                        self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                                        self.vram_viewer.load_vram_data(imgdata)
+                                        return
+                            except ValueError as e:
+                                print(f"Error parsing area number: {e}")
+                                QMessageBox.critical(self, "Error", f"Failed to parse area number: {e}")
+                                return
+                    return
+
+                # Rest of your existing selection handling code...
                 additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
                 if additional_data:
                     id, dat_start, offset = additional_data
@@ -185,11 +224,11 @@ class MainWindow(QMainWindow):
                     self.widgets_area.setCurrentWidget(widget)
 
                     if widget == self.widgets["TXTD"]:
-                        file_path = selected_item.data(Qt.ItemDataRole.UserRole + 1)  # Retrieve stored file path
+                        file_path = selected_item.data(Qt.ItemDataRole.UserRole + 1)
                         print(f"File path: {file_path}")
                         if file_path:
                             try:
-                                if self.dat_file:  # Ensure the DAT file is available
+                                if self.dat_file:
                                     print("Loading TXTD data...")
                                     self.txtd_viewer.load_txtd_data(self.dat_file, dat_start, offset)
                                 else:
