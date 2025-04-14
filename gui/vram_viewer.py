@@ -109,22 +109,26 @@ class VRAMViewer(QWidget):
             scompare = 0
             lz = w * 2  # Line size in bytes
 
+            extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
             while scompare < s:
-                base = img_file.read(1)[0]
+                control_byte = img_file.read(1)
+                if not control_byte:
+                    break
+                control = control_byte[0]
                 scompare += 1
-                amount = base >> 3
-                extra = base & 7
+
+                amount = control >> 3
+                extra = control & 0x07
 
                 if extra == 0:
                     chunk = img_file.read(amount)
                     shard_data.extend(chunk)
                     scompare += amount
                 else:
-                    extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
                     ref_offset = extras[extra]
                     for _ in range(amount):
-                        if len(shard_data) >= abs(ref_offset):
-                            ref_pos = len(shard_data) + ref_offset
+                        ref_pos = len(shard_data) + ref_offset
+                        if 0 <= ref_pos < len(shard_data):
                             shard_data.append(shard_data[ref_pos])
                         else:
                             shard_data.append(0)

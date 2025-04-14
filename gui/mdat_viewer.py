@@ -45,8 +45,8 @@ class MDATViewer(QOpenGLWidget):
                         qimage.width(), qimage.height(), 0,
                         GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
 
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
 
         print("✅ VRAM texture uploaded:", qimage.width(), "x", qimage.height())
 
