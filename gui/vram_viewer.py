@@ -64,7 +64,9 @@ class VRAMViewer(QWidget):
         bottom_layout.addWidget(self.info_label)
         self.layout.addLayout(bottom_layout)
 
-        self.is_stretched = False
+        self.is_stretched = True
+
+
 
     def load_vram_data(self, img_data):
         try:
@@ -73,6 +75,7 @@ class VRAMViewer(QWidget):
             qimage = QImage(vram_image.tobytes(), 4096, 512, QImage.Format.Format_RGBA8888)
 
             self.original_pixmap = QPixmap.fromImage(qimage)
+            self.update_pixmap()
             self.reset_zoom()
             self.info_label.setText("VRAM Image Loaded")
             if hasattr(self, 'mdat_viewer') and self.mdat_viewer:
@@ -209,3 +212,4 @@ class ZoomableLabel(QLabel):
 
 for method_name in ['reset_zoom', 'set_stretched', 'zoom_by', 'update_pixmap', 'resizeEvent']:
     setattr(VRAMViewer, method_name, getattr(ctrl, method_name))
+
