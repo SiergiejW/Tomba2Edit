@@ -7,7 +7,7 @@ from PyQt6.QtOpenGL import (
     QOpenGLVertexArrayObject,
     QOpenGLBuffer
 )
-from PyQt6.QtGui import QMatrix4x4
+from PyQt6.QtGui import QMatrix4x4, QImage
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from functions.camera_controls import CameraControls  # Importing the camera controls class
@@ -21,9 +21,34 @@ class MDATViewer(QOpenGLWidget):
         self.color_buffer = QOpenGLBuffer()
         self.index_buffer = QOpenGLBuffer()
         self.shader_program = QOpenGLShaderProgram()
-
+        self.texcoord_buffer = QOpenGLBuffer()
+        self.vram_texture = None  # OpenGL texture ID
         # Initialize the camera controls
         self.camera_controls = CameraControls(self)
+
+    def set_vram_image(self, qimage):
+        print("Trying to set VRAM image...")
+
+        self.makeCurrent()
+
+        if qimage.format() != QImage.Format.Format_RGBA8888:
+            qimage = qimage.convertToFormat(QImage.Format.Format_RGBA8888)
+
+        ptr = qimage.bits()
+        ptr.setsize(qimage.sizeInBytes())
+        buf = ptr.asstring()  # ✅ convert to bytes
+
+        self.vram_texture = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
+
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA,
+                        qimage.width(), qimage.height(), 0,
+                        GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
+
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+
+        print("✅ VRAM texture uploaded:", qimage.width(), "x", qimage.height())
 
     def load_mdat_data(self, dat_file_path, dat_start, offset):
         """Load MDAT data from the DAT file"""
@@ -53,11 +78,14 @@ class MDATViewer(QOpenGLWidget):
                 #version 330 core
                 layout(location = 0) in vec3 position;
                 layout(location = 1) in vec3 color;
+                layout(location = 2) in vec2 texCoord;  // new
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
+                out vec2 fragTexCoord;  // new
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
                     fragColor = color;
+                    fragTexCoord = texCoord;  // new
                 }
                 """
         ):
@@ -68,9 +96,12 @@ class MDATViewer(QOpenGLWidget):
                 """
                 #version 330 core
                 in vec3 fragColor;
+                in vec2 fragTexCoord;  // new
                 out vec4 outColor;
+                uniform sampler2D vramTexture;  // new
                 void main() {
-                    outColor = vec4(fragColor, 1.0);
+                    vec4 texColor = texture(vramTexture, fragTexCoord);  // new
+                    outColor = texColor * vec4(fragColor, 1.0);  // combine or just use texColor
                 }
                 """
         ):
@@ -84,6 +115,7 @@ class MDATViewer(QOpenGLWidget):
         self.vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.color_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+        self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
     def resizeGL(self, w, h):
         """Handle window resize"""
@@ -117,6 +149,7 @@ class MDATViewer(QOpenGLWidget):
 
         # Prepare data
         try:
+
             vertices = np.array([
                 [v[0] / 1000.0, v[1] / 1000.0, v[2] / 1000.0]
                 for v in self.model_data['vertices']
@@ -124,6 +157,9 @@ class MDATViewer(QOpenGLWidget):
 
             colors = np.array([
                 c for c in self.model_data['vertex_colors']
+            ], dtype=np.float32).flatten()
+            tex_coords = np.array([
+                [t[0], t[1]] for t in self.model_data['texture_coords']
             ], dtype=np.float32).flatten()
 
             indices = []
@@ -134,6 +170,7 @@ class MDATViewer(QOpenGLWidget):
                     indices.extend([face[0], face[1], face[2]])
                     indices.extend([face[0], face[2], face[3]])
             indices = np.array(indices, dtype=np.uint32)
+
         except Exception as e:
             print(f"Error preparing data: {e}")
             return
@@ -156,10 +193,30 @@ class MDATViewer(QOpenGLWidget):
             GL.glEnableVertexAttribArray(1)
             GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
 
+            # Texture buffer
+            self.texcoord_buffer.create()
+            self.texcoord_buffer.bind()
+            self.texcoord_buffer.allocate(tex_coords.tobytes(), tex_coords.nbytes)
+            GL.glEnableVertexAttribArray(2)
+            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
             # Index buffer
             self.index_buffer.create()
             self.index_buffer.bind()
             self.index_buffer.allocate(indices.tobytes(), indices.nbytes)
+
+            if self.vram_texture:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
+                self.shader_program.setUniformValue("vramTexture", 0)
+            else:
+                print("⚠️ No VRAM texture bound.")
+
+            if not self.model_data['texture_info']:
+                print("⚠️ No texture info found in model data.")
+            else:
+                page, clut, trans = self.model_data['texture_info'][0]
+                print(f"🧩 First texture info: page={page}, clut=0x{clut:X}, transparent={trans}")
 
             # Draw
             GL.glDrawElements(GL.GL_TRIANGLES, len(indices), GL.GL_UNSIGNED_INT, None)

@@ -1,7 +1,7 @@
 import os
 import struct
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
@@ -239,8 +239,48 @@ class MainWindow(QMainWindow):
                                 print(f"Error loading TXTD file: {e}")
                                 QMessageBox.critical(self, "Error", f"Failed to load TXTD file: {e}")
 
+
                     elif widget == self.widgets["MDAT"]:
                         try:
+                            # Step 1: Try to find AREA_XX from parent or grandparent
+                            area_name = None
+                            parent = selected_item.parent()
+                            if parent:
+                                grandparent = parent.parent()
+                                if grandparent and grandparent.text().startswith("AREA_"):
+                                    area_name = grandparent.text()
+                                elif parent.text().startswith("AREA_"):
+                                    area_name = parent.text()
+
+                            if area_name:
+                                area_number = area_name.split("_")[1].split()[0]  # e.g., "04" from "AREA_04 (41)"
+                                try:
+                                    chunk_index = int(area_number, 16)
+                                    img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+                                    idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+
+                                    with open(img_path, "rb") as IMG, open(idx_path, "rb") as IDX:
+                                        chunk_size = 0x800
+                                        IDX.seek(chunk_index * chunk_size)
+                                        img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                                        IMG.seek(img_start)
+                                        imgdata = IMG.read(img_end - img_start)
+
+                                        # Step 2: decode VRAM and send to MDATViewer
+                                        from gui.vram_viewer import VRAMViewer  # make sure it's available
+                                        vram_img = self.vram_viewer.process_vram(imgdata)
+                                        if vram_img.mode != "RGBA":
+                                            qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
+                                                            QImage.Format.Format_RGB888)
+                                        else:
+                                            qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
+                                                            QImage.Format.Format_RGBA8888)
+
+                                        print(f"✔️ Feeding VRAM from AREA_{area_number} to MDATViewer")
+                                        self.mdat_viewer.set_vram_image(qimage)
+
+                                except Exception as e:
+                                    print(f"❌ Could not load VRAM for AREA_{area_number}: {e}")
                             if self.dat_file:
                                 print("Loading MDAT data...")
                                 success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)

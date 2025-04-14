@@ -6,7 +6,9 @@ def exportMDAT(drwa_addr, datpath):
     model_data = {
         'vertices': [],
         'vertex_colors': [],
-        'faces': []
+        'faces': [],
+        'texture_coords': [],
+        'texture_info': []  # (texture_page, clut_address, is_transparent)
     }
 
     triangles = {32: 0, 34: 0, 37: 0, 38: 0, 39: 0, 48: 0, 50: 1, 52: 0, 54: 1}
@@ -14,6 +16,17 @@ def exportMDAT(drwa_addr, datpath):
     transparent = False
 
     #print(f"Now exporting MDAT from address 0x{drwa_addr:X}")
+
+    def getClutCoords(num):
+        return (int((bin(num)[2:].zfill(16))[10:], 2) << 4,
+                int((bin(num)[2:].zfill(16))[1:10], 2))
+
+    def clutCoords2Address(intuple):
+        # Calculate CLUT address with bounds checking
+        raw_address = (intuple[0] * 2 + intuple[1] * 0x800)
+        # Ensure it doesn't exceed VRAM size (typically 1MB for PS1)
+        max_vram_size = 1024 * 1024  # 1MB
+        return raw_address % max_vram_size
 
     def short(rom, ind, off):
         rom.seek(ind + off)
@@ -70,10 +83,25 @@ def exportMDAT(drwa_addr, datpath):
                     v3 = xyz(rom, ind, 29, 27, 25)
                     c3 = vtx(rom, ind, 1, 2, 3, 1, 1, 1)
 
+                    # Get texture info
+                    texture_page = char(rom, ind, 11) & 0x1F
+                    clut_coords = getClutCoords(short(rom, ind, 7))
+                    clut_address = clutCoords2Address(clut_coords)
+
+                    # Store texture info
+                    tex_info = (texture_page, clut_address, transparent)
+
+                    # Get UV coordinates
+                    uv1 = (char(rom, ind, 5) / 256, char(rom, ind, 6) / 256)
+                    uv2 = (char(rom, ind, 9) / 256, char(rom, ind, 10) / 256)
+                    uv3 = (char(rom, ind, 31) / 256, char(rom, ind, 32) / 256)
+
                     base_idx = len(model_data['vertices'])
                     model_data['vertices'].extend([v1, v2, v3])
                     model_data['vertex_colors'].extend([c1, c2, c3])
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
+                    model_data['texture_coords'].extend([uv1, uv2, uv3])
+                    model_data['texture_info'].append(tex_info)
 
                     face += 3
                     ind += (36 - 7)
@@ -98,11 +126,28 @@ def exportMDAT(drwa_addr, datpath):
                     v4 = xyz(rom, ind, 35, 39, 37)
                     c4 = vtx(rom, ind, 1, 2, 3, 1, 1, 1)
 
+                    # Get texture info
+                    texture_page = char(rom, ind, 11) & 0x1F
+                    clut_coords = getClutCoords(short(rom, ind, 7))
+                    clut_address = clutCoords2Address(clut_coords)
+
+                    # Store texture info
+                    tex_info = (texture_page, clut_address, transparent)
+
+                    # Get UV coordinates
+                    uv1 = (char(rom, ind, 13) / 256, char(rom, ind, 14) / 256)
+                    uv2 = (char(rom, ind, 5) / 256, char(rom, ind, 6) / 256)
+                    uv3 = (char(rom, ind, 9) / 256, char(rom, ind, 10) / 256)
+                    uv4 = (char(rom, ind, 15) / 256, char(rom, ind, 16) / 256)
+
                     base_idx = len(model_data['vertices'])
                     model_data['vertices'].extend([v1, v2, v3, v4])
                     model_data['vertex_colors'].extend([c1, c2, c3, c4])
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
                     model_data['faces'].append([base_idx + 3, base_idx + 2, base_idx])
+                    model_data['texture_coords'].extend([uv1, uv2, uv3, uv4])
+                    model_data['texture_info'].append(tex_info)
+                    model_data['texture_info'].append(tex_info)
 
                     face += 4
                     ind += (44 - 7)

@@ -84,6 +84,10 @@ class VRAMViewer(QWidget):
             self.original_pixmap = QPixmap.fromImage(qimage)
             self.reset_zoom()
             self.info_label.setText("VRAM Image Loaded")
+            if hasattr(self, 'mdat_viewer') and self.mdat_viewer:
+                self.mdat_viewer.set_vram_image(qimage)
+                self.mdat_viewer.update()
+
             return True
         except Exception as e:
             self.info_label.setText(f"Error loading VRAM: {str(e)}")
