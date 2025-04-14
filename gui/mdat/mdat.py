@@ -44,11 +44,17 @@ def exportMDAT(drwa_addr, datpath):
         return [short(rom, ind, x), -short(rom, ind, y), short(rom, ind, z)]  # Flip Y
 
     def adjust_uv(raw_u, raw_v, page):
-        page_x = page % 8  # Each page is 128px wide, arranged 8 wide
-        page_y = page // 8  # Each row is 256px high
-        full_u = page_x * 128 + raw_u
-        full_v = page_y * 256 + raw_v
-        return (full_u / 1024.0, full_v / 512.0)
+        # VRAM is 4096x512, with pages arranged in 16 columns (256px each) and 2 rows (256px each)
+        page_col = page % 16  # 16 columns per row (4096/256=16)
+        page_row = page // 16  # 2 rows total (512/256=2)
+
+        # Each original 128px-wide page is stretched to 256px in the VRAM texture
+        full_u = page_col * 256 + (raw_u * 2)  # Scale raw_u by 2
+        full_v = page_row * 256 + raw_v
+
+        # Normalize to [0,1] range based on full texture size
+        return (full_u / 4096.0, full_v / 512.0)
+
 
     with open(datpath, "rb") as rom:
         rom.seek(drwa_addr)
@@ -87,7 +93,7 @@ def exportMDAT(drwa_addr, datpath):
                     c3 = vtx(rom, ind, 1, 2, 3, 1, 1, 1)
 
                     # Get texture info
-                    texture_page = char(rom, ind, 11) & 0x1F
+                    texture_page = char(rom, ind, 11)
                     clut_coords = getClutCoords(short(rom, ind, 7))
                     clut_address = clutCoords2Address(clut_coords)
 
