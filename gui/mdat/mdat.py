@@ -44,15 +44,15 @@ def exportMDAT(drwa_addr, datpath):
         return [short(rom, ind, x), -short(rom, ind, y), short(rom, ind, z)]  # Flip Y
 
     def adjust_uv(raw_u, raw_v, page):
-        # VRAM is 4096x512, with pages arranged in 16 columns (256px each) and 2 rows (256px each)
-        page_col = page % 16  # 16 columns per row (4096/256=16)
-        page_row = page // 16  # 2 rows total (512/256=2)
+        # Determine atlas position (16 pages per row, 2 rows)
+        page_col = page % 16
+        page_row = page // 16
 
-        # Each original 128px-wide page is stretched to 256px in the VRAM texture
-        full_u = page_col * 256 + (raw_u * 2)  # Scale raw_u by 2
+        # Compute absolute pixel coordinates in the atlas
+        full_u = page_col * 256 + raw_u  # **Do NOT double raw_u**; raw_u is already 0–255 within the 256px page
         full_v = page_row * 256 + raw_v
 
-        # Normalize to [0,1] range based on full texture size
+        # Normalize to [0,1]
         return (full_u / 4096.0, full_v / 512.0)
 
 
