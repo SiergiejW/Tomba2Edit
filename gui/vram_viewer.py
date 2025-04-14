@@ -85,6 +85,10 @@ class VRAMViewer(QWidget):
             return False
 
     def process_vram(self, img_data):
+        import io
+        from PIL import Image
+        import struct
+
         img_file = io.BytesIO(img_data)
         c_header_amount = struct.unpack("<I", img_file.read(4))[0]
         c_header_size = c_header_amount * 0xC + 4
@@ -93,7 +97,8 @@ class VRAMViewer(QWidget):
         c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
         img_file.read(skip)
 
-        vram_image = Image.new("RGBA", (4096, 512))  # Final image in RGBA
+        # Step 1: Simulate raw 1MB VRAM as bytearray (1024x512 x 2 bytes per pixel)
+        vram_bytes = bytearray(1024 * 512 * 2)  # 1MB = 524288 words = 1024x512 x 2
 
         for x, y, w, h, s in c_header_list:
             shard_data = bytearray()
@@ -101,6 +106,7 @@ class VRAMViewer(QWidget):
             lz = w * 2
             extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
 
+            # Decompression logic (LZ-style with backrefs)
             while scompare < s:
                 control_byte = img_file.read(1)
                 if not control_byte:
@@ -124,17 +130,27 @@ class VRAMViewer(QWidget):
                         else:
                             shard_data.append(0)
 
-            # Write 4bpp data into 4096-wide RGBA image
+            # Step 2: Copy shard into simulated VRAM respecting 0x800-byte row stride
             for row in range(h):
-                for col in range(w * 2):  # 2 pixels per byte
-                    byte_index = row * w + (col // 2)
-                    if byte_index >= len(shard_data):
-                        continue
-                    byte = shard_data[byte_index]
-                    pixel_val = (byte >> 4) & 0x0F if col % 2 else byte & 0x0F
-                    gray = pixel_val * 17
-                    rgba = (gray, gray, gray, 255)
-                    vram_image.putpixel((x * 2 + col, y + row), rgba)
+                shard_start = row * w * 2
+                shard_end = shard_start + w * 2
+                vram_offset = (y + row) * 0x800 + (x * 2)
+                vram_bytes[vram_offset:vram_offset + w * 2] = shard_data[shard_start:shard_end]
+
+        # Step 3: Convert 4bpp VRAM into RGBA image (4096x512)
+        vram_image = Image.new("RGBA", (4096, 512))
+        for y in range(512):
+            for x in range(0, 4096, 2):  # 2 pixels per byte
+                byte_index = y * 0x800 + (x // 2)
+                if byte_index >= len(vram_bytes):
+                    continue
+                byte = vram_bytes[byte_index]
+                low = byte & 0x0F
+                high = (byte >> 4) & 0x0F
+                g1 = low * 17
+                g2 = high * 17
+                vram_image.putpixel((x, y), (g1, g1, g1, 255))
+                vram_image.putpixel((x + 1, y), (g2, g2, g2, 255))
 
         return vram_image
 
