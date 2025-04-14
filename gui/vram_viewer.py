@@ -70,16 +70,7 @@ class VRAMViewer(QWidget):
         try:
             vram_image = self.process_vram(img_data)
 
-            if vram_image.mode == "RGB":
-                qimage = QImage(vram_image.tobytes(),
-                                vram_image.width,
-                                vram_image.height,
-                                QImage.Format.Format_RGB888)
-            else:
-                qimage = QImage(vram_image.tobytes(),
-                                vram_image.width,
-                                vram_image.height,
-                                QImage.Format.Format_RGBA8888)
+            qimage = QImage(vram_image.tobytes(), 4096, 512, QImage.Format.Format_RGBA8888)
 
             self.original_pixmap = QPixmap.fromImage(qimage)
             self.reset_zoom()
@@ -102,14 +93,14 @@ class VRAMViewer(QWidget):
         c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
         img_file.read(skip)
 
-        vram_image = Image.new("RGB", (1024, 512), (0, 0, 0))
+        vram_image = Image.new("RGBA", (4096, 512))  # Final image in RGBA
 
         for x, y, w, h, s in c_header_list:
             shard_data = bytearray()
             scompare = 0
-            lz = w * 2  # Line size in bytes
-
+            lz = w * 2
             extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
+
             while scompare < s:
                 control_byte = img_file.read(1)
                 if not control_byte:
@@ -133,16 +124,17 @@ class VRAMViewer(QWidget):
                         else:
                             shard_data.append(0)
 
+            # Write 4bpp data into 4096-wide RGBA image
             for row in range(h):
-                for col in range(w):
-                    pos = (row * w + col) * 2
-                    if pos + 1 < len(shard_data):
-                        # Note the byte order - original code writes directly to VRAM
-                        color16 = (shard_data[pos] << 8) | shard_data[pos + 1]
-                        r = ((color16 >> 11) & 0x1F) << 3
-                        g = ((color16 >> 5) & 0x3F) << 2
-                        b = (color16 & 0x1F) << 3
-                        vram_image.putpixel((x + col, y + row), (r, g, b))
+                for col in range(w * 2):  # 2 pixels per byte
+                    byte_index = row * w + (col // 2)
+                    if byte_index >= len(shard_data):
+                        continue
+                    byte = shard_data[byte_index]
+                    pixel_val = (byte >> 4) & 0x0F if col % 2 else byte & 0x0F
+                    gray = pixel_val * 17
+                    rgba = (gray, gray, gray, 255)
+                    vram_image.putpixel((x * 2 + col, y + row), rgba)
 
         return vram_image
 
