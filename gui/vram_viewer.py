@@ -1,3 +1,5 @@
+# gui/vram_viewer.py
+
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
@@ -7,7 +9,8 @@ from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QPainter
 from PIL import Image
 import io
 import struct
-
+# 🔗 Attach external zoom-related methods to VRAMViewer
+import functions.graphic_controls as ctrl
 
 class VRAMViewer(QWidget):
     def __init__(self):
@@ -23,7 +26,6 @@ class VRAMViewer(QWidget):
         self.layout.setSpacing(0)
         self.setLayout(self.layout)
 
-        # Top bar with zoom controls
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(10, 5, 10, 5)
         top_bar.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -44,7 +46,6 @@ class VRAMViewer(QWidget):
         top_bar.addWidget(self.zoom_out_btn)
         self.layout.addLayout(top_bar)
 
-        # Scroll area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -56,7 +57,6 @@ class VRAMViewer(QWidget):
         self.image_label.setScaledContents(False)
         self.scroll_area.setWidget(self.image_label)
 
-        # Bottom info label
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(10, 5, 10, 5)
         bottom_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
@@ -64,7 +64,7 @@ class VRAMViewer(QWidget):
         bottom_layout.addWidget(self.info_label)
         self.layout.addLayout(bottom_layout)
 
-        self.is_stretched = False  # Default: original size with zoom
+        self.is_stretched = False
 
     def load_vram_data(self, img_data):
         try:
@@ -89,120 +89,6 @@ class VRAMViewer(QWidget):
             self.info_label.setText(f"Error loading VRAM: {str(e)}")
             return False
 
-    def update_pixmap(self, preserve_position=True, immediate=False):
-        if not self.original_pixmap:
-            return
-
-        scroll_area = self.scroll_area
-        h_scroll = scroll_area.horizontalScrollBar()
-        v_scroll = scroll_area.verticalScrollBar()
-
-        # Calculate current center position if preserving
-        if preserve_position and not self.is_stretched and h_scroll.maximum() > 0 and v_scroll.maximum() > 0:
-            old_center_x = h_scroll.value() + h_scroll.pageStep() / 2
-            old_center_y = v_scroll.value() + v_scroll.pageStep() / 2
-            old_center_ratio_x = old_center_x / h_scroll.maximum()
-            old_center_ratio_y = old_center_y / v_scroll.maximum()
-        else:
-            preserve_position = False
-
-        if self.is_stretched:
-            # Stretched mode - scale to fit viewport
-            self.scroll_area.setWidgetResizable(False)
-            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-            viewport_size = self.scroll_area.viewport().size()
-            self.image_label.setPixmap(self.original_pixmap.scaled(
-                viewport_size,
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.FastTransformation
-            ))
-            self.image_label.setFixedSize(viewport_size)
-        else:
-            # Original/Zoom mode
-            self.scroll_area.setWidgetResizable(False)
-            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-            # Remove any size constraints
-            self.image_label.setMaximumSize(16777215, 16777215)
-            self.image_label.setMinimumSize(0, 0)
-
-            # Calculate new size first
-            if self.zoom_factor == 1.0:
-                new_size = self.original_pixmap.size()
-            else:
-                new_size = QSize(
-                    int(self.original_pixmap.width() * self.zoom_factor),
-                    int(self.original_pixmap.height() * self.zoom_factor))
-
-            # Phase 1: Resize container first
-            self.image_label.resize(new_size)
-            QApplication.processEvents()
-
-            # Phase 2: Then update pixmap in one atomic operation
-            if self.zoom_factor == 1.0:
-                new_pixmap = self.original_pixmap
-            else:
-                new_pixmap = self.original_pixmap.scaled(
-                    new_size,
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.FastTransformation)
-
-            self.image_label.setPixmap(new_pixmap)
-
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
-        # Restore position if needed (with deferred adjustment)
-        if preserve_position:
-            def deferred_scroll():
-                QApplication.processEvents()
-                new_h_max = h_scroll.maximum()
-                new_v_max = v_scroll.maximum()
-                if new_h_max > 0 and new_v_max > 0:
-                    target_x = old_center_ratio_x * new_h_max - h_scroll.pageStep() / 2
-                    target_y = old_center_ratio_y * new_v_max - v_scroll.pageStep() / 2
-                    h_scroll.setValue(int(max(0, min(new_h_max, target_x))))
-                    v_scroll.setValue(int(max(0, min(new_v_max, target_y))))
-
-            if immediate:
-                deferred_scroll()
-            else:
-                QTimer.singleShot(0, deferred_scroll)
-
-    def reset_zoom(self):
-        self.is_stretched = False
-        self.zoom_factor = 1.0
-        self.update_pixmap(preserve_position=False)
-        # Reset to top-left
-        self.scroll_area.horizontalScrollBar().setValue(0)
-        self.scroll_area.verticalScrollBar().setValue(0)
-
-    def set_stretched(self):
-        self.is_stretched = True
-        self.zoom_factor = 1.0
-        self.update_pixmap(preserve_position=False)
-
-    def zoom_by(self, direction):
-        if self.is_stretched:
-            self.is_stretched = False
-
-        zoom_change = 0.25 if direction > 0 else -0.25
-        new_zoom = max(0.1, min(10.0, self.zoom_factor + zoom_change))
-
-        if new_zoom != self.zoom_factor:
-            self.zoom_factor = new_zoom
-            # First update with immediate position restore
-            self.update_pixmap(preserve_position=True, immediate=True)
-            # Then do a deferred perfect position adjustment
-            self.update_pixmap(preserve_position=True, immediate=False)
-
-    def resizeEvent(self, event):
-        if self.is_stretched:
-            self.update_pixmap(preserve_position=False)
-        super().resizeEvent(event)
-
     def process_vram(self, img_data):
         img_file = io.BytesIO(img_data)
         c_header_amount = struct.unpack("<I", img_file.read(4))[0]
@@ -217,6 +103,7 @@ class VRAMViewer(QWidget):
         for x, y, w, h, s in c_header_list:
             shard_data = bytearray()
             scompare = 0
+            lz = w * 2  # Line size in bytes
 
             while scompare < s:
                 base = img_file.read(1)[0]
@@ -225,15 +112,16 @@ class VRAMViewer(QWidget):
                 extra = base & 7
 
                 if extra == 0:
-                    shard_data.extend(img_file.read(amount))
+                    chunk = img_file.read(amount)
+                    shard_data.extend(chunk)
                     scompare += amount
                 else:
+                    extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
+                    ref_offset = extras[extra]
                     for _ in range(amount):
-                        if len(shard_data) >= 2:
-                            ref_pos = len(shard_data) + \
-                                      [-0, -1, -w * 2, -w * 2 - 1, -w * 2 - 2, -w * 2 - 3, -w * 2 + 1, -w * 2 + 2][
-                                          extra]
-                            shard_data.append(shard_data[ref_pos] if ref_pos >= 0 else 0)
+                        if len(shard_data) >= abs(ref_offset):
+                            ref_pos = len(shard_data) + ref_offset
+                            shard_data.append(shard_data[ref_pos])
                         else:
                             shard_data.append(0)
 
@@ -241,7 +129,8 @@ class VRAMViewer(QWidget):
                 for col in range(w):
                     pos = (row * w + col) * 2
                     if pos + 1 < len(shard_data):
-                        color16 = (shard_data[pos + 1] << 8) | shard_data[pos]
+                        # Note the byte order - original code writes directly to VRAM
+                        color16 = (shard_data[pos] << 8) | shard_data[pos + 1]
                         r = ((color16 >> 11) & 0x1F) << 3
                         g = ((color16 >> 5) & 0x3F) << 2
                         b = (color16 & 0x1F) << 3
@@ -274,7 +163,6 @@ class ZoomableLabel(QLabel):
         if (self.drag_start_pos is not None and
                 self.scroll_start_pos is not None and
                 not self.parent_viewer.is_stretched):
-            # Calculate incremental movement
             delta = event.pos() - self.last_pos
             self.last_pos = event.pos()
 
@@ -282,7 +170,6 @@ class ZoomableLabel(QLabel):
             scroll_bar_h = scroll_area.horizontalScrollBar()
             scroll_bar_v = scroll_area.verticalScrollBar()
 
-            # Apply smooth scrolling
             scroll_bar_h.setValue(scroll_bar_h.value() - delta.x())
             scroll_bar_v.setValue(scroll_bar_v.value() - delta.y())
         super().mouseMoveEvent(event)
@@ -297,6 +184,12 @@ class ZoomableLabel(QLabel):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)  # Nearest neighbor
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         if self.pixmap():
             painter.drawPixmap(self.rect(), self.pixmap())
+
+
+
+
+for method_name in ['reset_zoom', 'set_stretched', 'zoom_by', 'update_pixmap', 'resizeEvent']:
+    setattr(VRAMViewer, method_name, getattr(ctrl, method_name))
