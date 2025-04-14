@@ -66,8 +66,6 @@ class VRAMViewer(QWidget):
 
         self.is_stretched = True
 
-
-
     def load_vram_data(self, img_data):
         try:
             vram_image = self.process_vram(img_data)
@@ -76,7 +74,7 @@ class VRAMViewer(QWidget):
 
             self.original_pixmap = QPixmap.fromImage(qimage)
             self.update_pixmap()
-            self.reset_zoom()
+            self.set_stretched()  # Changed from self.reset_zoom()
             self.info_label.setText("VRAM Image Loaded")
             if hasattr(self, 'mdat_viewer') and self.mdat_viewer:
                 self.mdat_viewer.set_vram_image(qimage)

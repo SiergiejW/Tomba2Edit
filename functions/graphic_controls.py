@@ -22,16 +22,22 @@ def update_pixmap(self, preserve_position=True, immediate=False):
 
     if self.is_stretched:
         self.scroll_area.setWidgetResizable(False)
+        # Disable horizontal scroll and enable vertical if needed
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        viewport_size = self.scroll_area.viewport().size()
-        self.image_label.setPixmap(self.original_pixmap.scaled(
-            viewport_size,
+        viewport_width = scroll_area.viewport().width()
+        original_height = self.original_pixmap.height()
+        scaled_size = QSize(viewport_width, original_height)
+
+        # Scale only horizontally, keep original vertical size
+        scaled_pixmap = self.original_pixmap.scaled(
+            scaled_size,
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.FastTransformation
-        ))
-        self.image_label.setFixedSize(viewport_size)
+        )
+        self.image_label.setPixmap(scaled_pixmap)
+        self.image_label.setFixedSize(scaled_size)
     else:
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
