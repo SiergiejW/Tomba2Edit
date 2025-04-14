@@ -214,9 +214,9 @@ class MDATViewer(QOpenGLWidget):
 
             if not self.model_data['texture_info']:
                 print("⚠️ No texture info found in model data.")
-            else:
-                page, clut, trans = self.model_data['texture_info'][0]
-                print(f"🧩 First texture info: page={page}, clut=0x{clut:X}, transparent={trans}")
+            #else:
+            #    page, clut, trans = self.model_data['texture_info'][0]
+            #    print(f"🧩 First texture info: page={page}, clut=0x{clut:X}, transparent={trans}")
 
             # Draw
             GL.glDrawElements(GL.GL_TRIANGLES, len(indices), GL.GL_UNSIGNED_INT, None)

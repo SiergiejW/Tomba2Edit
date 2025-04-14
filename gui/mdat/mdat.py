@@ -22,11 +22,7 @@ def exportMDAT(drwa_addr, datpath):
                 int((bin(num)[2:].zfill(16))[1:10], 2))
 
     def clutCoords2Address(intuple):
-        # Calculate CLUT address with bounds checking
-        raw_address = (intuple[0] * 2 + intuple[1] * 0x800)
-        # Ensure it doesn't exceed VRAM size (typically 1MB for PS1)
-        max_vram_size = 1024 * 1024  # 1MB
-        return raw_address % max_vram_size
+        return (intuple[0] * 2 + intuple[1] * 0x800)
 
     def short(rom, ind, off):
         rom.seek(ind + off)
@@ -46,6 +42,13 @@ def exportMDAT(drwa_addr, datpath):
 
     def xyz(rom, ind, x, y, z):
         return [short(rom, ind, x), -short(rom, ind, y), short(rom, ind, z)]  # Flip Y
+
+    def adjust_uv(raw_u, raw_v, page):
+        page_x = page % 8  # Each page is 128px wide, arranged 8 wide
+        page_y = page // 8  # Each row is 256px high
+        full_u = page_x * 128 + raw_u
+        full_v = page_y * 256 + raw_v
+        return (full_u / 1024.0, full_v / 512.0)
 
     with open(datpath, "rb") as rom:
         rom.seek(drwa_addr)
@@ -92,9 +95,10 @@ def exportMDAT(drwa_addr, datpath):
                     tex_info = (texture_page, clut_address, transparent)
 
                     # Get UV coordinates
-                    uv1 = (char(rom, ind, 5) / 256, char(rom, ind, 6) / 256)
-                    uv2 = (char(rom, ind, 9) / 256, char(rom, ind, 10) / 256)
-                    uv3 = (char(rom, ind, 31) / 256, char(rom, ind, 32) / 256)
+                    uv1 = adjust_uv(char(rom, ind, 5), char(rom, ind, 6), texture_page)
+                    uv2 = adjust_uv(char(rom, ind, 9), char(rom, ind, 10), texture_page)
+                    uv3 = adjust_uv(char(rom, ind, 31), char(rom, ind, 32), texture_page)
+                    #print(f"[DEBUG] Page {texture_page}: UV1 = {uv1} UV2 = {uv2} UV3 = {uv3}")
 
                     base_idx = len(model_data['vertices'])
                     model_data['vertices'].extend([v1, v2, v3])
@@ -135,10 +139,11 @@ def exportMDAT(drwa_addr, datpath):
                     tex_info = (texture_page, clut_address, transparent)
 
                     # Get UV coordinates
-                    uv1 = (char(rom, ind, 13) / 256, char(rom, ind, 14) / 256)
-                    uv2 = (char(rom, ind, 5) / 256, char(rom, ind, 6) / 256)
-                    uv3 = (char(rom, ind, 9) / 256, char(rom, ind, 10) / 256)
-                    uv4 = (char(rom, ind, 15) / 256, char(rom, ind, 16) / 256)
+                    uv1 = adjust_uv(char(rom, ind, 13), char(rom, ind, 14), texture_page)
+                    uv2 = adjust_uv(char(rom, ind, 5), char(rom, ind, 6), texture_page)
+                    uv3 = adjust_uv(char(rom, ind, 9), char(rom, ind, 10), texture_page)
+                    uv4 = adjust_uv(char(rom, ind, 15), char(rom, ind, 16), texture_page)
+                    #print(f"[DEBUG] Page {texture_page}: UV1 = {uv1} UV2 = {uv2} UV3 = {uv3} UV4 = {uv4}")
 
                     base_idx = len(model_data['vertices'])
                     model_data['vertices'].extend([v1, v2, v3, v4])
