@@ -57,11 +57,69 @@ class MDATViewer(QOpenGLWidget):
 
         try:
             self.model_data = mdat.exportMDAT(address, dat_file_path)
+            self.prepare_buffers()  # <- use self.
             self.update()
             return True
         except Exception as e:
             print(f"Error loading MDAT data: {e}")
             return False
+
+    def prepare_buffers(self):
+        if not self.model_data or not self.model_data.get("vertices"):
+            return
+
+        try:
+            vertices = np.array([
+                [v[0] / 1000.0, v[1] / 1000.0, v[2] / 1000.0]
+                for v in self.model_data['vertices']
+            ], dtype=np.float32).flatten()
+
+            colors = np.array(self.model_data['vertex_colors'], dtype=np.float32).flatten()
+
+            tex_coords = np.array([
+                [t[0], t[1]] for t in self.model_data['texture_coords']
+            ], dtype=np.float32).flatten()
+
+            indices = []
+            for face in self.model_data['faces']:
+                if len(face) == 3:
+                    indices.extend(face)
+                elif len(face) == 4:
+                    indices.extend([face[0], face[1], face[2]])
+                    indices.extend([face[0], face[2], face[3]])
+            indices = np.array(indices, dtype=np.uint32)
+
+            self.vao.bind()
+
+            # Vertex buffer
+            self.vertex_buffer.create()
+            self.vertex_buffer.bind()
+            self.vertex_buffer.allocate(vertices.tobytes(), vertices.nbytes)
+            GL.glEnableVertexAttribArray(0)
+            GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
+            # Color buffer
+            self.color_buffer.create()
+            self.color_buffer.bind()
+            self.color_buffer.allocate(colors.tobytes(), colors.nbytes)
+            GL.glEnableVertexAttribArray(1)
+            GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
+            # Texture coord buffer
+            self.texcoord_buffer.create()
+            self.texcoord_buffer.bind()
+            self.texcoord_buffer.allocate(tex_coords.tobytes(), tex_coords.nbytes)
+            GL.glEnableVertexAttribArray(2)
+            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
+            # Index buffer
+            self.index_buffer.create()
+            self.index_buffer.bind()
+            self.index_buffer.allocate(indices.tobytes(), indices.nbytes)
+
+            self.vao.release()
+        except Exception as e:
+            print(f"Error preparing buffers: {e}")
 
     def initializeGL(self):
         """Initialize OpenGL"""
@@ -147,83 +205,18 @@ class MDATViewer(QOpenGLWidget):
 
         self.shader_program.setUniformValue("modelViewProjection", model_view_projection)
 
-        # Prepare data
-        try:
-
-            vertices = np.array([
-                [v[0] / 1000.0, v[1] / 1000.0, v[2] / 1000.0]
-                for v in self.model_data['vertices']
-            ], dtype=np.float32).flatten()
-
-            colors = np.array([
-                c for c in self.model_data['vertex_colors']
-            ], dtype=np.float32).flatten()
-            tex_coords = np.array([
-                [t[0], t[1]] for t in self.model_data['texture_coords']
-            ], dtype=np.float32).flatten()
-
-            indices = []
-            for face in self.model_data['faces']:
-                if len(face) == 3:
-                    indices.extend(face)
-                elif len(face) == 4:
-                    indices.extend([face[0], face[1], face[2]])
-                    indices.extend([face[0], face[2], face[3]])
-            indices = np.array(indices, dtype=np.uint32)
-
-        except Exception as e:
-            print(f"Error preparing data: {e}")
-            return
-
-        # Upload data
         self.vao.bind()
 
-        try:
-            # Vertex buffer
-            self.vertex_buffer.create()
-            self.vertex_buffer.bind()
-            self.vertex_buffer.allocate(vertices.tobytes(), vertices.nbytes)
-            GL.glEnableVertexAttribArray(0)
-            GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        if self.vram_texture:
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
+            self.shader_program.setUniformValue("vramTexture", 0)
+        else:
+            print("⚠️ No VRAM texture bound.")
 
-            # Color buffer
-            self.color_buffer.create()
-            self.color_buffer.bind()
-            self.color_buffer.allocate(colors.tobytes(), colors.nbytes)
-            GL.glEnableVertexAttribArray(1)
-            GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        # Draw call
+        GL.glDrawElements(GL.GL_TRIANGLES, self.index_buffer.size() // 4, GL.GL_UNSIGNED_INT, None)
 
-            # Texture buffer
-            self.texcoord_buffer.create()
-            self.texcoord_buffer.bind()
-            self.texcoord_buffer.allocate(tex_coords.tobytes(), tex_coords.nbytes)
-            GL.glEnableVertexAttribArray(2)
-            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
-
-            # Index buffer
-            self.index_buffer.create()
-            self.index_buffer.bind()
-            self.index_buffer.allocate(indices.tobytes(), indices.nbytes)
-
-            if self.vram_texture:
-                GL.glActiveTexture(GL.GL_TEXTURE0)
-                GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
-                self.shader_program.setUniformValue("vramTexture", 0)
-            else:
-                print("⚠️ No VRAM texture bound.")
-
-            if not self.model_data['texture_info']:
-                print("⚠️ No texture info found in model data.")
-            #else:
-            #    page, clut, trans = self.model_data['texture_info'][0]
-            #    print(f"🧩 First texture info: page={page}, clut=0x{clut:X}, transparent={trans}")
-
-            # Draw
-            GL.glDrawElements(GL.GL_TRIANGLES, len(indices), GL.GL_UNSIGNED_INT, None)
-        except Exception as e:
-            print(f"Error uploading data: {e}")
-
-        # Clean up
         self.vao.release()
         self.shader_program.release()
 
