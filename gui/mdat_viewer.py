@@ -28,6 +28,8 @@ class MDATViewer(QOpenGLWidget):
         self.camera_controls = CameraControls(self)
         self.clut_quad_tex = None
         self.clut_tri_tex = None
+        self.clut_map = {}  # address -> GL texture ID
+        self.clut_index_groups = {}  # address -> list of indices
 
     def set_vram_image(self, qimage):
         self.makeCurrent()
@@ -80,6 +82,11 @@ class MDATViewer(QOpenGLWidget):
             return
 
         try:
+            self.clut_map = {}
+            self.clut_index_groups = {}
+
+            index_offset = 0
+            indices = []
             vertices = np.array([
                 [v[0] / 1000.0, v[1] / 1000.0, v[2] / 1000.0]
                 for v in self.model_data['vertices']
@@ -91,22 +98,35 @@ class MDATViewer(QOpenGLWidget):
                 [t[0], t[1]] for t in self.model_data['texture_coords']
             ], dtype=np.float32).flatten()
 
-            indices = []
-            self.tri_indices = []
-            self.quad_indices = []
-
             for i, face in enumerate(self.model_data['faces']):
-                if len(face) == 3:
-                    self.tri_indices.extend(face)
-                elif len(face) == 4:
-                    # Decompose quad to 2 tris
-                    self.quad_indices.extend([face[0], face[1], face[2]])
-                    self.quad_indices.extend([face[0], face[2], face[3]])
+                tex_info = self.model_data['texture_info'][i]
+                clut_address = tex_info[1]
 
-            self.tri_indices = np.array(self.tri_indices, dtype=np.uint32)
-            self.quad_indices = np.array(self.quad_indices, dtype=np.uint32)
-            print(f"🧩 Tri count: {len(self.tri_indices)}, Quad count: {len(self.quad_indices)}")
-            indices = np.concatenate([self.tri_indices, self.quad_indices])
+                if clut_address not in self.clut_index_groups:
+                    self.clut_index_groups[clut_address] = []
+
+                    # Generate a fake CLUT (16 random RGBA values)
+                    clut_array = np.random.randint(0, 256, (16, 4), dtype=np.uint8)
+                    self.clut_map[clut_address] = self.upload_clut(clut_array)
+
+                self.clut_index_groups[clut_address].extend(face)
+
+            # Flatten all indices to a single buffer, keep per-group offsets
+            index_offsets = {}
+            group_indices = []
+            for clut_address, face_indices in self.clut_index_groups.items():
+                face_indices = np.array(face_indices, dtype=np.uint32)
+                index_offsets[clut_address] = len(group_indices) * 4  # byte offset
+                group_indices.extend(face_indices)
+
+            all_indices = np.array(group_indices, dtype=np.uint32)
+
+            self.index_buffer.create()
+            self.index_buffer.bind()
+            self.index_buffer.allocate(all_indices.tobytes(), all_indices.nbytes)
+
+            self.index_offsets = index_offsets
+            self.index_counts = {k: len(v) for k, v in self.clut_index_groups.items()}
 
             self.vao.bind()
 
@@ -131,13 +151,11 @@ class MDATViewer(QOpenGLWidget):
             GL.glEnableVertexAttribArray(2)
             GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
 
-            # Index buffer
-            self.index_buffer.create()
+            # bind index buffer while VAO is bound
             self.index_buffer.bind()
-            self.index_buffer.allocate(indices.tobytes(), indices.nbytes)
-
 
             self.vao.release()
+
         except Exception as e:
             print(f"Error preparing buffers: {e}")
 
@@ -238,32 +256,23 @@ class MDATViewer(QOpenGLWidget):
         GL.glBindTexture(GL.GL_TEXTURE_1D, self.clut_tri_tex)
         self.shader_program.setUniformValue("clutTexture", 1)
 
+        # Final per-CLUT draw loop
         try:
-            if hasattr(self, 'tri_indices') and len(self.tri_indices):
-                print(f"✅ Drawing TRI: {len(self.tri_indices)} indices at offset 0")
-                GL.glDrawElements(GL.GL_TRIANGLES,
-                                  len(self.tri_indices),
-                                  index_type,
-                                  ctypes.c_void_p(0))
-            else:
-                print("⚠️ No triangle indices found.")
-        except Exception as e:
-            print(f"💥 Draw TRI failed: {e}")
+            for clut_address, tex_id in self.clut_map.items():
+                offset = self.index_offsets[clut_address]
+                count = self.index_counts[clut_address]
+                print(f"🎯 Drawing CLUT 0x{clut_address:X}: {count} indices at byte offset {offset}")
 
-        # Draw quads
-        try:
-            if hasattr(self, 'quad_indices') and len(self.quad_indices):
-                tri_offset_bytes = len(self.tri_indices) * stride
-                print(f"✅ Drawing QUAD: {len(self.quad_indices)} indices at offset {tri_offset_bytes}")
-                GL.glBindTexture(GL.GL_TEXTURE_1D, self.clut_quad_tex)
+                GL.glActiveTexture(GL.GL_TEXTURE1)
+                GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                self.shader_program.setUniformValue("clutTexture", 1)
+
                 GL.glDrawElements(GL.GL_TRIANGLES,
-                                  len(self.quad_indices),
-                                  index_type,
-                                  ctypes.c_void_p(tri_offset_bytes))
-            else:
-                print("⚠️ No quad indices found.")
+                                  count,
+                                  GL.GL_UNSIGNED_INT,
+                                  ctypes.c_void_p(offset))
         except Exception as e:
-            print(f"💥 Draw QUAD failed: {e}")
+            print(f"💥 Draw per-face CLUTs failed: {e}")
 
         self.vao.release()
         self.shader_program.release()
