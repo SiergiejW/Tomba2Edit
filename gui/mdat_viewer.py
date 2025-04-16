@@ -11,6 +11,7 @@ from PyQt6.QtGui import QMatrix4x4, QImage
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from functions.camera_controls import CameraControls  # Importing the camera controls class
+import ctypes
 
 class MDATViewer(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -25,10 +26,10 @@ class MDATViewer(QOpenGLWidget):
         self.vram_texture = None  # OpenGL texture ID
         # Initialize the camera controls
         self.camera_controls = CameraControls(self)
+        self.clut_quad_tex = None
+        self.clut_tri_tex = None
 
     def set_vram_image(self, qimage):
-        print("Trying to set VRAM image...")
-
         self.makeCurrent()
 
         if qimage.format() != QImage.Format.Format_RGBA8888:
@@ -36,21 +37,31 @@ class MDATViewer(QOpenGLWidget):
 
         ptr = qimage.bits()
         ptr.setsize(qimage.sizeInBytes())
-        buf = ptr.asstring()  # ✅ convert to bytes
+        buf = ptr.asstring()
 
-        self.vram_texture = GL.glGenTextures(1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
-
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA,
+        # Create grayscale index texture from VRAM (just R channel assumed)
+        self.index_texture = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RED,
                         qimage.width(), qimage.height(), 0,
                         GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, buf)
-
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+        print("✅ Index texture uploaded (grayscale).")
 
-        print("✅ VRAM texture uploaded:", qimage.width(), "x", qimage.height())
-
+    def upload_clut(self, clut_array):
+        tex_id = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+        GL.glTexImage1D(GL.GL_TEXTURE_1D, 0, GL.GL_RGBA, 16, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, clut_array)
+        GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+        GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+        return tex_id
     def load_mdat_data(self, dat_file_path, dat_start, offset):
+        clut_quad = np.random.randint(0, 256, (16, 4), dtype=np.uint8)  # RGBA
+        clut_tri = np.random.randint(0, 256, (16, 4), dtype=np.uint8)
+        self.makeCurrent()
+        self.clut_tri_tex = self.upload_clut(clut_tri)
+        self.clut_quad_tex = self.upload_clut(clut_quad)
         """Load MDAT data from the DAT file"""
         address = dat_start + offset
         print("at", address, f"({dat_start})")
@@ -81,13 +92,21 @@ class MDATViewer(QOpenGLWidget):
             ], dtype=np.float32).flatten()
 
             indices = []
-            for face in self.model_data['faces']:
+            self.tri_indices = []
+            self.quad_indices = []
+
+            for i, face in enumerate(self.model_data['faces']):
                 if len(face) == 3:
-                    indices.extend(face)
+                    self.tri_indices.extend(face)
                 elif len(face) == 4:
-                    indices.extend([face[0], face[1], face[2]])
-                    indices.extend([face[0], face[2], face[3]])
-            indices = np.array(indices, dtype=np.uint32)
+                    # Decompose quad to 2 tris
+                    self.quad_indices.extend([face[0], face[1], face[2]])
+                    self.quad_indices.extend([face[0], face[2], face[3]])
+
+            self.tri_indices = np.array(self.tri_indices, dtype=np.uint32)
+            self.quad_indices = np.array(self.quad_indices, dtype=np.uint32)
+            print(f"🧩 Tri count: {len(self.tri_indices)}, Quad count: {len(self.quad_indices)}")
+            indices = np.concatenate([self.tri_indices, self.quad_indices])
 
             self.vao.bind()
 
@@ -116,6 +135,7 @@ class MDATViewer(QOpenGLWidget):
             self.index_buffer.create()
             self.index_buffer.bind()
             self.index_buffer.allocate(indices.tobytes(), indices.nbytes)
+
 
             self.vao.release()
         except Exception as e:
@@ -153,13 +173,17 @@ class MDATViewer(QOpenGLWidget):
                 QOpenGLShader.ShaderTypeBit.Fragment,
                 """
                 #version 330 core
+                in vec2 fragTexCoord;
                 in vec3 fragColor;
-                in vec2 fragTexCoord;  // new
                 out vec4 outColor;
-                uniform sampler2D vramTexture;  // new
+                
+                uniform sampler2D indexTexture;
+                uniform sampler1D clutTexture;
+                
                 void main() {
-                    vec4 texColor = texture(vramTexture, fragTexCoord);  // new
-                    outColor = texColor * vec4(fragColor, 1.0);  // combine or just use texColor
+                    float index = texture(indexTexture, fragTexCoord).r * 15.0;
+                    vec4 clutColor = texture(clutTexture, index / 15.0);
+                    outColor = clutColor * vec4(fragColor, 1.0);
                 }
                 """
         ):
@@ -181,41 +205,65 @@ class MDATViewer(QOpenGLWidget):
         GL.glViewport(0, 0, w, h)
 
     def paintGL(self):
-        """Render the scene"""
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-
-        if not self.model_data or not self.model_data.get('vertices'):
+        if not self.model_data:
+            print("❌ No model data to draw.")
             return
 
-        # Set up matrices
+        # Camera setup
         projection = QMatrix4x4()
         projection.perspective(45.0, self.width() / self.height(), 0.1, 100.0)
-
         view = QMatrix4x4()
         view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
         view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
         view.translate(self.camera_controls.camera_x, self.camera_controls.camera_y, self.camera_controls.camera_z)
-
         model_view_projection = projection * view
 
-        # Bind shader
         if not self.shader_program.bind():
-            print("Failed to bind shader program")
+            print("❌ Shader bind failed.")
             return
-
         self.shader_program.setUniformValue("modelViewProjection", model_view_projection)
 
         self.vao.bind()
 
-        if self.vram_texture:
-            GL.glActiveTexture(GL.GL_TEXTURE0)
-            GL.glBindTexture(GL.GL_TEXTURE_2D, self.vram_texture)
-            self.shader_program.setUniformValue("vramTexture", 0)
-        else:
-            print("⚠️ No VRAM texture bound.")
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture)
+        self.shader_program.setUniformValue("indexTexture", 0)
 
-        # Draw call
-        GL.glDrawElements(GL.GL_TRIANGLES, self.index_buffer.size() // 4, GL.GL_UNSIGNED_INT, None)
+        index_type = GL.GL_UNSIGNED_INT
+        stride = np.uint32().nbytes  # 4 bytes
+
+        # Draw triangles
+        GL.glActiveTexture(GL.GL_TEXTURE1)
+        GL.glBindTexture(GL.GL_TEXTURE_1D, self.clut_tri_tex)
+        self.shader_program.setUniformValue("clutTexture", 1)
+
+        try:
+            if hasattr(self, 'tri_indices') and len(self.tri_indices):
+                print(f"✅ Drawing TRI: {len(self.tri_indices)} indices at offset 0")
+                GL.glDrawElements(GL.GL_TRIANGLES,
+                                  len(self.tri_indices),
+                                  index_type,
+                                  ctypes.c_void_p(0))
+            else:
+                print("⚠️ No triangle indices found.")
+        except Exception as e:
+            print(f"💥 Draw TRI failed: {e}")
+
+        # Draw quads
+        try:
+            if hasattr(self, 'quad_indices') and len(self.quad_indices):
+                tri_offset_bytes = len(self.tri_indices) * stride
+                print(f"✅ Drawing QUAD: {len(self.quad_indices)} indices at offset {tri_offset_bytes}")
+                GL.glBindTexture(GL.GL_TEXTURE_1D, self.clut_quad_tex)
+                GL.glDrawElements(GL.GL_TRIANGLES,
+                                  len(self.quad_indices),
+                                  index_type,
+                                  ctypes.c_void_p(tri_offset_bytes))
+            else:
+                print("⚠️ No quad indices found.")
+        except Exception as e:
+            print(f"💥 Draw QUAD failed: {e}")
 
         self.vao.release()
         self.shader_program.release()
