@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
 
                                         qimage = ImageQt(vram_img).copy()
 
-                                        self.mdat_viewer.set_vram_image(qimage, vram_bytes)  # <<<< must pass vram_bytes too!
+                                        # Remove second call completely, just do once correctly:
                                         if vram_img.mode != "RGBA":
                                             qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
                                                             QImage.Format.Format_RGB888)
@@ -287,7 +287,6 @@ class MainWindow(QMainWindow):
                                             qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
                                                             QImage.Format.Format_RGBA8888)
 
-                                        print(f"Feeding VRAM from AREA_{area_number} to MDATViewer")
                                         self.mdat_viewer.set_vram_image(qimage, vram_bytes)
 
                                 except Exception as e:

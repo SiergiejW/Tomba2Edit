@@ -158,6 +158,7 @@ class VRAMViewer(QWidget):
                 vram_image.putpixel((x, y), (g1, g1, g1, 255))
                 vram_image.putpixel((x + 1, y), (g2, g2, g2, 255))
 
+
         return vram_image, vram_bytes
 
 

@@ -13,13 +13,7 @@ import gui.mdat.mdat as mdat
 from functions.camera_controls import CameraControls  # Importing the camera controls class
 import ctypes
 
-def export_current_vram(self, path="exported_debug_vram.vram"):
-    if hasattr(self, 'vram_raw_bytes') and self.vram_raw_bytes:
-        with open(path, "wb") as f:
-            f.write(self.vram_raw_bytes)
-        print(f"✔️ VRAM dumped to {path}")
-    else:
-        print("❌ No VRAM bytes available to export!")
+
 
 class MDATViewer(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -42,18 +36,25 @@ class MDATViewer(QOpenGLWidget):
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
 
-        # Convert clut_address (linear) into VRAM x, y using Tomba2 logic
-        x = ((clut_address & 0xF) << 4)
-        y = (clut_address >> 10)
+        # Direct linear address usage (NO x, y calculation here!)
+        addr = clut_address  # linear address directly!
 
+        print(f"\n[NEW SCRIPT] CLUT at VRAM address 0x{clut_address:06X}:")
+
+        line = "  "
         for i in range(16):
-            addr = ((y * 1024) + (x + i)) * 2  # each word = 2 bytes
+            read_addr = addr + i * 2
 
-            if addr + 1 >= len(self.vram_raw_bytes):
-                clut.append([0, 0, 0, 255])
-                continue
+            if read_addr + 1 >= len(self.vram_raw_bytes):
+                b0, b1 = 0, 0
+            else:
+                b0 = self.vram_raw_bytes[read_addr]
+                b1 = self.vram_raw_bytes[read_addr + 1]
 
-            word = int.from_bytes(self.vram_raw_bytes[addr:addr + 2], byteorder='little')
+            word = b0 | (b1 << 8)
+
+            print(f"    Bytes @ {read_addr:06X}: {b0:02X} {b1:02X} -> Word: ({word:04X})")
+
             R = (word & 0x1F) * 8
             G = ((word >> 5) & 0x1F) * 8
             B = ((word >> 10) & 0x1F) * 8
@@ -61,6 +62,7 @@ class MDATViewer(QOpenGLWidget):
 
             clut.append([R, G, B, A])
 
+        print("\n")  # Newline after 16
         return np.array(clut, dtype=np.uint8)
 
     def set_vram_image(self, qimage, raw_vram=None):
