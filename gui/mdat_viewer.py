@@ -13,6 +13,14 @@ import gui.mdat.mdat as mdat
 from functions.camera_controls import CameraControls  # Importing the camera controls class
 import ctypes
 
+def export_current_vram(self, path="exported_debug_vram.vram"):
+    if hasattr(self, 'vram_raw_bytes') and self.vram_raw_bytes:
+        with open(path, "wb") as f:
+            f.write(self.vram_raw_bytes)
+        print(f"✔️ VRAM dumped to {path}")
+    else:
+        print("❌ No VRAM bytes available to export!")
+
 class MDATViewer(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)

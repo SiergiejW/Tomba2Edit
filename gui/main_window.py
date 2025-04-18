@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
                                                             QImage.Format.Format_RGBA8888)
 
                                         print(f"Feeding VRAM from AREA_{area_number} to MDATViewer")
-                                        self.mdat_viewer.set_vram_image(qimage)
+                                        self.mdat_viewer.set_vram_image(qimage, vram_bytes)
 
                                 except Exception as e:
                                     print(f"❌ Could not load VRAM for AREA_{area_number}: {e}")
