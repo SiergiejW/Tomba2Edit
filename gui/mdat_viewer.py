@@ -35,34 +35,24 @@ class MDATViewer(QOpenGLWidget):
 
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
-
         # Direct linear address usage (NO x, y calculation here!)
         addr = clut_address  # linear address directly!
-
-        print(f"\n[NEW SCRIPT] CLUT at VRAM address 0x{clut_address:06X}:")
-
+        #print(f"\n[NEW SCRIPT] CLUT at VRAM address 0x{clut_address:06X}:")
         line = "  "
         for i in range(16):
             read_addr = addr + i * 2
-
             if read_addr + 1 >= len(self.vram_raw_bytes):
                 b0, b1 = 0, 0
             else:
                 b0 = self.vram_raw_bytes[read_addr]
                 b1 = self.vram_raw_bytes[read_addr + 1]
-
             word = b0 | (b1 << 8)
-
-            print(f"    Bytes @ {read_addr:06X}: {b0:02X} {b1:02X} -> Word: ({word:04X})")
-
+            #print(f"    Bytes @ {read_addr:06X}: {b0:02X} {b1:02X} -> Word: ({word:04X})")
             R = (word & 0x1F) * 8
             G = ((word >> 5) & 0x1F) * 8
             B = ((word >> 10) & 0x1F) * 8
             A = 0 if (R == 0 and G == 0 and B == 0) else (128 if transparent else 255)
-
             clut.append([R, G, B, A])
-
-        print("\n")  # Newline after 16
         return np.array(clut, dtype=np.uint8)
 
     def set_vram_image(self, qimage, raw_vram=None):
@@ -74,7 +64,6 @@ class MDATViewer(QOpenGLWidget):
         ptr = qimage.bits()
         ptr.setsize(qimage.sizeInBytes())
         self.vram_qimage = qimage
-
         # Store raw VRAM
         self.vram_raw_bytes = raw_vram if raw_vram else bytearray()
         if raw_vram is not None:
@@ -96,7 +85,6 @@ class MDATViewer(QOpenGLWidget):
 
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
-
         print("VRAM image uploaded as 32-bit RGBA texture (used as index map).")
 
 
@@ -157,7 +145,7 @@ class MDATViewer(QOpenGLWidget):
                     # Generate a fake CLUT (16 random RGBA values)
                     _, clut_address, is_transparent = tex_info
                     clut_array = self.extract_clut_from_vram(clut_address, is_transparent)
-                    print(f" CLUT 0x{clut_address:X}: {clut_array}")
+                    #print(f" CLUT 0x{clut_address:X}: {clut_array}")
                     self.clut_map[clut_address] = self.upload_clut(clut_array)
 
                 self.clut_index_groups[clut_address].extend(face)
@@ -309,19 +297,19 @@ class MDATViewer(QOpenGLWidget):
 
         # Final per-CLUT draw loop
         try:
+            current_tex_id = None
+
             for clut_address, tex_id in self.clut_map.items():
+                if tex_id != current_tex_id:
+                    GL.glActiveTexture(GL.GL_TEXTURE1)
+                    GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                    self.shader_program.setUniformValue("clutTexture", 1)
+                    current_tex_id = tex_id
+
                 offset = self.index_offsets[clut_address]
                 count = self.index_counts[clut_address]
-                #print(f" Drawing CLUT 0x{clut_address:X}: {count} indices at byte offset {offset}")
 
-                GL.glActiveTexture(GL.GL_TEXTURE1)
-                GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
-                self.shader_program.setUniformValue("clutTexture", 1)
-
-                GL.glDrawElements(GL.GL_TRIANGLES,
-                                  count,
-                                  GL.GL_UNSIGNED_INT,
-                                  ctypes.c_void_p(offset))
+                GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
         except Exception as e:
             print(f" Draw per-face CLUTs failed: {e}")
 
