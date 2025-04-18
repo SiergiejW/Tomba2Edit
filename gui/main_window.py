@@ -16,6 +16,7 @@ from gui.txtd_viewer import TXTDViewer
 from gui.mdat_viewer import MDATViewer
 from functions.idx_parser import parse_idx_file
 from gui.vram_viewer import VRAMViewer
+from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -268,7 +269,17 @@ class MainWindow(QMainWindow):
 
                                         # Step 2: decode VRAM and send to MDATViewer
                                         from gui.vram_viewer import VRAMViewer  # make sure it's available
-                                        vram_img = self.vram_viewer.process_vram(imgdata)
+                                        vram_img_result = self.vram_viewer.process_vram(imgdata)
+
+                                        if isinstance(vram_img_result, tuple):
+                                            vram_img, vram_bytes = vram_img_result
+                                        else:
+                                            vram_img = vram_img_result
+                                            vram_bytes = None
+
+                                        qimage = ImageQt(vram_img).copy()
+                                        print(f"✔️Feeding VRAM from AREA_{area_number} to MDATViewer")
+                                        self.mdat_viewer.set_vram_image(qimage, vram_bytes)
                                         if vram_img.mode != "RGBA":
                                             qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
                                                             QImage.Format.Format_RGB888)
@@ -276,7 +287,7 @@ class MainWindow(QMainWindow):
                                             qimage = QImage(vram_img.tobytes(), vram_img.width, vram_img.height,
                                                             QImage.Format.Format_RGBA8888)
 
-                                        print(f"✔️ Feeding VRAM from AREA_{area_number} to MDATViewer")
+                                        print(f"Feeding VRAM from AREA_{area_number} to MDATViewer")
                                         self.mdat_viewer.set_vram_image(qimage)
 
                                 except Exception as e:

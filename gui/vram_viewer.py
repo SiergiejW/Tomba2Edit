@@ -11,6 +11,7 @@ import io
 import struct
 # 🔗 Attach external zoom-related methods to VRAMViewer
 import functions.graphic_controls as ctrl
+from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
 class VRAMViewer(QWidget):
     def __init__(self):
@@ -68,17 +69,21 @@ class VRAMViewer(QWidget):
 
     def load_vram_data(self, img_data):
         try:
-            vram_image = self.process_vram(img_data)
+            result = self.process_vram(img_data)
+            if isinstance(result, tuple):
+                vram_image, vram_bytes = result
+            else:
+                vram_image = result
+                vram_bytes = None
 
-            qimage = QImage(vram_image.tobytes(), 4096, 512, QImage.Format.Format_RGBA8888)
+            qimage = ImageQt(vram_image).copy()  # ✅ Safe conversion
 
             self.original_pixmap = QPixmap.fromImage(qimage)
             self.update_pixmap()
             self.set_stretched()  # Changed from self.reset_zoom()
             self.info_label.setText("VRAM Image Loaded")
             if hasattr(self, 'mdat_viewer') and self.mdat_viewer:
-                self.mdat_viewer.set_vram_image(qimage)
-                self.mdat_viewer.update()
+                self.mdat_viewer.set_vram_image(qimage, vram_bytes)
 
             return True
         except Exception as e:
@@ -153,7 +158,7 @@ class VRAMViewer(QWidget):
                 vram_image.putpixel((x, y), (g1, g1, g1, 255))
                 vram_image.putpixel((x + 1, y), (g2, g2, g2, 255))
 
-        return vram_image
+        return vram_image, vram_bytes
 
 
 class ZoomableLabel(QLabel):
