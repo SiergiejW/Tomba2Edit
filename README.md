@@ -2,6 +2,7 @@
 ## Introduction
 A tool for previewing, with the goal of becoming a Tomba! 2 repacker/exporter. Based on reverse-engineered research by the Tomba Club.<br>
 Check out our [discord](discord.com/invite/WcAb5kf) and [Youtube](https://www.youtube.com/@TombaClub). Visit out [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.<br>
+The tool aims to view models, textures, sprites, text, background maps, collision data, animations from Tomba 2.
 
 ## Installation
 Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)<br>
