@@ -1,5 +1,6 @@
 # mdat_viewer.py
 import numpy as np
+from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QFileDialog
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -10,9 +11,13 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QImage
 from OpenGL import GL
 import gui.mdat.mdat as mdat
+from gui.mdat_export import export_mdat_to_gltf
 from functions.camera_controls import CameraControls  # Importing the camera controls class
 import ctypes
-
+from PyQt6.QtWidgets import (
+    QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
+    QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
+)
 
 
 class MDATViewer(QOpenGLWidget):
@@ -32,7 +37,21 @@ class MDATViewer(QOpenGLWidget):
         self.clut_tri_tex = None
         self.clut_map = {}  # address -> GL texture ID
         self.clut_index_groups = {}  # address -> list of indices
+        self.export_button = QPushButton("Export to GLTF", self)
+        self.export_button.clicked.connect(self.export_to_glb)
 
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.export_button)
+        layout.addStretch()
+
+    def export_to_glb(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save GLTF file", "", "GLTF Files (*.gltf)")
+        if file_path:
+            success = export_mdat_to_gltf(self.model_data, self.vram_qimage, self.clut_map, file_path)
+            if success:
+                QMessageBox.information(self, "Export Complete", "Exported model successfully!")
+            else:
+                QMessageBox.critical(self, "Export Failed", "Failed to export model.")
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
         # Direct linear address usage (NO x, y calculation here!)
