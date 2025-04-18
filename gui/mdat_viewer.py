@@ -67,8 +67,11 @@ class MDATViewer(QOpenGLWidget):
 
         # Store raw VRAM
         self.vram_raw_bytes = raw_vram if raw_vram else bytearray()
-        if not self.vram_raw_bytes:
-            print("❌ vram_raw_bytes is empty or missing!")
+        if raw_vram is not None:
+            self.vram_raw_bytes = raw_vram
+        else:
+            print("❌ WARNING: raw_vram missing when setting VRAM! CLUTs will fail.")
+            self.vram_raw_bytes = bytearray()
 
         self.vram_bytes = ptr.asstring()
         self.vram_width = qimage.width()
@@ -299,7 +302,7 @@ class MDATViewer(QOpenGLWidget):
             for clut_address, tex_id in self.clut_map.items():
                 offset = self.index_offsets[clut_address]
                 count = self.index_counts[clut_address]
-                print(f" Drawing CLUT 0x{clut_address:X}: {count} indices at byte offset {offset}")
+                #print(f" Drawing CLUT 0x{clut_address:X}: {count} indices at byte offset {offset}")
 
                 GL.glActiveTexture(GL.GL_TEXTURE1)
                 GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
