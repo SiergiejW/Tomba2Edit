@@ -53,14 +53,6 @@ class MDATViewer(QOpenGLWidget):
             }
         """)
 
-
-        # Culling toggle button
-        self.culling_enabled = False  # Track state
-        self.culling_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Backface Culling", self)
-        self.culling_action.setCheckable(True)
-        self.culling_action.toggled.connect(self.toggle_culling)
-        self.toolbar.addAction(self.culling_action)
-
         # Texture mode button
         self.texture_mode_enabled = True  # Default to textured mode
         self.texture_mode_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton), "Texture Mode", self)
@@ -68,6 +60,13 @@ class MDATViewer(QOpenGLWidget):
         self.texture_mode_action.setChecked(True)  # Start as enabled
         self.texture_mode_action.toggled.connect(self.toggle_texture_mode)
         self.toolbar.addAction(self.texture_mode_action)
+
+        # Culling toggle button
+        self.culling_enabled = False  # Track state
+        self.culling_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Backface Culling", self)
+        self.culling_action.setCheckable(True)
+        self.culling_action.toggled.connect(self.toggle_culling)
+        self.toolbar.addAction(self.culling_action)
 
         # Export button
         export_action_icon = QIcon("icons/graphics/address-book.png")

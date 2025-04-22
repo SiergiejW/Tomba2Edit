@@ -25,6 +25,7 @@ def export_mdat_to_gltf(model_data: Dict[str, Any], vram_qimage: QImage, clut_ma
         vertices = np.array(model_data['vertices'], dtype=np.float32).reshape(-1, 3)
         normals = np.zeros_like(vertices)  # Placeholder normals
         tex_coords = np.array(model_data['texture_coords'], dtype=np.float32).reshape(-1, 2)
+        colors = np.array(model_data['vertex_colors'], dtype=np.float32).reshape(-1, 3)
 
         # Prepare faces (convert quads to triangles)
         all_faces = []
@@ -54,9 +55,10 @@ def export_mdat_to_gltf(model_data: Dict[str, Any], vram_qimage: QImage, clut_ma
                     "attributes": {
                         "POSITION": 0,
                         "NORMAL": 1,
-                        "TEXCOORD_0": 2
+                        "TEXCOORD_0": 2,
+                        "COLOR_0": 3
                     },
-                    "indices": 3,
+                    "indices": 4,
                     "mode": 4  # TRIANGLES
                 }]
             }],
@@ -82,6 +84,8 @@ def export_mdat_to_gltf(model_data: Dict[str, Any], vram_qimage: QImage, clut_ma
         normal_data = normals.tobytes()
         texcoord_data = tex_coords.tobytes()
         index_data = faces.tobytes()
+        color_data = colors.tobytes()
+
 
         # Add buffer views and accessors
         def add_buffer_view(data, target=None):
@@ -123,6 +127,14 @@ def export_mdat_to_gltf(model_data: Dict[str, Any], vram_qimage: QImage, clut_ma
             "type": "VEC2"
         })
 
+        color_view = add_buffer_view(color_data, 34962)  # ARRAY_BUFFER
+        gltf["accessors"].append({
+            "bufferView": color_view,
+            "componentType": 5126,  # FLOAT
+            "count": len(colors),
+            "type": "VEC3"
+        })
+
         # Indices
         index_view = add_buffer_view(index_data, 34963)  # ELEMENT_ARRAY_BUFFER
         gltf["accessors"].append({
@@ -161,11 +173,14 @@ def export_mdat_to_gltf(model_data: Dict[str, Any], vram_qimage: QImage, clut_ma
             gltf["materials"].append({
                 "pbrMetallicRoughness": {
                     "baseColorTexture": {
-                        "index": 0
+                        "index": 0,
+                        "texCoord": 0
                     },
+                    "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
                     "metallicFactor": 0,
                     "roughnessFactor": 1
-                }
+                },
+                "vertexColor": True
             })
 
             # Assign material to primitive
