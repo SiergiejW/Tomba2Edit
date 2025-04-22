@@ -141,6 +141,8 @@ class MDATViewer(QOpenGLWidget):
             self.clut_map = {}
             self.clut_index_groups = {}
 
+
+
             index_offset = 0
             indices = []
             vertices = np.array([
