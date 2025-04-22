@@ -1,6 +1,6 @@
 # mdat_viewer.py
 import numpy as np
-from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QFileDialog
+from PyQt6.QtCore import Qt
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -8,7 +8,7 @@ from PyQt6.QtOpenGL import (
     QOpenGLVertexArrayObject,
     QOpenGLBuffer
 )
-from PyQt6.QtGui import QMatrix4x4, QImage
+from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from gui.mdat_export import export_mdat_to_gltf
@@ -37,11 +37,48 @@ class MDATViewer(QOpenGLWidget):
         self.clut_tri_tex = None
         self.clut_map = {}  # address -> GL texture ID
         self.clut_index_groups = {}  # address -> list of indices
-        self.export_button = QPushButton("Export to GLTF", self)
-        self.export_button.clicked.connect(self.export_to_glb)
+        self.toolbar = QToolBar(self)
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.toolbar.setStyleSheet("""
+            QToolButton {
+                background-color: rgba(255, 255, 255, 128);  /* 50% opaque white */
+                color: black;
+                border: none;
+                padding: 5px;
+                margin: 2px;
+                border-radius: 4px;
+            }
+            QToolButton:hover {
+                background-color: rgba(255, 255, 255, 180);
+            }
+        """)
 
+
+        # Culling toggle button
+        self.culling_enabled = False  # Track state
+        self.culling_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Backface Culling", self)
+        self.culling_action.setCheckable(True)
+        self.culling_action.toggled.connect(self.toggle_culling)
+        self.toolbar.addAction(self.culling_action)
+
+        # Texture mode button
+        self.texture_mode_enabled = True  # Default to textured mode
+        self.texture_mode_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton), "Texture Mode", self)
+        self.texture_mode_action.setCheckable(True)
+        self.texture_mode_action.setChecked(True)  # Start as enabled
+        self.texture_mode_action.toggled.connect(self.toggle_texture_mode)
+        self.toolbar.addAction(self.texture_mode_action)
+
+        # Export button
+        export_action_icon = QIcon("icons/graphics/address-book.png")
+        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export GLTF", self)
+        export_action.triggered.connect(self.export_to_glb)
+        self.toolbar.addAction(export_action)
+
+        # Layout
         layout = QVBoxLayout(self)
-        layout.addWidget(self.export_button)
+        layout.setContentsMargins(0, 0, 0, 0)  # No margins
+        layout.addWidget(self.toolbar)
         layout.addStretch()
 
     def export_to_glb(self):
@@ -52,6 +89,20 @@ class MDATViewer(QOpenGLWidget):
                 QMessageBox.information(self, "Export Complete", "Exported model successfully!")
             else:
                 QMessageBox.critical(self, "Export Failed", "Failed to export model.")
+
+    def toggle_culling(self, checked):
+        self.makeCurrent()
+        if checked:
+            GL.glEnable(GL.GL_CULL_FACE)
+            GL.glCullFace(GL.GL_BACK)
+        else:
+            GL.glDisable(GL.GL_CULL_FACE)
+        self.update()
+
+    def toggle_texture_mode(self, checked):
+        self.texture_mode_enabled = checked
+        self.update()
+
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
         # Direct linear address usage (NO x, y calculation here!)
@@ -168,6 +219,9 @@ class MDATViewer(QOpenGLWidget):
                     clut_array = self.extract_clut_from_vram(clut_address, is_transparent)
                     #print(f" CLUT 0x{clut_address:X}: {clut_array}")
                     self.clut_map[clut_address] = self.upload_clut(clut_array)
+                    if not hasattr(self, 'clut_transparency'):
+                        self.clut_transparency = {}
+                    self.clut_transparency[clut_address] = is_transparent
 
                 self.clut_index_groups[clut_address].extend(face)
 
@@ -223,8 +277,8 @@ class MDATViewer(QOpenGLWidget):
         """Initialize OpenGL"""
         GL.glClearColor(0.1, 0.1, 0.1, 1.0)
         GL.glEnable(GL.GL_DEPTH_TEST)
-        GL.glEnable(GL.GL_CULL_FACE)
-        GL.glCullFace(GL.GL_BACK)
+        #GL.glEnable(GL.GL_CULL_FACE)
+        #GL.glCullFace(GL.GL_BACK)
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -259,13 +313,18 @@ class MDATViewer(QOpenGLWidget):
                 
                 uniform sampler2D indexTexture;
                 uniform sampler1D clutTexture;
+                uniform bool useTextures;  // <---- NEW UNIFORM
                 
                 void main() {
-                    float index = texture(indexTexture, fragTexCoord).r * 15.0;
-                    vec4 clutColor = texture(clutTexture, index / 16.0);
-                    if (clutColor.a < 0.01)
-                        discard;  // <-- throw away fully transparent pixels
-                    outColor = clutColor * vec4(fragColor, 1.0);
+                    if (useTextures) {
+                        float index = texture(indexTexture, fragTexCoord).r * 15.0;
+                        vec4 clutColor = texture(clutTexture, index / 16.0);
+                        if (clutColor.a < 0.01)
+                            discard;
+                        outColor = clutColor * vec4(fragColor, 1.0);
+                    } else {
+                        outColor = vec4(fragColor, 1.0);  // Just vertex color
+                    }
                 }
                 """
         ):
@@ -308,35 +367,58 @@ class MDATViewer(QOpenGLWidget):
 
         self.vao.bind()
 
+        self.shader_program.setUniformValue("useTextures", self.texture_mode_enabled)
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture)
         self.shader_program.setUniformValue("indexTexture", 0)
 
-        index_type = GL.GL_UNSIGNED_INT
-        stride = np.uint32().nbytes  # 4 bytes
-
-        # Draw triangles
         GL.glActiveTexture(GL.GL_TEXTURE1)
-        GL.glBindTexture(GL.GL_TEXTURE_1D, self.clut_tri_tex)
         self.shader_program.setUniformValue("clutTexture", 1)
 
-        # Final per-CLUT draw loop
-        try:
-            current_tex_id = None
 
-            for clut_address, tex_id in self.clut_map.items():
-                if tex_id != current_tex_id:
-                    GL.glActiveTexture(GL.GL_TEXTURE1)
-                    GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
-                    self.shader_program.setUniformValue("clutTexture", 1)
-                    current_tex_id = tex_id
 
-                offset = self.index_offsets[clut_address]
-                count = self.index_counts[clut_address]
+        # First Pass: Opaque objects
+        GL.glDepthMask(GL.GL_TRUE)
 
+        current_tex_id = None
+        for clut_address, tex_id in self.clut_map.items():
+            if tex_id != current_tex_id:
+                GL.glActiveTexture(GL.GL_TEXTURE1)
+                GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                self.shader_program.setUniformValue("clutTexture", 1)
+                current_tex_id = tex_id
+
+            offset = self.index_offsets[clut_address]
+            count = self.index_counts[clut_address]
+
+            # Check if this CLUT is transparent or not
+            # You need to store transparency per CLUT! We'll fix that in a second!
+
+            is_transparent = self.clut_transparency.get(clut_address, False)
+
+            if not is_transparent:
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
-        except Exception as e:
-            print(f" Draw per-face CLUTs failed: {e}")
+
+        # Second Pass: Transparent objects
+        GL.glDepthMask(GL.GL_FALSE)
+
+        current_tex_id = None
+        for clut_address, tex_id in self.clut_map.items():
+            if tex_id != current_tex_id:
+                GL.glActiveTexture(GL.GL_TEXTURE1)
+                GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                self.shader_program.setUniformValue("clutTexture", 1)
+                current_tex_id = tex_id
+
+            offset = self.index_offsets[clut_address]
+            count = self.index_counts[clut_address]
+
+            is_transparent = self.clut_transparency.get(clut_address, False)
+
+            if is_transparent:
+                GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
+
+        GL.glDepthMask(GL.GL_TRUE)  # Restore normal state
 
         self.vao.release()
         self.shader_program.release()
