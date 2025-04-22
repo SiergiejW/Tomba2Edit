@@ -223,6 +223,8 @@ class MDATViewer(QOpenGLWidget):
         GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glEnable(GL.GL_CULL_FACE)
         GL.glCullFace(GL.GL_BACK)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
         # Initialize shaders
         self.shader_program = QOpenGLShaderProgram()
@@ -258,7 +260,9 @@ class MDATViewer(QOpenGLWidget):
                 
                 void main() {
                     float index = texture(indexTexture, fragTexCoord).r * 15.0;
-                    vec4 clutColor = texture(clutTexture, index / 15.0);
+                    vec4 clutColor = texture(clutTexture, index / 16.0);
+                    if (clutColor.a < 0.01)
+                        discard;  // <-- throw away fully transparent pixels
                     outColor = clutColor * vec4(fragColor, 1.0);
                 }
                 """
