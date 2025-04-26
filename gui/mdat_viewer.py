@@ -18,8 +18,6 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
-
-
 class MDATViewer(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)

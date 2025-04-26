@@ -59,6 +59,9 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
         action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open", self)
+        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export Bytes", self)
+        export_action.triggered.connect(self.export_selected_bytes)
+        toolbar.addAction(export_action)
         action.triggered.connect(self.open_folder_dialog)
         toolbar.addAction(action)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -110,6 +113,36 @@ class MainWindow(QMainWindow):
                 return "SMST"
         else:
             return "NULL"
+
+    def export_selected_bytes(self):
+        selected_indexes = self.tree_view.selectionModel().selectedIndexes()
+        if not selected_indexes:
+            QMessageBox.warning(self, "Warning", "No item selected.")
+            return
+
+        selected_index = selected_indexes[0]
+        selected_item = self.tree_view.model().itemFromIndex(selected_index)
+
+        additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
+        if not additional_data:
+            QMessageBox.warning(self, "Warning", "Selected item does not contain exportable data.")
+            return
+
+        id, dat_start, offset = additional_data
+        try:
+            with open(self.dat_file, "rb") as f:
+                f.seek(dat_start + offset)
+                # Guess a maximum size to read (for now 0x10000 bytes)
+                # Optionally, you can improve this to calculate actual file size if you have that info
+                data = f.read(0x10000)
+
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Exported Bytes", f"{id:X}_{dat_start + offset:08X}.bin", "Binary Files (*.bin)")
+            if save_path:
+                with open(save_path, "wb") as out_file:
+                    out_file.write(data)
+                QMessageBox.information(self, "Success", f"Exported bytes to {save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export bytes: {e}")
 
     def count_items(self, item):
         count = 0
