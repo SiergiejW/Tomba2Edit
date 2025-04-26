@@ -2,7 +2,7 @@ import os
 import struct
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
-from PyQt6.QtWidgets import (QStyle)
+from PyQt6.QtWidgets import QStyle
 
 
 def parse_idx_file(main_window, cd_folder):
@@ -11,10 +11,9 @@ def parse_idx_file(main_window, cd_folder):
     img_path = os.path.join(cd_folder, "TOMBA2.IMG")
 
     IDX = open(idx_path, "rb")
-    DAT = open(dat_path, "rb")  # Open the DAT file
+    DAT = open(dat_path, "rb")
     IMG = open(img_path, "rb")
 
-    # Store the DAT file reference for later use
     main_window.dat_file = dat_path
 
     chunk_size = 0x800
@@ -30,8 +29,6 @@ def parse_idx_file(main_window, cd_folder):
     for chunk_index in range(int(os.path.getsize(idx_path) / chunk_size)):
         IDX.seek(chunk_index * chunk_size)
         img_start, img_end, dat_start, dat_end, pointer_amount = struct.unpack("<5I", IDX.read(20))
-        # if not any([img_start, img_end, dat_start, dat_end, pointer_amount]):
-        #    continue
 
         IMG.seek(img_start)
         imgdata = IMG.read(img_end - img_start)
@@ -61,30 +58,32 @@ def parse_idx_file(main_window, cd_folder):
             area_item.appendRow(sdat_item)
             for i in range(len(sdat_pointers)):
                 id, offset = sdat_pointers[i]
-                # Find end offset
                 if i < len(sdat_pointers) - 1:
                     next_offset = sdat_pointers[i + 1][1]
                 else:
-                    next_offset = dat_end - dat_start  # Last file uses chunk end
+                    next_offset = dat_end - dat_start
 
                 size = next_offset - offset
                 filetype = main_window.id_convert(DAT, id, hex(dat_start + offset))
                 file_item = QStandardItem(file_icon, f"{id}-{offset:04X}.{filetype}")
 
-                # Store the additional data in the UserRole (or another role)
+                # ✅ Store basic data
                 file_item.setData((id, dat_start, offset, size), Qt.ItemDataRole.UserRole)
+                # ✅ Store AREA and file index
+                file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)
 
                 file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-                if filetype == "SPRT":  # SPRT
+                # Set icon
+                if filetype == "SPRT":
                     file_item.setIcon(main_window.sprt_icon)
-                elif filetype == "TXTD":  # txtd
+                elif filetype == "TXTD":
                     file_item.setIcon(main_window.txtd_icon)
                     file_path = f"{dat_start + offset:08X}.txtd"
-                    file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)  # Store file path in another role
-                elif filetype == "TANP":  # TANP
+                    file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
+                elif filetype == "TANP":
                     file_item.setIcon(main_window.tanp_icon)
-                elif filetype == "SMST":  # TANP
+                elif filetype == "SMST":
                     file_item.setIcon(main_window.smst_icon)
                 elif filetype == "SCLD":
                     file_item.setIcon(main_window.scld_icon)
@@ -98,6 +97,7 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setIcon(main_window.betp_icon)
                 elif filetype == "ALFD":
                     file_item.setIcon(main_window.alfd_icon)
+
                 sdat_item.appendRow(file_item)
 
         if imgdata:
@@ -105,13 +105,11 @@ def parse_idx_file(main_window, cd_folder):
             vram_item.setFlags(vram_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             area_item.appendRow(vram_item)
 
-            # Compressed VRAM (as saved in IMG)
             vram_c_item = QStandardItem(main_window.cvram_icon, f"{chunk_index:02X}.CVRAM")
             vram_c_item.setFlags(vram_c_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             vram_c_item.setData(("vram_compressed", img_start, img_end - img_start, img_path), Qt.ItemDataRole.UserRole)
             vram_item.appendRow(vram_c_item)
 
-            # Decompressed VRAM (simulate from process_vram())
             vram_u_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.VRAM")
             vram_u_item.setFlags(vram_u_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             vram_u_item.setData(("vram_uncompressed", chunk_index), Qt.ItemDataRole.UserRole)
@@ -126,6 +124,7 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item = QStandardItem(file_icon, f"{adr:04X}-{end:04X}.bin")
                 trail_file_item.setFlags(trail_file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 trail_file_item.setData(("trail", adr, end - adr, dat_start), Qt.ItemDataRole.UserRole)
+                trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
                 trail_item.appendRow(trail_file_item)
 
         main_window.update_folder_name(area_item)
