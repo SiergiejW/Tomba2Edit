@@ -90,6 +90,57 @@ class VRAMViewer(QWidget):
             self.info_label.setText(f"Error loading VRAM: {str(e)}")
             return False
 
+    def load_cvrm_data(self, img_data):
+        try:
+            img_file = io.BytesIO(img_data)
+            c_header_amount = struct.unpack("<I", img_file.read(4))[0]
+            c_header_size = c_header_amount * 0xC + 4
+            skip = 0x800 - c_header_size
+
+            c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
+            img_file.read(skip)
+
+            # Create a blank 4096x512 RGBA image
+            vram_image = Image.new("RGBA", (4096, 512))
+
+            # Now, paste compressed shards directly
+            for x, y, w, h, s in c_header_list:
+                shard_raw = img_file.read(s)
+
+                # Simple method: paste shard raw data block by block
+                # 1 pixel = 1 byte (not real compression expansion)
+                for row in range(h):
+                    for col in range(w):
+                        index = (row * w + col) * 2
+                        if index + 1 < len(shard_raw):
+                            pixel = shard_raw[index:index + 2]
+                            val = struct.unpack("<H", pixel)[0]
+
+                            # Fake colorize: show (R, G, B) as some split of bits
+                            r = (val >> 10) & 0x1F
+                            g = (val >> 5) & 0x1F
+                            b = val & 0x1F
+
+                            # Expand to 8-bit color channels
+                            r = (r << 3) | (r >> 2)
+                            g = (g << 3) | (g >> 2)
+                            b = (b << 3) | (b >> 2)
+
+                            vram_image.putpixel((x * 2 + col * 2, y + row), (r, g, b, 255))
+                            vram_image.putpixel((x * 2 + col * 2 + 1, y + row), (r, g, b, 255))
+
+            # Load into viewer
+            qimage = ImageQt(vram_image).copy()
+            self.original_pixmap = QPixmap.fromImage(qimage)
+            self.update_pixmap()
+            self.set_stretched()
+            self.info_label.setText("CVRAM Loaded (raw colored)")
+            return True
+
+        except Exception as e:
+            self.info_label.setText(f"Error loading CVRAM: {str(e)}")
+            return False
+
     def process_vram(self, img_data):
         import io
         from PIL import Image

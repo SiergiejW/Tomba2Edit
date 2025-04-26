@@ -1,7 +1,7 @@
 import os
 import struct
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 from icons.icons import (icon_window,
                          icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
                          icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB,
-                         icon_VRAM,
+                         icon_VRAM, icon_CVRAM,
                          )
 from main import version
 from gui.txtd_viewer import TXTDViewer
@@ -37,6 +37,7 @@ class MainWindow(QMainWindow):
         self.betp_icon = QIcon(icon_BETP)
         self.alfd_icon = QIcon(icon_ALFD)
         self.vram_icon = QIcon(icon_VRAM)
+        self.cvram_icon = QIcon(icon_CVRAM)
 
         self.folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
         self.file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
@@ -58,12 +59,13 @@ class MainWindow(QMainWindow):
         container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
-        action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open", self)
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open", self)
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export Bytes", self)
         export_action.triggered.connect(self.export_selected_bytes)
+
+        toolbar.addAction(open_action)
         toolbar.addAction(export_action)
-        action.triggered.connect(self.open_folder_dialog)
-        toolbar.addAction(action)
+        open_action.triggered.connect(self.open_folder_dialog)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
 
         self.folder_info_label = QLabel("Select Tomba folder (with BIN, CD, MOVIE)")
@@ -128,15 +130,47 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Selected item does not contain exportable data.")
             return
 
-        id, dat_start, offset = additional_data
         try:
-            with open(self.dat_file, "rb") as f:
-                f.seek(dat_start + offset)
-                # Guess a maximum size to read (for now 0x10000 bytes)
-                # Optionally, you can improve this to calculate actual file size if you have that info
-                data = f.read(0x10000)
+            if additional_data[0] == "trail":
+                _, offset, size, _ = additional_data
+                with open(self.dat_file, "rb") as f:
+                    f.seek(offset)
+                    data = f.read(size)
 
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save Exported Bytes", f"{id:X}_{dat_start + offset:08X}.bin", "Binary Files (*.bin)")
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save Trail Bytes", f"trail_{offset:08X}.bin", "Binary Files (*.bin)")
+
+            elif additional_data[0] == "vram_compressed":
+                _, offset, size, img_path = additional_data
+                with open(img_path, "rb") as f:
+                    f.seek(offset)
+                    data = f.read(size)
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save Compressed VRAM", f"vram_c_{offset:08X}.cvrm", "VRAM Files (*.cvrm)")
+
+            elif additional_data[0] == "vram_uncompressed":
+                _, chunk_index = additional_data
+                img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+                idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                with open(img_path, "rb") as IMG, open(idx_path, "rb") as IDX:
+                    chunk_size = 0x800
+                    IDX.seek(chunk_index * chunk_size)
+                    img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                    IMG.seek(img_start)
+                    imgdata = IMG.read(img_end - img_start)
+                    # decompress using your VRAM process_vram function
+                    from gui.vram_viewer import VRAMViewer
+                    vram_viewer = VRAMViewer()
+                    vram_img, vram_bytes = vram_viewer.process_vram(imgdata)
+                    data = bytes(vram_bytes)  # 1MB buffer
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save Decompressed VRAM", f"vram_u_{chunk_index:02X}.vram", "VRAM Files (*.vram)")
+
+            else:
+                id, dat_start, offset, size = additional_data
+                with open(self.dat_file, "rb") as f:
+                    f.seek(dat_start + offset)
+                    data = f.read(size)
+
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save Exported Bytes", f"{id:X}_{dat_start + offset:08X}.bin", "Binary Files (*.bin)")
+
             if save_path:
                 with open(save_path, "wb") as out_file:
                     out_file.write(data)
@@ -212,47 +246,79 @@ class MainWindow(QMainWindow):
                 print(f"Selected Item: {item_name}")
 
                 # Check if this is a VRAM file
-                if item_name.endswith('.vram'):
-                    # Get the parent item to find the AREA index
-                    parent = selected_item.parent()
-                    if parent:
-                        grandparent = parent.parent()
-                        if grandparent:
-                            area_name = grandparent.text()
-                        else:
-                            area_name = parent.text()
+                if item_name.endswith('.VRAM') or item_name.endswith('.CVRAM'):
+                    if item_name.endswith('.VRAM'):
+                        # Get the parent item to find the AREA index
+                        parent = selected_item.parent()
+                        if parent:
+                            grandparent = parent.parent()
+                            if grandparent:
+                                area_name = grandparent.text()
+                            else:
+                                area_name = parent.text()
 
-                        # Extract the area number (handle cases like "AREA_07 (18)")
+                            # Extract the area number (handle cases like "AREA_07 (18)")
+                            if area_name.startswith('AREA_'):
+                                area_part = area_name.split('_')[1].split()[0]  # Gets "07" from "AREA_07 (18)"
+                                try:
+                                    chunk_index = int(area_part, 16)
+                                    # Load the VRAM data
+                                    img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+                                    with open(img_path, "rb") as IMG:
+                                        IDX_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                                        with open(IDX_path, "rb") as IDX:
+                                            chunk_size = 0x800
+                                            IDX.seek(chunk_index * chunk_size)
+                                            img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                                            IMG.seek(img_start)
+                                            imgdata = IMG.read(img_end - img_start)
+
+                                            # Show VRAM viewer
+                                            self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                                            self.vram_viewer.load_vram_data(imgdata)
+                                            return
+                                except ValueError as e:
+                                    print(f"Error parsing area number: {e}")
+                                    QMessageBox.critical(self, "Error", f"Failed to parse area number: {e}")
+                                    return
+                    elif item_name.endswith('.CVRAM'):
+                        parent = selected_item.parent()
+                        if parent:
+                            grandparent = parent.parent()
+                            if grandparent:
+                                area_name = grandparent.text()
+                            else:
+                                area_name = parent.text()
+
                         if area_name.startswith('AREA_'):
-                            area_part = area_name.split('_')[1].split()[0]  # Gets "07" from "AREA_07 (18)"
-                            try:
-                                chunk_index = int(area_part, 16)
-                                # Load the VRAM data
-                                img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
-                                with open(img_path, "rb") as IMG:
-                                    IDX_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
-                                    with open(IDX_path, "rb") as IDX:
-                                        chunk_size = 0x800
-                                        IDX.seek(chunk_index * chunk_size)
-                                        img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
-                                        IMG.seek(img_start)
-                                        imgdata = IMG.read(img_end - img_start)
+                            area_part = area_name.split('_')[1].split()[0]
+                            chunk_index = int(area_part, 16)
 
-                                        # Show VRAM viewer
-                                        self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
-                                        self.vram_viewer.load_vram_data(imgdata)
-                                        return
-                            except ValueError as e:
-                                print(f"Error parsing area number: {e}")
-                                QMessageBox.critical(self, "Error", f"Failed to parse area number: {e}")
-                                return
+                            img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+                            with open(img_path, "rb") as IMG:
+                                idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                                with open(idx_path, "rb") as IDX:
+                                    chunk_size = 0x800
+                                    IDX.seek(chunk_index * chunk_size)
+                                    img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                                    IMG.seek(img_start)
+                                    imgdata = IMG.read(img_end - img_start)
+
+                                    # ✨ Instead of decompressing, just load raw CVRAM
+                                    self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                                    self.vram_viewer.load_cvrm_data(imgdata)  # <-- NEW FUNCTION
+
                     return
 
                 # Rest of your existing selection handling code...
                 additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
                 if additional_data:
-                    id, dat_start, offset = additional_data
-                    print(f"ID: {id:X}, DAT Start: {dat_start:X}, Offset: {offset:X}")
+                    id = additional_data[0]
+                    if isinstance(id, int):
+                        dat_start, offset = additional_data[1], additional_data[2]
+                        print(f"ID: {id:X}, DAT Start: {dat_start:X}, Offset: {offset:X}")
+                    else:
+                        print(f"Special file type: {id}")
 
                     # Determine file type and get appropriate widget
                     file_type = item_name.split('.')[-1].upper() if '.' in item_name else "DEFAULT"
