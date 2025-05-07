@@ -154,7 +154,7 @@ class VRAMViewer(QWidget):
         c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
         img_file.read(skip)
 
-        # Step 1: Simulate raw 1MB VRAM as bytearray (1024x512 x 2 bytes per pixel)
+        # Simulate raw 1MB VRAM as bytearray (1024x512 x 2 bytes per pixel)
         vram_bytes = bytearray(1024 * 512 * 2)  # 1MB = 524288 words = 1024x512 x 2
 
         for x, y, w, h, s in c_header_list:
@@ -187,14 +187,14 @@ class VRAMViewer(QWidget):
                         else:
                             shard_data.append(0)
 
-            # Step 2: Copy shard into simulated VRAM respecting 0x800-byte row stride
+            # Copy shard into simulated VRAM respecting 0x800-byte row stride
             for row in range(h):
                 shard_start = row * w * 2
                 shard_end = shard_start + w * 2
                 vram_offset = (y + row) * 0x800 + (x * 2)
                 vram_bytes[vram_offset:vram_offset + w * 2] = shard_data[shard_start:shard_end]
 
-        # Step 3: Convert 4bpp VRAM into RGBA image (4096x512)
+        #  Convert 4bpp VRAM into RGBA image (4096x512)
         vram_image = Image.new("RGBA", (4096, 512))
         for y in range(512):
             for x in range(0, 4096, 2):  # 2 pixels per byte
