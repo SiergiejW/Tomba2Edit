@@ -309,13 +309,13 @@ class MainWindow(QMainWindow):
                                     IMG.seek(img_start)
                                     imgdata = IMG.read(img_end - img_start)
 
-                                    # ✨ Instead of decompressing, just load raw CVRAM
+                                    # Instead of decompressing, just load raw CVRAM
                                     self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
                                     self.vram_viewer.load_cvrm_data(imgdata)  # <-- NEW FUNCTION
 
                     return
 
-                # Rest of your existing selection handling code...
+                # selection handling code...
                 additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
                 if additional_data:
                     id = additional_data[0]
