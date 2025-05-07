@@ -147,8 +147,8 @@ if __name__ == "__main__":
     original_dat = "C:/Users/Patryk/PycharmProjects/Tomba/iso/retail-us/CD/TOMBA2.DAT"
     modified_file = "C:/Users/Patryk/PycharmProjects/Tomba310/repacker/AREA_04_FILE_08_ID_D_OFFSET_00078A08.bin"
 
-    output_idx = "C:/Users/Patryk/PycharmProjects/Tomba310/repacker/NEW_TOMBA2.IDX"
-    output_dat = "C:/Users/Patryk/PycharmProjects/Tomba310/repacker/NEW_TOMBA2.DAT"
+    output_idx = "C:/Users/Patryk/PycharmProjects/Tomba310/repacker/insert/TOMBA2.IDX"
+    output_dat = "C:/Users/Patryk/PycharmProjects/Tomba310/repacker/insert/TOMBA2.DAT"
 
     chunks = parse_idx(original_idx)
     repack_single_file(original_dat, modified_file, chunks, output_dat)

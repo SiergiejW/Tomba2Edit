@@ -11,8 +11,8 @@ def exportMDAT(drwa_addr, datpath):
         'texture_info': []  # (texture_page, clut_address, is_transparent)
     }
 
-    triangles = {32: 0, 34: 0, 37: 0, 38: 0, 39: 0, 48: 0, 50: 1, 52: 0, 54: 1}
-    quads = {40: 0, 42: 0, 44: 0, 45: 0, 46: 0, 47: 0, 56: 0, 58: 1, 60: 0, 62: 1}
+    triangles = {32: 0, 34: 0, 37: 0, 38: 0, 39: 0, 48: 0, 50: 1, 52: 0, 54: 1} #this is from PSX draw modes manual
+    quads = {40: 0, 42: 0, 44: 0, 45: 0, 46: 0, 47: 0, 56: 0, 58: 1, 60: 0, 62: 1} #this is from PSX draw modes manual
     transparent = False
 
     #print(f"Now exporting MDAT from address 0x{drwa_addr:X}")
