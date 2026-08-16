@@ -66,6 +66,14 @@ class MainWindow(QMainWindow):
         # Populated by idx_parser.parse_idx_file() each time an ISO is opened.
         self.txtd_item_lookup = {}
 
+        # (chunk_index, file_index) -> "edited" | "exported", mirroring the
+        # color currently applied to that TXTD file's row. Kept separately
+        # from txtd_item_lookup so the enclosing NN_DATA/AREA_NN folder
+        # colors can be recomputed by aggregating over every file inside
+        # them (see _refresh_folder_state_color) without having to inspect
+        # Qt foreground brushes.
+        self.txtd_file_states = {}
+
         # Set once an ISO has been opened and its TOMBA2.DAT/IDX/IMG have
         # been extracted to a temp folder (see open_iso_dialog / ISOHandler).
         self.dat_file = None
@@ -246,16 +254,68 @@ class MainWindow(QMainWindow):
         (green) once those edits have been exported, or None for the
         tree's normal color (never touched) - so it's obvious at a glance
         which TXTD files were changed and whether that change was saved,
-        without having to open each one."""
+        without having to open each one. Also recomputes the enclosing
+        NN_DATA and AREA_NN folder colors from every TXTD file inside
+        them, so an edit anywhere shows up all the way up the tree."""
         file_item = self.txtd_item_lookup.get((chunk_index, file_index))
         if file_item is None:
             return
-        if state == "edited":
-            file_item.setForeground(QBrush(QColor(EDITED_TXTD_ITEM_COLOR)))
-        elif state == "exported":
-            file_item.setForeground(QBrush(QColor(EXPORTED_TXTD_ITEM_COLOR)))
+
+        if state:
+            self.txtd_file_states[(chunk_index, file_index)] = state
         else:
-            file_item.setData(None, Qt.ItemDataRole.ForegroundRole)
+            self.txtd_file_states.pop((chunk_index, file_index), None)
+
+        self._apply_tree_item_state_color(file_item, state)
+
+        sdat_item = file_item.parent()
+        if sdat_item is not None:
+            self._refresh_folder_state_color(sdat_item)
+            area_item = sdat_item.parent()
+            if area_item is not None:
+                self._refresh_folder_state_color(area_item)
+
+    @staticmethod
+    def _apply_tree_item_state_color(item, state):
+        if state == "edited":
+            item.setForeground(QBrush(QColor(EDITED_TXTD_ITEM_COLOR)))
+        elif state == "exported":
+            item.setForeground(QBrush(QColor(EXPORTED_TXTD_ITEM_COLOR)))
+        else:
+            item.setData(None, Qt.ItemDataRole.ForegroundRole)
+
+    def _refresh_folder_state_color(self, folder_item):
+        """Recomputes an NN_DATA or AREA_NN folder's color by aggregating
+        the edit/export state of every TXTD file anywhere underneath it:
+        orange if any of them still has pending edits, else green if any
+        of them has been edited-and-exported, else back to the tree's
+        normal color."""
+        self._apply_tree_item_state_color(folder_item, self._aggregate_txtd_state(folder_item))
+
+    def _aggregate_txtd_state(self, item):
+        """"edited" if any TXTD file at or below `item` has pending edits,
+        else "exported" if any has been edited-and-exported, else None.
+        Walks the tree itself (rather than needing a separate index of
+        "which files live under this folder"), using the (chunk_index,
+        file_index) tuple every TXTD file item already carries in
+        UserRole + 2 (see idx_parser.parse_idx_file)."""
+        saw_exported = False
+        for row in range(item.rowCount()):
+            child = item.child(row)
+            if child is None:
+                continue
+
+            location = child.data(Qt.ItemDataRole.UserRole + 2)
+            state = self.txtd_file_states.get(location) if location else None
+            if state is None and child.hasChildren():
+                state = self._aggregate_txtd_state(child)
+
+            if state == "edited":
+                return "edited"
+            if state == "exported":
+                saw_exported = True
+
+        return "exported" if saw_exported else None
 
     def export_all_files(self):
         if not self.pending_txtd_edits:
@@ -352,6 +412,8 @@ class MainWindow(QMainWindow):
             self.iso_handler.cleanup()
         self.iso_handler = ISOHandler()
         self.pending_txtd_edits.clear()
+        self.txtd_file_states.clear()
+        self.txtd_viewer.clear_cache()
         self.current_iso_path = None
 
         try:

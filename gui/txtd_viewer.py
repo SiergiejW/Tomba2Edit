@@ -165,6 +165,19 @@ class TXTDViewer(QWidget):
         # _edited_locations/orange.
         self._exported_locations = set()
 
+        # (chunk_index, file_index) -> {"data", "edited_locations",
+        # "exported_locations"} for every TXTD that's been loaded at least
+        # once. Without this, switching to some other file (TXTD or not)
+        # and back would call load_txtd_data() again, which used to always
+        # re-read the entry text fresh off disk and lose the edited text
+        # and orange/green coloring. Now load_txtd_data() reuses this
+        # cache for a file it's seen before, and the *same* dict/set
+        # objects are shared between here and the cache entry, so edits
+        # and mark_exported() keep the cache correct with no extra
+        # bookkeeping. Cleared via clear_cache() whenever a new ISO is
+        # opened (see MainWindow.open_iso_dialog).
+        self._file_state_cache = {}
+
         # Create the main layout
         layout = QVBoxLayout()
 
@@ -278,9 +291,29 @@ class TXTDViewer(QWidget):
         """
         self._loading = True
         try:
-            print(f"Loading TXTD data from DAT file: {DAT}, start: {datstart}, offset: {offset}")
-            self.current_data = txtd.preview(DAT, datstart + offset)
-            print("TXTD data loaded successfully.")
+            cache_key = (chunk_index, file_index) if chunk_index is not None and file_index is not None else None
+            cached = self._file_state_cache.get(cache_key) if cache_key is not None else None
+
+            if cached is not None:
+                # Seen this file before - reuse its edited text and
+                # orange/green state instead of re-reading the original
+                # bytes off disk (which would silently discard both).
+                print(f"Reusing cached TXTD data for chunk={chunk_index}, file={file_index}")
+                self.current_data = cached["data"]
+                self._edited_locations = cached["edited_locations"]
+                self._exported_locations = cached["exported_locations"]
+            else:
+                print(f"Loading TXTD data from DAT file: {DAT}, start: {datstart}, offset: {offset}")
+                self.current_data = txtd.preview(DAT, datstart + offset)
+                print("TXTD data loaded successfully.")
+                self._edited_locations = set()
+                self._exported_locations = set()
+                if cache_key is not None:
+                    self._file_state_cache[cache_key] = {
+                        "data": self.current_data,
+                        "edited_locations": self._edited_locations,
+                        "exported_locations": self._exported_locations,
+                    }
 
             self.chunk_index = chunk_index
             self.file_index = file_index
@@ -289,8 +322,6 @@ class TXTDViewer(QWidget):
             self.offset = offset
             self._current_entry_item = None
             self._entry_items = {}
-            self._edited_locations = set()
-            self._exported_locations = set()
 
             self.tree_model.clear()
             self.text_edit.clear()
@@ -399,19 +430,37 @@ class TXTDViewer(QWidget):
     def mark_exported(self, chunk_index, file_index):
         """Called by the owning window right after a successful export
         (Export Files / Export ISO), once per TXTD file that was actually
-        included in it. If that's the TXTD currently loaded here, every
-        entry that was dirty (orange) flips to EXPORTED_ENTRY_COLOR
-        (green) - "edited and saved" - until it's edited again, at which
-        point it goes back to orange. No-ops if a different TXTD is
-        currently loaded."""
-        if (self.chunk_index, self.file_index) != (chunk_index, file_index):
-            return
-        if not self._edited_locations:
+        included in it. Every entry that was dirty (orange) for that file
+        flips to EXPORTED_ENTRY_COLOR (green) - "edited and saved" - until
+        it's edited again, at which point it goes back to orange.
+
+        This updates the file's state whether or not it's the one
+        currently displayed: if it *is* currently displayed, the visible
+        tree rows are recolored immediately; otherwise the update lands in
+        _file_state_cache so the colors are already correct the next time
+        that file is loaded (see load_txtd_data())."""
+        is_current = (self.chunk_index, self.file_index) == (chunk_index, file_index)
+
+        if is_current:
+            edited_locations = self._edited_locations
+            exported_locations = self._exported_locations
+        else:
+            cached = self._file_state_cache.get((chunk_index, file_index))
+            if cached is None:
+                return
+            edited_locations = cached["edited_locations"]
+            exported_locations = cached["exported_locations"]
+
+        if not edited_locations:
             return
 
-        newly_exported = self._edited_locations
-        self._edited_locations = set()
-        self._exported_locations |= newly_exported
+        newly_exported = set(edited_locations)
+        edited_locations.clear()
+        exported_locations |= newly_exported
+
+        if not is_current:
+            return  # that file's tree rows don't exist right now; the
+                     # cache update above is picked up on next load.
 
         for location in newly_exported:
             item = self._entry_items.get(location)
@@ -420,3 +469,25 @@ class TXTDViewer(QWidget):
             m_idx, e_idx = location
             entry = self.current_data["entries"][m_idx]["entries"][e_idx]
             self._set_entry_item_label(item, entry, location)
+
+    def clear_cache(self):
+        """Forgets every cached per-file text/color state and resets the
+        viewer to empty. Call this whenever a new ISO is opened - without
+        it, (chunk_index, file_index) numbers from the old disc could
+        collide with a completely different file on the new one."""
+        self._file_state_cache = {}
+        self.current_data = None
+        self.chunk_index = None
+        self.file_index = None
+        self.id_val = None
+        self.dat_start = None
+        self.offset = None
+        self._current_entry_item = None
+        self._entry_items = {}
+        self._edited_locations = set()
+        self._exported_locations = set()
+
+        self.tree_model.clear()
+        self.text_edit.clear()
+        self.text_edit.setReadOnly(True)
+        self.status_label.setText("")

@@ -104,8 +104,8 @@ letters = {
 0xFA:"\n",
 0xFB:" ",
 0xFC:"{$PAUSE}",
-0xD0:"{SQUARE}",
-0xCF:"{TRIANGLE}",
+0xD0:"{$SQUARE}",
+0xCF:"{$TRIANGLE}",
 
 0x64:"{$RIGHT}",
 0x65:"{$LEFT}",
