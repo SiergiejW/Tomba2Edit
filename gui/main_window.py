@@ -1,7 +1,7 @@
 import os
 import struct
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage, QPixmap
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage, QPixmap, QColor, QBrush
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
@@ -18,6 +18,12 @@ from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
+
+# Colors used to flag a TXTD file's row in the main file tree, mirroring
+# the entry-level coloring in TXTDViewer: orange while it has pending
+# (unexported) text edits, green once those edits have been exported.
+EDITED_TXTD_ITEM_COLOR = "orange"
+EXPORTED_TXTD_ITEM_COLOR = "green"
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -54,6 +60,11 @@ class MainWindow(QMainWindow):
         # (chunk_index, file_index) -> {"id", "dat_start", "offset", "data"}
         # for every TXTD that's been edited but not yet exported.
         self.pending_txtd_edits = {}
+
+        # (chunk_index, file_index) -> the QStandardItem for that TXTD file
+        # in self.tree_view, so pending edits can be highlighted there too.
+        # Populated by idx_parser.parse_idx_file() each time an ISO is opened.
+        self.txtd_item_lookup = {}
 
         # Set once an ISO has been opened and its TOMBA2.DAT/IDX/IMG have
         # been extracted to a temp folder (see open_iso_dialog / ISOHandler).
@@ -224,9 +235,27 @@ class MainWindow(QMainWindow):
         self.pending_txtd_edits[(chunk_index, file_index)] = {
             "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
         }
+        self._set_txtd_tree_item_state(chunk_index, file_index, "edited")
         self.statusBar().showMessage(
             f"{len(self.pending_txtd_edits)} TXTD file(s) have pending edits - "
             f"use the 'Export Files' button when ready.")
+
+    def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
+        """Colors a TXTD file's row in the main tree (under its NN_DATA
+        folder): "edited" (orange) while it has pending edits, "exported"
+        (green) once those edits have been exported, or None for the
+        tree's normal color (never touched) - so it's obvious at a glance
+        which TXTD files were changed and whether that change was saved,
+        without having to open each one."""
+        file_item = self.txtd_item_lookup.get((chunk_index, file_index))
+        if file_item is None:
+            return
+        if state == "edited":
+            file_item.setForeground(QBrush(QColor(EDITED_TXTD_ITEM_COLOR)))
+        elif state == "exported":
+            file_item.setForeground(QBrush(QColor(EXPORTED_TXTD_ITEM_COLOR)))
+        else:
+            file_item.setData(None, Qt.ItemDataRole.ForegroundRole)
 
     def export_all_files(self):
         if not self.pending_txtd_edits:
@@ -274,6 +303,9 @@ class MainWindow(QMainWindow):
             "Back up your original CD files, then copy these two over them "
             "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
         )
+        for chunk_index, file_index in self.pending_txtd_edits.keys():
+            self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
+            self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
 
     def count_items(self, item):
@@ -428,6 +460,9 @@ class MainWindow(QMainWindow):
             "this ISO to check the edits landed correctly."
         )
         if edits:
+            for chunk_index, file_index in self.pending_txtd_edits.keys():
+                self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
+                self.txtd_viewer.mark_exported(chunk_index, file_index)
             self.pending_txtd_edits.clear()
 
     def closeEvent(self, event):

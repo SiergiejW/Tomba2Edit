@@ -1,5 +1,10 @@
+import re
+
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QIcon
+from PyQt6.QtGui import (
+    QStandardItem, QStandardItemModel, QFont, QIcon, QBrush, QColor,
+    QSyntaxHighlighter, QTextCharFormat,
+)
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
     QTextEdit, QLabel
@@ -14,10 +19,114 @@ from icons.icons import icon_TXTD_master, icon_TXTD_entry
 # (master_index, entry_index) position in self.current_data.
 ENTRY_LOCATION_ROLE = Qt.ItemDataRole.UserRole + 10
 
-# How many characters of an entry's text to show inline in the tree, before
-# truncating with "...". Keeps rows scannable while still being useful for
-# telling entries apart at a glance during translation.
-ENTRY_PREVIEW_MAX_CHARS = 40
+# --- Entry tree row colors -------------------------------------------------
+# Whole-row colors used in the *tree* to flag an entry's edit status. These
+# are plain foreground overrides on the QStandardItem (no rich text) - the
+# tree only ever shows one of: normal, EDITED (dirty, not yet exported), or
+# EXPORTED (was edited and successfully exported at least once since).
+EDITED_ENTRY_COLOR = "orange"
+EXPORTED_ENTRY_COLOR = "green"
+
+# --- {$COLOR} tag highlighting (edit box only) ------------------------------
+# The game's dialogue text embeds control tags like "{$ORANGE}", which set
+# the color of everything after them until the next color tag. These only
+# get highlighted in the editable text box (self.text_edit) - never in the
+# tree previews, which stay plain text.
+STATE_DEFAULT = 0  # also what {$WHITE} resets to - left unstyled, since
+                    # that's already the edit box's normal text color.
+STATE_ORANGE = 1
+STATE_BLUE = 2
+STATE_PINK = 3
+STATE_GREEN = 4
+
+TAG_STATE = {
+    "WHITE": STATE_DEFAULT,
+    "ORANGE": STATE_ORANGE,
+    "BLUE": STATE_BLUE,
+    "PINK": STATE_PINK,
+    "GREEN": STATE_GREEN,
+}
+# Colors chosen to read reasonably on both light and dark themes; tweak
+# freely if they don't match the actual in-game colors.
+STATE_COLOR = {
+    STATE_DEFAULT: None,
+    STATE_ORANGE: "orange",
+    STATE_BLUE: "#3d8bfd",
+    STATE_PINK: "#ff69b4",
+    STATE_GREEN: "#3ddc84",
+}
+
+# Matches specifically the five recognized color/reset tags (these change
+# the highlighter's current color state).
+_COLOR_TAG_RE = re.compile(r"\{\$(" + "|".join(TAG_STATE) + r")\}")
+# Matches ANY {$...} control tag, color-setting or not (e.g. {$END},
+# {$FF}) - every one of these always renders gray, regardless of what it
+# does. Tokens without the leading "$", like "{TRIANGLE}", are NOT control
+# tags and are left as ordinary dialogue text.
+_ANY_TAG_RE = re.compile(r"\{\$[^{}]*\}")
+
+# Dim gray used for the literal {$...} tag text itself, so it doesn't
+# visually compete with the actual dialogue around it.
+TAG_TOKEN_COLOR = "#8a8a8a"
+
+
+class EntryTextHighlighter(QSyntaxHighlighter):
+    """Syntax-highlights a TXTD entry's raw text inside the edit box.
+
+    Every {$...} control tag - whether it sets a color (WHITE/ORANGE/
+    BLUE/PINK/GREEN) or not (e.g. {$END}, {$FF}) - is always rendered in
+    TAG_TOKEN_COLOR (gray), so the tag syntax itself stays out of the way.
+    The five color tags additionally change the color of the dialogue
+    text that follows them, until the next color tag - including across
+    line breaks, since a color can span multiple lines of an entry.
+    {$WHITE} (and anything before the first tag) is left unstyled, which
+    is already the edit box's normal default text color.
+
+    Only ever attached to self.text_edit's document - the tree previews
+    stay plain text, unaffected by any of this.
+    """
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._tag_format = QTextCharFormat()
+        self._tag_format.setForeground(QColor(TAG_TOKEN_COLOR))
+
+        self._state_formats = {}
+        for state, color in STATE_COLOR.items():
+            if color is None:
+                continue
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            self._state_formats[state] = fmt
+
+    def highlightBlock(self, text):
+        state = self.previousBlockState()
+        if state < 0:
+            state = STATE_DEFAULT
+
+        pos = 0
+        for m in _ANY_TAG_RE.finditer(text):
+            if m.start() > pos:
+                self._apply_state(pos, m.start() - pos, state)
+
+            # The tag token itself is always gray, regardless of state.
+            self.setFormat(m.start(), len(m.group(0)), self._tag_format)
+
+            color_match = _COLOR_TAG_RE.fullmatch(m.group(0))
+            if color_match:
+                state = TAG_STATE[color_match.group(1)]
+
+            pos = m.end()
+
+        if pos < len(text):
+            self._apply_state(pos, len(text) - pos, state)
+
+        self.setCurrentBlockState(state)
+
+    def _apply_state(self, start, length, state):
+        fmt = self._state_formats.get(state)
+        if fmt is not None:
+            self.setFormat(start, length, fmt)
 
 
 class TXTDViewer(QWidget):
@@ -43,6 +152,18 @@ class TXTDViewer(QWidget):
 
         self._current_entry_item = None
         self._loading = False  # guards against textChanged firing during programmatic updates
+
+        # (master_index, entry_index) -> QStandardItem, for quick lookup by
+        # mark_exported() below. Reset in load_txtd_data().
+        self._entry_items = {}
+        # locations edited since the current TXTD was loaded, not yet
+        # exported - rendered EDITED_ENTRY_COLOR (orange) in the tree.
+        self._edited_locations = set()
+        # locations that were edited and have since been successfully
+        # exported (see mark_exported()) - rendered EXPORTED_ENTRY_COLOR
+        # (green) until touched again, at which point they go back to
+        # _edited_locations/orange.
+        self._exported_locations = set()
 
         # Create the main layout
         layout = QVBoxLayout()
@@ -72,6 +193,10 @@ class TXTDViewer(QWidget):
         # Optional: Increase the minimum width for better readability
         self.text_edit.setMinimumWidth(400)
 
+        # Highlights {$COLOR} tags in the edit box only (see class docstring).
+        # Keep a reference so it isn't garbage-collected.
+        self._entry_text_highlighter = EntryTextHighlighter(self.text_edit.document())
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
 
@@ -93,34 +218,55 @@ class TXTDViewer(QWidget):
         self.text_edit.textChanged.connect(self._on_text_changed)
 
     @staticmethod
-    def _entry_preview_text(text, max_len=ENTRY_PREVIEW_MAX_CHARS):
-        """Collapse an entry's text down to a single-line snippet suitable
-        for showing inline in the tree (whitespace/newlines collapsed,
-        truncated with '...' if it's longer than max_len)."""
+    def _entry_preview_text(text):
+        """Collapse an entry's raw text into a single readable line for the
+        tree - whitespace/newlines collapsed to single spaces, but no
+        length limit, so the preview always shows the entry's full text
+        (tags included; {$COLOR} tags aren't specially rendered here, only
+        in the edit box - see EntryTextHighlighter)."""
         if not text:
             return ""
-        collapsed = " ".join(text.split())
-        if not collapsed:
-            return ""
-        if len(collapsed) > max_len:
-            return collapsed[:max_len].rstrip() + "..."
-        return collapsed
+        return " ".join(text.split())
 
-    def _entry_label(self, entry):
-        """Builds the tree label for one entry, e.g.
-        'Entry 0000 (Hey! You scared me. What are you...) (87 characters)'.
-        END-marker sentinels (no text) get a simpler label."""
+    def _entry_label_parts(self, entry):
+        """Returns (address_str, preview, is_sentinel), the shared pieces
+        used to build the tree label."""
         is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
         addr_str = f"Entry {entry['adr']:04X}"
         if is_sentinel:
-            return f"{addr_str} (END marker)"
+            return addr_str, None, True
 
         text = entry.get("text") or ""
-        char_count = len(text)
-        preview = self._entry_preview_text(text)
+        return addr_str, self._entry_preview_text(text), False
+
+    def _entry_label(self, entry):
+        """Plain-text tree label, e.g.
+        'Entry 0000 (Hey! You scared me. What are you doing here?)'.
+        END-marker sentinels (no text) get a simpler label."""
+        addr_str, preview, is_sentinel = self._entry_label_parts(entry)
+        if is_sentinel:
+            return f"{addr_str} (END marker)"
         if preview:
-            return f"{addr_str} ({char_count} chars) ({preview})"
-        return f"{addr_str} ({char_count} characters)"
+            return f"{addr_str} ({preview})"
+        return addr_str
+
+    def _entry_item_color(self, location):
+        """The whole-row color for an entry's tree item: orange while it
+        has an unexported edit, green if it was edited and has since been
+        exported, or None (normal) if it's never been touched."""
+        if location in self._edited_locations:
+            return EDITED_ENTRY_COLOR
+        if location in self._exported_locations:
+            return EXPORTED_ENTRY_COLOR
+        return None
+
+    def _set_entry_item_label(self, item, entry, location):
+        item.setText(self._entry_label(entry))
+        color = self._entry_item_color(location)
+        if color:
+            item.setForeground(QBrush(QColor(color)))
+        else:
+            item.setData(None, Qt.ItemDataRole.ForegroundRole)
 
     def load_txtd_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
         """
@@ -142,6 +288,9 @@ class TXTDViewer(QWidget):
             self.dat_start = datstart
             self.offset = offset
             self._current_entry_item = None
+            self._entry_items = {}
+            self._edited_locations = set()
+            self._exported_locations = set()
 
             self.tree_model.clear()
             self.text_edit.clear()
@@ -166,9 +315,12 @@ class TXTDViewer(QWidget):
                         f"Master Header {master_header['adr']:04X} ({entry_group['entry_amount']} entries)")
 
                     for e_idx, entry in enumerate(entry_group.get("entries", [])):
-                        entry_item = QStandardItem(QIcon(icon_TXTD_entry), self._entry_label(entry))
+                        location = (m_idx, e_idx)
+                        entry_item = QStandardItem(QIcon(icon_TXTD_entry), "")
+                        self._entry_items[location] = entry_item
+                        self._set_entry_item_label(entry_item, entry, location)
                         entry_item.setFlags(entry_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                        entry_item.setData((m_idx, e_idx), ENTRY_LOCATION_ROLE)
+                        entry_item.setData(location, ENTRY_LOCATION_ROLE)
                         master_item.appendRow(entry_item)
 
             self.tree.expandAll()
@@ -228,9 +380,14 @@ class TXTDViewer(QWidget):
         entry = self.current_data["entries"][m_idx]["entries"][e_idx]
         entry["text"] = self.text_edit.toPlainText()
 
-        # Keep the tree label's preview/character-count in sync live as the
-        # user types, so it's always an accurate reflection of the text.
-        self._current_entry_item.setText(self._entry_label(entry))
+        # A fresh edit always means "dirty" again, even if it was
+        # previously exported (green) - touching it moves it back to
+        # pending/orange.
+        self._edited_locations.add(location)
+        self._exported_locations.discard(location)
+
+        # Keep the tree label in sync live as the user types.
+        self._set_entry_item_label(self._current_entry_item, entry, location)
 
         if None not in (self.chunk_index, self.file_index, self.id_val, self.dat_start, self.offset):
             self.content_changed.emit(
@@ -238,3 +395,28 @@ class TXTDViewer(QWidget):
                 self.dat_start, self.offset, self.current_data
             )
             self.status_label.setText("Edited - will be included in the next Export Files.")
+
+    def mark_exported(self, chunk_index, file_index):
+        """Called by the owning window right after a successful export
+        (Export Files / Export ISO), once per TXTD file that was actually
+        included in it. If that's the TXTD currently loaded here, every
+        entry that was dirty (orange) flips to EXPORTED_ENTRY_COLOR
+        (green) - "edited and saved" - until it's edited again, at which
+        point it goes back to orange. No-ops if a different TXTD is
+        currently loaded."""
+        if (self.chunk_index, self.file_index) != (chunk_index, file_index):
+            return
+        if not self._edited_locations:
+            return
+
+        newly_exported = self._edited_locations
+        self._edited_locations = set()
+        self._exported_locations |= newly_exported
+
+        for location in newly_exported:
+            item = self._entry_items.get(location)
+            if item is None:
+                continue
+            m_idx, e_idx = location
+            entry = self.current_data["entries"][m_idx]["entries"][e_idx]
+            self._set_entry_item_label(item, entry, location)

@@ -23,6 +23,11 @@ def parse_idx_file(main_window, cd_folder):
     model.setHorizontalHeaderLabels(["Name"])
     root_item = model.invisibleRootItem()
 
+    # (chunk_index, file_index) -> the QStandardItem for that TXTD file, so
+    # TXTDViewer edits can be reflected here too (see
+    # MainWindow._set_txtd_tree_item_edited). Reset on every (re)parse.
+    main_window.txtd_item_lookup = {}
+
     folder_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
     file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
@@ -81,6 +86,7 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setIcon(main_window.txtd_icon)
                     file_path = f"{dat_start + offset:08X}.txtd"
                     file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
+                    main_window.txtd_item_lookup[(chunk_index, i)] = file_item
                 elif filetype == "TANP":
                     file_item.setIcon(main_window.tanp_icon)
                 elif filetype == "SMST":
