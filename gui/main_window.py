@@ -96,14 +96,14 @@ class MainWindow(QMainWindow):
         container_layout.addWidget(toolbar)
         open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open ISO", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
-        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export Bytes", self)
+        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export File", self)
         export_action.triggered.connect(self.export_selected_bytes)
-        export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Export Files", self)
+        export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Save IDX/DAT", self)
         export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD edits applied")
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
-        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Export ISO", self)
+        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO", self)
         export_iso_action.setToolTip(
             "Rebuild the opened disc as a new .iso, with any pending TXTD edits applied "
             "(everything else on the disc is carried over unchanged)"

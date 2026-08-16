@@ -97,6 +97,7 @@ class EntryTextHighlighter(QSyntaxHighlighter):
                 continue
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(color))
+            fmt.setFontWeight(QFont.Weight.Bold)
             self._state_formats[state] = fmt
 
     def highlightBlock(self, text):
@@ -200,7 +201,9 @@ class TXTDViewer(QWidget):
         self.text_edit.setReadOnly(True)
 
         # Configure larger font
-        font = QFont("Courier New", 10)  # Font family and size (12pt)
+        font = QFont("Courier New", 12)  # Font family and size (12pt)
+        font.setWeight(QFont.Weight.Bold)
+        self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text_edit.setFont(font)
 
         # Optional: Increase the minimum width for better readability
