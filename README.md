@@ -11,6 +11,9 @@ Project uses PyQt6, struct, numpy, OpenGL, Pillow Python libraries.
 ## How to use:<br>
 Extract Tomba 2 iso and select folder, that contains BIN, CD, MOVIE<br>
 The script will search for files named TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG and display their contents.
+MDAT - Level data
+TXTD - Text data
+SMST - 3D Assets
 
 ## Controls 
 **Camera movement:**<br>
