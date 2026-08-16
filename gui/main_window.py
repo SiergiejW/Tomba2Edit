@@ -59,6 +59,11 @@ class MainWindow(QMainWindow):
         # been extracted to a temp folder (see open_iso_dialog / ISOHandler).
         self.dat_file = None
         self.iso_handler = None
+        # Path to the disc image currently open - kept around so Export ISO
+        # has a full original disc to rebuild from (extracted files alone
+        # aren't enough, since everything besides DAT/IDX/IMG needs to be
+        # carried over from the source image too).
+        self.current_iso_path = None
 
         self.setup_tree_view()
         self.setup_widgets()
@@ -79,9 +84,18 @@ class MainWindow(QMainWindow):
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
+        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Export ISO", self)
+        export_iso_action.setToolTip(
+            "Rebuild the opened disc as a new .iso, with any pending TXTD edits applied "
+            "(everything else on the disc is carried over unchanged)"
+        )
+        export_iso_action.triggered.connect(self.export_iso)
+        self.export_iso_action = export_iso_action
+
         toolbar.addAction(open_action)
         toolbar.addAction(export_action)
         toolbar.addAction(export_files_action)
+        toolbar.addAction(export_iso_action)
         open_action.triggered.connect(self.open_iso_dialog)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
 
@@ -289,11 +303,24 @@ class MainWindow(QMainWindow):
         if not iso_path:
             return
 
+        if self.pending_txtd_edits:
+            proceed = QMessageBox.question(
+                self, "Discard pending edits?",
+                f"You have {len(self.pending_txtd_edits)} TXTD edit(s) that haven't been "
+                "exported yet. Opening a new ISO will discard them.\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
+
         # Starting a fresh ISO always throws away whatever was extracted
         # for the previous one.
         if self.iso_handler:
             self.iso_handler.cleanup()
         self.iso_handler = ISOHandler()
+        self.pending_txtd_edits.clear()
+        self.current_iso_path = None
 
         try:
             self.iso_handler.extract_iso(iso_path)
@@ -315,7 +342,93 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this ISO:\n\n{e}")
             return
 
+        self.current_iso_path = iso_path
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
+
+    def _pack_pending_txtd_edits(self):
+        """Turn self.pending_txtd_edits into the `edits` list repack_files()
+        expects. Returns None (after showing an error dialog) if any entry
+        fails to encode."""
+        from functions import txtd_packer
+        edits = []
+        try:
+            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
+                packed_bytes = txtd_packer.pack_txtd(info["data"])
+                edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
+        except txtd_packer.TxtdPackError as e:
+            QMessageBox.critical(self, "Text encoding error",
+                                  f"Couldn't encode a TXTD entry's text:\n\n{e}\n\n"
+                                  "Fix that entry and try exporting again.")
+            return None
+        return edits
+
+    def export_iso(self):
+        """Rebuild the currently opened disc as a new .iso, applying any
+        pending TXTD edits to TOMBA2.DAT/IDX along the way. Every other
+        file and folder on the disc (TOMBA2.IMG, the executable, movies,
+        etc.) is carried over from the original image unchanged, so this
+        produces a complete, ready-to-play image instead of the two loose
+        files 'Export Files' hands back."""
+        if not self.current_iso_path or not self.iso_handler or not getattr(self, 'dat_file', None):
+            QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
+            return
+
+        edits = []
+        if self.pending_txtd_edits:
+            edits = self._pack_pending_txtd_edits()
+            if edits is None:
+                return
+
+        default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
+        default_name += "_edited.iso" if edits else "_copy.iso"
+        output_path, _ = QFileDialog.getSaveFileName(
+            self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)"
+        )
+        if not output_path:
+            return
+
+        import shutil
+        import tempfile
+        from functions.repacker import repack_files
+        from functions.iso_builder import build_iso
+
+        replacements = {}
+        tmp_repack_dir = None
+        try:
+            if edits:
+                tmp_repack_dir = tempfile.mkdtemp(prefix="tomba2edit_repack_")
+                original_idx = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                tmp_dat = os.path.join(tmp_repack_dir, "TOMBA2.DAT")
+                tmp_idx = os.path.join(tmp_repack_dir, "TOMBA2.IDX")
+                repack_files(self.dat_file, original_idx, edits, tmp_dat, tmp_idx)
+                with open(tmp_dat, "rb") as f:
+                    replacements["TOMBA2.DAT"] = f.read()
+                with open(tmp_idx, "rb") as f:
+                    replacements["TOMBA2.IDX"] = f.read()
+
+            build_iso(self.current_iso_path, replacements, output_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", f"Failed to rebuild ISO:\n\n{e}")
+            return
+        finally:
+            if tmp_repack_dir:
+                shutil.rmtree(tmp_repack_dir, ignore_errors=True)
+
+        summary = (
+            f"({len(edits)} TXTD file(s) repacked into it.)"
+            if edits else
+            "(No pending edits - this is an unmodified copy of the opened disc.)"
+        )
+        QMessageBox.information(
+            self, "ISO export complete",
+            f"Wrote:\n{output_path}\n\n{summary}\n\n"
+            "Note: this is a single-track, data-only ISO. If you opened a "
+            "multi-track BIN/CUE with CD audio, that audio isn't part of "
+            "this file - keep using the BIN/CUE for in-game music, and use "
+            "this ISO to check the edits landed correctly."
+        )
+        if edits:
+            self.pending_txtd_edits.clear()
 
     def closeEvent(self, event):
         if self.iso_handler:
