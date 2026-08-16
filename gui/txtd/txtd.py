@@ -50,7 +50,7 @@ def preview(DAT, datstart):
                 master_adr = getB(2)
                 master_extra = getB(2)
                 master_headers[a] = {"adr": master_adr, "extra": master_extra}
-                output["master_headers"].append({"adr": master_adr})  # Add to output
+                output["master_headers"].append({"adr": master_adr, "extra": master_extra})  # Add to output
 
             # Processing each entry in master headers
             for entry in master_headers:

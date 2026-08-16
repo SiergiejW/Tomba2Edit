@@ -2,9 +2,9 @@ import struct
 
 
 
-with open("C:/Users/Patryk/PycharmProjects/Tomba310/repacker/new.txt", "w") as out:
+with open("C:/Users/Patryk/PycharmProjects/Tomba/iso/edited rom/TOMBA2_DEFAULT.txt", "w") as out:
     out.write("img_strt img_end  dat_strt dat_end     SDAMOUNT     ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS  ID ADRESS    TRAIL DATA IS HERE\n")
-    with open("C:/Users/Patryk/PycharmProjects/Tomba310/repacker/NEW_TOMBA2.IDX", "rb") as rom:
+    with open("C:/Users/Patryk/PycharmProjects/Tomba310/iso/edited rom/TOMBA2_DEFAULT.IDX", "rb") as rom:
         rom.seek(0,2)
         chunk_amount = int(rom.tell()/0x800)
         rom.seek(0)

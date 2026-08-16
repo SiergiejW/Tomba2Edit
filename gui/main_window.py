@@ -50,8 +50,13 @@ class MainWindow(QMainWindow):
         self.widgets_area = QStackedWidget()
         self.splitter.addWidget(self.widgets_area)
 
+        # (chunk_index, file_index) -> {"id", "dat_start", "offset", "data"}
+        # for every TXTD that's been edited but not yet exported.
+        self.pending_txtd_edits = {}
+
         self.setup_tree_view()
         self.setup_widgets()
+        self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
         self.tree_view.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.setStatusBar(QStatusBar(self))
 
@@ -62,9 +67,14 @@ class MainWindow(QMainWindow):
         open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open", self)
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export Bytes", self)
         export_action.triggered.connect(self.export_selected_bytes)
+        export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Export Files", self)
+        export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD edits applied")
+        export_files_action.triggered.connect(self.export_all_files)
+        self.export_files_action = export_files_action
 
         toolbar.addAction(open_action)
         toolbar.addAction(export_action)
+        toolbar.addAction(export_files_action)
         open_action.triggered.connect(self.open_folder_dialog)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
 
@@ -182,6 +192,68 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export bytes: {e}")
+
+    def on_txtd_content_changed(self, chunk_index, file_index, id_val, dat_start, offset, current_data):
+        """Called by TXTDViewer every time an entry's text is edited.
+        current_data is the SAME dict object the viewer keeps editing in
+        place, so this just needs to remember which (area, file) it
+        belongs to - no need to copy it defensively here since each
+        edited TXTD only ever has one viewer instance touching it at a
+        time in this UI."""
+        self.pending_txtd_edits[(chunk_index, file_index)] = {
+            "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+        }
+        self.statusBar().showMessage(
+            f"{len(self.pending_txtd_edits)} TXTD file(s) have pending edits - "
+            f"use the 'Export Files' button when ready.")
+
+    def export_all_files(self):
+        if not self.pending_txtd_edits:
+            QMessageBox.information(self, "Nothing to export",
+                                     "No TXTD edits are pending. Edit some entry text first.")
+            return
+
+        if not getattr(self, 'dat_file', None):
+            QMessageBox.critical(self, "Error", "No TOMBA2 folder is open.")
+            return
+
+        out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder for the modified DAT + IDX")
+        if not out_dir:
+            return
+
+        from functions import txtd_packer
+        from functions.repacker import repack_files
+
+        try:
+            edits = []
+            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
+                packed_bytes = txtd_packer.pack_txtd(info["data"])
+                edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
+        except txtd_packer.TxtdPackError as e:
+            QMessageBox.critical(self, "Text encoding error",
+                                  f"Couldn't encode a TXTD entry's text:\n\n{e}\n\n"
+                                  "Fix that entry and try exporting again.")
+            return
+
+        original_dir = os.path.dirname(self.dat_file)
+        original_idx = os.path.join(original_dir, "TOMBA2.IDX")
+        output_dat = os.path.join(out_dir, "TOMBA2.DAT")
+        output_idx = os.path.join(out_dir, "TOMBA2.IDX")
+
+        try:
+            repack_files(self.dat_file, original_idx, edits, output_dat, output_idx)
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", f"Failed to rebuild DAT/IDX: {e}")
+            return
+
+        QMessageBox.information(
+            self, "Export complete",
+            f"Wrote:\n{output_dat}\n{output_idx}\n\n"
+            f"({len(edits)} TXTD file(s) repacked.)\n\n"
+            "Back up your original CD files, then copy these two over them "
+            "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
+        )
+        self.pending_txtd_edits.clear()
 
     def count_items(self, item):
         count = 0
@@ -337,7 +409,15 @@ class MainWindow(QMainWindow):
                             try:
                                 if self.dat_file:
                                     print("Loading TXTD data...")
-                                    self.txtd_viewer.load_txtd_data(self.dat_file, dat_start, offset)
+                                    txtd_chunk_info = selected_item.data(Qt.ItemDataRole.UserRole + 2)
+                                    if txtd_chunk_info:
+                                        txtd_chunk_index, txtd_file_index = txtd_chunk_info
+                                    else:
+                                        txtd_chunk_index, txtd_file_index = (0, 0)
+                                    self.txtd_viewer.load_txtd_data(
+                                        self.dat_file, dat_start, offset,
+                                        chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
+                                    )
                                 else:
                                     QMessageBox.critical(self, "Error", "DAT file not loaded.")
                             except Exception as e:
