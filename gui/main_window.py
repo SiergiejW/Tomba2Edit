@@ -15,6 +15,7 @@ from main import version
 from gui.txtd_viewer import TXTDViewer
 from gui.mdat_viewer import MDATViewer
 from functions.idx_parser import parse_idx_file
+from functions.iso_handler import ISOHandler
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
@@ -54,6 +55,11 @@ class MainWindow(QMainWindow):
         # for every TXTD that's been edited but not yet exported.
         self.pending_txtd_edits = {}
 
+        # Set once an ISO has been opened and its TOMBA2.DAT/IDX/IMG have
+        # been extracted to a temp folder (see open_iso_dialog / ISOHandler).
+        self.dat_file = None
+        self.iso_handler = None
+
         self.setup_tree_view()
         self.setup_widgets()
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
@@ -64,7 +70,8 @@ class MainWindow(QMainWindow):
         container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
-        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open", self)
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open ISO", self)
+        open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export Bytes", self)
         export_action.triggered.connect(self.export_selected_bytes)
         export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Export Files", self)
@@ -75,10 +82,10 @@ class MainWindow(QMainWindow):
         toolbar.addAction(open_action)
         toolbar.addAction(export_action)
         toolbar.addAction(export_files_action)
-        open_action.triggered.connect(self.open_folder_dialog)
+        open_action.triggered.connect(self.open_iso_dialog)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
 
-        self.folder_info_label = QLabel("Select Tomba folder (with BIN, CD, MOVIE)")
+        self.folder_info_label = QLabel("Select a Tomba! 2 ISO file to begin")
         self.folder_info_label.setWordWrap(True)
         container_layout.addWidget(self.folder_info_label)
         container_widget.setLayout(container_layout)
@@ -214,7 +221,7 @@ class MainWindow(QMainWindow):
             return
 
         if not getattr(self, 'dat_file', None):
-            QMessageBox.critical(self, "Error", "No TOMBA2 folder is open.")
+            QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
             return
 
         out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder for the modified DAT + IDX")
@@ -270,21 +277,50 @@ class MainWindow(QMainWindow):
             count = self.count_items(item)
             item.setText(f"{item.text()} ({count})")
 
-    def open_folder_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
-        if folder:
-            cd_folder = os.path.join(folder, "CD")
-            if os.path.exists(cd_folder):
-                required_files = ["TOMBA2.DAT", "TOMBA2.IDX", "TOMBA2.IMG"]
-                if all(os.path.exists(os.path.join(cd_folder, f)) for f in required_files):
-                    self.folder_info_label.setText(f"Selected Folder: {folder}")
-                    parse_idx_file(self, cd_folder)
-                else:
-                    QMessageBox.critical(self, "Error", "The selected folder does not contain the required TOMBA2 files.")
-            else:
-                QMessageBox.critical(self, "Error", "The selected folder does not contain a 'CD' folder.")
-        else:
-            self.folder_info_label.setText("Select Tomba folder (with BIN, CD, MOVIE)")
+    def open_iso_dialog(self):
+        """Open a Tomba! 2 disc image, extract TOMBA2.DAT/IDX/IMG from it
+        into a temp folder, and populate the tree view from that - this is
+        the sole entry point into the app now (folder-based opening has
+        been replaced by this)."""
+        iso_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Tomba! 2 ISO", "",
+            "Disc Images (*.iso *.bin *.img);;All Files (*)"
+        )
+        if not iso_path:
+            return
+
+        # Starting a fresh ISO always throws away whatever was extracted
+        # for the previous one.
+        if self.iso_handler:
+            self.iso_handler.cleanup()
+        self.iso_handler = ISOHandler()
+
+        try:
+            self.iso_handler.extract_iso(iso_path)
+        except Exception as e:
+            self.iso_handler.cleanup()
+            self.iso_handler = None
+            self.folder_info_label.setText("Select a Tomba! 2 ISO file to begin")
+            QMessageBox.critical(self, "Error", f"Failed to read ISO:\n\n{e}")
+            return
+
+        extracted_dir = self.iso_handler.get_temp_dir()
+        try:
+            parse_idx_file(self, extracted_dir)
+        except Exception as e:
+            self.iso_handler.cleanup()
+            self.iso_handler = None
+            self.dat_file = None
+            self.folder_info_label.setText("Select a Tomba! 2 ISO file to begin")
+            QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this ISO:\n\n{e}")
+            return
+
+        self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
+
+    def closeEvent(self, event):
+        if self.iso_handler:
+            self.iso_handler.cleanup()
+        super().closeEvent(event)
 
     def tuplify(self, item):
         dat_id = item >> 24
