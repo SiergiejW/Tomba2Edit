@@ -23,9 +23,26 @@ difference, not a format difference: both decode correctly with this
 exact same logic.
 
 Entries with adr == extra == 0xFFFF are unused/blank slots (decoded as
-"END!", matching txtd.py's own convention) and can appear anywhere in
-the table, not just at the end - the game apparently reserves more
-slots than any one instance of this file necessarily fills in.
+"END!", matching txtd.py's own convention). The FIRST such slot marks
+the true end of this file's real entry list - reading stops there and
+never processes entry_amount's remaining declared slots. This matters
+because entry_amount can reserve MORE slots than a given instance of
+this chunk actually fills in (id=2's sample never needs this - its one
+sentinel sits exactly at the last of its 141 slots - but a second,
+fuller id=3 sample makes it unambiguous: entry_amount there is 117, yet
+only the first 58 slots are real ascending (adr,extra) pairs, slot 58
+is already an END sentinel, and every raw byte from slot 60 onward -
+still nominally "inside the table" per entry_amount - decodes not as
+more (adr,extra) pairs but as one continuous, perfectly grammatical
+stretch of English ("equipped!", "used!", "acquired!", "removed!",
+"given!", "sent to nest!", ... flowing seamlessly into the real
+entry_root text pool with no gap at all). That's stale leftover text
+sitting in reserved-but-unused table space, not real entries - the
+game almost certainly stops scanning at the first blank slot too,
+since there'd be no other way for it to know where the real list ends
+short of entry_amount. Trying to decode past the first sentinel is
+what previously showed a wall of garbled/{$EOF} "entries" after a
+normal-looking start.
 """
 
 from gui.txtd.tombadict import letters as l
@@ -109,6 +126,7 @@ def preview(DAT, datstart):
                 print(f"Processing entry {b + 1}/{entry_amount}...")
                 ptr = entry_headers[b]["adr"]
                 who = entry_headers[b]["extra"]
+                is_sentinel = (ptr == 0xFFFF and who == 0xFFFF)
                 real = entry_root + ptr
                 text_content = prepareText(ptr, who, real)
                 print(f"ptr:0x{ptr:X}, who:0x{who:X}, real:0x{real:X}")
@@ -118,6 +136,15 @@ def preview(DAT, datstart):
                     "extra": who,
                     "text": text_content,
                 })
+                if is_sentinel:
+                    # Stop at the first blank slot - see module docstring.
+                    # Whatever entry_amount reserves past this point isn't
+                    # real entry data.
+                    if b + 1 < entry_amount:
+                        print(f"Hit first END sentinel at entry {b} - "
+                              f"ignoring the remaining {entry_amount - b - 1} "
+                              f"reserved-but-unused table slot(s).")
+                    break
 
             output["entries"] = entries
 
