@@ -14,6 +14,11 @@ from icons.icons import icon_TXTD_master, icon_TXTD_entry
 # (master_index, entry_index) position in self.current_data.
 ENTRY_LOCATION_ROLE = Qt.ItemDataRole.UserRole + 10
 
+# How many characters of an entry's text to show inline in the tree, before
+# truncating with "...". Keeps rows scannable while still being useful for
+# telling entries apart at a glance during translation.
+ENTRY_PREVIEW_MAX_CHARS = 40
+
 
 class TXTDViewer(QWidget):
     """
@@ -87,6 +92,36 @@ class TXTDViewer(QWidget):
         self.tree.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.text_edit.textChanged.connect(self._on_text_changed)
 
+    @staticmethod
+    def _entry_preview_text(text, max_len=ENTRY_PREVIEW_MAX_CHARS):
+        """Collapse an entry's text down to a single-line snippet suitable
+        for showing inline in the tree (whitespace/newlines collapsed,
+        truncated with '...' if it's longer than max_len)."""
+        if not text:
+            return ""
+        collapsed = " ".join(text.split())
+        if not collapsed:
+            return ""
+        if len(collapsed) > max_len:
+            return collapsed[:max_len].rstrip() + "..."
+        return collapsed
+
+    def _entry_label(self, entry):
+        """Builds the tree label for one entry, e.g.
+        'Entry 0000 (Hey! You scared me. What are you...) (87 characters)'.
+        END-marker sentinels (no text) get a simpler label."""
+        is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
+        addr_str = f"Entry {entry['adr']:04X}"
+        if is_sentinel:
+            return f"{addr_str} (END marker)"
+
+        text = entry.get("text") or ""
+        char_count = len(text)
+        preview = self._entry_preview_text(text)
+        if preview:
+            return f"{addr_str} ({char_count} chars) ({preview})"
+        return f"{addr_str} ({char_count} characters)"
+
     def load_txtd_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
         """
         chunk_index/file_index/id_val identify which SDAT slot this
@@ -131,7 +166,7 @@ class TXTDViewer(QWidget):
                         f"Master Header {master_header['adr']:04X} ({entry_group['entry_amount']} entries)")
 
                     for e_idx, entry in enumerate(entry_group.get("entries", [])):
-                        entry_item = QStandardItem(QIcon(icon_TXTD_entry), f"Entry {entry['adr']:04X}")
+                        entry_item = QStandardItem(QIcon(icon_TXTD_entry), self._entry_label(entry))
                         entry_item.setFlags(entry_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         entry_item.setData((m_idx, e_idx), ENTRY_LOCATION_ROLE)
                         master_item.appendRow(entry_item)
@@ -190,7 +225,12 @@ class TXTDViewer(QWidget):
             return
 
         m_idx, e_idx = location
-        self.current_data["entries"][m_idx]["entries"][e_idx]["text"] = self.text_edit.toPlainText()
+        entry = self.current_data["entries"][m_idx]["entries"][e_idx]
+        entry["text"] = self.text_edit.toPlainText()
+
+        # Keep the tree label's preview/character-count in sync live as the
+        # user types, so it's always an accurate reflection of the text.
+        self._current_entry_item.setText(self._entry_label(entry))
 
         if None not in (self.chunk_index, self.file_index, self.id_val, self.dat_start, self.offset):
             self.content_changed.emit(
