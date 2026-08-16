@@ -7,21 +7,23 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
 from icons.icons import (icon_window,
-                         icon_TXTD, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
+                         icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
                          icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB,
                          icon_VRAM, icon_CVRAM,
                          )
 from main import version
 from gui.txtd_viewer import TXTDViewer
+from gui.txt2_viewer import TXT2Viewer
 from gui.mdat_viewer import MDATViewer
 from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
-# Colors used to flag a TXTD file's row in the main file tree, mirroring
-# the entry-level coloring in TXTDViewer: orange while it has pending
-# (unexported) text edits, green once those edits have been exported.
+# Colors used to flag a TXTD/TXT2 file's row in the main file tree,
+# mirroring the entry-level coloring in TXTDViewer/TXT2Viewer: orange
+# while it has pending (unexported) text edits, green once those edits
+# have been exported.
 EDITED_TXTD_ITEM_COLOR = "orange"
 EXPORTED_TXTD_ITEM_COLOR = "green"
 
@@ -34,6 +36,7 @@ class MainWindow(QMainWindow):
 
         # Proceed with icon loading
         self.txtd_icon = QIcon(icon_TXTD)
+        self.txt2_icon = QIcon(icon_TXT2)
         self.sprt_icon = QIcon(icon_SPRT)
         self.tanp_icon = QIcon(icon_TANP)
         self.smst_icon = QIcon(icon_SMST)
@@ -57,21 +60,27 @@ class MainWindow(QMainWindow):
         self.widgets_area = QStackedWidget()
         self.splitter.addWidget(self.widgets_area)
 
-        # (chunk_index, file_index) -> {"id", "dat_start", "offset", "data"}
-        # for every TXTD that's been edited but not yet exported.
+        # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
+        # "data"} for every TXTD/TXT2 file that's been edited but not yet
+        # exported. Both file types share this one dict - the "kind" tag
+        # ("txtd" or "txt2") is only used by _pack_pending_txtd_edits() to
+        # decide whether to call txtd_packer.pack_txtd() or
+        # txt2_packer.pack_txt2() for that entry; everything else here
+        # (coloring, export bookkeeping) treats both kinds identically.
         self.pending_txtd_edits = {}
 
-        # (chunk_index, file_index) -> the QStandardItem for that TXTD file
-        # in self.tree_view, so pending edits can be highlighted there too.
-        # Populated by idx_parser.parse_idx_file() each time an ISO is opened.
+        # (chunk_index, file_index) -> the QStandardItem for that TXTD/TXT2
+        # file in self.tree_view, so pending edits can be highlighted there
+        # too. Populated by idx_parser.parse_idx_file() each time an ISO is
+        # opened.
         self.txtd_item_lookup = {}
 
         # (chunk_index, file_index) -> "edited" | "exported", mirroring the
-        # color currently applied to that TXTD file's row. Kept separately
-        # from txtd_item_lookup so the enclosing NN_DATA/AREA_NN folder
-        # colors can be recomputed by aggregating over every file inside
-        # them (see _refresh_folder_state_color) without having to inspect
-        # Qt foreground brushes.
+        # color currently applied to that TXTD/TXT2 file's row. Kept
+        # separately from txtd_item_lookup so the enclosing NN_DATA/AREA_NN
+        # folder colors can be recomputed by aggregating over every file
+        # inside them (see _refresh_folder_state_color) without having to
+        # inspect Qt foreground brushes.
         self.txtd_file_states = {}
 
         # Set once an ISO has been opened and its TOMBA2.DAT/IDX/IMG have
@@ -87,6 +96,7 @@ class MainWindow(QMainWindow):
         self.setup_tree_view()
         self.setup_widgets()
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
+        self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)
         self.tree_view.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.setStatusBar(QStatusBar(self))
 
@@ -99,13 +109,13 @@ class MainWindow(QMainWindow):
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export File", self)
         export_action.triggered.connect(self.export_selected_bytes)
         export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Save IDX/DAT", self)
-        export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD edits applied")
+        export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD/TXT2 edits applied")
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
         export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO", self)
         export_iso_action.setToolTip(
-            "Rebuild the opened disc as a new .iso, with any pending TXTD edits applied "
+            "Rebuild the opened disc as a new .iso, with any pending TXTD/TXT2 edits applied "
             "(everything else on the disc is carried over unchanged)"
         )
         export_iso_action.triggered.connect(self.export_iso)
@@ -241,12 +251,27 @@ class MainWindow(QMainWindow):
         edited TXTD only ever has one viewer instance touching it at a
         time in this UI."""
         self.pending_txtd_edits[(chunk_index, file_index)] = {
-            "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+            "kind": "txtd", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
         }
         self._set_txtd_tree_item_state(chunk_index, file_index, "edited")
         self.statusBar().showMessage(
-            f"{len(self.pending_txtd_edits)} TXTD file(s) have pending edits - "
-            f"use the 'Export Files' button when ready.")
+            f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
+            f"use the 'Save IDX/DAT' button when ready.")
+
+    def on_txt2_content_changed(self, chunk_index, file_index, id_val, dat_start, offset, current_data):
+        """Called by TXT2Viewer every time an entry's text is edited. Same
+        idea as on_txtd_content_changed() above - the two kinds of pending
+        edit share self.pending_txtd_edits (see its docstring), tagged with
+        "kind" so _pack_pending_txtd_edits() knows which packer to use for
+        each one; every other bookkeeping step (tree coloring, export
+        counting) doesn't need to distinguish between them at all."""
+        self.pending_txtd_edits[(chunk_index, file_index)] = {
+            "kind": "txt2", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+        }
+        self._set_txtd_tree_item_state(chunk_index, file_index, "edited")
+        self.statusBar().showMessage(
+            f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
+            f"use the 'Save IDX/DAT' button when ready.")
 
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
         """Colors a TXTD file's row in the main tree (under its NN_DATA
@@ -320,7 +345,7 @@ class MainWindow(QMainWindow):
     def export_all_files(self):
         if not self.pending_txtd_edits:
             QMessageBox.information(self, "Nothing to export",
-                                     "No TXTD edits are pending. Edit some entry text first.")
+                                     "No TXTD/TXT2 edits are pending. Edit some entry text first.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -331,18 +356,10 @@ class MainWindow(QMainWindow):
         if not out_dir:
             return
 
-        from functions import txtd_packer
         from functions.repacker import repack_files
 
-        try:
-            edits = []
-            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
-                packed_bytes = txtd_packer.pack_txtd(info["data"])
-                edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
-        except txtd_packer.TxtdPackError as e:
-            QMessageBox.critical(self, "Text encoding error",
-                                  f"Couldn't encode a TXTD entry's text:\n\n{e}\n\n"
-                                  "Fix that entry and try exporting again.")
+        edits = self._pack_pending_txtd_edits()
+        if edits is None:
             return
 
         original_dir = os.path.dirname(self.dat_file)
@@ -359,13 +376,16 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "Export complete",
             f"Wrote:\n{output_dat}\n{output_idx}\n\n"
-            f"({len(edits)} TXTD file(s) repacked.)\n\n"
+            f"({len(edits)} file(s) repacked.)\n\n"
             "Back up your original CD files, then copy these two over them "
             "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
         )
-        for chunk_index, file_index in self.pending_txtd_edits.keys():
+        for (chunk_index, file_index), info in self.pending_txtd_edits.items():
             self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
-            self.txtd_viewer.mark_exported(chunk_index, file_index)
+            if info.get("kind") == "txt2":
+                self.txt2_viewer.mark_exported(chunk_index, file_index)
+            else:
+                self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
 
     def count_items(self, item):
@@ -398,7 +418,7 @@ class MainWindow(QMainWindow):
         if self.pending_txtd_edits:
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD edit(s) that haven't been "
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) that haven't been "
                 "exported yet. Opening a new ISO will discard them.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -414,6 +434,7 @@ class MainWindow(QMainWindow):
         self.pending_txtd_edits.clear()
         self.txtd_file_states.clear()
         self.txtd_viewer.clear_cache()
+        self.txt2_viewer.clear_cache()
         self.current_iso_path = None
 
         try:
@@ -442,16 +463,28 @@ class MainWindow(QMainWindow):
     def _pack_pending_txtd_edits(self):
         """Turn self.pending_txtd_edits into the `edits` list repack_files()
         expects. Returns None (after showing an error dialog) if any entry
-        fails to encode."""
+        fails to encode.
+
+        Branches on each pending edit's "kind" tag (see
+        on_txtd_content_changed / on_txt2_content_changed) to call the
+        right packer - txt2_packer.Txt2PackError subclasses
+        txtd_packer.TxtdPackError, so one except clause below catches
+        either. This is the single place that packs BOTH file types, and
+        is now used by both export_all_files() and export_iso() so the
+        logic only exists once."""
         from functions import txtd_packer
+        from functions import txt2_packer
         edits = []
         try:
             for (chunk_index, file_index), info in self.pending_txtd_edits.items():
-                packed_bytes = txtd_packer.pack_txtd(info["data"])
+                if info.get("kind") == "txt2":
+                    packed_bytes = txt2_packer.pack_txt2(info["data"])
+                else:
+                    packed_bytes = txtd_packer.pack_txtd(info["data"])
                 edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
         except txtd_packer.TxtdPackError as e:
             QMessageBox.critical(self, "Text encoding error",
-                                  f"Couldn't encode a TXTD entry's text:\n\n{e}\n\n"
+                                  f"Couldn't encode an entry's text:\n\n{e}\n\n"
                                   "Fix that entry and try exporting again.")
             return None
         return edits
@@ -509,7 +542,7 @@ class MainWindow(QMainWindow):
                 shutil.rmtree(tmp_repack_dir, ignore_errors=True)
 
         summary = (
-            f"({len(edits)} TXTD file(s) repacked into it.)"
+            f"({len(edits)} file(s) repacked into it.)"
             if edits else
             "(No pending edits - this is an unmodified copy of the opened disc.)"
         )
@@ -522,9 +555,12 @@ class MainWindow(QMainWindow):
             "this ISO to check the edits landed correctly."
         )
         if edits:
-            for chunk_index, file_index in self.pending_txtd_edits.keys():
+            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
                 self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
-                self.txtd_viewer.mark_exported(chunk_index, file_index)
+                if info.get("kind") == "txt2":
+                    self.txt2_viewer.mark_exported(chunk_index, file_index)
+                else:
+                    self.txtd_viewer.mark_exported(chunk_index, file_index)
             self.pending_txtd_edits.clear()
 
     def closeEvent(self, event):
@@ -544,6 +580,7 @@ class MainWindow(QMainWindow):
 
     def setup_widgets(self):
         self.txtd_viewer = TXTDViewer()
+        self.txt2_viewer = TXT2Viewer()
         self.mdat_viewer = MDATViewer()
         self.vram_viewer = VRAMViewer()  # Add this line
 
@@ -551,6 +588,7 @@ class MainWindow(QMainWindow):
             "Folder": QLabel("This is a folder"),
             "SPRT": QLabel("SPRITE Viewer"),
             "TXTD": self.txtd_viewer,
+            "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_viewer,
             "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
@@ -670,6 +708,27 @@ class MainWindow(QMainWindow):
                                 print(f"Error loading TXTD file: {e}")
                                 QMessageBox.critical(self, "Error", f"Failed to load TXTD file: {e}")
 
+                    elif widget == self.widgets["TXT2"]:
+                        file_path = selected_item.data(Qt.ItemDataRole.UserRole + 1)
+                        print(f"File path: {file_path}")
+                        if file_path:
+                            try:
+                                if self.dat_file:
+                                    print("Loading TXT2 data...")
+                                    txt2_chunk_info = selected_item.data(Qt.ItemDataRole.UserRole + 2)
+                                    if txt2_chunk_info:
+                                        txt2_chunk_index, txt2_file_index = txt2_chunk_info
+                                    else:
+                                        txt2_chunk_index, txt2_file_index = (0, 0)
+                                    self.txt2_viewer.load_txt2_data(
+                                        self.dat_file, dat_start, offset,
+                                        chunk_index=txt2_chunk_index, file_index=txt2_file_index, id_val=id
+                                    )
+                                else:
+                                    QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                            except Exception as e:
+                                print(f"Error loading TXT2 file: {e}")
+                                QMessageBox.critical(self, "Error", f"Failed to load TXT2 file: {e}")
 
                     elif widget == self.widgets["MDAT"]:
                         try:
