@@ -17,6 +17,17 @@ from gui.txtd_viewer import (
 # Import the necessary icon
 from icons.icons import icon_TXT2_entry
 
+# Muted color for entries txt2.is_probably_text() flags as likely NOT
+# real dialogue (see that function's docstring - a real, non-truncated
+# sample turned up two such entries: a perfectly regular numeric table
+# with stale pointers sitting in the message slots, no 0xFFFF sentinel
+# in sight). Deliberately distinct from EDITED_ENTRY_COLOR/
+# EXPORTED_ENTRY_COLOR so a flagged-but-untouched entry never gets
+# confused with a real pending/exported edit; touching one still turns
+# it orange/green like any other entry; it's purely an unedited-state
+# hint, not a data restriction.
+NON_TEXT_ENTRY_COLOR = "gray"
+
 
 class TXT2Viewer(QWidget):
     """
@@ -137,7 +148,23 @@ class TXT2Viewer(QWidget):
 
     def _entry_label_parts(self, entry):
         """Returns (address_str, preview, is_sentinel), the shared pieces
-        used to build the tree label. Identical logic to TXTDViewer's."""
+        used to build the tree label. Gap entries (see txt2.py's
+        docstring - real text found between the table and entry_root,
+        not addressed by any (adr,extra) pair) have no adr of their own,
+        so they get an "Extra text" label instead of "Entry XXXX".
+
+        NOTE: this text still lives entirely inside THIS file, between
+        this file's own table and this file's own entry_root - it is
+        never read from anywhere else. The label used to say "Shared
+        text", which was meant as "shares/reuses bytes with another
+        entry's string" (see txt2.py's docstring on tail-sharing) but
+        reads, at a glance, like "text shared in from outside this
+        file" - the opposite of what's actually happening. Renamed to
+        avoid that misreading.
+        """
+        if entry.get("is_gap"):
+            return "Extra text", self._entry_preview_text(entry.get("text") or ""), False
+
         is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
         addr_str = f"Entry {entry['adr']:04X}"
         if is_sentinel:
@@ -149,31 +176,73 @@ class TXT2Viewer(QWidget):
     def _entry_label(self, entry):
         """Plain-text tree label, e.g.
         'Entry 0000 (Use {$UP} to jump to the back)'.
-        END-marker sentinels (no text) get a simpler label."""
+        END-marker sentinels (no text) get a simpler label, and entries
+        txt2.is_probably_text() doesn't trust get a "(?)" flag appended
+        so it's obvious at a glance which ones probably aren't real,
+        editable dialogue (see that function's docstring)."""
         addr_str, preview, is_sentinel = self._entry_label_parts(entry)
         if is_sentinel:
             return f"{addr_str} (END marker)"
+        suspect_flag = "" if txt2.is_probably_text(entry.get("text") or "") else "  [not text?]"
         if preview:
-            return f"{addr_str} ({preview})"
-        return addr_str
+            return f"{addr_str} ({preview}){suspect_flag}"
+        return f"{addr_str}{suspect_flag}"
 
-    def _entry_item_color(self, location):
+    def _entry_item_color(self, entry, location):
         """The whole-row color for an entry's tree item: orange while it
-        has an unexported edit, green if it was edited and has since been
-        exported, or None (normal) if it's never been touched."""
+        has an unexported edit, green if it was edited and has since
+        been exported, gray if it's untouched but txt2.is_probably_text()
+        doesn't trust its content, or None (normal) otherwise. Edit
+        state always wins over the gray "suspect" hint - once you touch
+        an entry it's tracked as a real edit like any other, regardless
+        of what it looked like before."""
         if location in self._edited_locations:
             return EDITED_ENTRY_COLOR
         if location in self._exported_locations:
             return EXPORTED_ENTRY_COLOR
+        is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
+        if not is_sentinel and not txt2.is_probably_text(entry.get("text") or ""):
+            return NON_TEXT_ENTRY_COLOR
         return None
 
     def _set_entry_item_label(self, item, entry, location):
         item.setText(self._entry_label(entry))
-        color = self._entry_item_color(location)
+        color = self._entry_item_color(entry, location)
         if color:
             item.setForeground(QBrush(QColor(color)))
         else:
             item.setData(None, Qt.ItemDataRole.ForegroundRole)
+
+    @staticmethod
+    def _debug_dump_entries(chunk_index, file_index, id_val, entries):
+        """Prints every entry in this TXT2 file to stdout, one line each -
+        index, raw adr/extra, and the exact decoded text (repr'd, so
+        embedded newlines/tags are visible rather than breaking the
+        layout). Runs every time a TXT2 file is selected in the main
+        tree, whether its data came fresh off disk or from cache, so
+        it always reflects what's actually about to be shown/edited.
+        This exists to make things like the "chopped into entries
+        wrongly" table-overrun bug (see txt2.py's docstring) easy to
+        spot by eye - a quick scan for entries whose adr/extra don't
+        ascend sensibly, or whose text is an unexpected {$EOF}/{$XX}
+        run, points straight at the offending slot instead of having to
+        step through the parser. Entries txt2.is_probably_text() flags
+        as likely non-dialogue get a "<-- NOT TEXT?" marker here too,
+        for the same reason the tree shows them in gray. Gap entries
+        (see txt2.py's docstring) have no adr/extra of their own - shown
+        as "adr=GAP" instead of a hex address."""
+        print(f"=== TXT2 entry dump: chunk={chunk_index} file={file_index} "
+              f"id={id_val} ({len(entries)} entries) ===")
+        for i, entry in enumerate(entries):
+            text = entry.get("text", "")
+            flag = "" if txt2.is_probably_text(text) else "  <-- NOT TEXT?"
+            if entry.get("is_gap"):
+                print(f"  [{i:3d}] adr=GAP  extra=GAP  text={text!r}{flag}")
+            else:
+                adr = entry.get("adr") or 0
+                extra = entry.get("extra") or 0
+                print(f"  [{i:3d}] adr={adr:04X} extra={extra:04X} text={text!r}{flag}")
+        print(f"=== end TXT2 entry dump ({len(entries)} entries) ===")
 
     def load_txt2_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
         """
@@ -227,6 +296,7 @@ class TXT2Viewer(QWidget):
                 return
 
             entries = self.current_data.get("entries", [])
+            self._debug_dump_entries(chunk_index, file_index, id_val, entries)
 
             # No master-header grouping layer for TXT2 - every entry is a
             # top-level row in the tree.
