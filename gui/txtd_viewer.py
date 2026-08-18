@@ -179,6 +179,10 @@ class TXTDViewer(QWidget):
         # opened (see MainWindow.open_iso_dialog).
         self._file_state_cache = {}
 
+        # location -> original text, so edits reverted back to the
+        # original clear the edited/exported marks again.
+        self._original_entry_texts = {}
+
         # Create the main layout
         layout = QVBoxLayout()
 
@@ -305,17 +309,23 @@ class TXTDViewer(QWidget):
                 self.current_data = cached["data"]
                 self._edited_locations = cached["edited_locations"]
                 self._exported_locations = cached["exported_locations"]
+                self._original_entry_texts = cached.get("original_entry_texts", {})
             else:
                 print(f"Loading TXTD data from DAT file: {DAT}, start: {datstart}, offset: {offset}")
                 self.current_data = txtd.preview(DAT, datstart + offset)
                 print("TXTD data loaded successfully.")
                 self._edited_locations = set()
                 self._exported_locations = set()
+                self._original_entry_texts = {}
+                for m_idx, group in enumerate(self.current_data.get("entries", [])):
+                    for e_idx, e in enumerate(group.get("entries", [])):
+                        self._original_entry_texts[(m_idx, e_idx)] = e["text"]
                 if cache_key is not None:
                     self._file_state_cache[cache_key] = {
                         "data": self.current_data,
                         "edited_locations": self._edited_locations,
                         "exported_locations": self._exported_locations,
+                        "original_entry_texts": self._original_entry_texts,
                     }
 
             self.chunk_index = chunk_index
@@ -414,11 +424,13 @@ class TXTDViewer(QWidget):
         entry = self.current_data["entries"][m_idx]["entries"][e_idx]
         entry["text"] = self.text_edit.toPlainText()
 
-        # A fresh edit always means "dirty" again, even if it was
-        # previously exported (green) - touching it moves it back to
-        # pending/orange.
-        self._edited_locations.add(location)
-        self._exported_locations.discard(location)
+        if entry["text"] == self._original_entry_texts.get(location):
+            # back to the original text - no longer dirty
+            self._edited_locations.discard(location)
+            self._exported_locations.discard(location)
+        else:
+            self._edited_locations.add(location)
+            self._exported_locations.discard(location)
 
         # Keep the tree label in sync live as the user types.
         self._set_entry_item_label(self._current_entry_item, entry, location)
@@ -473,6 +485,15 @@ class TXTDViewer(QWidget):
             entry = self.current_data["entries"][m_idx]["entries"][e_idx]
             self._set_entry_item_label(item, entry, location)
 
+    def pending_state(self):
+        """"edited"/"exported"/None for the currently loaded file, based
+        on _edited_locations/_exported_locations."""
+        if self._edited_locations:
+            return "edited"
+        if self._exported_locations:
+            return "exported"
+        return None
+
     def clear_cache(self):
         """Forgets every cached per-file text/color state and resets the
         viewer to empty. Call this whenever a new ISO is opened - without
@@ -489,6 +510,7 @@ class TXTDViewer(QWidget):
         self._entry_items = {}
         self._edited_locations = set()
         self._exported_locations = set()
+        self._original_entry_texts = {}
 
         self.tree_model.clear()
         self.text_edit.clear()

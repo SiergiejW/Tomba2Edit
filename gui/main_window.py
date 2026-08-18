@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
         container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
-        open_action = QAction(QIcon(icon_disc), "Open ISO", self)
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open ISO", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
 
         open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open CD Folder", self)
@@ -261,10 +261,14 @@ class MainWindow(QMainWindow):
         belongs to - no need to copy it defensively here since each
         edited TXTD only ever has one viewer instance touching it at a
         time in this UI."""
-        self.pending_txtd_edits[(chunk_index, file_index)] = {
-            "kind": "txtd", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
-        }
-        self._set_txtd_tree_item_state(chunk_index, file_index, "edited")
+        state = self.txtd_viewer.pending_state()
+        if state == "edited":
+            self.pending_txtd_edits[(chunk_index, file_index)] = {
+                "kind": "txtd", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+            }
+        else:
+            self.pending_txtd_edits.pop((chunk_index, file_index), None)
+        self._set_txtd_tree_item_state(chunk_index, file_index, state)
         self.statusBar().showMessage(
             f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
             f"use the 'Save IDX/DAT' button when ready.")
@@ -276,10 +280,14 @@ class MainWindow(QMainWindow):
         "kind" so _pack_pending_txtd_edits() knows which packer to use for
         each one; every other bookkeeping step (tree coloring, export
         counting) doesn't need to distinguish between them at all."""
-        self.pending_txtd_edits[(chunk_index, file_index)] = {
-            "kind": "txt2", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
-        }
-        self._set_txtd_tree_item_state(chunk_index, file_index, "edited")
+        state = self.txt2_viewer.pending_state()
+        if state == "edited":
+            self.pending_txtd_edits[(chunk_index, file_index)] = {
+                "kind": "txt2", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+            }
+        else:
+            self.pending_txtd_edits.pop((chunk_index, file_index), None)
+        self._set_txtd_tree_item_state(chunk_index, file_index, state)
         self.statusBar().showMessage(
             f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
             f"use the 'Save IDX/DAT' button when ready.")

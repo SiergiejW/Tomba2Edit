@@ -59,6 +59,9 @@ class TXT2Viewer(QWidget):
         # entry_index -> original encoded byte length, for the length-
         # change warning in _entry_length_warning().
         self._original_entry_lengths = {}
+        # entry_index -> original text, so edits reverted back to the
+        # original clear the edited/exported marks again.
+        self._original_entry_texts = {}
 
         # Create the main layout
         layout = QVBoxLayout()
@@ -251,6 +254,7 @@ class TXT2Viewer(QWidget):
                 self._edited_locations = cached["edited_locations"]
                 self._exported_locations = cached["exported_locations"]
                 self._original_entry_lengths = cached.get("original_entry_lengths", {})
+                self._original_entry_texts = cached.get("original_entry_texts", {})
             else:
                 print(f"Loading TXT2 data from DAT file: {DAT}, start: {datstart}, offset: {offset}, size: {size}")
                 self.current_data = txt2.preview(DAT, datstart + offset, size=size)
@@ -258,10 +262,12 @@ class TXT2Viewer(QWidget):
                 self._edited_locations = set()
                 self._exported_locations = set()
                 self._original_entry_lengths = {}
+                self._original_entry_texts = {}
                 for loc, e in enumerate(self.current_data.get("entries", [])):
                     is_sentinel = (e.get("adr") == 0xFFFF and e.get("extra") == 0xFFFF)
                     if is_sentinel:
                         continue  # no text - length tracking is meaningless here
+                    self._original_entry_texts[loc] = e["text"]
                     try:
                         self._original_entry_lengths[loc] = len(encode_text(e["text"]))
                     except TxtdPackError as ex:
@@ -272,6 +278,7 @@ class TXT2Viewer(QWidget):
                         "edited_locations": self._edited_locations,
                         "exported_locations": self._exported_locations,
                         "original_entry_lengths": self._original_entry_lengths,
+                        "original_entry_texts": self._original_entry_texts,
                     }
 
             self.chunk_index = chunk_index
@@ -365,11 +372,13 @@ class TXT2Viewer(QWidget):
         entry = self.current_data["entries"][e_idx]
         entry["text"] = self.text_edit.toPlainText()
 
-        # A fresh edit always means "dirty" again, even if it was
-        # previously exported (green) - touching it moves it back to
-        # pending/orange.
-        self._edited_locations.add(location)
-        self._exported_locations.discard(location)
+        if entry["text"] == self._original_entry_texts.get(location):
+            # back to the original text - no longer dirty
+            self._edited_locations.discard(location)
+            self._exported_locations.discard(location)
+        else:
+            self._edited_locations.add(location)
+            self._exported_locations.discard(location)
 
         # Keep the tree label in sync live as the user types.
         self._set_entry_item_label(self._current_entry_item, entry, location)
@@ -454,6 +463,15 @@ class TXT2Viewer(QWidget):
             entry = self.current_data["entries"][e_idx]
             self._set_entry_item_label(item, entry, location)
 
+    def pending_state(self):
+        """"edited"/"exported"/None for the currently loaded file, based
+        on _edited_locations/_exported_locations."""
+        if self._edited_locations:
+            return "edited"
+        if self._exported_locations:
+            return "exported"
+        return None
+
     def clear_cache(self):
         """Forgets every cached per-file text/color state and resets the
         viewer to empty. Call this whenever a new ISO is opened - without
@@ -471,6 +489,7 @@ class TXT2Viewer(QWidget):
         self._edited_locations = set()
         self._exported_locations = set()
         self._original_entry_lengths = {}
+        self._original_entry_texts = {}
 
         self.tree_model.clear()
         self.text_edit.clear()
