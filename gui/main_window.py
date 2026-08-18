@@ -104,8 +104,19 @@ class MainWindow(QMainWindow):
         container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
-        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open ISO", self)
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveCDIcon), "Open ISO", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
+
+        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open CD Folder", self)
+        open_folder_action.setToolTip(
+            "Open an already-extracted disc folder directly (a folder containing a "
+            "CD subfolder with TOMBA2.DAT/IDX/IMG, or that CD folder itself) - "
+            "skips re-extracting from an .iso every time. 'Save ISO' isn't "
+            "available for a folder opened this way, since there's no original "
+            "disc image to rebuild from - use 'Save IDX/DAT' instead."
+        )
+        open_folder_action.triggered.connect(self.open_folder_dialog)
+
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export File", self)
         export_action.triggered.connect(self.export_selected_bytes)
         export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Save IDX/DAT", self)
@@ -122,6 +133,7 @@ class MainWindow(QMainWindow):
         self.export_iso_action = export_iso_action
 
         toolbar.addAction(open_action)
+        toolbar.addAction(open_folder_action)
         toolbar.addAction(export_action)
         toolbar.addAction(export_files_action)
         toolbar.addAction(export_iso_action)
@@ -407,9 +419,9 @@ class MainWindow(QMainWindow):
 
     def open_iso_dialog(self):
         """Open a Tomba! 2 disc image, extract TOMBA2.DAT/IDX/IMG from it
-        into a temp folder, and populate the tree view from that - this is
-        the sole entry point into the app now (folder-based opening has
-        been replaced by this)."""
+        into a temp folder, and populate the tree view from that. See
+        open_folder_dialog() for the other entry point - opening an
+        already-extracted CD folder directly, without an ISO at all."""
         iso_path, _ = QFileDialog.getOpenFileName(
             self, "Select Tomba! 2 ISO", "",
             "Disc Images (*.iso *.bin *.img);;All Files (*)"
@@ -461,6 +473,81 @@ class MainWindow(QMainWindow):
 
         self.current_iso_path = iso_path
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
+
+    def open_folder_dialog(self):
+        """Open an already-extracted disc folder directly - the user picks
+        either a folder containing a CD subfolder with TOMBA2.DAT/IDX/IMG
+        (matching the ISOHandler layout: <picked>/CD/TOMBA2.*), or that CD
+        folder itself, so this works whether they navigate to the parent
+        or straight into it. No .iso involved at all, so there's nothing
+        to re-extract on every open - useful for iterating on translation
+        edits against files already unpacked once.
+
+        Since there's no original disc image behind this, self.iso_handler
+        and self.current_iso_path are left cleared (any handler left over
+        from a previously opened ISO is cleaned up) - export_iso() already
+        refuses to run without those set, correctly steering the user to
+        'Save IDX/DAT' instead, which only needs self.dat_file (set by
+        parse_idx_file() below same as the ISO path does)."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
+        )
+        if not folder:
+            return
+
+        required_files = ("TOMBA2.DAT", "TOMBA2.IDX", "TOMBA2.IMG")
+
+        def has_required_files(path):
+            return all(os.path.exists(os.path.join(path, name)) for name in required_files)
+
+        nested_cd = os.path.join(folder, "CD")
+        if has_required_files(nested_cd):
+            cd_folder = nested_cd
+        elif has_required_files(folder):
+            cd_folder = folder
+        else:
+            QMessageBox.critical(
+                self, "Error",
+                "Couldn't find TOMBA2.DAT, TOMBA2.IDX and TOMBA2.IMG in this folder "
+                "or in a CD subfolder inside it. Select the folder that was extracted "
+                "from a Tomba! 2 disc image (with a CD subfolder), or that CD folder "
+                "directly."
+            )
+            return
+
+        if self.pending_txtd_edits:
+            proceed = QMessageBox.question(
+                self, "Discard pending edits?",
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) that haven't been "
+                "exported yet. Opening a new folder will discard them.\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
+
+        # No ISO backs this folder - drop any handler/temp dir left over
+        # from a previously opened ISO, and leave current_iso_path unset
+        # so export_iso() correctly refuses ('Save IDX/DAT' still works,
+        # it only needs self.dat_file).
+        if self.iso_handler:
+            self.iso_handler.cleanup()
+        self.iso_handler = None
+        self.current_iso_path = None
+        self.pending_txtd_edits.clear()
+        self.txtd_file_states.clear()
+        self.txtd_viewer.clear_cache()
+        self.txt2_viewer.clear_cache()
+
+        try:
+            parse_idx_file(self, cd_folder)
+        except Exception as e:
+            self.dat_file = None
+            self.folder_info_label.setText("Select a Tomba! 2 ISO file to begin")
+            QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this folder:\n\n{e}")
+            return
+
+        self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
     def _pack_pending_txtd_edits(self):
         """Turn self.pending_txtd_edits into the `edits` list repack_files()

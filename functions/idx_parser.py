@@ -91,11 +91,7 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
                     main_window.txtd_item_lookup[(chunk_index, i)] = file_item
                 elif filetype in ("TXT1", "TXT2"):
-                    # TXT1 (SDAT id 2) and TXT2 (SDAT id 3) are the same
-                    # on-disk layout (see gui/txtd/txt2.py's docstring) -
-                    # both get the same icon/viewer wiring, just tagged
-                    # with their own extension so the two ids are never
-                    # shown under one label.
+                    # same layout, different SDAT id - separate labels
                     file_item.setIcon(main_window.txt2_icon)
                     file_path = f"{dat_start + offset:08X}.{filetype.lower()}"
                     file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)

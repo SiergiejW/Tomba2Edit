@@ -5,42 +5,18 @@ from PyQt6.QtWidgets import (
     QTextEdit, QLabel
 )
 import gui.txtd.txt2 as txt2
-
-# Reused as-is from the TXTD viewer, so TXT2 automatically gets the exact
-# same {$COLOR} tag highlighting (and the same bold Courier New styling)
-# in its edit box, and the exact same orange/green entry-row coloring
-# convention in its tree - no drift between the two viewers' aesthetics.
 from gui.txtd_viewer import (
     EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE,
 )
+from functions.txt2_packer import encode_text, TxtdPackError
 
-# Import the necessary icon
 from icons.icons import icon_TXT2_entry
 
-# Muted color for entries txt2.is_probably_text() flags as likely NOT
-# real dialogue (see that function's docstring - a real, non-truncated
-# sample turned up two such entries: a perfectly regular numeric table
-# with stale pointers sitting in the message slots, no 0xFFFF sentinel
-# in sight). Deliberately distinct from EDITED_ENTRY_COLOR/
-# EXPORTED_ENTRY_COLOR so a flagged-but-untouched entry never gets
-# confused with a real pending/exported edit; touching one still turns
-# it orange/green like any other entry; it's purely an unedited-state
-# hint, not a data restriction.
 NON_TEXT_ENTRY_COLOR = "gray"
+STATUS_WARNING_COLOR = "#c0392b"
 
 
 class TXT2Viewer(QWidget):
-    """
-    Displays a TXT2 file's entries and lets the user edit entry text in
-    place, exactly like TXTDViewer - just without the master-header
-    grouping layer, since a TXT2 chunk is structurally just ONE flat
-    table of entries (see gui/txtd/txt2.py's own docstring for why).
-    Every edit is written straight back into self.current_data as it's
-    typed (no separate "save" step to remember), and `content_changed`
-    is emitted so the owning window can track which TXT2 chunks have
-    pending edits ready to export.
-    """
-
     # (chunk_index, file_index, id_val, dat_start, offset, current_data)
     # - same signature as TXTDViewer.content_changed, so MainWindow can
     # handle both with a matching pair of nearly-identical slots.
@@ -80,6 +56,10 @@ class TXT2Viewer(QWidget):
         # clear_cache() whenever a new ISO is opened.
         self._file_state_cache = {}
 
+        # entry_index -> original encoded byte length, for the length-
+        # change warning in _entry_length_warning().
+        self._original_entry_lengths = {}
+
         # Create the main layout
         layout = QVBoxLayout()
 
@@ -117,6 +97,8 @@ class TXT2Viewer(QWidget):
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setWordWrap(True)  # keep long warnings from stretching the window
+        self.status_label.setMaximumWidth(600)
 
         right_layout.addWidget(self.text_edit)
         right_layout.addWidget(self.status_label)
@@ -252,11 +234,8 @@ class TXT2Viewer(QWidget):
         DAT/IDX later - pass them whenever the caller has them (see
         main_window.py's on_tree_selection_changed).
 
-        size is this chunk's own byte length (see txt2.preview()'s own
-        docstring for why it matters - without it, a stale/unused table
-        slot's pointer can resolve into a neighboring SDAT chunk's bytes
-        and get decoded as if it were this file's own text). Pass it
-        whenever the caller has it, same as the others above.
+        size is this chunk's own byte length, needed to keep reads
+        bounded to this file (see txt2.preview()).
         """
         self._loading = True
         try:
@@ -271,17 +250,28 @@ class TXT2Viewer(QWidget):
                 self.current_data = cached["data"]
                 self._edited_locations = cached["edited_locations"]
                 self._exported_locations = cached["exported_locations"]
+                self._original_entry_lengths = cached.get("original_entry_lengths", {})
             else:
                 print(f"Loading TXT2 data from DAT file: {DAT}, start: {datstart}, offset: {offset}, size: {size}")
                 self.current_data = txt2.preview(DAT, datstart + offset, size=size)
                 print("TXT2 data loaded successfully.")
                 self._edited_locations = set()
                 self._exported_locations = set()
+                self._original_entry_lengths = {}
+                for loc, e in enumerate(self.current_data.get("entries", [])):
+                    is_sentinel = (e.get("adr") == 0xFFFF and e.get("extra") == 0xFFFF)
+                    if is_sentinel:
+                        continue  # no text - length tracking is meaningless here
+                    try:
+                        self._original_entry_lengths[loc] = len(encode_text(e["text"]))
+                    except TxtdPackError as ex:
+                        print(f"Could not compute original length for entry {loc}: {ex}")
                 if cache_key is not None:
                     self._file_state_cache[cache_key] = {
                         "data": self.current_data,
                         "edited_locations": self._edited_locations,
                         "exported_locations": self._exported_locations,
+                        "original_entry_lengths": self._original_entry_lengths,
                     }
 
             self.chunk_index = chunk_index
@@ -295,6 +285,7 @@ class TXT2Viewer(QWidget):
             self.tree_model.clear()
             self.text_edit.clear()
             self.text_edit.setReadOnly(True)
+            self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText("")
 
             if not self.current_data:
@@ -351,6 +342,7 @@ class TXT2Viewer(QWidget):
             self._current_entry_item = selected_item
             self.text_edit.setPlainText(entry["text"])
             self.text_edit.setReadOnly(is_sentinel)
+            self.status_label.setStyleSheet("color: gray;")  # clear any warning color from the last entry
             self.status_label.setText(
                 "This is an END marker (no text) - not editable." if is_sentinel else ""
             )
@@ -387,7 +379,37 @@ class TXT2Viewer(QWidget):
                 self.chunk_index, self.file_index, self.id_val,
                 self.dat_start, self.offset, self.current_data
             )
-            self.status_label.setText("Edited - will be included in the next Save IDX/DAT.")
+            warning = self._entry_length_warning(location, entry)
+            if warning:
+                self.status_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR}; font-weight: bold;")
+                self.status_label.setText(warning)
+            else:
+                self.status_label.setStyleSheet("color: gray;")
+                self.status_label.setText("Edited - will be included in the next Save IDX/DAT.")
+
+    def _entry_length_warning(self, location, entry):
+        """Warning string if this entry's encoded length changed since
+        load, else None. TXT2 entries have been confirmed (real in-game
+        tests) to break if their byte length changes; TXTD/TXT1 don't
+        have this problem. Heads-up only, never blocks saving."""
+        original_len = self._original_entry_lengths.get(location)
+        if original_len is None:
+            return None
+        try:
+            current_len = len(encode_text(entry["text"]))
+        except TxtdPackError:
+            return None
+        if current_len == original_len:
+            return None
+        delta = current_len - original_len
+        return (
+            f"Warning: this entry's encoded length changed by {delta:+d} byte(s) "
+            f"(was {original_len}, now {current_len}). Real in-game tests confirmed "
+            "TXT2 entries are read at fixed addresses outside this file's own table "
+            "(unlike TXTD/TXT1, which handle any length fine) - a length change here "
+            "risks corrupting this entry, and possibly others, in-game. Keep this "
+            "edit the same byte length if at all possible."
+        )
 
     def mark_exported(self, chunk_index, file_index):
         """Called by the owning window right after a successful export
@@ -448,8 +470,10 @@ class TXT2Viewer(QWidget):
         self._entry_items = {}
         self._edited_locations = set()
         self._exported_locations = set()
+        self._original_entry_lengths = {}
 
         self.tree_model.clear()
         self.text_edit.clear()
         self.text_edit.setReadOnly(True)
+        self.status_label.setStyleSheet("color: gray;")
         self.status_label.setText("")
