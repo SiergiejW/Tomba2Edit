@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
-from icons.icons import (icon_window,
+from icons.icons import (icon_window, icon_disc,
                          icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
                          icon_SCLD, icon_BGMP, icon_BETP, icon_ALFD, icon_DRWB,
                          icon_VRAM, icon_CVRAM,
@@ -104,16 +104,13 @@ class MainWindow(QMainWindow):
         container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
         container_layout.addWidget(toolbar)
-        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveCDIcon), "Open ISO", self)
+        open_action = QAction(QIcon(icon_disc), "Open ISO", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
 
         open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open CD Folder", self)
         open_folder_action.setToolTip(
-            "Open an already-extracted disc folder directly (a folder containing a "
-            "CD subfolder with TOMBA2.DAT/IDX/IMG, or that CD folder itself) - "
-            "skips re-extracting from an .iso every time. 'Save ISO' isn't "
-            "available for a folder opened this way, since there's no original "
-            "disc image to rebuild from - use 'Save IDX/DAT' instead."
+            "Open an already-extracted CD folder directly, skipping ISO extraction. "
+            "'Save ISO' won't be available - use 'Save IDX/DAT' instead."
         )
         open_folder_action.triggered.connect(self.open_folder_dialog)
 
@@ -418,10 +415,9 @@ class MainWindow(QMainWindow):
             item.setText(f"{item.text()} ({count})")
 
     def open_iso_dialog(self):
-        """Open a Tomba! 2 disc image, extract TOMBA2.DAT/IDX/IMG from it
-        into a temp folder, and populate the tree view from that. See
-        open_folder_dialog() for the other entry point - opening an
-        already-extracted CD folder directly, without an ISO at all."""
+        """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp
+        folder and populate the tree view. See open_folder_dialog() for
+        opening an already-extracted folder instead."""
         iso_path, _ = QFileDialog.getOpenFileName(
             self, "Select Tomba! 2 ISO", "",
             "Disc Images (*.iso *.bin *.img);;All Files (*)"
@@ -475,20 +471,9 @@ class MainWindow(QMainWindow):
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
 
     def open_folder_dialog(self):
-        """Open an already-extracted disc folder directly - the user picks
-        either a folder containing a CD subfolder with TOMBA2.DAT/IDX/IMG
-        (matching the ISOHandler layout: <picked>/CD/TOMBA2.*), or that CD
-        folder itself, so this works whether they navigate to the parent
-        or straight into it. No .iso involved at all, so there's nothing
-        to re-extract on every open - useful for iterating on translation
-        edits against files already unpacked once.
-
-        Since there's no original disc image behind this, self.iso_handler
-        and self.current_iso_path are left cleared (any handler left over
-        from a previously opened ISO is cleaned up) - export_iso() already
-        refuses to run without those set, correctly steering the user to
-        'Save IDX/DAT' instead, which only needs self.dat_file (set by
-        parse_idx_file() below same as the ISO path does)."""
+        """Open an already-extracted CD folder directly, no ISO needed.
+        Accepts either the parent folder (with a CD subfolder) or the CD
+        folder itself."""
         folder = QFileDialog.getExistingDirectory(
             self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
         )
@@ -526,10 +511,7 @@ class MainWindow(QMainWindow):
             if proceed != QMessageBox.StandardButton.Yes:
                 return
 
-        # No ISO backs this folder - drop any handler/temp dir left over
-        # from a previously opened ISO, and leave current_iso_path unset
-        # so export_iso() correctly refuses ('Save IDX/DAT' still works,
-        # it only needs self.dat_file).
+        # no ISO backs this folder - clear iso_handler so export_iso() refuses
         if self.iso_handler:
             self.iso_handler.cleanup()
         self.iso_handler = None
@@ -677,13 +659,7 @@ class MainWindow(QMainWindow):
             "Folder": QLabel("This is a folder"),
             "SPRT": QLabel("SPRITE Viewer"),
             "TXTD": self.txtd_viewer,
-            # TXT1 (SDAT id 2) and TXT2 (SDAT id 3) are structurally the
-            # same layout (see gui/txtd/txt2.py's docstring) - they share
-            # this one TXT2Viewer instance rather than duplicating it, but
-            # keep distinct dict keys so id_convert()'s "TXT1"/"TXT2"
-            # labels each resolve to a real widget instead of falling
-            # through to "DEFAULT".
-            "TXT1": self.txt2_viewer,
+            "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_viewer,
             "VRAM": self.vram_viewer,  # Add this line
@@ -809,9 +785,7 @@ class MainWindow(QMainWindow):
                                 print(f"Error loading TXTD file: {e}")
                                 QMessageBox.critical(self, "Error", f"Failed to load TXTD file: {e}")
 
-                    elif widget == self.widgets["TXT2"]:
-                        # Handles both TXT1 (id 2) and TXT2 (id 3) rows -
-                        # both dict keys point at this same widget/viewer.
+                    elif widget == self.widgets["TXT2"]:  # also handles TXT1 rows
                         file_path = selected_item.data(Qt.ItemDataRole.UserRole + 1)
                         print(f"File path: {file_path}")
                         if file_path:

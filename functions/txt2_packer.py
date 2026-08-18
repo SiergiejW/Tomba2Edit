@@ -15,7 +15,7 @@ import struct
 
 from functions.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN
 
-# Marker text.preview() uses for a table entry whose pointer resolves
+# Marker txt2.preview() uses for a table entry whose pointer resolves
 # outside this file's own bytes. Not a real tombadict token.
 OOB_MARKER = "{$OOB}"
 
