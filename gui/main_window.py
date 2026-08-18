@@ -140,7 +140,9 @@ class MainWindow(QMainWindow):
     def id_convert(main_window, DAT, id, pointer_start):
         if id == 0:
             return "SPRT"
-        elif id in [2, 3]:
+        elif id == 2:
+            return "TXT1"
+        elif id == 3:
             return "TXT2"
         elif id == 13:
             return "TXTD"
@@ -588,6 +590,13 @@ class MainWindow(QMainWindow):
             "Folder": QLabel("This is a folder"),
             "SPRT": QLabel("SPRITE Viewer"),
             "TXTD": self.txtd_viewer,
+            # TXT1 (SDAT id 2) and TXT2 (SDAT id 3) are structurally the
+            # same layout (see gui/txtd/txt2.py's docstring) - they share
+            # this one TXT2Viewer instance rather than duplicating it, but
+            # keep distinct dict keys so id_convert()'s "TXT1"/"TXT2"
+            # labels each resolve to a real widget instead of falling
+            # through to "DEFAULT".
+            "TXT1": self.txt2_viewer,
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_viewer,
             "VRAM": self.vram_viewer,  # Add this line
@@ -677,6 +686,11 @@ class MainWindow(QMainWindow):
                     id = additional_data[0]
                     if isinstance(id, int):
                         dat_start, offset = additional_data[1], additional_data[2]
+                        # This SDAT entry's own byte length (idx_parser.py's
+                        # `size`) - named distinctly from the unrelated
+                        # `chunk_size` (the fixed 0x800 IDX record stride)
+                        # used elsewhere in this same method for VRAM.
+                        entry_size = additional_data[3] if len(additional_data) > 3 else None
                         print(f"ID: {id:X}, DAT Start: {dat_start:X}, Offset: {offset:X}")
                     else:
                         print(f"Special file type: {id}")
@@ -709,6 +723,8 @@ class MainWindow(QMainWindow):
                                 QMessageBox.critical(self, "Error", f"Failed to load TXTD file: {e}")
 
                     elif widget == self.widgets["TXT2"]:
+                        # Handles both TXT1 (id 2) and TXT2 (id 3) rows -
+                        # both dict keys point at this same widget/viewer.
                         file_path = selected_item.data(Qt.ItemDataRole.UserRole + 1)
                         print(f"File path: {file_path}")
                         if file_path:
@@ -722,7 +738,8 @@ class MainWindow(QMainWindow):
                                         txt2_chunk_index, txt2_file_index = (0, 0)
                                     self.txt2_viewer.load_txt2_data(
                                         self.dat_file, dat_start, offset,
-                                        chunk_index=txt2_chunk_index, file_index=txt2_file_index, id_val=id
+                                        chunk_index=txt2_chunk_index, file_index=txt2_file_index, id_val=id,
+                                        size=entry_size
                                     )
                                 else:
                                     QMessageBox.critical(self, "Error", "DAT file not loaded.")

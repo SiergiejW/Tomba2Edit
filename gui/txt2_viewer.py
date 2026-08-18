@@ -244,13 +244,19 @@ class TXT2Viewer(QWidget):
                 print(f"  [{i:3d}] adr={adr:04X} extra={extra:04X} text={text!r}{flag}")
         print(f"=== end TXT2 entry dump ({len(entries)} entries) ===")
 
-    def load_txt2_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
+    def load_txt2_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None, size=None):
         """
         chunk_index/file_index/id_val identify which SDAT slot this TXT2
         file came from (AREA index, file index within that area, and its
         type id - 2 or 3). They're needed to export edits back into the
         DAT/IDX later - pass them whenever the caller has them (see
         main_window.py's on_tree_selection_changed).
+
+        size is this chunk's own byte length (see txt2.preview()'s own
+        docstring for why it matters - without it, a stale/unused table
+        slot's pointer can resolve into a neighboring SDAT chunk's bytes
+        and get decoded as if it were this file's own text). Pass it
+        whenever the caller has it, same as the others above.
         """
         self._loading = True
         try:
@@ -266,8 +272,8 @@ class TXT2Viewer(QWidget):
                 self._edited_locations = cached["edited_locations"]
                 self._exported_locations = cached["exported_locations"]
             else:
-                print(f"Loading TXT2 data from DAT file: {DAT}, start: {datstart}, offset: {offset}")
-                self.current_data = txt2.preview(DAT, datstart + offset)
+                print(f"Loading TXT2 data from DAT file: {DAT}, start: {datstart}, offset: {offset}, size: {size}")
+                self.current_data = txt2.preview(DAT, datstart + offset, size=size)
                 print("TXT2 data loaded successfully.")
                 self._edited_locations = set()
                 self._exported_locations = set()

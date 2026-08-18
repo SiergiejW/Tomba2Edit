@@ -191,10 +191,19 @@ def is_probably_text(text):
     hex-escape ratio below would say. Checked before the ratio heuristic
     since "EOF" isn't 2 hex digits and would otherwise slip past
     _HEX_ESCAPE_RE entirely.
+
+    "{$OOB}" is the same idea, one file-length shorter: preview() (when
+    given this chunk's own size) appends it instead of decoding anything
+    when an (adr,extra) pointer resolves at or past THIS file's own end -
+    i.e. into a neighboring SDAT chunk's bytes, never this file's own
+    text (see preview()'s docstring for the real sample that motivated
+    this - two stale table slots that otherwise decode as a long run of
+    someone else's binary data). Same treatment as "{$EOF}": never real
+    text, checked up front for the same reason.
     """
     if not text or text == "END!":
         return True
-    if "{$EOF}" in text:
+    if "{$EOF}" in text or "{$OOB}" in text:
         return False
     stripped = text.replace("{$FF}", "")
     if not stripped:
@@ -203,7 +212,42 @@ def is_probably_text(text):
     return escaped_chars < 0.35 * len(stripped)
 
 
-def preview(DAT, datstart):
+def preview(DAT, datstart, size=None):
+    """
+    size, when given, is this chunk's own byte length as recorded in the
+    IDX (the gap to the NEXT SDAT entry's offset, or to dat_end for the
+    last one - see idx_parser.py). Since the DAT is one giant file with
+    every SDAT chunk laid out back to back, a (adr,extra) table entry
+    with a stale/bogus pointer can resolve to an address that's still a
+    valid offset into the DAT as a whole while landing well past THIS
+    chunk's own end, inside whatever unrelated chunk happens to follow
+    it - there is nothing about the raw byte layout that stops that read
+    from "succeeding" and returning garbage.
+
+    This is exactly what a real id=3 sample does: two of its table slots
+    (adr=0x0E17 and 0x0EAE) decode to a long, regular, distinctly non-
+    text 4-byte-per-record structure - previously written off as "some
+    OTHER binary structure entirely unrelated to text" living elsewhere
+    in the DAT. Computed precisely (not eyeballed): with this chunk's
+    real IDX-recorded size, entry_root+0x0E17 lands 15 bytes PAST this
+    chunk's own end, and entry_root+0x0EAE lands 166 bytes past it -
+    both are actually the START of the very next SDAT chunk's own bytes,
+    read here purely because nothing was stopping it. They're stale,
+    never-cleaned-up leftover pointer values in slots the game itself
+    presumably never reads for text either (there'd be no other way for
+    it to avoid the exact same out-of-bounds read) - not real text of
+    ANY file, this one or its neighbor's.
+
+    When size is given, every read this function performs treats this
+    chunk's own end as a hard boundary, same idea as the existing
+    physical-DAT-EOF guard below but one file-length shorter: an address
+    at or past that boundary can't be this file's own text no matter
+    what the raw bytes there happen to decode to, so it's reported as
+    "{$OOB}" (out of bounds) instead of being decoded as if it were.
+    size is optional (defaults to unbounded, matching every caller
+    before this was added) so existing callers that can't supply it yet
+    keep working exactly as before - just without this protection.
+    """
     def getB(number=1):
         return int.from_bytes(rom.read(number), byteorder='little')
 
@@ -227,10 +271,22 @@ def preview(DAT, datstart):
         # every time a TXT2 entry is opened in the GUI, a single bad/
         # corrupt chunk hanging the whole app is worse than a wrong-but-
         # bounded read, so this version stops cleanly at EOF instead.
+        if file_end is not None and real >= file_end:
+            # Not a truncated read - real never belonged to this file's
+            # own bytes in the first place (see module-level note above).
+            # Still seek there so the caller's rom.tell()-based "where did
+            # this entry's bytes end" bookkeeping sees a consistent,
+            # zero-length range rather than wherever some earlier read
+            # happened to leave the cursor.
+            rom.seek(real)
+            return "{$OOB}"
         textout = ""
         rom.seek(real)
         n = -1
         while n != 0xFF:
+            if file_end is not None and rom.tell() >= file_end:
+                textout += "{$OOB}"
+                break
             chunk = rom.read(1)
             if not chunk:
                 textout += "{$EOF}"
@@ -244,6 +300,7 @@ def preview(DAT, datstart):
         return textout
 
     output = {"entries": []}
+    file_end = None if size is None else datstart + size
 
     try:
         print(f"Opening DAT file: {DAT}")
@@ -298,16 +355,28 @@ def preview(DAT, datstart):
                 # overflow_end is None for a normal, fully self-contained
                 # fragment, or the position right after its real
                 # terminator when it ran past `end`.
+                # Never start (or continue) a fragment at/past this
+                # chunk's own end, same reasoning as getText()'s file_end
+                # guard above - `end` here is only ever "where the next
+                # already-known entry happens to start" and, same as any
+                # (adr,extra) pointer, can legitimately sit past this
+                # file's own bytes for a stale/unused slot. Without this,
+                # the overflow-into-`end` merge below could walk straight
+                # into a neighboring SDAT chunk looking for a terminator
+                # that was never this file's to find.
+                scan_end = end if file_end is None else min(end, file_end)
                 rom.seek(start)
                 pos = start
                 out = []
-                while pos < end:
+                while pos < scan_end:
                     frag_start = pos
                     frag = bytearray()
                     while True:
+                        if file_end is not None and pos >= file_end:
+                            break  # this file's own bytes stop here - same hard stop as true physical EOF
                         chunk = rom.read(1)
                         if not chunk:
-                            break  # true physical EOF - the only hard stop
+                            break  # true physical EOF - the only other hard stop
                         frag.append(chunk[0])
                         pos += 1
                         if chunk[0] == 0xFF:
