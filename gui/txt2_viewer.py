@@ -314,9 +314,25 @@ class TXT2Viewer(QWidget):
             self._debug_dump_entries(chunk_index, file_index, id_val, entries)
 
             # No master-header grouping layer for TXT2 - every entry is a
-            # top-level row in the tree.
+            # top-level row in the tree, EXCEPT pure tail-share duplicates:
+            # entries whose whole text is just a literal suffix of an
+            # earlier entry's text (the retail format's own space-saving
+            # trick - one message's bytes double as the tail of another's;
+            # see txt2.py's docstring on tail-sharing). Those stay fully
+            # real, independently-addressed table slots and are packed
+            # exactly as before - only the tree ROW is skipped, so the
+            # list reads as complete phrases instead of confusing,
+            # truncated-looking fragments like "creased by 1!".
+            seen_texts = []
             for e_idx, entry in enumerate(entries):
                 location = e_idx
+                text = entry.get("text") or ""
+                is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
+                is_tail_share = not is_sentinel and text and any(prior.endswith(text) for prior in seen_texts)
+                seen_texts.append(text)
+                if is_tail_share:
+                    continue
+
                 entry_item = QStandardItem(QIcon(icon_TXT2_entry), "")
                 self._entry_items[location] = entry_item
                 self._set_entry_item_label(entry_item, entry, location)
