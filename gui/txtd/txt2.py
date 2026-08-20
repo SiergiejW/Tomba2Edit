@@ -20,7 +20,32 @@ def is_probably_text(text):
     return escaped_chars < 0.35 * len(stripped)
 
 
-def preview(DAT, datstart, size=None):
+def _align_up16(n):
+    return (n + 15) // 16 * 16
+
+
+def preview(DAT, datstart, size=None, id_val=None):
+    """
+    id_val selects the table format: 3 (TXT2) reads the table as a FLAT
+    list of independent 2-byte pointers - every value is its own real,
+    independently-addressed message, with no (adr,extra) pairing and no
+    (0xFFFF,0xFFFF) END sentinel (just a single trailing 0xFFFF
+    terminator). Anything else (2/TXT1, or unspecified) keeps the
+    original paired-table reading.
+
+    This was confirmed two ways: byte-for-byte (entry_root+11 in a real
+    English TXT2 sample decodes to "creased by 1!" - a genuine, valid
+    tail-shared substring of entry_root+0's own text, not garbage) and
+    by an independent, shipped Chinese fan-translation project's own
+    working source (github.com/jywjyw/tomba2-hack) - its writer for this
+    exact file rebuilds the table as one flat list of independently
+    recomputed pointers, no pairing at all. The previous paired model
+    treated the second half of every slot ("extra") as inert metadata
+    and preserved it unchanged on save - since it's actually a live
+    pointer to its own message, any edit that shifted byte positions
+    left it stale, which is exactly the length-sensitivity bug real
+    in-game tests kept reproducing.
+    """
     def getB(number=1):
         return int.from_bytes(rom.read(number), byteorder='little')
 
@@ -130,61 +155,108 @@ def preview(DAT, datstart, size=None):
                         })
 
             print("Reading TXT2 root and entry amount...")
-            entry_root_raw, entry_amount = struct.unpack("<HHxxxxxxxxxxxx", rom.read(MHSIZE))
+            entry_root_raw, raw_count = struct.unpack("<HHxxxxxxxxxxxx", rom.read(MHSIZE))
             entry_root = (entry_root_raw << 2) + MHSIZE + datstart
-            print(f"Entry root: {entry_root:08X}, Entry amount: {entry_amount}")
-
-            if entry_amount > 1000:
-                print(f"Warning: Entry amount seems unusually high ({entry_amount}). Limiting to 1000 entries.")
-                entry_amount = 1000
-
-            print("Reading entry table...")
-            entry_headers = {}
-            for b in range(entry_amount):
-                entry_adr = getB(2)
-                entry_extra = getB(2)
-                entry_headers[b] = {"adr": entry_adr, "extra": entry_extra}
+            print(f"Entry root: {entry_root:08X}, raw_count: {raw_count}")
 
             entries = []
-            for b in range(entry_amount):
-                print(f"Processing entry {b + 1}/{entry_amount}...")
-                ptr = entry_headers[b]["adr"]
-                who = entry_headers[b]["extra"]
-                is_sentinel = (ptr == 0xFFFF and who == 0xFFFF)
-                real = entry_root + ptr
-                text_content = prepareText(ptr, who, real)
 
-                real_end = rom.tell()
-                print(f"ptr:0x{ptr:X}, who:0x{who:X}, real:0x{real:X}")
-                print(f"text:{text_content}")
-                entries.append({
-                    "adr": ptr,
-                    "extra": who,
-                    "text": text_content,
-                    "is_gap": False,
-                    "_sort_key": float('inf') if is_sentinel else real,
-                    "_real_start": None if is_sentinel else real,
-                    "_real_end": None if is_sentinel else real_end,
-                })
-                if is_sentinel:
-                    if b + 1 < entry_amount:
-                        print(f"Hit first END sentinel at entry {b} - "
-                              f"ignoring the remaining {entry_amount - b - 1} "
-                              f"reserved-but-unused table slot(s).")
-                    break
+            if id_val == 3:
+                # Flat pointer table (see this function's own docstring).
+                pointer_count = raw_count - 1
+                if pointer_count > 2000:
+                    print(f"Warning: pointer_count seems unusually high ({pointer_count}). Limiting to 2000.")
+                    pointer_count = 2000
 
+                pointers = []
+                for i in range(pointer_count):
+                    pointers.append(getB(2))
+                terminator = getB(2)
+                if terminator != 0xFFFF:
+                    print(f"Warning: expected 0xFFFF terminator after {pointer_count} "
+                          f"pointers, got 0x{terminator:04X} - table may be misread.")
 
-            physical_table_slots = len(entries)
-            if entries and entries[-1]["is_gap"] is False and \
-               entries[-1]["adr"] == 0xFFFF and entries[-1]["extra"] == 0xFFFF:
-                while physical_table_slots < entry_amount:
-                    hdr = entry_headers[physical_table_slots]
-                    if hdr["adr"] != 0xFFFF or hdr["extra"] != 0xFFFF:
+                for i, ptr in enumerate(pointers):
+                    real = entry_root + ptr
+                    print(f"\t{i}: ptr=0x{ptr:04X} (at 0x{real:X})")
+                    text_content = getText(real)
+                    real_end = rom.tell()
+                    print(f"text:{text_content}")
+                    entries.append({
+                        "adr": ptr,
+                        "extra": None,
+                        "text": text_content,
+                        "is_gap": False,
+                        "_sort_key": real,
+                        "_real_start": real,
+                        "_real_end": real_end,
+                    })
+
+                # Align relative to this chunk's own start, then add
+                # datstart back - NOT the other way around. datstart
+                # (this chunk's absolute DAT position) isn't itself
+                # always a multiple of 16, so aligning the absolute
+                # position gives a different (wrong) answer than
+                # aligning the chunk-relative size and adding datstart
+                # after - confirmed directly: reading this same file at
+                # its real DAT offset (0x81D4, not 16-aligned) computed
+                # a table_region_end 4 bytes early compared to reading
+                # it as a standalone extracted file (datstart=0, where
+                # the bug can't show since 0 is already 16-aligned).
+                table_region_end = datstart + _align_up16(MHSIZE + pointer_count * 2 + 2)
+
+            else:
+                # Paired (adr,extra) table - TXT1 (id 2) and anything unspecified.
+                entry_amount = raw_count
+                if entry_amount > 1000:
+                    print(f"Warning: Entry amount seems unusually high ({entry_amount}). Limiting to 1000 entries.")
+                    entry_amount = 1000
+
+                print("Reading entry table...")
+                entry_headers = {}
+                for b in range(entry_amount):
+                    entry_adr = getB(2)
+                    entry_extra = getB(2)
+                    entry_headers[b] = {"adr": entry_adr, "extra": entry_extra}
+
+                for b in range(entry_amount):
+                    print(f"Processing entry {b + 1}/{entry_amount}...")
+                    ptr = entry_headers[b]["adr"]
+                    who = entry_headers[b]["extra"]
+                    is_sentinel = (ptr == 0xFFFF and who == 0xFFFF)
+                    real = entry_root + ptr
+                    text_content = prepareText(ptr, who, real)
+
+                    real_end = rom.tell()
+                    print(f"ptr:0x{ptr:X}, who:0x{who:X}, real:0x{real:X}")
+                    print(f"text:{text_content}")
+                    entries.append({
+                        "adr": ptr,
+                        "extra": who,
+                        "text": text_content,
+                        "is_gap": False,
+                        "_sort_key": float('inf') if is_sentinel else real,
+                        "_real_start": None if is_sentinel else real,
+                        "_real_end": None if is_sentinel else real_end,
+                    })
+                    if is_sentinel:
+                        if b + 1 < entry_amount:
+                            print(f"Hit first END sentinel at entry {b} - "
+                                  f"ignoring the remaining {entry_amount - b - 1} "
+                                  f"reserved-but-unused table slot(s).")
                         break
-                    physical_table_slots += 1
 
+                physical_table_slots = len(entries)
+                if entries and entries[-1]["is_gap"] is False and \
+                   entries[-1]["adr"] == 0xFFFF and entries[-1]["extra"] == 0xFFFF:
+                    while physical_table_slots < entry_amount:
+                        hdr = entry_headers[physical_table_slots]
+                        if hdr["adr"] != 0xFFFF or hdr["extra"] != 0xFFFF:
+                            break
+                        physical_table_slots += 1
 
-            table_region_end = datstart + MHSIZE + physical_table_slots * 4
+                table_region_end = datstart + MHSIZE + physical_table_slots * 4
+
             covered = []
             if entry_root > table_region_end:
                 gap_size = entry_root - table_region_end
@@ -197,7 +269,38 @@ def preview(DAT, datstart, size=None):
                 # byte in the range, padding included) - mark all of it
                 # covered so gap scan #2 doesn't re-read any of it.
                 covered.append((table_region_end, entry_root))
-
+            else:
+                # No declared slack between the table and entry_root - can
+                # still happen if a file's own accounting doesn't leave
+                # room for a forward gap. The entry starting exactly at
+                # entry_root (adr=0) can still be a lead-in overflow, same
+                # idea as the forward case: scan backward from entry_root
+                # for the previous message's own terminator, bounded so it
+                # can never walk back past the table's own start.
+                zero_adr_entry = next(
+                    (e for e in entries if not e["is_gap"] and e.get("adr") == 0),
+                    None,
+                )
+                lower_bound = datstart + MHSIZE
+                if zero_adr_entry is not None and entry_root > lower_bound:
+                    rom.seek(entry_root - 1)
+                    prev_byte = rom.read(1)
+                    if prev_byte and prev_byte[0] != 0xFF:
+                        pos = entry_root - 1
+                        while pos > lower_bound:
+                            rom.seek(pos - 1)
+                            b = rom.read(1)
+                            if not b or b[0] == 0xFF:
+                                break
+                            pos -= 1
+                        if pos < entry_root:
+                            rom.seek(pos)
+                            lead_raw = rom.read(entry_root - pos)
+                            lead_text = decode_bytes(lead_raw)
+                            print(f"Entry 0 has no clean start at 0x{entry_root:X} - "
+                                  f"recovered lead-in from 0x{pos:X}: {lead_text!r}")
+                            zero_adr_entry["text"] = lead_text + zero_adr_entry["text"]
+                            zero_adr_entry["lead_in_len"] = len(lead_raw)
 
             for e in entries:
                 if not e["is_gap"] and e["_real_start"] is not None:
@@ -212,7 +315,6 @@ def preview(DAT, datstart, size=None):
                               f"scanning for extra un-addressed {{$FF}}-delimited text.")
                         add_gap_fragments(entries, current_end, start)
                     current_end = max(current_end, end)
-
 
             entries.sort(key=lambda e: e["_sort_key"])
             for e in entries:

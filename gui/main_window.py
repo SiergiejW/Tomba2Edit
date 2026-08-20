@@ -557,7 +557,10 @@ class MainWindow(QMainWindow):
         try:
             for (chunk_index, file_index), info in self.pending_txtd_edits.items():
                 if info.get("kind") == "txt2":
-                    packed_bytes = txt2_packer.pack_txt2(info["data"])
+                    if info.get("id") == 3:
+                        packed_bytes = txt2_packer.pack_txt2_flat(info["data"])
+                    else:
+                        packed_bytes = txt2_packer.pack_txt2(info["data"])
                 else:
                     packed_bytes = txtd_packer.pack_txtd(info["data"])
                 edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})

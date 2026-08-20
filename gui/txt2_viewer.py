@@ -257,7 +257,7 @@ class TXT2Viewer(QWidget):
                 self._original_entry_texts = cached.get("original_entry_texts", {})
             else:
                 print(f"Loading TXT2 data from DAT file: {DAT}, start: {datstart}, offset: {offset}, size: {size}")
-                self.current_data = txt2.preview(DAT, datstart + offset, size=size)
+                self.current_data = txt2.preview(DAT, datstart + offset, size=size, id_val=id_val)
                 print("TXT2 data loaded successfully.")
                 self._edited_locations = set()
                 self._exported_locations = set()
@@ -268,6 +268,17 @@ class TXT2Viewer(QWidget):
                     if is_sentinel:
                         continue  # no text - length tracking is meaningless here
                     self._original_entry_texts[loc] = e["text"]
+                    # Length-change risk is now confirmed real ONLY for
+                    # TXT2 (id 3) gap entries - they're still read at a
+                    # fixed address outside this file's own table (see
+                    # txt2.preview()'s docstring). Every regular table
+                    # entry is a freshly-recomputed, independent pointer
+                    # now (same fix), so it's safe to resize - and TXT1
+                    # (id 2) was never subject to this at all. Don't
+                    # track/warn for anything else, so the warning stops
+                    # firing on edits that are actually fine.
+                    if id_val != 3 or not e.get("is_gap"):
+                        continue
                     try:
                         self._original_entry_lengths[loc] = len(encode_text(e["text"]))
                     except TxtdPackError as ex:
@@ -397,16 +408,40 @@ class TXT2Viewer(QWidget):
                 self.status_label.setText("Edited - will be included in the next Save IDX/DAT.")
 
     def _entry_length_warning(self, location, entry):
-        """Warning string if this entry's encoded length changed since
-        load, else None. TXT2 entries have been confirmed (real in-game
-        tests) to break if their byte length changes; TXTD/TXT1 don't
-        have this problem. Heads-up only, never blocks saving."""
-        original_len = self._original_entry_lengths.get(location)
-        if original_len is None:
-            return None
+        """Warning string if this entry is at real risk from its current
+        edit, else None. Two confirmed-in-game risk classes, both TXT2
+        (id 3) only:
+
+        1. Gap entries - read at a fixed address outside this file's own
+           table, so ANY length change is risky.
+        2. lead_in_len entries - part of their displayed text is an
+           unaddressed "lead-in" merged in from a preceding gap; only
+           the remainder after that lead-in is this entry's own address.
+           Shortening the edit until that remainder holds zero real
+           characters (just the bare terminator) was confirmed in-game
+           to break display (shows a stray fragment instead of the full
+           text) - even though the pristine retail file itself ships at
+           least one entry with that same zero-content shape, so it's
+           not simply "always invalid," just confirmed unsafe to edit
+           into. Regular table entries and TXT1/TXTD don't have either
+           problem. Heads-up only, never blocks saving."""
         try:
             current_len = len(encode_text(entry["text"]))
         except TxtdPackError:
+            return None
+
+        lead_in_len = entry.get("lead_in_len") or 0
+        if lead_in_len > 0 and current_len - lead_in_len <= 1:
+            return (
+                "Warning: shortening this any further would leave this entry's "
+                "own address with zero real characters (just the end marker) - "
+                "confirmed in-game to display as a stray leftover fragment "
+                "instead of the full text. Keep at least one real character "
+                "after the point where this text's un-addressed lead-in ends."
+            )
+
+        original_len = self._original_entry_lengths.get(location)
+        if original_len is None:
             return None
         if current_len == original_len:
             return None
