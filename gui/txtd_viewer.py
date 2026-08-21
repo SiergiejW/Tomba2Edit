@@ -167,16 +167,12 @@ class TXTDViewer(QWidget):
         self._exported_locations = set()
 
         # (chunk_index, file_index) -> {"data", "edited_locations",
-        # "exported_locations"} for every TXTD that's been loaded at least
-        # once. Without this, switching to some other file (TXTD or not)
-        # and back would call load_txtd_data() again, which used to always
-        # re-read the entry text fresh off disk and lose the edited text
-        # and orange/green coloring. Now load_txtd_data() reuses this
-        # cache for a file it's seen before, and the *same* dict/set
-        # objects are shared between here and the cache entry, so edits
-        # and mark_exported() keep the cache correct with no extra
-        # bookkeeping. Cleared via clear_cache() whenever a new ISO is
-        # opened (see MainWindow.open_iso_dialog).
+        # "exported_locations"} for every TXTD loaded at least once, so
+        # switching away and back preserves edits/coloring instead of
+        # re-reading fresh from disk. The *same* dict/set objects are
+        # shared between here and the cache entry, so edits and
+        # mark_exported() keep it correct with no extra bookkeeping.
+        # Cleared via clear_cache() when a new ISO is opened.
         self._file_state_cache = {}
 
         # location -> original text, so edits reverted back to the

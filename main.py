@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 
-version = "0.2.3"
+version = "0.2.4"
 
 def main():
     print(f"Tomba2Edit ver{version}")

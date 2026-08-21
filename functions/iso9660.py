@@ -99,6 +99,31 @@ class ISO9660Reader:
         sector_count = -(-size // LOGICAL_SECTOR_SIZE) if size else 0
         return self.read_sectors(lba, sector_count)[:size]
 
+    def read_file_lenient(self, lba, size):
+        """Like read_file, but if the directory's declared extent runs
+        past the actual end of the image, returns the bytes that ARE
+        present zero-padded to the declared size instead of raising -
+        a disc's trailing padding/filler file (e.g. "ZZZ.DAT") can be
+        short in an otherwise-intact rip without affecting real game
+        data. Returns (data, was_truncated) so callers can surface it."""
+        try:
+            return self.read_file(lba, size), False
+        except ISOFormatError:
+            pass
+
+        sector_count = -(-size // LOGICAL_SECTOR_SIZE) if size else 0
+        out = bytearray()
+        for i in range(sector_count):
+            phys_start = (lba + i) * self.sector_size + self.data_offset
+            phys_end = phys_start + LOGICAL_SECTOR_SIZE
+            if phys_end > len(self._raw):
+                break
+            out += self._raw[phys_start:phys_end]
+        out = out[:size]
+        if len(out) < size:
+            out += b"\x00" * (size - len(out))
+        return bytes(out), True
+
     def _detect_layout(self):
         for sector_size, data_offset in SECTOR_LAYOUTS:
             phys_start = PVD_LBA * sector_size + data_offset

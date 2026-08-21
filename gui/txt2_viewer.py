@@ -133,20 +133,12 @@ class TXT2Viewer(QWidget):
 
     def _entry_label_parts(self, entry):
         """Returns (address_str, preview, is_sentinel), the shared pieces
-        used to build the tree label. Gap entries (see txt2.py's
-        docstring - real text found between the table and entry_root,
-        not addressed by any (adr,extra) pair) have no adr of their own,
-        so they get an "Extra text" label instead of "Entry XXXX".
-
-        NOTE: this text still lives entirely inside THIS file, between
-        this file's own table and this file's own entry_root - it is
-        never read from anywhere else. The label used to say "Shared
-        text", which was meant as "shares/reuses bytes with another
-        entry's string" (see txt2.py's docstring on tail-sharing) but
-        reads, at a glance, like "text shared in from outside this
-        file" - the opposite of what's actually happening. Renamed to
-        avoid that misreading.
-        """
+        used to build the tree label. Gap entries (real text found
+        between the table and entry_root, not addressed by any
+        (adr,extra) pair - see txt2.py) have no adr of their own, so
+        they get an "Extra text" label instead of "Entry XXXX". This
+        text lives entirely inside THIS file; it's never read from
+        anywhere else."""
         if entry.get("is_gap"):
             return "Extra text", self._entry_preview_text(entry.get("text") or ""), False
 
@@ -200,22 +192,10 @@ class TXT2Viewer(QWidget):
 
     @staticmethod
     def _debug_dump_entries(chunk_index, file_index, id_val, entries):
-        """Prints every entry in this TXT2 file to stdout, one line each -
-        index, raw adr/extra, and the exact decoded text (repr'd, so
-        embedded newlines/tags are visible rather than breaking the
-        layout). Runs every time a TXT2 file is selected in the main
-        tree, whether its data came fresh off disk or from cache, so
-        it always reflects what's actually about to be shown/edited.
-        This exists to make things like the "chopped into entries
-        wrongly" table-overrun bug (see txt2.py's docstring) easy to
-        spot by eye - a quick scan for entries whose adr/extra don't
-        ascend sensibly, or whose text is an unexpected {$EOF}/{$XX}
-        run, points straight at the offending slot instead of having to
-        step through the parser. Entries txt2.is_probably_text() flags
-        as likely non-dialogue get a "<-- NOT TEXT?" marker here too,
-        for the same reason the tree shows them in gray. Gap entries
-        (see txt2.py's docstring) have no adr/extra of their own - shown
-        as "adr=GAP" instead of a hex address."""
+        """Prints every entry (index, raw adr/extra, decoded text) to
+        stdout for eyeballing the parsed table. Entries flagged unlikely
+        to be real dialogue get a "<-- NOT TEXT?" marker; gap entries
+        (see txt2.py) show "adr=GAP" instead of an address."""
         print(f"=== TXT2 entry dump: chunk={chunk_index} file={file_index} "
               f"id={id_val} ({len(entries)} entries) ===")
         for i, entry in enumerate(entries):
@@ -268,15 +248,10 @@ class TXT2Viewer(QWidget):
                     if is_sentinel:
                         continue  # no text - length tracking is meaningless here
                     self._original_entry_texts[loc] = e["text"]
-                    # Length-change risk is now confirmed real ONLY for
-                    # TXT2 (id 3) gap entries - they're still read at a
-                    # fixed address outside this file's own table (see
-                    # txt2.preview()'s docstring). Every regular table
-                    # entry is a freshly-recomputed, independent pointer
-                    # now (same fix), so it's safe to resize - and TXT1
-                    # (id 2) was never subject to this at all. Don't
-                    # track/warn for anything else, so the warning stops
-                    # firing on edits that are actually fine.
+                    # Only TXT2 (id 3) gap entries are read at a fixed
+                    # address outside this file's own table (see
+                    # txt2.preview()) - length changes there are risky.
+                    # Regular table entries and TXT1 resize safely.
                     if id_val != 3 or not e.get("is_gap"):
                         continue
                     try:
@@ -424,23 +399,11 @@ class TXT2Viewer(QWidget):
                 self.status_label.setText("Edited - will be included in the next Save IDX/DAT.")
 
     def _entry_length_warning(self, location, entry):
-        """Warning string if this entry is at real risk from its current
-        edit, else None. Two confirmed-in-game risk classes, both TXT2
-        (id 3) only:
-
-        1. Gap entries - read at a fixed address outside this file's own
-           table, so ANY length change is risky.
-        2. lead_in_len entries - part of their displayed text is an
-           unaddressed "lead-in" merged in from a preceding gap; only
-           the remainder after that lead-in is this entry's own address.
-           Shortening the edit until that remainder holds zero real
-           characters (just the bare terminator) was confirmed in-game
-           to break display (shows a stray fragment instead of the full
-           text) - even though the pristine retail file itself ships at
-           least one entry with that same zero-content shape, so it's
-           not simply "always invalid," just confirmed unsafe to edit
-           into. Regular table entries and TXT1/TXTD don't have either
-           problem. Heads-up only, never blocks saving."""
+        """Warning string if this TXT2 (id 3) entry's edit is risky, else
+        None: gap entries are read at a fixed address outside this
+        file's table, so any length change is risky; lead_in_len entries
+        additionally break display if shortened to zero real characters
+        after their lead-in. Heads-up only, never blocks saving."""
         try:
             current_len = len(encode_text(entry["text"]))
         except TxtdPackError:
@@ -449,11 +412,10 @@ class TXT2Viewer(QWidget):
         lead_in_len = entry.get("lead_in_len") or 0
         if lead_in_len > 0 and current_len - lead_in_len <= 1:
             return (
-                "Warning: shortening this any further would leave this entry's "
-                "own address with zero real characters (just the end marker) - "
-                "confirmed in-game to display as a stray leftover fragment "
-                "instead of the full text. Keep at least one real character "
-                "after the point where this text's un-addressed lead-in ends."
+                "Warning: shortening this any further leaves this entry's own "
+                "address with zero real characters (just the end marker), which "
+                "displays as a stray leftover fragment instead of the full text. "
+                "Keep at least one real character after this text's lead-in ends."
             )
 
         original_len = self._original_entry_lengths.get(location)
@@ -464,11 +426,10 @@ class TXT2Viewer(QWidget):
         delta = current_len - original_len
         return (
             f"Warning: this entry's encoded length changed by {delta:+d} byte(s) "
-            f"(was {original_len}, now {current_len}). Real in-game tests confirmed "
-            "TXT2 entries are read at fixed addresses outside this file's own table "
-            "(unlike TXTD/TXT1, which handle any length fine) - a length change here "
-            "risks corrupting this entry, and possibly others, in-game. Keep this "
-            "edit the same byte length if at all possible."
+            f"(was {original_len}, now {current_len}). TXT2 entries are read at "
+            "fixed addresses outside this file's own table (unlike TXTD/TXT1), so "
+            "a length change here risks corrupting this entry, and possibly "
+            "others, in-game. Keep this edit the same byte length if at all possible."
         )
 
     def mark_exported(self, chunk_index, file_index):

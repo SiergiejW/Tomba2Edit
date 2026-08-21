@@ -257,7 +257,14 @@ def build_iso(original_path, replacements, output_path):
             if fnode.content is not None:
                 data = fnode.content
             else:
-                data = reader.read_file(fnode.orig_lba, fnode.orig_size)
+                data, was_truncated = reader.read_file_lenient(fnode.orig_lba, fnode.orig_size)
+                if was_truncated:
+                    print(
+                        f"Warning: {fnode.name} is shorter in the source image than its "
+                        f"own directory entry declares ({fnode.orig_size} bytes) - padded "
+                        f"the missing tail with zeros. Harmless if this is a padding/filler "
+                        f"file (e.g. ZZZ.DAT); worth double-checking otherwise."
+                    )
             out.write(data.ljust(fnode.sectors * LOGICAL_SECTOR_SIZE, b"\x00"))
 
     return output_path

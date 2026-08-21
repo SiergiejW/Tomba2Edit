@@ -5,18 +5,9 @@ import re
 CHUNK_SIZE = 0x800
 TRAILER_SIZE = 0x700
 HEADER_SIZE = CHUNK_SIZE - TRAILER_SIZE
-CD_SECTOR_SIZE = 0x800  # 2048 bytes - PSX CD-ROM (Mode 1/Form 1) sector size.
-                        # Confirmed by comparing real files: the original
-                        # TOMBA2.DAT and a known-working modded TOMBA2.DAT are
-                        # BOTH exact multiples of 2048 bytes, while a naively
-                        # resized DAT (just the real content, no trailing
-                        # padding) is not. The disc almost certainly reads
-                        # this file in whole sectors, so its total size must
-                        # stay sector-aligned or the last partial sector can
-                        # end up truncated/misread when the ISO is rebuilt -
-                        # a failure mode invisible to any check that only
-                        # looks at IDX/DAT internal consistency, since the
-                        # content itself is perfectly valid.
+CD_SECTOR_SIZE = 0x800  # PSX CD-ROM sector size - DAT is read in whole
+                        # sectors, so its size (and every chunk boundary
+                        # within it) must stay a multiple of this.
 
 
 def pad_to_sector(data):
@@ -68,41 +59,18 @@ def _apply_single_replacement(dat_bytes, chunks, area, file_idx, new_data):
     internally consistent - including when the replaced region exactly
     touches a neighboring chunk's boundary.
 
-    THE '>' VS '>=' BUG (fixed): the previous version used strict '>'
-    when deciding whether a chunk's dat_start/dat_end needed to shift.
-    DAT areas are packed back-to-back with essentially no gap between
-    them, so it's the common case - not an edge case - for the next
-    chunk's dat_start to be EXACTLY EQUAL to the end of the file you
-    just resized. Fixed by using a uniform '>=' rule: any address at or
-    after the end of the replaced region shifts; anything before it
-    does not.
+    Any address at or after the end of the replaced region shifts by
+    the size difference; DAT areas are packed back-to-back, so it's
+    common for a neighboring chunk's dat_start to land exactly on that
+    boundary.
 
-    THE PER-CHUNK SECTOR-ALIGNMENT BUG (fixed): confirmed against real
-    files that EVERY chunk's dat_start is a multiple of CD_SECTOR_SIZE
-    (2048 bytes) in the original game data, and stays that way in a
-    known-working romhacker rebuild - not just the final DAT file's
-    total size. Padding only the very end of the whole DAT (this
-    function's earlier version) leaves every chunk AFTER the edited
-    one sector-misaligned, even though the total file size happens to
-    come out sector-aligned by coincidence. Real PS1 CD-ROM reads are
-    almost certainly done in whole sectors per AREA, so a
-    sector-misaligned AREA boundary can read the wrong data or crash on
-    real hardware/an accurate emulator - invisible to any check that
-    only looks at IDX/DAT pointer consistency, since the pointers
-    themselves are still "correct" relative to a misaligned base.
-
-    Fixed by padding the EDITED CHUNK's own dat_end up to the next
-    sector boundary (not the file within it - later files in the same
-    chunk only shift by the raw size difference, since only whole-AREA
-    boundaries need to land on a sector) and cascading that combined
-    shift (content growth + alignment padding) to every absolute
-    position at or after the edited chunk's end: later chunks'
-    dat_start/dat_end, and every trail range. Because every chunk
-    boundary starts out sector-aligned already, the amount of padding
-    needed always resolves to a shift that's itself a whole number of
-    sectors - so this keeps every later chunk aligned by induction, and
-    the final total DAT size comes out sector-aligned automatically
-    with no separate end-of-file padding step required.
+    Every chunk's dat_start must stay a multiple of CD_SECTOR_SIZE. The
+    edited chunk's own dat_end is padded up to the next sector boundary
+    (later files within the same chunk only shift by the raw size
+    difference - only whole-AREA boundaries need sector alignment), and
+    that combined shift cascades to every later chunk's
+    dat_start/dat_end and trail range, keeping them aligned by
+    induction.
 
     Returns the new DAT bytes (bytearray).
     """

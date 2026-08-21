@@ -5,6 +5,7 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImag
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
+    QTabWidget,
 )
 from icons.icons import (icon_window, icon_disc,
                          icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
@@ -15,12 +16,14 @@ from main import version
 from gui.txtd_viewer import TXTDViewer
 from gui.txt2_viewer import TXT2Viewer
 from gui.mdat_viewer import MDATViewer
+from gui.mainbin_viewer import MainExeViewer
 from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
+from functions.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
-# Colors used to flag a TXTD/TXT2 file's row in the main file tree,
+# Colors used to flag a file's row in the main file tree,
 # mirroring the entry-level coloring in TXTDViewer/TXT2Viewer: orange
 # while it has pending (unexported) text edits, green once those edits
 # have been exported.
@@ -53,12 +56,22 @@ class MainWindow(QMainWindow):
         self.file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        self.setCentralWidget(self.splitter)
 
         self.tree_view = QTreeView()
         self.splitter.addWidget(self.tree_view)
         self.widgets_area = QStackedWidget()
         self.splitter.addWidget(self.widgets_area)
+
+        # Tab 1 (default): the existing tree + per-file viewer splitter.
+        # Tab 2: MAIN.EXE's own string-pool editor (gui/mainbin_viewer.py) -
+        # populated whenever a MAIN.EXE is found alongside the opened
+        # ISO/folder (see open_iso_dialog/open_folder_dialog), left empty
+        # otherwise.
+        self.mainexe_viewer = MainExeViewer()
+        self.main_tabs = QTabWidget()
+        self.main_tabs.addTab(self.splitter, "Disc Files")
+        self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
+        self.setCentralWidget(self.main_tabs)
 
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
         # "data"} for every TXTD/TXT2 file that's been edited but not yet
@@ -97,6 +110,7 @@ class MainWindow(QMainWindow):
         self.setup_widgets()
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
         self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)
+        self.mainexe_viewer.content_changed.connect(self.on_mainexe_content_changed)
         self.tree_view.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.setStatusBar(QStatusBar(self))
 
@@ -292,6 +306,17 @@ class MainWindow(QMainWindow):
             f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
             f"use the 'Save IDX/DAT' button when ready.")
 
+    def on_mainexe_content_changed(self):
+        """Called by MainExeViewer every time an entry's text is edited.
+        Its own pending edits are tracked entirely inside the viewer
+        (self.mainexe_viewer.pending_edits()/has_pending_edits()) - this
+        just keeps the status bar in sync, mirroring
+        on_txtd_content_changed/on_txt2_content_changed."""
+        n_mainexe = len(self.mainexe_viewer.pending_edits())
+        self.statusBar().showMessage(
+            f"{len(self.pending_txtd_edits)} disc file(s) and {n_mainexe} MAIN.EXE "
+            f"entry(ies) have pending edits - use the 'Save IDX/DAT' button when ready.")
+
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
         """Colors a TXTD file's row in the main tree (under its NN_DATA
         folder): "edited" (orange) while it has pending edits, "exported"
@@ -362,9 +387,15 @@ class MainWindow(QMainWindow):
         return "exported" if saw_exported else None
 
     def export_all_files(self):
-        if not self.pending_txtd_edits:
+        # all_edits(), not pending_edits() - every export runs against
+        # the untouched source exe fresh, so it must reapply every
+        # change made since load (edited AND already-exported alike),
+        # not just what's newly dirty, or a previous export's changes
+        # would silently get dropped from this one.
+        mainexe_edits = self.mainexe_viewer.all_edits()
+        if not self.pending_txtd_edits and not mainexe_edits:
             QMessageBox.information(self, "Nothing to export",
-                                     "No TXTD/TXT2 edits are pending. Edit some entry text first.")
+                                     "No TXTD/TXT2/MAIN.EXE edits are pending. Edit some entry text first.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -392,11 +423,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", f"Failed to rebuild DAT/IDX: {e}")
             return
 
+        output_paths = [output_dat, output_idx]
+        if mainexe_edits:
+            output_exe = os.path.join(out_dir, "MAIN.EXE")
+            try:
+                mainbin_repack_pool(
+                    self.mainexe_viewer.exe_path, self.mainexe_viewer.entries,
+                    mainexe_edits, output_exe,
+                )
+            except MainBinEditError as e:
+                QMessageBox.critical(self, "Export failed", f"Failed to rebuild MAIN.EXE: {e}")
+                return
+            output_paths.append(output_exe)
+
         QMessageBox.information(
             self, "Export complete",
-            f"Wrote:\n{output_dat}\n{output_idx}\n\n"
-            f"({len(edits)} file(s) repacked.)\n\n"
-            "Back up your original CD files, then copy these two over them "
+            "Wrote:\n" + "\n".join(output_paths) + "\n\n"
+            f"({len(edits)} disc file(s)" + (f" + MAIN.EXE" if mainexe_edits else "") + " repacked.)\n\n"
+            "Back up your original CD files, then copy these over them "
             "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
         )
         for (chunk_index, file_index), info in self.pending_txtd_edits.items():
@@ -406,6 +450,8 @@ class MainWindow(QMainWindow):
             else:
                 self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
+        if mainexe_edits:
+            self.mainexe_viewer.mark_exported()
 
     def count_items(self, item):
         count = 0
@@ -422,6 +468,24 @@ class MainWindow(QMainWindow):
             count = self.count_items(item)
             item.setText(f"{item.text()} ({count})")
 
+    def _load_mainexe(self, exe_path):
+        """Load exe_path into the MAIN.EXE tab, or clear it with a clear
+        reason if that's not possible - either no file was found (None)
+        or it's not the specific build mainbin_editor.py's pointer tables
+        were mapped against (MainBinEditError, most likely
+        UnsupportedExeError - see verify_supported())."""
+        if not exe_path:
+            self.mainexe_viewer.clear_cache()
+            return
+        try:
+            self.mainexe_viewer.load_exe(exe_path)
+        except MainBinEditError as e:
+            self.mainexe_viewer.clear_cache()
+            QMessageBox.warning(
+                self, "MAIN.EXE not editable",
+                f"Found a MAIN.EXE, but couldn't load it for editing:\n\n{e}"
+            )
+
     def open_iso_dialog(self):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp
         folder and populate the tree view. See open_folder_dialog() for
@@ -433,10 +497,11 @@ class MainWindow(QMainWindow):
         if not iso_path:
             return
 
-        if self.pending_txtd_edits:
+        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits():
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) that haven't been "
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) and "
+                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s) that haven't been "
                 "exported yet. Opening a new ISO will discard them.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -453,6 +518,7 @@ class MainWindow(QMainWindow):
         self.txtd_file_states.clear()
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
+        self.mainexe_viewer.clear_cache()
         self.current_iso_path = None
 
         try:
@@ -474,6 +540,8 @@ class MainWindow(QMainWindow):
             self.folder_info_label.setText("Select a Tomba! 2 ISO file to begin")
             QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this ISO:\n\n{e}")
             return
+
+        self._load_mainexe(self.iso_handler.extracted_files.get("MAIN.EXE"))
 
         self.current_iso_path = iso_path
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
@@ -508,10 +576,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.pending_txtd_edits:
+        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits():
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) that haven't been "
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) and "
+                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s) that haven't been "
                 "exported yet. Opening a new folder will discard them.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -528,6 +597,7 @@ class MainWindow(QMainWindow):
         self.txtd_file_states.clear()
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
+        self.mainexe_viewer.clear_cache()
 
         try:
             parse_idx_file(self, cd_folder)
@@ -536,6 +606,18 @@ class MainWindow(QMainWindow):
             self.folder_info_label.setText("Select a Tomba! 2 ISO file to begin")
             QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this folder:\n\n{e}")
             return
+
+        # MAIN.EXE sits alongside the CD folder (one level up from
+        # TOMBA2.DAT/IDX/IMG), not inside it - confirmed against a real
+        # extracted Tomba! 2 folder layout - but also check cd_folder
+        # itself in case some other extraction puts it there instead.
+        mainexe_path = None
+        for candidate_dir in (folder, cd_folder):
+            candidate = os.path.join(candidate_dir, "MAIN.EXE")
+            if os.path.exists(candidate):
+                mainexe_path = candidate
+                break
+        self._load_mainexe(mainexe_path)
 
         self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
@@ -587,9 +669,13 @@ class MainWindow(QMainWindow):
             edits = self._pack_pending_txtd_edits()
             if edits is None:
                 return
+        # all_edits(), not pending_edits() - see export_all_files()'s
+        # own comment on this for why.
+        mainexe_edits = self.mainexe_viewer.all_edits()
+        has_any_edits = bool(edits) or bool(mainexe_edits)
 
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
-        default_name += "_edited.iso" if edits else "_copy.iso"
+        default_name += "_edited.iso" if has_any_edits else "_copy.iso"
         output_path, _ = QFileDialog.getSaveFileName(
             self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)"
         )
@@ -604,8 +690,10 @@ class MainWindow(QMainWindow):
         replacements = {}
         tmp_repack_dir = None
         try:
-            if edits:
+            if edits or mainexe_edits:
                 tmp_repack_dir = tempfile.mkdtemp(prefix="tomba2edit_repack_")
+
+            if edits:
                 original_idx = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
                 tmp_dat = os.path.join(tmp_repack_dir, "TOMBA2.DAT")
                 tmp_idx = os.path.join(tmp_repack_dir, "TOMBA2.IDX")
@@ -614,6 +702,19 @@ class MainWindow(QMainWindow):
                     replacements["TOMBA2.DAT"] = f.read()
                 with open(tmp_idx, "rb") as f:
                     replacements["TOMBA2.IDX"] = f.read()
+
+            if mainexe_edits:
+                tmp_exe = os.path.join(tmp_repack_dir, "MAIN.EXE")
+                try:
+                    mainbin_repack_pool(
+                        self.mainexe_viewer.exe_path, self.mainexe_viewer.entries,
+                        mainexe_edits, tmp_exe,
+                    )
+                except MainBinEditError as e:
+                    QMessageBox.critical(self, "Export failed", f"Failed to rebuild MAIN.EXE:\n\n{e}")
+                    return
+                with open(tmp_exe, "rb") as f:
+                    replacements["MAIN.EXE"] = f.read()
 
             build_iso(self.current_iso_path, replacements, output_path)
         except Exception as e:
@@ -624,8 +725,8 @@ class MainWindow(QMainWindow):
                 shutil.rmtree(tmp_repack_dir, ignore_errors=True)
 
         summary = (
-            f"({len(edits)} file(s) repacked into it.)"
-            if edits else
+            f"({len(edits)} disc file(s)" + (" + MAIN.EXE" if mainexe_edits else "") + " repacked into it.)"
+            if has_any_edits else
             "(No pending edits - this is an unmodified copy of the opened disc.)"
         )
         QMessageBox.information(
@@ -644,6 +745,8 @@ class MainWindow(QMainWindow):
                 else:
                     self.txtd_viewer.mark_exported(chunk_index, file_index)
             self.pending_txtd_edits.clear()
+        if mainexe_edits:
+            self.mainexe_viewer.mark_exported()
 
     def closeEvent(self, event):
         if self.iso_handler:

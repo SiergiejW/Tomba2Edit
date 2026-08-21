@@ -16,7 +16,12 @@ from functions.iso9660 import ISO9660Reader, ISOFormatError
 
 REQUIRED_FILES = ("TOMBA2.DAT", "TOMBA2.IDX", "TOMBA2.IMG")
 
-__all__ = ["ISOHandler", "ISOFormatError", "REQUIRED_FILES"]
+# Not required to open the disc - extracted (and later, on export, patched
+# back in) when present, but their absence never blocks opening an ISO
+# that's otherwise a valid Tomba! 2 disc.
+OPTIONAL_FILES = ("MAIN.EXE",)
+
+__all__ = ["ISOHandler", "ISOFormatError", "REQUIRED_FILES", "OPTIONAL_FILES"]
 
 
 class ISOHandler:
@@ -27,10 +32,13 @@ class ISOHandler:
         self.extracted_files = {}
 
     def extract_iso(self, iso_path):
-        """Extract TOMBA2.DAT, TOMBA2.IDX and TOMBA2.IMG from the disc image
-        at `iso_path` into a fresh temp directory, and return
-        {filename: extracted_path}. Raises ISOFormatError / FileNotFoundError
-        on failure; the temp directory is cleaned up automatically if it does."""
+        """Extract TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG (and MAIN.EXE, if
+        present - see OPTIONAL_FILES) from the disc image at `iso_path`
+        into a fresh temp directory, and return {filename: extracted_path}.
+        Raises ISOFormatError / FileNotFoundError on failure (only for
+        REQUIRED_FILES - a missing optional file is just absent from the
+        returned dict); the temp directory is cleaned up automatically if
+        it does."""
         self.cleanup()
         self.temp_dir = tempfile.mkdtemp(prefix="tomba2edit_")
 
@@ -39,7 +47,7 @@ class ISOHandler:
                 raw = f.read()
 
             reader = ISO9660Reader(raw)
-            wanted = set(REQUIRED_FILES)
+            wanted = set(REQUIRED_FILES) | set(OPTIONAL_FILES)
             locations = reader.find_files(reader.root_lba, reader.root_size, wanted)
 
             missing = [name for name in REQUIRED_FILES if name not in locations]
@@ -50,7 +58,9 @@ class ISOHandler:
                 )
 
             files_found = {}
-            for name in REQUIRED_FILES:
+            for name in list(REQUIRED_FILES) + list(OPTIONAL_FILES):
+                if name not in locations:
+                    continue
                 file_lba, file_size = locations[name]
                 data = reader.read_file(file_lba, file_size)
                 dest_path = os.path.join(self.temp_dir, name)

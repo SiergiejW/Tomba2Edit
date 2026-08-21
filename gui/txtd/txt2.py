@@ -27,24 +27,15 @@ def _align_up16(n):
 def preview(DAT, datstart, size=None, id_val=None):
     """
     id_val selects the table format: 3 (TXT2) reads the table as a FLAT
-    list of independent 2-byte pointers - every value is its own real,
-    independently-addressed message, with no (adr,extra) pairing and no
-    (0xFFFF,0xFFFF) END sentinel (just a single trailing 0xFFFF
-    terminator). Anything else (2/TXT1, or unspecified) keeps the
-    original paired-table reading.
+    list of independent 2-byte pointers - every value is its own
+    independently-addressed message, with no (adr,extra) pairing and a
+    single trailing 0xFFFF terminator (not a (0xFFFF,0xFFFF) sentinel).
+    Anything else (2/TXT1, or unspecified) uses the paired-table
+    reading.
 
-    This was confirmed two ways: byte-for-byte (entry_root+11 in a real
-    English TXT2 sample decodes to "creased by 1!" - a genuine, valid
-    tail-shared substring of entry_root+0's own text, not garbage) and
-    by an independent, shipped Chinese fan-translation project's own
-    working source (github.com/jywjyw/tomba2-hack) - its writer for this
-    exact file rebuilds the table as one flat list of independently
-    recomputed pointers, no pairing at all. The previous paired model
-    treated the second half of every slot ("extra") as inert metadata
-    and preserved it unchanged on save - since it's actually a live
-    pointer to its own message, any edit that shifted byte positions
-    left it stale, which is exactly the length-sensitivity bug real
-    in-game tests kept reproducing.
+    Confirmed against a real English TXT2 sample and an independent fan
+    translation's source (github.com/jywjyw/tomba2-hack), which rebuilds
+    this table the same flat way.
     """
     def getB(number=1):
         return int.from_bytes(rom.read(number), byteorder='little')

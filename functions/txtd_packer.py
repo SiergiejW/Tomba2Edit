@@ -4,43 +4,17 @@ Reverse of gui/txtd/txtd.py's preview() function.
 Rebuilds a self-consistent TXTD binary blob from the structure produced
 by txtd.preview() (optionally edited in the GUI).
 
-THE 16-BYTE ALIGNMENT RULE (found by comparing against real game data)
-------------------------------------------------------------------------
-Every table region in a real TXTD block - the master table, and every
-master's own entry table - is followed by up to 15 bytes of zero
-padding so that the region that comes right after it (master_root, or
-that master's entry_root / text pool) always starts on a 16-byte
-boundary RELATIVE TO THAT TABLE'S OWN START. This was verified against
-6 independent, unmodified TXTD files from the retail DAT (about 90
-master/entry-table groups total) with zero exceptions - every single
-one rounds its header+table size up to a multiple of 16 before the
-next region begins.
+16-BYTE ALIGNMENT: every table region (master table, each master's own
+entry table) is followed by zero padding so the next region starts on
+a 16-byte boundary relative to that table's own start - true across
+every retail TXTD file, and required since MIPS traps on misaligned
+word/halfword loads.
 
-This is almost certainly a PS1 hardware/DMA alignment requirement (or
-at minimum a firm convention the game's own tools always followed) -
-the kind of thing a byte-for-byte Python reader will parse just fine
-either way (since it only ever does sequential 1-byte-at-a-time reads
-for text and explicit seeks for headers - it doesn't care about
-alignment), while breaking it may still crash the real PS1 engine or
-an accurate emulator, since MIPS traps on misaligned word/halfword
-loads. An earlier version of this packer tight-packed everything at
-just 4-byte alignment instead of 16, eliminating this slack entirely -
-that is the leading suspect for a "reads fine in the GUI/Python but
-crashes in-game" symptom, and is why this version aligns to 16 bytes
-to match the original convention exactly.
-
-WHY NOT PATCH THE ORIGINAL BYTES IN PLACE INSTEAD?
--------------------------------------------------------
-Every pointer in a TXTD block (master_root, each entry_root, every
-master/entry address) is stored explicitly in the file. Shortening or
-lengthening ONE decoded text string shifts every text byte after it,
-invalidating every pointer that pointed past that string. There's no
-way to know from the decoded structure alone which tables happened to
-share a text pool in the original, hand-built file, so naive byte
-splicing is dangerous. Instead, this packer rebuilds the whole blob
-using ONE fixed, deterministic layout - but now with the SAME 16-byte
-alignment convention the original format actually uses, not an
-invented tight-packed one:
+Since every pointer (master_root, each entry_root, every master/entry
+address) is stored explicitly and shortening/lengthening one text
+string shifts everything after it, in-place patching isn't viable -
+this packer instead rebuilds the whole blob with ONE fixed,
+deterministic, 16-byte-aligned layout:
 
     [0x00]                    TXTD header (16 bytes)
     [0x10]                    master table (master_amount * 4 bytes)
