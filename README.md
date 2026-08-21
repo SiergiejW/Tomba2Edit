@@ -4,6 +4,13 @@ A tool for previewing, with the goal of becoming a Tomba! 2 repacker/exporter. B
 Check out our [discord](discord.com/invite/WcAb5kf) and [Youtube](https://www.youtube.com/@TombaClub). Visit [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.<br>
 The tool aims to view models, textures, sprites, text, background maps, collision data, animations from Tomba 2.
 
+## Credits
+This is a reverse engineering work that started in 2018 Tomba Club Discord server started by AtanoKSi.
+Special thanks to: 
+vervalkon for inspiring me to learn Python and figuring out MANY things here
+Dedok179 for demonstrating the repacking is possible and help with text editing/translation work
+and all Tomba Club members for their contributions to the project.
+
 ## Installation
 Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)<br>
 Project uses PyQt6, struct, numpy, OpenGL, Pillow Python libraries.
