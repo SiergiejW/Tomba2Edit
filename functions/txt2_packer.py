@@ -8,7 +8,7 @@ interleaved as discovered) to preserve correct data structures.
 
 import struct
 
-from functions.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN
+from functions.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN, _REVERSE_LETTERS
 
 # Marker used for a table entry whose pointer resolves outside
 # this file's own bytes.
@@ -193,7 +193,10 @@ def pack_txt2_flat(txt2_data):
 
     entry_root_rel = _align_up(table_region_end + len(leading_gap_blob) + len(lead_in_bytes), ALIGN)
     leading_gap_pad = entry_root_rel - len(lead_in_bytes) - (table_region_end + len(leading_gap_blob))
-    entry_root_raw = (entry_root_rel - MHSIZE) // 4
+    # id 3's entry_root_raw is a halfword (2-byte) count, not a word count -
+    # see txt2.preview()'s own comment on this, confirmed directly against
+    # the pristine retail file.
+    entry_root_raw = (entry_root_rel - MHSIZE) // 2
 
     if entry_root_raw > 0xFFFF or raw_count > 0xFFFF:
         raise Txt2PackError(
@@ -308,6 +311,56 @@ def pack_txt2_flat(txt2_data):
                 out[pos:pos + 2] = struct.pack("<H", original_adr)
 
     return bytes(out)
+
+
+def encode_text_dedok(text):
+    """
+    Direct port of Dedok179's C# GetByteString(). Same algorithm as our
+    own encode_text(), different control flow: scan char by char, and
+    on an opening "{$" grab up to 32 chars up to the closing '}' as one
+    token. "{$END}" is special-cased - its real dictionary entry is
+    "{$END}\n\n" (the two newlines are display-only, consumed here
+    without producing their own bytes). A token not found in the
+    dictionary is parsed as a raw "{$XX}" hex byte escape.
+    """
+    data = bytearray()
+    n = len(text)
+    i = 0
+    while i < n:
+        symbol = text[i]
+        if symbol == "{" and i + 1 < n and text[i + 1] == "$":
+            key = ""
+            for j in range(32):
+                if i + j >= n:
+                    break
+                symbol = text[i + j]
+                key += symbol
+                if symbol == "}":
+                    i += j
+                    break
+
+            if key == "{$END}":
+                key = "{$END}\n\n"
+                i += 2
+
+            if key in _REVERSE_LETTERS:
+                data.append(_REVERSE_LETTERS[key])
+            else:
+                try:
+                    hex_part = key.split("$", 1)[1].split("}", 1)[0]
+                    data.append(int(hex_part, 16))
+                except (IndexError, ValueError) as e:
+                    raise Txt2PackError(
+                        f"Can't encode token {key!r}: not in the dictionary "
+                        f"and not a valid {{$XX}} hex escape."
+                    ) from e
+        else:
+            if symbol not in _REVERSE_LETTERS:
+                raise Txt2PackError(f"Can't encode character {symbol!r}: no entry in tombadict.py's letters table.")
+            data.append(_REVERSE_LETTERS[symbol])
+        i += 1
+
+    return bytes(data)
 
 
 def pack_txt2_simple(txt2_data):

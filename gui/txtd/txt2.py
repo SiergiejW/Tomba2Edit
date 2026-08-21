@@ -156,27 +156,63 @@ def preview(DAT, datstart, size=None, id_val=None):
 
             print("Reading TXT2 root and entry amount...")
             entry_root_raw, raw_count = struct.unpack("<HHxxxxxxxxxxxx", rom.read(MHSIZE))
-            entry_root = (entry_root_raw << 2) + MHSIZE + datstart
+            # entry_root_raw counts this table's OWN native slot width, not
+            # bytes - confirmed directly against the pristine retail file:
+            # id 3's table is 2 bytes/slot, and decoding with *2 turns 4
+            # entries that looked permanently out-of-bounds under *4 into
+            # perfectly valid, complete English text (e.g. "{$PINK}The Last
+            # Pig Bag{$WHITE} acquired!..."), while *4 pushes all 4 of them
+            # past this file's own end. All other id 3 entries decode
+            # cleanly either way, so those 4 were the only tell. id 2's
+            # table is 4 bytes/slot (adr+extra), and *4 still decodes every
+            # entry there cleanly, so it's left as-is.
+            multiplier = 2 if id_val == 3 else 4
+            entry_root = (entry_root_raw * multiplier) + MHSIZE + datstart
             print(f"Entry root: {entry_root:08X}, raw_count: {raw_count}")
 
             entries = []
 
             if id_val == 3:
                 # Flat pointer table (see this function's own docstring).
-                pointer_count = raw_count - 1
+                # Some writers (pack_txt2_flat) always follow raw_count-1
+                # real pointers with one dedicated 0xFFFF terminator slot;
+                # others (pack_txt2_simple) give the table exactly
+                # raw_count slots and let the LAST real entry's own value
+                # be 0xFFFF instead. Reading up to raw_count slots and
+                # stopping at the first 0xFFFF handles both: real pointer
+                # values are always tiny offsets into this file's own text
+                # pool, never anywhere near 0xFFFF.
+                pointer_count = raw_count
                 if pointer_count > 2000:
                     print(f"Warning: pointer_count seems unusually high ({pointer_count}). Limiting to 2000.")
                     pointer_count = 2000
 
                 pointers = []
+                hit_terminator = False
                 for i in range(pointer_count):
-                    pointers.append(getB(2))
-                terminator = getB(2)
-                if terminator != 0xFFFF:
-                    print(f"Warning: expected 0xFFFF terminator after {pointer_count} "
-                          f"pointers, got 0x{terminator:04X} - table may be misread.")
+                    val = getB(2)
+                    pointers.append(val)
+                    if val == 0xFFFF:
+                        hit_terminator = True
+                        break
+                if not hit_terminator:
+                    print(f"Warning: no 0xFFFF terminator found within {pointer_count} pointers - table may be misread.")
 
                 for i, ptr in enumerate(pointers):
+                    is_sentinel = (ptr == 0xFFFF)
+                    if is_sentinel:
+                        print(f"\t{i}: ptr=0xFFFF - END marker")
+                        entries.append({
+                            "adr": 0xFFFF,
+                            "extra": 0xFFFF,
+                            "text": "END!",
+                            "is_gap": False,
+                            "_sort_key": float("inf"),
+                            "_real_start": None,
+                            "_real_end": None,
+                        })
+                        continue
+
                     real = entry_root + ptr
                     print(f"\t{i}: ptr=0x{ptr:04X} (at 0x{real:X})")
                     text_content = getText(real)
@@ -203,7 +239,9 @@ def preview(DAT, datstart, size=None, id_val=None):
                 # a table_region_end 4 bytes early compared to reading
                 # it as a standalone extracted file (datstart=0, where
                 # the bug can't show since 0 is already 16-aligned).
-                table_region_end = datstart + _align_up16(MHSIZE + pointer_count * 2 + 2)
+                # len(pointers) already includes the terminator slot
+                # (dedicated or self-terminating), so no "+2" needed here.
+                table_region_end = datstart + _align_up16(MHSIZE + len(pointers) * 2)
 
             else:
                 # Paired (adr,extra) table - TXT1 (id 2) and anything unspecified.
