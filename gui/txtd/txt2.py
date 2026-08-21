@@ -317,12 +317,42 @@ def preview(DAT, datstart, size=None, id_val=None):
                     current_end = max(current_end, end)
 
             entries.sort(key=lambda e: e["_sort_key"])
+
+            # Confirmed by tracing real PS1 memory: the live game reads
+            # the first 11 table slots a SECOND way, via
+            # table_region_end + table[k] instead of the usual
+            # entry_root + table[k], to find the generic "used!/
+            # acquired!/equipped!/removed!/given!/sent to nest!/fed!/
+            # entered hotspring!/set!/burned up!/chanted!" suffix shared
+            # by every item pickup/use/equip. This 11 is a fixed,
+            # engine-level constant, not something to re-derive per file
+            # - a leading gap's own offset can coincidentally equal an
+            # unrelated table slot's own pointer value (confirmed
+            # directly: slot 11 "matches" here purely by chance, since
+            # "Magic Gauge grew!" isn't part of this at all), so matching
+            # numbers alone isn't a safe way to detect this past what's
+            # actually been proven. Still verify the match holds even
+            # within that cap, in case a file has fewer than 11.
+            VERB_SUFFIX_COUNT = 11
+            verb_suffix_count = 0
+            if id_val == 3:
+                leading_gap_entries = [e for e in entries if e["is_gap"] and e["_sort_key"] < entry_root]
+                real_table_entries = [e for e in entries if not e["is_gap"] and e.get("adr") is not None]
+                n = min(VERB_SUFFIX_COUNT, len(leading_gap_entries), len(real_table_entries))
+                for k in range(n):
+                    gap_offset = leading_gap_entries[k]["_sort_key"] - table_region_end
+                    if real_table_entries[k]["adr"] == gap_offset:
+                        verb_suffix_count = k + 1
+                    else:
+                        break
+
             for e in entries:
                 del e["_sort_key"]
                 e.pop("_real_start", None)
                 e.pop("_real_end", None)
 
             output["entries"] = entries
+            output["verb_suffix_count"] = verb_suffix_count
 
             print("Finished processing TXT2 data.")
             return output

@@ -558,7 +558,7 @@ class MainWindow(QMainWindow):
             for (chunk_index, file_index), info in self.pending_txtd_edits.items():
                 if info.get("kind") == "txt2":
                     if info.get("id") == 3:
-                        packed_bytes = txt2_packer.pack_txt2_flat(info["data"])
+                        packed_bytes = txt2_packer.pack_txt2_simple(info["data"])
                     else:
                         packed_bytes = txt2_packer.pack_txt2(info["data"])
                 else:
