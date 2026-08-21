@@ -6,7 +6,7 @@ The tool aims to view models, textures, sprites, text, background maps, collisio
 
 ## Special Thanks
 
-This reverse-engineering effort started in the **Tomba Club Discord**, founded in 2018 by **AtanoKSi** ([YT](https://www.youtube.com/c/atanoksi), [SoundCloud](https://soundcloud.com/atanok-si)).
+This reverse-engineering effort started in the **Tomba Club Discord**, founded in 2018 by **AtanoKSi** ([SoundCloud](https://soundcloud.com/atanok-si), [YT](https://www.youtube.com/c/atanoksi)).
 
 Huge thanks to everyone who contributed, especially:
 
