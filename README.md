@@ -4,15 +4,15 @@ A tool for previewing, with the goal of becoming a Tomba! 2 repacker/exporter. B
 Check out our [discord](discord.com/invite/WcAb5kf) and [Youtube](https://www.youtube.com/@TombaClub). Visit [Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information) for more Tomba 2 technical information.<br>
 The tool aims to view models, textures, sprites, text, background maps, collision data, animations from Tomba 2.
 
-## Special thanks
+## Special Thanks
 
 This reverse-engineering effort started in the **Tomba Club Discord** in 2018.
 
 Huge thanks to everyone who contributed, especially:
 
-- **[vervalkon](https://x.com/vervalkon)**, [yt](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg) HUGE inspiration to learn Python and amazing help with figuring out *big chunk* of the logic used in this project.
+- **vervalkon** ([X](https://x.com/vervalkon), [YouTube](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg)) - HUGE inspiration to learn Python and amazing help with figuring out *big chunk* of the logic used in this project.
 
-- **[Dedok179](https://github.com/Dedok179)**, [yt](https://www.youtube.com/c/Dedok179) for demonstrating that repacking is possible and providing help with text editing and translation work.
+- **Dedok179** ([GitHub](https://github.com/Dedok179), [YouTube](https://www.youtube.com/c/Dedok179)) - for demonstrating that repacking is possible and providing help with text editing and translation work.
 
 - **All Tomba Club members** - Thank you for your research, testing, documentation, and contributions that made this project possible.
 
