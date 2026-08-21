@@ -10,11 +10,11 @@ This reverse-engineering effort started in the **Tomba Club Discord** in 2018.
 
 Huge thanks to everyone who contributed, especially:
 
-- **[vervalkon](https://x.com/vervalkon)**, [yt](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg) — Inspired me to learn Python and helped figure out *many* of the discoveries used in this project.
+- **[vervalkon](https://x.com/vervalkon)**, [yt](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg) for inspiring me to learn Python and helping figure out *many* of the discoveries used in this project.
 
-- **[Dedok179](https://github.com/Dedok179)**, [yt](https://www.youtube.com/c/Dedok179) — Demonstrated that repacking is possible and provided invaluable help with text editing and translation work.
+- **[Dedok179](https://github.com/Dedok179)**, [yt](https://www.youtube.com/c/Dedok179) for demonstrating that repacking is possible and providing invaluable help with text editing and translation work.
 
-- **All Tomba Club members** — Thank you for your research, testing, documentation, and contributions that made this project possible.
+- **All Tomba Club members** - Thank you for your research, testing, documentation, and contributions that made this project possible.
 
 ## Installation
 Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)<br>
