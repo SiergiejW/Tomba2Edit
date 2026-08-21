@@ -6,13 +6,13 @@ The tool aims to view models, textures, sprites, text, background maps, collisio
 
 ## Special Thanks
 
-This reverse-engineering effort started in the **Tomba Club Discord**, founded in 2018 by **AtanoKSi** ([YouTube](https://www.youtube.com/c/atanoksi), [SoundCloud](https://soundcloud.com/atanok-si)).
+This reverse-engineering effort started in the **Tomba Club Discord**, founded in 2018 by **AtanoKSi** ([YT](https://www.youtube.com/c/atanoksi), [SoundCloud](https://soundcloud.com/atanok-si)).
 
 Huge thanks to everyone who contributed, especially:
 
-- **vervalkon** ([X](https://x.com/vervalkon), [YouTube](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg)) - HUGE inspiration to learn Python and amazing help with figuring out *big chunk* of the logic used in this project.
+- **vervalkon** ([X](https://x.com/vervalkon), [YT](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg)) - HUGE inspiration to learn Python and amazing help with figuring out *big chunk* of the logic used in this project.
 
-- **Dedok179** ([GitHub](https://github.com/Dedok179), [YouTube](https://www.youtube.com/c/Dedok179)) - for demonstrating that repacking is possible and providing help with text editing and translation work.
+- **Dedok179** ([GitHub](https://github.com/Dedok179), [YT](https://www.youtube.com/c/Dedok179)) - for demonstrating that repacking is possible and providing help with text editing and translation work.
 
 - **All Tomba Club members** - Thank you for your research, testing, documentation, and contributions that made this project possible.
 
