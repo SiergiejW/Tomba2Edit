@@ -7,9 +7,9 @@ The tool aims to view models, textures, sprites, text, background maps, collisio
 ## Special thanks
 This is a reverse engineering work that started in 2018 Tomba Club Discord server started by AtanoKSi.
 Special thanks to: <br>
-<ul>vervalkon for inspiring me to learn Python and figuring out MANY things here</ul><br>
-<ul>Dedok179 for demonstrating the repacking is possible and help with text editing/translation work</ul><br>
-<ul>and all Tomba Club members for their contributions to the project!</ul><br>
+<li>vervalkon for inspiring me to learn Python and figuring out MANY things here<br>
+<li>Dedok179 for demonstrating the repacking is possible and help with text editing/translation work<br>
+<li>and all Tomba Club members for their contributions to the project!<br>
 
 ## Installation
 Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW/Tomba2Edit/releases)<br>
