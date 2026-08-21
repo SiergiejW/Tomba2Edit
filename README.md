@@ -10,9 +10,9 @@ This reverse-engineering effort started in the **Tomba Club Discord** in 2018.
 
 Huge thanks to everyone who contributed, especially:
 
-- **[vervalkon](https://x.com/vervalkon)**, [yt](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg) for inspiring me to learn Python and helping figure out *many* of the discoveries used in this project.
+- **[vervalkon](https://x.com/vervalkon)**, [yt](https://www.youtube.com/channel/UCgyrTxYpBaB1Dahpz94rOEg) HUGE inspiration to learn Python and amazing help with figuring out *big chunk* of the logic used in this project.
 
-- **[Dedok179](https://github.com/Dedok179)**, [yt](https://www.youtube.com/c/Dedok179) for demonstrating that repacking is possible and providing invaluable help with text editing and translation work.
+- **[Dedok179](https://github.com/Dedok179)**, [yt](https://www.youtube.com/c/Dedok179) for demonstrating that repacking is possible and providing help with text editing and translation work.
 
 - **All Tomba Club members** - Thank you for your research, testing, documentation, and contributions that made this project possible.
 
