@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
         open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open ISO", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
 
-        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open CD Folder", self)
+        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Folder", self)
         open_folder_action.setToolTip(
             "Open an already-extracted CD folder directly, skipping ISO extraction. "
             "'Save ISO' won't be available - use 'Save IDX/DAT' instead."

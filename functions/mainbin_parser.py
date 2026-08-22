@@ -27,7 +27,7 @@ def decode_bytes(raw):
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
         else:
-            out.append("{{$%02X}}".format(b))
+            out.append(f"{{${b:02X}}}")
     return "".join(out)
 
 

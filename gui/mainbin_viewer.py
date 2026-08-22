@@ -14,16 +14,14 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
 
 from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
-from functions.mainbin_editor import _mainbin_entries, compute_pool_state, FLOW_REGION_START, FLOW_REGION_END
+from functions.mainbin_editor import (
+    _mainbin_entries, compute_pool_state, detect_build, _is_flowable, UnsupportedExeError,
+)
 from functions.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
 POOL_OK_COLOR = "#1e7d32"
 POOL_OVER_COLOR = "#c0392b"
-
-
-def _is_flowable(offset):
-    return FLOW_REGION_START <= offset < FLOW_REGION_END
 
 
 class MainExeViewer(QWidget):
@@ -35,6 +33,7 @@ class MainExeViewer(QWidget):
     def __init__(self):
         super().__init__()
         self.exe_path = None
+        self.build = None
         self.entries = []
 
         self._current_entry_item = None
@@ -109,9 +108,18 @@ class MainExeViewer(QWidget):
     def load_exe(self, exe_path):
         """Scan exe_path's string pool and populate the tree. Safe to call
         again with a new path (e.g. a freshly opened ISO/folder) - fully
-        resets prior state first."""
+        resets prior state first. For a build this tool doesn't know the
+        pointer tables for (see BUILDS), falls back to a read-only view
+        (self.build stays None) instead of refusing outright - browsing
+        doesn't touch any pointer table, only editing needs the mapping."""
         self.clear_cache()
         self.exe_path = exe_path
+        try:
+            self.build = detect_build(exe_path)
+            self.pool_toggle.setText(f"Text pool ({self.build['label']})")
+        except UnsupportedExeError:
+            self.build = None
+            self.pool_toggle.setText("Text pool (unrecognized build)")
         self.entries = _mainbin_entries(exe_path)
         self._original_texts = {e["offset"]: e["text"] for e in self.entries}
         self._entries_by_offset = {e["offset"]: e for e in self.entries}
@@ -132,7 +140,7 @@ class MainExeViewer(QWidget):
         return preview if len(preview) <= 60 else preview[:57] + "..."
 
     def _entry_label(self, entry):
-        pin = "[pinned] " if not _is_flowable(entry["offset"]) else ""
+        pin = "[pinned] " if not _is_flowable(entry["offset"], self.build) else ""
         return f"[{entry['offset']:#06x}] {pin}{self._preview_text(entry['text'])}"
 
     def _find_entry(self, offset):
@@ -149,7 +157,7 @@ class MainExeViewer(QWidget):
 
         self._current_entry_item = item
         current_text = self._entries_by_offset[offset]["text"]
-        pinned = not _is_flowable(offset)
+        pinned = not _is_flowable(offset, self.build)
 
         self._loading = True
         self.text_edit.setPlainText(current_text)
@@ -162,7 +170,7 @@ class MainExeViewer(QWidget):
         if self._loading or self._current_entry_item is None:
             return
         offset = self._current_entry_item.data(ENTRY_LOCATION_ROLE)
-        if offset is None or not _is_flowable(offset):
+        if offset is None or not _is_flowable(offset, self.build):
             return
 
         new_text = self.text_edit.toPlainText()
@@ -190,7 +198,7 @@ class MainExeViewer(QWidget):
         item.setText(self._entry_label(self._entries_by_offset[offset]))
 
     def _update_status(self, offset, text):
-        if not _is_flowable(offset):
+        if not _is_flowable(offset, self.build):
             self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText(
                 "This entry has no known pointer-table reference, so it's "
@@ -218,7 +226,14 @@ class MainExeViewer(QWidget):
         self.pool_label.setVisible(checked)
 
     def _update_pool_label(self):
-        state = compute_pool_state(self.entries, self.pending_edits_for_pool())
+        if self.build is None:
+            self.pool_label.setStyleSheet("color: gray;")
+            self.pool_label.setText(
+                "Unrecognized game build - pointer tables haven't been mapped for "
+                "this version, so entries are view-only. No editing or saving."
+            )
+            return
+        state = compute_pool_state(self.entries, self.build, self.pending_edits_for_pool())
         used, capacity, free = state["used"], state["capacity"], state["free"]
         if state["errors"]:
             self.pool_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR};")
@@ -259,7 +274,9 @@ class MainExeViewer(QWidget):
         return "edited" if self._edited_offsets else None
 
     def pool_overflowing(self):
-        state = compute_pool_state(self.entries, self.pending_edits_for_pool())
+        if self.build is None:
+            return False
+        state = compute_pool_state(self.entries, self.build, self.pending_edits_for_pool())
         return state["free"] < 0 or bool(state["errors"])
 
     def mark_exported(self):
@@ -275,6 +292,7 @@ class MainExeViewer(QWidget):
         """Full reset - called before loading a new exe, and when a new
         ISO/folder is opened with no MAIN.EXE found in it."""
         self.exe_path = None
+        self.build = None
         self.entries = []
         self._current_entry_item = None
         self._entry_items = {}
@@ -291,3 +309,4 @@ class MainExeViewer(QWidget):
         self.status_label.setStyleSheet("color: gray;")
         self.status_label.setText("")
         self.pool_label.setText("")
+        self.pool_toggle.setText("Text pool")
