@@ -17,9 +17,11 @@ from gui.txtd_viewer import TXTDViewer
 from gui.txt2_viewer import TXT2Viewer
 from gui.mdat_viewer import MDATViewer
 from gui.mainbin_viewer import MainExeViewer
+from gui.bins_viewer import BinsViewer
 from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from functions.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
+from functions.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
@@ -68,9 +70,11 @@ class MainWindow(QMainWindow):
         # ISO/folder (see open_iso_dialog/open_folder_dialog), left empty
         # otherwise.
         self.mainexe_viewer = MainExeViewer()
+        self.bins_viewer = BinsViewer()
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self.splitter, "Disc Files")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
+        self.main_tabs.addTab(self.bins_viewer, "BINs")
         self.setCentralWidget(self.main_tabs)
 
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
@@ -111,6 +115,7 @@ class MainWindow(QMainWindow):
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
         self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)
         self.mainexe_viewer.content_changed.connect(self.on_mainexe_content_changed)
+        self.bins_viewer.content_changed.connect(self.on_bins_content_changed)
         self.tree_view.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.setStatusBar(QStatusBar(self))
 
@@ -283,9 +288,7 @@ class MainWindow(QMainWindow):
         else:
             self.pending_txtd_edits.pop((chunk_index, file_index), None)
         self._set_txtd_tree_item_state(chunk_index, file_index, state)
-        self.statusBar().showMessage(
-            f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
-            f"use the 'Save IDX/DAT' button when ready.")
+        self._refresh_edit_status()
 
     def on_txt2_content_changed(self, chunk_index, file_index, id_val, dat_start, offset, current_data):
         """Called by TXT2Viewer every time an entry's text is edited. Same
@@ -302,20 +305,35 @@ class MainWindow(QMainWindow):
         else:
             self.pending_txtd_edits.pop((chunk_index, file_index), None)
         self._set_txtd_tree_item_state(chunk_index, file_index, state)
-        self.statusBar().showMessage(
-            f"{len(self.pending_txtd_edits)} file(s) have pending edits - "
-            f"use the 'Save IDX/DAT' button when ready.")
+        self._refresh_edit_status()
 
     def on_mainexe_content_changed(self):
         """Called by MainExeViewer every time an entry's text is edited.
         Its own pending edits are tracked entirely inside the viewer
-        (self.mainexe_viewer.pending_edits()/has_pending_edits()) - this
-        just keeps the status bar in sync, mirroring
-        on_txtd_content_changed/on_txt2_content_changed."""
+        (self.mainexe_viewer.pending_edits()/has_pending_edits())."""
+        self._refresh_edit_status()
+
+    def on_bins_content_changed(self):
+        """Same as on_mainexe_content_changed, for SOP.BIN's own pending
+        edits (self.bins_viewer.pending_edits()/has_pending_edits())."""
+        self._refresh_edit_status()
+
+    def _refresh_edit_status(self):
+        """Status bar text reflecting every pending-edit source at once -
+        called after each edit AND after a successful export, so it
+        doesn't go stale showing "pending" once everything's just been
+        saved (mark_exported() doesn't emit content_changed, so nothing
+        else would refresh this)."""
+        n_txtd = len(self.pending_txtd_edits)
         n_mainexe = len(self.mainexe_viewer.pending_edits())
-        self.statusBar().showMessage(
-            f"{len(self.pending_txtd_edits)} disc file(s) and {n_mainexe} MAIN.EXE "
-            f"entry(ies) have pending edits - use the 'Save IDX/DAT' button when ready.")
+        n_sop = len(self.bins_viewer.pending_edits())
+        if n_txtd == 0 and n_mainexe == 0 and n_sop == 0:
+            self.statusBar().showMessage("No pending edits.")
+        else:
+            self.statusBar().showMessage(
+                f"{n_txtd} disc file(s), {n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
+                f"SOP.BIN line(s) have pending edits - use the 'Save IDX/DAT' button when ready."
+            )
 
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
         """Colors a TXTD file's row in the main tree (under its NN_DATA
@@ -393,9 +411,10 @@ class MainWindow(QMainWindow):
         # not just what's newly dirty, or a previous export's changes
         # would silently get dropped from this one.
         mainexe_edits = self.mainexe_viewer.all_edits()
-        if not self.pending_txtd_edits and not mainexe_edits:
+        sop_edits = self.bins_viewer.all_edits()
+        if not self.pending_txtd_edits and not mainexe_edits and not sop_edits:
             QMessageBox.information(self, "Nothing to export",
-                                     "No TXTD/TXT2/MAIN.EXE edits are pending. Edit some entry text first.")
+                                     "No TXTD/TXT2/MAIN.EXE/SOP.BIN edits are pending. Edit some entry text first.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -436,10 +455,28 @@ class MainWindow(QMainWindow):
                 return
             output_paths.append(output_exe)
 
+        if sop_edits:
+            output_sop = os.path.join(out_dir, "SOP.BIN")
+            try:
+                sop_repack_pool(
+                    self.bins_viewer.sop_viewer.sop_path, self.bins_viewer.sop_viewer.entries,
+                    sop_edits, output_sop,
+                )
+            except SopEditError as e:
+                QMessageBox.critical(self, "Export failed", f"Failed to rebuild SOP.BIN: {e}")
+                return
+            output_paths.append(output_sop)
+
+        extras = []
+        if mainexe_edits:
+            extras.append("MAIN.EXE")
+        if sop_edits:
+            extras.append("SOP.BIN")
+        extras_suffix = "".join(f" + {name}" for name in extras)
         QMessageBox.information(
             self, "Export complete",
             "Wrote:\n" + "\n".join(output_paths) + "\n\n"
-            f"({len(edits)} disc file(s)" + (f" + MAIN.EXE" if mainexe_edits else "") + " repacked.)\n\n"
+            f"({len(edits)} disc file(s){extras_suffix} repacked.)\n\n"
             "Back up your original CD files, then copy these over them "
             "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
         )
@@ -452,6 +489,8 @@ class MainWindow(QMainWindow):
         self.pending_txtd_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
+        if sop_edits:
+            self.bins_viewer.mark_exported()
 
     def count_items(self, item):
         count = 0
@@ -486,6 +525,13 @@ class MainWindow(QMainWindow):
                 f"Found a MAIN.EXE, but couldn't load it for editing:\n\n{e}"
             )
 
+    def _load_bins(self, overlays, sop_path):
+        """Populate the BINs tab - overlays: [{"name", "size"}, ...] for
+        every file in the disc's BIN/ folder, sop_path: extracted
+        SOP.BIN path or None. Never refuses - an unrecognized SOP.BIN
+        build falls back to a read-only view instead (see BinsViewer)."""
+        self.bins_viewer.load_overlays(overlays, sop_path)
+
     def open_iso_dialog(self):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp
         folder and populate the tree view. See open_folder_dialog() for
@@ -497,11 +543,12 @@ class MainWindow(QMainWindow):
         if not iso_path:
             return
 
-        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits():
+        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits() or self.bins_viewer.has_pending_edits():
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) and "
-                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s) that haven't been "
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
+                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
+                f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
                 "exported yet. Opening a new ISO will discard them.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -519,6 +566,7 @@ class MainWindow(QMainWindow):
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
         self.mainexe_viewer.clear_cache()
+        self.bins_viewer.clear_cache()
         self.current_iso_path = None
 
         try:
@@ -542,6 +590,7 @@ class MainWindow(QMainWindow):
             return
 
         self._load_mainexe(self.iso_handler.extracted_files.get("MAIN.EXE"))
+        self._load_bins(self.iso_handler.bin_overlays, self.iso_handler.extracted_files.get("SOP.BIN"))
 
         self.current_iso_path = iso_path
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
@@ -576,11 +625,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits():
+        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits() or self.bins_viewer.has_pending_edits():
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s) and "
-                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s) that haven't been "
+                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
+                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
+                f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
                 "exported yet. Opening a new folder will discard them.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -598,6 +648,7 @@ class MainWindow(QMainWindow):
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
         self.mainexe_viewer.clear_cache()
+        self.bins_viewer.clear_cache()
 
         try:
             parse_idx_file(self, cd_folder)
@@ -618,6 +669,24 @@ class MainWindow(QMainWindow):
                 mainexe_path = candidate
                 break
         self._load_mainexe(mainexe_path)
+
+        # BIN/ sits alongside MAIN.EXE, same two candidate locations.
+        bin_dir = None
+        for candidate_dir in (folder, cd_folder):
+            candidate = os.path.join(candidate_dir, "BIN")
+            if os.path.isdir(candidate):
+                bin_dir = candidate
+                break
+        overlays = []
+        sop_path = None
+        if bin_dir:
+            for name in os.listdir(bin_dir):
+                full = os.path.join(bin_dir, name)
+                if os.path.isfile(full):
+                    overlays.append({"name": name.upper(), "size": os.path.getsize(full)})
+                    if name.upper() == "SOP.BIN":
+                        sop_path = full
+        self._load_bins(overlays, sop_path)
 
         self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
@@ -672,7 +741,8 @@ class MainWindow(QMainWindow):
         # all_edits(), not pending_edits() - see export_all_files()'s
         # own comment on this for why.
         mainexe_edits = self.mainexe_viewer.all_edits()
-        has_any_edits = bool(edits) or bool(mainexe_edits)
+        sop_edits = self.bins_viewer.all_edits()
+        has_any_edits = bool(edits) or bool(mainexe_edits) or bool(sop_edits)
 
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
@@ -690,7 +760,7 @@ class MainWindow(QMainWindow):
         replacements = {}
         tmp_repack_dir = None
         try:
-            if edits or mainexe_edits:
+            if edits or mainexe_edits or sop_edits:
                 tmp_repack_dir = tempfile.mkdtemp(prefix="tomba2edit_repack_")
 
             if edits:
@@ -716,6 +786,19 @@ class MainWindow(QMainWindow):
                 with open(tmp_exe, "rb") as f:
                     replacements["MAIN.EXE"] = f.read()
 
+            if sop_edits:
+                tmp_sop = os.path.join(tmp_repack_dir, "SOP.BIN")
+                try:
+                    sop_repack_pool(
+                        self.bins_viewer.sop_viewer.sop_path, self.bins_viewer.sop_viewer.entries,
+                        sop_edits, tmp_sop,
+                    )
+                except SopEditError as e:
+                    QMessageBox.critical(self, "Export failed", f"Failed to rebuild SOP.BIN:\n\n{e}")
+                    return
+                with open(tmp_sop, "rb") as f:
+                    replacements["SOP.BIN"] = f.read()
+
             build_iso(self.current_iso_path, replacements, output_path)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Failed to rebuild ISO:\n\n{e}")
@@ -724,8 +807,14 @@ class MainWindow(QMainWindow):
             if tmp_repack_dir:
                 shutil.rmtree(tmp_repack_dir, ignore_errors=True)
 
+        extras = []
+        if mainexe_edits:
+            extras.append("MAIN.EXE")
+        if sop_edits:
+            extras.append("SOP.BIN")
+        extras_suffix = "".join(f" + {name}" for name in extras)
         summary = (
-            f"({len(edits)} disc file(s)" + (" + MAIN.EXE" if mainexe_edits else "") + " repacked into it.)"
+            f"({len(edits)} disc file(s){extras_suffix} repacked into it.)"
             if has_any_edits else
             "(No pending edits - this is an unmodified copy of the opened disc.)"
         )
@@ -747,6 +836,8 @@ class MainWindow(QMainWindow):
             self.pending_txtd_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
+        if sop_edits:
+            self.bins_viewer.mark_exported()
 
     def closeEvent(self, event):
         if self.iso_handler:
