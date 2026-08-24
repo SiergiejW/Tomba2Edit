@@ -7,9 +7,11 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
-    QTextEdit, QLabel
+    QLabel, QTextEdit,
 )
 import gui.txtd.txtd as txtd
+from gui.margin_text_edit import MarginTextEdit
+from gui import panel_title
 
 
 # Import the necessary icons
@@ -68,6 +70,25 @@ _ANY_TAG_RE = re.compile(r"\{\$[^{}]*\}")
 # Dim gray used for the literal {$...} tag text itself, so it doesn't
 # visually compete with the actual dialogue around it.
 TAG_TOKEN_COLOR = "#8a8a8a"
+
+# On-screen width guide, mirroring SopViewer's - NOT yet confirmed by a
+# real in-game test the way SOP.BIN's 39-char limit was, so treat this
+# as a rough placeholder until it's actually verified. The five color
+# tags are zero-width (pure formatting, no glyph of their own). Every
+# other bracketed tag - {$END}, {$FF}, and non-"$" icon tags like
+# {TRIANGLE} - renders as exactly one glyph on screen, so it counts as
+# 1 character, not its own (much longer) text length.
+SCREEN_CHAR_LIMIT = 39
+STATUS_WARNING_COLOR = "#c0392b"
+SCREEN_OVERFLOW_COLOR = "#e67e22"
+
+_ANY_BRACKET_TAG_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _visible_length(text):
+    text = _COLOR_TAG_RE.sub("", text)
+    text = _ANY_BRACKET_TAG_RE.sub("X", text)
+    return len(text)
 
 
 class EntryTextHighlighter(QSyntaxHighlighter):
@@ -181,6 +202,7 @@ class TXTDViewer(QWidget):
 
         # Create the main layout
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Create a splitter to divide tree view and text edit
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -191,12 +213,21 @@ class TXTDViewer(QWidget):
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
 
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Master / Header"))
+        tree_panel_layout.addWidget(self.tree)
+        tree_panel.setLayout(tree_panel_layout)
+
         right_panel = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(panel_title.make_panel_title("Editing window"))
 
         # Create a QTextEdit for text input with larger font
-        self.text_edit = QTextEdit()
+        self.text_edit = MarginTextEdit(SCREEN_CHAR_LIMIT)
         self.text_edit.setPlaceholderText("Select an entry to view/edit its text")
         self.text_edit.setReadOnly(True)
 
@@ -221,7 +252,7 @@ class TXTDViewer(QWidget):
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter
-        splitter.addWidget(self.tree)
+        splitter.addWidget(tree_panel)
         splitter.addWidget(right_panel)
         splitter.setSizes([300, 700])
 
@@ -398,9 +429,11 @@ class TXTDViewer(QWidget):
             self._current_entry_item = selected_item
             self.text_edit.setPlainText(entry["text"])
             self.text_edit.setReadOnly(is_sentinel)
-            self.status_label.setText(
-                "This is an END marker (no text) - not editable." if is_sentinel else ""
-            )
+            if is_sentinel:
+                self.status_label.setStyleSheet("color: gray;")
+                self.status_label.setText("This is an END marker (no text) - not editable.")
+            else:
+                self._update_screen_width_status(entry["text"])
         except Exception as e:
             print(f"Error in on_tree_selection_changed: {e}")
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")
@@ -436,7 +469,30 @@ class TXTDViewer(QWidget):
                 self.chunk_index, self.file_index, self.id_val,
                 self.dat_start, self.offset, self.current_data
             )
+        self._update_screen_width_status(entry["text"], edited=True)
+
+    def _update_screen_width_status(self, text, edited=False):
+        """Warns when any ONE displayed line of text (tags stripped -
+        see _visible_length) runs past SCREEN_CHAR_LIMIT - checked per
+        line, not the entry's whole combined length, since a multi-line
+        entry's total easily exceeds the limit even when every actual
+        on-screen line fits fine. TXT1/TXTD only - TXT2 uses a
+        different font/width and has its own warnings in TXT2Viewer."""
+        visible_len = max((_visible_length(line) for line in text.split("\n")), default=0)
+        if visible_len > SCREEN_CHAR_LIMIT:
+            self.status_label.setStyleSheet(f"color: {SCREEN_OVERFLOW_COLOR}; font-weight: bold;")
+            prefix = "Edited. " if edited else ""
+            self.status_label.setText(
+                f"{prefix}longest line is {visible_len} characters (tags excluded) - "
+                f"likely to run off the screen (fits about {SCREEN_CHAR_LIMIT}, past "
+                f"the grey line above)."
+            )
+        elif edited:
+            self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText("Edited - will be included in the next Export Files.")
+        else:
+            self.status_label.setStyleSheet("color: gray;")
+            self.status_label.setText("")
 
     def mark_exported(self, chunk_index, file_index):
         """Called by the owning window right after a successful export

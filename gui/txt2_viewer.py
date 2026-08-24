@@ -9,6 +9,7 @@ from gui.txtd_viewer import (
     EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE,
 )
 from functions.txt2_packer import encode_text, TxtdPackError
+from gui import panel_title
 
 from icons.icons import icon_TXT2_entry
 
@@ -65,6 +66,7 @@ class TXT2Viewer(QWidget):
 
         # Create the main layout
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Create a splitter to divide tree view and text edit
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -75,9 +77,18 @@ class TXT2Viewer(QWidget):
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
 
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Entries window"))
+        tree_panel_layout.addWidget(self.tree)
+        tree_panel.setLayout(tree_panel_layout)
+
         right_panel = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(panel_title.make_panel_title("Editing window"))
 
         # Create a QTextEdit for text input with larger font
         self.text_edit = QTextEdit()
@@ -108,7 +119,7 @@ class TXT2Viewer(QWidget):
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter
-        splitter.addWidget(self.tree)
+        splitter.addWidget(tree_panel)
         splitter.addWidget(right_panel)
         splitter.setSizes([300, 700])
 

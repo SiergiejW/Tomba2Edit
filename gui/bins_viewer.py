@@ -6,16 +6,15 @@ functions/sop_editor.py - is currently understood well enough to edit;
 every other file is listed for visibility only.
 """
 
-import re
-
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, QStackedWidget
 
 from gui.sop_viewer import SopViewer
+from gui.txtd_viewer import EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR
+from gui import panel_title
 
 BIN_LOCATION_ROLE = Qt.ItemDataRole.UserRole + 1
-_AREA_OVERLAY_RE = re.compile(r"^A0[0-9A-L]\.BIN$", re.IGNORECASE)
 
 
 class BinsViewer(QWidget):
@@ -25,14 +24,24 @@ class BinsViewer(QWidget):
         super().__init__()
         self.sop_path = None
         self._overlays = []
+        self._sop_item = None
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tree = QTreeView()
         self.tree_model = QStandardItemModel()
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
+
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Entries window"))
+        tree_panel_layout.addWidget(self.tree)
+        tree_panel.setLayout(tree_panel_layout)
 
         self.stack = QStackedWidget()
         self.placeholder = QLabel(
@@ -46,13 +55,14 @@ class BinsViewer(QWidget):
 
         self.sop_viewer = SopViewer()
         self.sop_viewer.content_changed.connect(self.content_changed.emit)
+        self.sop_viewer.content_changed.connect(self._refresh_sop_item_color)
 
         self.stack.addWidget(self.placeholder)
         self.stack.addWidget(self.sop_viewer)
 
-        splitter.addWidget(self.tree)
+        splitter.addWidget(tree_panel)
         splitter.addWidget(self.stack)
-        splitter.setSizes([300, 700])
+        splitter.setSizes([350, 700])
         layout.addWidget(splitter)
         self.setLayout(layout)
 
@@ -61,33 +71,31 @@ class BinsViewer(QWidget):
     def load_overlays(self, overlays, sop_path):
         """overlays: [{"name": str, "size": int}, ...] as found on the
         disc (see ISOHandler.bin_overlays). sop_path: extracted SOP.BIN
-        path, or None if it wasn't found."""
+        path, or None if it wasn't found. Listed flat, matching how
+        they actually sit loose in the disc's BIN/ folder - no
+        synthetic grouping."""
         self.clear_cache()
         self._overlays = overlays
         self.sop_path = sop_path
 
         root = self.tree_model.invisibleRootItem()
-        area_overlays = sorted((o for o in overlays if _AREA_OVERLAY_RE.match(o["name"])), key=lambda o: o["name"])
-        other_overlays = sorted((o for o in overlays if not _AREA_OVERLAY_RE.match(o["name"])), key=lambda o: o["name"])
-
-        if area_overlays:
-            area_folder = QStandardItem(f"Area overlays ({len(area_overlays)})")
-            area_folder.setFlags(area_folder.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            for o in area_overlays:
-                area_folder.appendRow(self._make_item(o))
-            root.appendRow(area_folder)
-
-        for o in other_overlays:
-            root.appendRow(self._make_item(o))
+        for o in sorted(overlays, key=lambda o: o["name"]):
+            item = self._make_item(o)
+            if o["name"].upper() == "SOP.BIN":
+                self._sop_item = item
+            root.appendRow(item)
 
         if sop_path:
             self.sop_viewer.load_sop(sop_path)
+        self._refresh_sop_item_color()
 
     @staticmethod
     def _make_item(overlay):
         item = QStandardItem(f"{overlay['name']} ({overlay['size']} bytes)")
         item.setData(overlay["name"], BIN_LOCATION_ROLE)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if overlay["name"].upper() != "SOP.BIN":
+            item.setForeground(QBrush(QColor("gray")))
         return item
 
     def _on_tree_selection_changed(self):
@@ -100,6 +108,21 @@ class BinsViewer(QWidget):
             self.stack.setCurrentWidget(self.sop_viewer)
         else:
             self.stack.setCurrentWidget(self.placeholder)
+
+    def _refresh_sop_item_color(self):
+        """Colors SOP.BIN's own row in this tree - orange while it has
+        pending edits, green once exported - mirroring how TXTD/TXT2
+        files are colored in the main disc tree (see
+        SopViewer.pending_state())."""
+        if self._sop_item is None:
+            return
+        state = self.sop_viewer.pending_state()
+        if state == "edited":
+            self._sop_item.setForeground(QBrush(QColor(EDITED_ENTRY_COLOR)))
+        elif state == "exported":
+            self._sop_item.setForeground(QBrush(QColor(EXPORTED_ENTRY_COLOR)))
+        else:
+            self._sop_item.setData(None, Qt.ItemDataRole.ForegroundRole)
 
     def has_pending_edits(self):
         return self.sop_viewer.has_pending_edits()
@@ -115,10 +138,12 @@ class BinsViewer(QWidget):
 
     def mark_exported(self):
         self.sop_viewer.mark_exported()
+        self._refresh_sop_item_color()
 
     def clear_cache(self):
         self.sop_path = None
         self._overlays = []
+        self._sop_item = None
         self.tree_model.clear()
         self.sop_viewer.clear_cache()
         self.stack.setCurrentWidget(self.placeholder)

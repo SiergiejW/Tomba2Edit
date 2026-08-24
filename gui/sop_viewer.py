@@ -9,13 +9,16 @@ reference table and shared "blank" pointer this relies on).
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
-from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
+from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, QToolButton, QTextEdit
 
 from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
-from functions.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError
+from gui.margin_text_edit import MarginTextEdit
+from gui import panel_title
+from functions.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
 from functions.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
+SCREEN_OVERFLOW_COLOR = "#e67e22"
 POOL_OK_COLOR = "#1e7d32"
 POOL_OVER_COLOR = "#c0392b"
 
@@ -38,6 +41,7 @@ class SopViewer(QWidget):
         self._original_texts = {}
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tree = QTreeView()
@@ -45,11 +49,20 @@ class SopViewer(QWidget):
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
 
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Entry lines"))
+        tree_panel_layout.addWidget(self.tree)
+        tree_panel.setLayout(tree_panel_layout)
+
         right_panel = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(panel_title.make_panel_title("Editing window"))
 
-        self.text_edit = QTextEdit()
+        self.text_edit = MarginTextEdit(SCREEN_CHAR_LIMIT)
         self.text_edit.setPlaceholderText("Select a line to view/edit its text")
         self.text_edit.setReadOnly(True)
         font = QFont("Courier New", 12)
@@ -85,7 +98,7 @@ class SopViewer(QWidget):
         right_layout.addWidget(self.status_label)
         right_panel.setLayout(right_layout)
 
-        splitter.addWidget(self.tree)
+        splitter.addWidget(tree_panel)
         splitter.addWidget(right_panel)
         splitter.setSizes([350, 700])
         layout.addWidget(splitter)
@@ -198,13 +211,21 @@ class SopViewer(QWidget):
             return
 
         try:
-            encode_bytes(text)
+            encoded_len = len(encode_bytes(text))
         except MainBinParseError as e:
             self.status_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR}; font-weight: bold;")
             self.status_label.setText(f"Can't encode this text: {e}")
             return
 
-        if offset in self._edited_offsets:
+        edited_prefix = "Edited. " if offset in self._edited_offsets else ""
+        if encoded_len > SCREEN_CHAR_LIMIT:
+            self.status_label.setStyleSheet(f"color: {SCREEN_OVERFLOW_COLOR}; font-weight: bold;")
+            self.status_label.setText(
+                f"{edited_prefix}{encoded_len} characters - likely to run off the screen "
+                f"(fits about {SCREEN_CHAR_LIMIT}, past the grey line above). This is a "
+                f"display concern, separate from the save's byte budget."
+            )
+        elif edited_prefix:
             self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText("Edited - will be included in the next save.")
         else:
@@ -255,6 +276,16 @@ class SopViewer(QWidget):
 
     def has_pending_edits(self):
         return bool(self._edited_offsets)
+
+    def pending_state(self):
+        """"edited" | "exported" | None for the file as a whole -
+        mirrors TXTDViewer/TXT2Viewer's own pending_state(), so a
+        parent tree can color SOP.BIN's own row the same way."""
+        if self._edited_offsets:
+            return "edited"
+        if self._exported_offsets:
+            return "exported"
+        return None
 
     def pool_overflowing(self):
         if self.build is None:

@@ -14,8 +14,10 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
 
 from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
+from gui import panel_title
 from functions.mainbin_editor import (
     _mainbin_entries, compute_pool_state, detect_build, _is_flowable, UnsupportedExeError,
+    categorize_entries, PINNED_CATEGORY,
 )
 from functions.mainbin_parser import encode_bytes, MainBinParseError
 
@@ -46,6 +48,7 @@ class MainExeViewer(QWidget):
         self._original_texts = {}
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -54,9 +57,18 @@ class MainExeViewer(QWidget):
         self.tree.setModel(self.tree_model)
         self.tree.setHeaderHidden(True)
 
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Entries window"))
+        tree_panel_layout.addWidget(self.tree)
+        tree_panel.setLayout(tree_panel_layout)
+
         right_panel = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(panel_title.make_panel_title("Editing window"))
 
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("Select an entry to view/edit its text")
@@ -96,7 +108,7 @@ class MainExeViewer(QWidget):
         right_layout.addWidget(self.status_label)
         right_panel.setLayout(right_layout)
 
-        splitter.addWidget(self.tree)
+        splitter.addWidget(tree_panel)
         splitter.addWidget(right_panel)
         splitter.setSizes([350, 700])
         layout.addWidget(splitter)
@@ -125,19 +137,44 @@ class MainExeViewer(QWidget):
         self._entries_by_offset = {e["offset"]: e for e in self.entries}
 
         root = self.tree_model.invisibleRootItem()
-        for e in self.entries:
-            item = QStandardItem(self._entry_label(e))
-            item.setData(e["offset"], ENTRY_LOCATION_ROLE)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self._entry_items[e["offset"]] = item
-            root.appendRow(item)
+        categories = categorize_entries(exe_path, self.entries) if self.build is not None else None
 
+        if categories is not None:
+            # Grouped by which pointer table references each entry (see
+            # mainbin_editor.BUILDS' "tables" and categorize_entries) -
+            # purely a browsing aid, has no bearing on what's editable.
+            category_order = [t["label"] for t in self.build["tables"]] + [PINNED_CATEGORY]
+            folders = {}
+            for label in category_order:
+                folder = QStandardItem(label)
+                folder.setFlags(folder.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                folder.setForeground(QBrush(QColor("gray")))
+                folders[label] = folder
+            for e in self.entries:
+                item = QStandardItem(self._entry_label(e))
+                item.setData(e["offset"], ENTRY_LOCATION_ROLE)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._entry_items[e["offset"]] = item
+                folders[categories[e["offset"]]].appendRow(item)
+            for label in category_order:
+                folder = folders[label]
+                if folder.rowCount() > 0:
+                    folder.setText(f"{label} ({folder.rowCount()})")
+                    root.appendRow(folder)
+        else:
+            for e in self.entries:
+                item = QStandardItem(self._entry_label(e))
+                item.setData(e["offset"], ENTRY_LOCATION_ROLE)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._entry_items[e["offset"]] = item
+                root.appendRow(item)
+
+        self.tree.expandAll()
         self._update_pool_label()
 
     @staticmethod
     def _preview_text(text):
-        preview = " ".join(text.split())
-        return preview if len(preview) <= 60 else preview[:57] + "..."
+        return " ".join(text.split())
 
     def _entry_label(self, entry):
         pin = "[pinned] " if not _is_flowable(entry["offset"], self.build) else ""

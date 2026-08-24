@@ -40,6 +40,15 @@ from functions.mainbin_parser import scan_entries, encode_bytes, MainBinParseErr
 
 TEXT_REGION_START = 0x58  # fixed header size, identical across every known build
 
+# On-screen width limit, in characters - separate from the byte-pool budget
+# above: a line can fit the shared pool and still run off both edges of the
+# screen, since the renderer appears to position each line assuming
+# roughly the original English line's width. Empirically found (not
+# derived from any file structure) - "The letter1 says that Tomba's
+# childhood" (39 chars) was the longest line that stayed fully on screen
+# in a real in-game test; one character more started clipping.
+SCREEN_CHAR_LIMIT = 39
+
 BUILDS = {
     "en": {
         "label": "English",

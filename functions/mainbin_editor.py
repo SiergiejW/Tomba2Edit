@@ -30,7 +30,12 @@ BUILDS = {
         "label": "English",
         "file_size": 716800,
         "prefix_sha256": "0bcbb30fa93e299480a874c831681da88a8ab1fc9e7ba076e2240a0205b05571",
-        "tables": [(0x93054, 0x931c8), (0x93364, 0x933e4), (0x933e8, 0x93bc4), (0x93bd8, 0x942fc)],
+        "tables": [
+            {"range": (0x93054, 0x931c8), "label": "System / Menu"},
+            {"range": (0x93364, 0x933e4), "label": "Area Names"},
+            {"range": (0x933e8, 0x93bc4), "label": "Item Database"},
+            {"range": (0x93bd8, 0x942fc), "label": "Quest / Event Log"},
+        ],
         "flow_region_start": 0xE92,
         "flow_region_end": 0x521C,
         "scan_end": 0x5224,
@@ -39,7 +44,11 @@ BUILDS = {
         "label": "Spanish",
         "file_size": 718848,
         "prefix_sha256": "d7c44106b2be320600977a65c983ea54e15eaa6fbefbfb0e9e30bf6ed4e4dd9a",
-        "tables": [(0x93b60, 0x93ce0), (0x93e7c, 0x946dc), (0x946f0, 0x94e14)],
+        "tables": [
+            {"range": (0x93b60, 0x93ce0), "label": "System / Menu"},
+            {"range": (0x93e7c, 0x946dc), "label": "Area Names / Item Database"},
+            {"range": (0x946f0, 0x94e14), "label": "Quest / Event Log"},
+        ],
         "flow_region_start": 0xE92,
         "flow_region_end": 0x56D4,
         "scan_end": 0x56DC,
@@ -48,7 +57,11 @@ BUILDS = {
         "label": "German",
         "file_size": 718848,
         "prefix_sha256": "63dcbd62e2bf281c225fac1a5ae97ed1f4f6a511aa9f2718d8ac0e35374d1440",
-        "tables": [(0x93930, 0x93ab0), (0x93c4c, 0x944ac), (0x944c0, 0x94be8)],
+        "tables": [
+            {"range": (0x93930, 0x93ab0), "label": "System / Menu"},
+            {"range": (0x93c4c, 0x944ac), "label": "Area Names / Item Database"},
+            {"range": (0x944c0, 0x94be8), "label": "Quest / Event Log"},
+        ],
         "flow_region_start": 0xE92,
         "flow_region_end": 0x53EC,
         "scan_end": 0x53F4,
@@ -140,7 +153,8 @@ def build_reference_index(exe_path, entries):
     entry_by_ram = {RAM_BASE + e["offset"] - EXE_HEADER_SIZE: e for e in entries}
     refs = {e["offset"]: [] for e in entries}
 
-    for start, end in build["tables"]:
+    for table in build["tables"]:
+        start, end = table["range"]
         for off in range(start, end + 4, 4):
             v = struct.unpack_from("<I", exe, off)[0]
             e = entry_by_ram.get(v)
@@ -148,6 +162,34 @@ def build_reference_index(exe_path, entries):
                 refs[e["offset"]].append(off)
 
     return refs
+
+
+PINNED_CATEGORY = "Pinned"
+
+
+def categorize_entries(exe_path, entries):
+    """{entry_offset: table_label} for every entry - which of BUILDS'
+    named tables (see module docstring) references it, or
+    PINNED_CATEGORY for the 6 entries with no known reference at all.
+    Purely a GUI grouping aid - has no bearing on what's editable
+    (that's still _is_flowable/FLOW_REGION_START/END)."""
+    build = detect_build(exe_path)
+
+    with open(exe_path, "rb") as f:
+        exe = f.read()
+
+    entry_by_ram = {RAM_BASE + e["offset"] - EXE_HEADER_SIZE: e for e in entries}
+    categories = {e["offset"]: PINNED_CATEGORY for e in entries}
+
+    for table in build["tables"]:
+        start, end = table["range"]
+        for off in range(start, end + 4, 4):
+            v = struct.unpack_from("<I", exe, off)[0]
+            e = entry_by_ram.get(v)
+            if e is not None:
+                categories[e["offset"]] = table["label"]
+
+    return categories
 
 
 def _is_flowable(offset, build):

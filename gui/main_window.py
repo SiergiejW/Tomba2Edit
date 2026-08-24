@@ -1,11 +1,11 @@
 import os
 import struct
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QIcon, QImage, QPixmap, QColor, QBrush
+from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup, QIcon, QImage, QPixmap, QColor, QBrush
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
-    QTabWidget,
+    QTabWidget, QApplication,
 )
 from icons.icons import (icon_window, icon_disc,
                          icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
@@ -18,6 +18,8 @@ from gui.txt2_viewer import TXT2Viewer
 from gui.mdat_viewer import MDATViewer
 from gui.mainbin_viewer import MainExeViewer
 from gui.bins_viewer import BinsViewer
+from gui import theme
+from gui import panel_title
 from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from functions.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
@@ -60,7 +62,14 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
         self.tree_view = QTreeView()
-        self.splitter.addWidget(self.tree_view)
+        tree_panel = QWidget()
+        tree_panel_layout = QVBoxLayout()
+        tree_panel_layout.setContentsMargins(0, 0, 0, 0)
+        tree_panel_layout.setSpacing(0)
+        tree_panel_layout.addWidget(panel_title.make_panel_title("Main tree view"))
+        tree_panel_layout.addWidget(self.tree_view)
+        tree_panel.setLayout(tree_panel_layout)
+        self.splitter.addWidget(tree_panel)
         self.widgets_area = QStackedWidget()
         self.splitter.addWidget(self.widgets_area)
 
@@ -72,7 +81,7 @@ class MainWindow(QMainWindow):
         self.mainexe_viewer = MainExeViewer()
         self.bins_viewer = BinsViewer()
         self.main_tabs = QTabWidget()
-        self.main_tabs.addTab(self.splitter, "Disc Files")
+        self.main_tabs.addTab(self.splitter, "DAT Assets")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
         self.setCentralWidget(self.main_tabs)
@@ -119,11 +128,8 @@ class MainWindow(QMainWindow):
         self.tree_view.selectionModel().selectionChanged.connect(self.on_tree_selection_changed)
         self.setStatusBar(QStatusBar(self))
 
-        container_widget = QWidget()
-        container_layout = QVBoxLayout()
         toolbar = QToolBar("Main Toolbar")
-        container_layout.addWidget(toolbar)
-        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open ISO", self)
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open ISO/BIN", self)
         open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
 
         open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Folder", self)
@@ -140,29 +146,59 @@ class MainWindow(QMainWindow):
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
-        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO", self)
+        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO/BIN", self)
         export_iso_action.setToolTip(
             "Rebuild the opened disc as a new .iso, with any pending TXTD/TXT2 edits applied "
             "(everything else on the disc is carried over unchanged)"
         )
         export_iso_action.triggered.connect(self.export_iso)
         self.export_iso_action = export_iso_action
+        open_action.triggered.connect(self.open_iso_dialog)
 
+        # Same QAction instances go in both the toolbar and the File menu -
+        # Qt keeps them in sync automatically, no separate menu-only copies.
         toolbar.addAction(open_action)
         toolbar.addAction(open_folder_action)
         toolbar.addAction(export_action)
         toolbar.addAction(export_files_action)
         toolbar.addAction(export_iso_action)
-        open_action.triggered.connect(self.open_iso_dialog)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.addToolBar(toolbar)
+
+        file_menu = self.menuBar().addMenu("&File")
+        file_menu.addAction(open_action)
+        file_menu.addAction(open_folder_action)
+        file_menu.addSeparator()
+        file_menu.addAction(export_action)
+        file_menu.addAction(export_files_action)
+        file_menu.addAction(export_iso_action)
+
+        settings_menu = self.menuBar().addMenu("&Settings")
+        theme_menu = settings_menu.addMenu("Theme")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        self._theme_settings = QSettings("Tomba2Edit", "Tomba2Edit")
+        current_theme = self._theme_settings.value("theme", theme.DEFAULT_THEME)
+        if current_theme not in theme.THEMES:
+            current_theme = theme.DEFAULT_THEME  # stale value from an older theme key set
+        theme_labels = {"dark": "Dark (default)", "bright": "Bright"}
+        for theme_name in theme.THEMES:
+            action = QAction(theme_labels[theme_name], self, checkable=True)
+            action.setChecked(theme_name == current_theme)
+            action.triggered.connect(lambda checked, t=theme_name: self._apply_and_save_theme(t))
+            theme_group.addAction(action)
+            theme_menu.addAction(action)
+        theme.apply_theme(QApplication.instance(), current_theme)
 
         self.folder_info_label = QLabel("Select a Tomba! 2 ISO file to begin")
-        self.folder_info_label.setWordWrap(True)
-        container_layout.addWidget(self.folder_info_label)
-        container_widget.setLayout(container_layout)
-        self.setMenuWidget(container_widget)
+        self.statusBar().addPermanentWidget(self.folder_info_label)
 
-        initial_treeview_width = int(self.width() * 0.30)
+        # Fixed to match the left-pane width used by MainExeViewer/BinsViewer
+        # (gui/mainbin_viewer.py, gui/bins_viewer.py) so the tree/entries
+        # pane doesn't visibly jump width when switching tabs.
+        initial_treeview_width = 350
         self.splitter.setSizes([initial_treeview_width, self.width() - initial_treeview_width])
 
     def id_convert(main_window, DAT, id, pointer_start):
@@ -238,7 +274,8 @@ class MainWindow(QMainWindow):
                     self,
                     "Save Trail Bytes",
                     f"AREA_{chunk_index:02X}_TRAIL_{trail_index:02X}_OFFSET_{offset:08X}.bin",
-                    "Binary Files (*.bin)"
+                    "Binary Files (*.bin)",
+                    options=theme.file_dialog_options()
                 )
 
             elif additional_data[0] in ("vram_compressed", "vram_uncompressed"):
@@ -262,7 +299,8 @@ class MainWindow(QMainWindow):
                     self,
                     "Save Exported Bytes",
                     f"AREA_{chunk_index:02X}_FILE_{file_index:02X}_ID_{id:X}_OFFSET_{dat_start + offset:08X}.bin",
-                    "Binary Files (*.bin)"
+                    "Binary Files (*.bin)",
+                    options=theme.file_dialog_options()
                 )
 
             if save_path:
@@ -319,20 +357,26 @@ class MainWindow(QMainWindow):
         self._refresh_edit_status()
 
     def _refresh_edit_status(self):
-        """Status bar text reflecting every pending-edit source at once -
-        called after each edit AND after a successful export, so it
-        doesn't go stale showing "pending" once everything's just been
-        saved (mark_exported() doesn't emit content_changed, so nothing
-        else would refresh this)."""
+        """Status bar text AND the tabs' own "*" unsaved-marker, both
+        reflecting every pending-edit source at once - called after
+        each edit AND after a successful export, so neither goes stale
+        showing "pending" once everything's just been saved
+        (mark_exported() doesn't emit content_changed, so nothing else
+        would refresh this)."""
         n_txtd = len(self.pending_txtd_edits)
         n_mainexe = len(self.mainexe_viewer.pending_edits())
         n_sop = len(self.bins_viewer.pending_edits())
+
+        self.main_tabs.setTabText(0, "DAT Assets*" if n_txtd else "DAT Assets")
+        self.main_tabs.setTabText(1, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
+        self.main_tabs.setTabText(2, "BINs*" if n_sop else "BINs")
+
         if n_txtd == 0 and n_mainexe == 0 and n_sop == 0:
             self.statusBar().showMessage("No pending edits.")
         else:
             self.statusBar().showMessage(
                 f"{n_txtd} disc file(s), {n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
-                f"SOP.BIN line(s) have pending edits - use the 'Save IDX/DAT' button when ready."
+                f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button when ready."
             )
 
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
@@ -421,7 +465,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
             return
 
-        out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder for the modified DAT + IDX")
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Choose output folder for the modified DAT + IDX",
+            "", options=QFileDialog.Option.ShowDirsOnly | theme.file_dialog_options()
+        )
         if not out_dir:
             return
 
@@ -491,6 +538,7 @@ class MainWindow(QMainWindow):
             self.mainexe_viewer.mark_exported()
         if sop_edits:
             self.bins_viewer.mark_exported()
+        self._refresh_edit_status()
 
     def count_items(self, item):
         count = 0
@@ -538,7 +586,8 @@ class MainWindow(QMainWindow):
         opening an already-extracted folder instead."""
         iso_path, _ = QFileDialog.getOpenFileName(
             self, "Select Tomba! 2 ISO", "",
-            "Disc Images (*.iso *.bin *.img);;All Files (*)"
+            "Disc Images (*.iso *.bin *.img);;All Files (*)",
+            options=theme.file_dialog_options()
         )
         if not iso_path:
             return
@@ -568,6 +617,7 @@ class MainWindow(QMainWindow):
         self.mainexe_viewer.clear_cache()
         self.bins_viewer.clear_cache()
         self.current_iso_path = None
+        self._refresh_edit_status()
 
         try:
             self.iso_handler.extract_iso(iso_path)
@@ -600,7 +650,8 @@ class MainWindow(QMainWindow):
         Accepts either the parent folder (with a CD subfolder) or the CD
         folder itself."""
         folder = QFileDialog.getExistingDirectory(
-            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
+            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)",
+            "", options=QFileDialog.Option.ShowDirsOnly | theme.file_dialog_options()
         )
         if not folder:
             return
@@ -649,6 +700,7 @@ class MainWindow(QMainWindow):
         self.txt2_viewer.clear_cache()
         self.mainexe_viewer.clear_cache()
         self.bins_viewer.clear_cache()
+        self._refresh_edit_status()
 
         try:
             parse_idx_file(self, cd_folder)
@@ -747,7 +799,8 @@ class MainWindow(QMainWindow):
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
         output_path, _ = QFileDialog.getSaveFileName(
-            self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)"
+            self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)",
+            options=theme.file_dialog_options()
         )
         if not output_path:
             return
@@ -838,6 +891,7 @@ class MainWindow(QMainWindow):
             self.mainexe_viewer.mark_exported()
         if sop_edits:
             self.bins_viewer.mark_exported()
+        self._refresh_edit_status()
 
     def closeEvent(self, event):
         if self.iso_handler:
@@ -849,6 +903,10 @@ class MainWindow(QMainWindow):
         dat_ptr = item & 0x00FFFFFF
         return (dat_id, dat_ptr)
 
+
+    def _apply_and_save_theme(self, theme_name):
+        theme.apply_theme(QApplication.instance(), theme_name)
+        self._theme_settings.setValue("theme", theme_name)
 
     def setup_tree_view(self):
         self.tree_view.setModel(QStandardItemModel())
