@@ -7,7 +7,7 @@ whose values are always base+constant offsets - cross-checked
 identical (same offset, every entry) across English/German/Spanish/
 Japanese builds - so those aren't text pointers.
 
-The 12 story lines ARE individually addressed, though: a separate
+The 12 story lines are individually addressed: a separate
 table further into the file (REF_TABLE below) holds each line's own
 RAM address, used by the scroll-animation code to know which line is
 current at a given frame - some slots repeat a line's address across
