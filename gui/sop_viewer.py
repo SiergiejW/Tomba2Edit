@@ -1,10 +1,10 @@
 """
 GUI viewer/editor for BIN/SOP.BIN's intro story-crawl text (see
 functions/sop_editor.py for the scanning/packing logic this wraps).
-Same tree-on-left/text-on-right pattern as MainExeViewer, but each
-line has its OWN fixed byte budget instead of sharing one pool - see
-sop_editor's own docstring for why (confirmed by a real in-game test:
-lines here can't move or grow past their original span at all).
+Same tree-on-left/text-on-right, foldable-pool-budget pattern as
+MainExeViewer - lines share one fixed-capacity pool, tightly repacked
+and reference-patched on save (see sop_editor's own docstring for the
+reference table this relies on).
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -12,7 +12,7 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
 
 from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
-from functions.sop_editor import sop_entries, line_state, detect_build, UnsupportedSopError
+from functions.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError
 from functions.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
@@ -64,7 +64,7 @@ class SopViewer(QWidget):
         self.pool_toggle.setChecked(True)
         self.pool_toggle.setArrowType(Qt.ArrowType.DownArrow)
         self.pool_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.pool_toggle.setText("Overview")
+        self.pool_toggle.setText("Text pool")
         self.pool_toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
         self.pool_toggle.toggled.connect(self._on_pool_toggle)
 
@@ -102,10 +102,10 @@ class SopViewer(QWidget):
         self.sop_path = sop_path
         try:
             self.build = detect_build(sop_path)
-            self.pool_toggle.setText(f"Overview ({self.build['label']})")
+            self.pool_toggle.setText(f"Text pool ({self.build['label']})")
         except UnsupportedSopError:
             self.build = None
-            self.pool_toggle.setText("Overview (unrecognized build)")
+            self.pool_toggle.setText("Text pool (unrecognized build)")
         self.entries = sop_entries(sop_path)
         self._original_texts = {e["offset"]: e["text"] for e in self.entries}
         self._entries_by_offset = {e["offset"]: e for e in self.entries}
@@ -113,11 +113,10 @@ class SopViewer(QWidget):
         # The story displays bottom-to-top (newest line at the bottom,
         # scrolling up) - i.e. in FILE order reversed - so show it that
         # way in the tree too. The last entry in file order is always a
-        # 1-3 byte non-narrative fragment (confirmed identical role in
-        # every known build: alignment padding up to the pool's 4-byte
-        # boundary, not a displayed line) - hidden from the tree
-        # entirely; it stays in self.entries so repack_pool still packs
-        # it with everyone else, just never shown or selectable.
+        # 1-3 byte non-narrative fragment (alignment padding, not a
+        # displayed line - see sop_editor's pinned-entry handling) -
+        # hidden from the tree entirely; it stays in self.entries so
+        # repack_pool still leaves it untouched in place.
         display_order = [e for e in reversed(self.entries) if not self._is_trailing_filler(e["offset"])]
 
         root = self.tree_model.invisibleRootItem()
@@ -198,25 +197,19 @@ class SopViewer(QWidget):
             self.status_label.setText("Unrecognized game build - view-only, not editable.")
             return
 
-        entry = self._entries_by_offset[offset]
-        state = line_state(entry, {offset: text})
-        if state["error"]:
+        try:
+            encode_bytes(text)
+        except MainBinParseError as e:
             self.status_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR}; font-weight: bold;")
-            self.status_label.setText(f"Can't encode this text: {state['error']}")
+            self.status_label.setText(f"Can't encode this text: {e}")
             return
 
-        used, capacity, free = state["used"], state["capacity"], state["free"]
-        edited_prefix = "Edited. " if offset in self._edited_offsets else ""
-        if free < 0:
-            self.status_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR}; font-weight: bold;")
-            self.status_label.setText(
-                f"{edited_prefix}This line encodes to {used} byte(s), {-free} over its "
-                f"fixed {capacity}-byte limit. It's read from a hardcoded address, not a "
-                f"relocatable table, so it can't grow - shorten it or pad with spaces."
-            )
+        if offset in self._edited_offsets:
+            self.status_label.setStyleSheet("color: gray;")
+            self.status_label.setText("Edited - will be included in the next save.")
         else:
             self.status_label.setStyleSheet("color: gray;")
-            self.status_label.setText(f"{edited_prefix}{used} / {capacity} bytes used - {free} free.")
+            self.status_label.setText("")
 
     def _on_pool_toggle(self, checked):
         self.pool_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
@@ -230,33 +223,22 @@ class SopViewer(QWidget):
                 "this version, so lines are view-only. No editing or saving."
             )
             return
-        edits = self.pending_edits_for_pool()
-        over_budget = []
-        invalid = []
-        for e in self.entries:
-            if self._is_trailing_filler(e["offset"]):
-                continue
-            state = line_state(e, edits)
-            if state["error"]:
-                invalid.append(e["offset"])
-            elif state["free"] < 0:
-                over_budget.append(e["offset"])
-
-        if invalid:
+        state = compute_pool_state(self.entries, self.build, self.pending_edits_for_pool())
+        used, capacity, free = state["used"], state["capacity"], state["free"]
+        if state["errors"]:
             self.pool_label.setStyleSheet(f"color: {STATUS_WARNING_COLOR};")
-            self.pool_label.setText(f"{len(invalid)} line(s) have invalid text - fix those before saving.")
-        elif over_budget:
+            self.pool_label.setText(
+                f"Text pool: {len(state['errors'])} line(s) have invalid text - fix "
+                f"those before the byte count is meaningful."
+            )
+        elif free >= 0:
+            self.pool_label.setStyleSheet(f"color: {POOL_OK_COLOR};")
+            self.pool_label.setText(f"Text pool: {used} / {capacity} bytes used - {free} free")
+        else:
             self.pool_label.setStyleSheet(f"color: {POOL_OVER_COLOR};")
             self.pool_label.setText(
-                f"{len(over_budget)} line(s) are over their own fixed byte limit - "
-                f"shorten them before saving. Each line has its own limit; they "
-                f"don't share space."
-            )
-        else:
-            self.pool_label.setStyleSheet(f"color: {POOL_OK_COLOR};")
-            self.pool_label.setText(
-                f"All {len(self.entries) - 1} line(s) fit their original space. "
-                f"Each line has its own fixed byte limit - see it selected below."
+                f"Text pool: {used} / {capacity} bytes used - OVER BUDGET by {-free} "
+                f"byte(s). Shorten some lines before saving."
             )
 
     def pending_edits_for_pool(self):
@@ -277,11 +259,8 @@ class SopViewer(QWidget):
     def pool_overflowing(self):
         if self.build is None:
             return False
-        edits = self.pending_edits_for_pool()
-        return any(
-            line_state(e, edits)["error"] or line_state(e, edits)["free"] < 0
-            for e in self.entries
-        )
+        state = compute_pool_state(self.entries, self.build, self.pending_edits_for_pool())
+        return state["free"] < 0 or bool(state["errors"])
 
     def mark_exported(self):
         for offset in list(self._edited_offsets):
@@ -310,4 +289,4 @@ class SopViewer(QWidget):
         self.status_label.setStyleSheet("color: gray;")
         self.status_label.setText("")
         self.pool_label.setText("")
-        self.pool_toggle.setText("Overview")
+        self.pool_toggle.setText("Text pool")
