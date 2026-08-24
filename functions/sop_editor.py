@@ -2,29 +2,35 @@
 Fixed-budget editor for BIN/SOP.BIN's intro story-crawl text.
 
 SOP.BIN is a raw overlay (no PS-EXE header) found alongside MAIN.EXE at
-BIN/SOP.BIN on the disc. Its first 0x58 bytes are a 20-entry table
-whose values are always base+constant offsets - cross-checked
+BIN/SOP.BIN on the disc. Its first 0x58 bytes are a fixed 20-entry
+table whose values are always base+constant offsets - cross-checked
 identical (same offset, every entry) across English/German/Spanish/
-Japanese builds - so those aren't text pointers.
+Japanese builds, so none of them are text pointers.
 
-The 12 story lines are individually addressed: a separate
-table further into the file (REF_TABLE below) holds each line's own
-RAM address, used by the scroll-animation code to know which line is
-current at a given frame - some slots repeat a line's address across
-several consecutive "hold" frames, and some point at blank padding
-between lines, but every one of the 12 lines appears there exactly
-once. This was missed in an earlier version of this module (which
-assumed no such table existed and tightly repacked the lines assuming
-they were read start-to-finish) - confirmed wrong by a real in-game
-test, and the real table found afterward by brute-force address
-search, cross-validated across all three known builds the same way
-mainbin_editor.py's TABLES were.
+The 12 story lines ARE individually addressed: a scroll-animation
+reference table further into the file (REF_TABLE, found by brute-force
+address search after a naive repack broke display) holds one RAM
+address per animation frame - most frames just repeat the previous
+line's address ("hold" this line on screen) or a single shared "blank"
+address used during pause frames between lines, and each of the 12
+lines' addresses appears there exactly once. Fully mapped and
+cross-checked across all three known builds: every slot in every
+build's table is accounted for as either one of the 12 real lines or
+that one repeated blank address - nothing unexplained left over.
 
-With that table known, this now works exactly like mainbin_editor.py's
-pool: a fixed-capacity region, tightly repacked on save, every line's
-reference re-patched to match its new position. The pinned trailing
-filler byte (alignment padding, not a displayed line - see
-FLOW_REGION_END) has no reference anywhere and is never touched.
+The blank address matters here for a specific reason: it isn't a
+special sentinel the code compares against (confirmed by an actual
+in-game test - if it were, the display would have stayed blank
+regardless of what byte ended up there; instead it rendered whatever
+real text a naive repack put at that old address). It's read through
+the exact same generic pointer-dereference path as every real line,
+and just happens to point at a run of original padding bytes that
+decodes to an empty string. So repacking is safe as long as: (1) every
+real line's own reference is repatched to its new position (already
+required), and (2) the blank address is *also* repatched, to some
+byte that's still guaranteed to be zero after the repack - one spare
+byte, reserved from the pool's own budget, is enough since every one
+of its several dozen occurrences shares that single address anyway.
 """
 
 import hashlib
@@ -127,14 +133,23 @@ def sop_entries(sop_path):
 def build_reference_index(sop_path, entries):
     """entry_offset -> list of file offsets holding a 4-byte pointer to
     that entry's RAM address, anywhere in the scroll-animation's
-    reference table. Empty list means no reference (the pinned
-    trailing filler)."""
+    reference table. Also returns the shared "blank" slots as a
+    separate list, keyed under None, so repack_pool can repoint all of
+    them together (see module docstring).
+
+    Raises SopEditError if any slot in the table points somewhere that
+    isn't one of the 12 known lines or the single expected blank
+    address - i.e. if this build's table doesn't fully check out the
+    way every known build's does, refuse rather than silently miss a
+    reference."""
     build = detect_build(sop_path)
     with open(sop_path, "rb") as f:
         data = f.read()
 
     entry_by_ram = {build["ram_base"] + e["offset"]: e for e in entries}
     refs = {e["offset"]: [] for e in entries}
+    blank_slots = []
+    blank_value = None
 
     start, end = build["ref_table"]
     for off in range(start, end + 4, 4):
@@ -142,7 +157,19 @@ def build_reference_index(sop_path, entries):
         e = entry_by_ram.get(v)
         if e is not None:
             refs[e["offset"]].append(off)
+            continue
+        if blank_value is None:
+            blank_value = v
+        elif v != blank_value:
+            raise SopEditError(
+                f"Reference table slot at {off:#06x} points somewhere unexpected "
+                f"({v:#010x}) - doesn't match any known line or the expected shared "
+                f"blank address ({blank_value:#010x}). Refusing to edit rather than "
+                f"risk missing a reference this tool doesn't understand."
+            )
+        blank_slots.append(off)
 
+    refs[None] = blank_slots
     return refs
 
 
@@ -158,6 +185,12 @@ def compute_pool_state(entries, build, edits=None):
     given `edits` ({offset: new_text}) layered on entries' current
     text. Doesn't touch disk; safe to call on every keystroke.
 
+    Capacity is one byte less than the raw flowable span: repacking
+    always reserves exactly one guaranteed-zero byte for the shared
+    "blank" pause reference (see module docstring) - without it,
+    nothing left in the pool would still decode to an empty string for
+    that reference to point at.
+
     Returns {"used", "capacity", "free", "errors": {offset: message}}.
     `free` goes negative on overflow rather than raising."""
     edits = edits or {}
@@ -171,24 +204,27 @@ def compute_pool_state(entries, build, edits=None):
             used += len(encode_bytes(text)) + 1
         except MainBinParseError as ex:
             errors[e["offset"]] = str(ex)
-    capacity = (entries[-1]["offset"] if entries else build["flow_region_end"]) - TEXT_REGION_START
+    raw_capacity = (entries[-1]["offset"] if entries else build["flow_region_end"]) - TEXT_REGION_START
+    capacity = raw_capacity - 1  # reserved for the shared blank reference
     return {"used": used, "capacity": capacity, "free": capacity - used, "errors": errors}
 
 
 def repack_pool(sop_path, entries, edits, output_path):
     """Rebuild the story text from scratch: every flowable line's
     current text (edited or original) packed back-to-back with zero
-    gaps, every reference to it re-patched to its new address (see
-    build_reference_index). The pinned trailing filler is never moved.
+    gaps, every reference to it re-patched to its new address, and the
+    shared "blank" reference repatched to a freshly reserved
+    guaranteed-zero byte (see module docstring for why both matter).
+    The pinned trailing filler is never moved or written at all.
 
     Raises SopEditError on a bad build, an edit targeting the pinned
-    filler, invalid text, or an over-budget total (check
-    compute_pool_state first for live feedback).
+    filler, invalid text, an over-budget total (check
+    compute_pool_state first for live feedback), or a reference table
+    that doesn't fully check out (see build_reference_index).
 
     Returns {"used", "capacity", "free", "entries": [{"offset",
     "old_text", "new_text", "old_pool_offset", "new_pool_offset"}]}."""
     build = detect_build(sop_path)
-    flow_end = build["flow_region_end"]
 
     with open(sop_path, "rb") as f:
         data = bytearray(f.read())
@@ -208,11 +244,9 @@ def repack_pool(sop_path, entries, edits, output_path):
 
     refs = build_reference_index(sop_path, entries)
     flowable = [e for e in entries if _is_flowable(e["offset"], entries)]
-    # the pinned filler's own scanned offset is the true end of usable
-    # space - not derived from flow_region_end, since the filler's span
-    # doesn't always land exactly on that boundary (off by a byte or two
-    # depending on build - confirmed by direct check, not assumed).
-    flow_end_usable = entries[-1]["offset"] if len(entries) > len(flowable) else flow_end
+    flow_end_usable = entries[-1]["offset"] if len(entries) > len(flowable) else build["flow_region_end"]
+    raw_capacity = flow_end_usable - TEXT_REGION_START
+    capacity = raw_capacity - 1  # reserved for the shared blank reference
 
     new_pool = bytearray()
     new_offset_of = {}
@@ -226,16 +260,21 @@ def repack_pool(sop_path, entries, edits, output_path):
         new_pool += encoded + b"\x00"
 
     used = len(new_pool)
-    capacity = flow_end_usable - TEXT_REGION_START
     if used > capacity:
         raise SopEditError(
             f"Text pool overflow: {used} byte(s) needed, only {capacity} "
-            f"available ({used - capacity} byte(s) over budget). Shorten "
-            f"some lines before saving."
+            f"available ({used - capacity} byte(s) over budget - one byte of the "
+            f"raw {raw_capacity}-byte span is always reserved for the shared blank "
+            f"reference). Shorten some lines before saving."
         )
-    new_pool += b"\x00" * (capacity - used)
+    new_pool += b"\x00" * (raw_capacity - used)
     data[TEXT_REGION_START:flow_end_usable] = new_pool
-    # pinned entries keep their original bytes untouched - nothing to write
+    # pinned filler keeps its original bytes untouched - nothing written there
+
+    blank_target = TEXT_REGION_START + used  # first byte of trailing padding - guaranteed 0x00
+    blank_ram = build["ram_base"] + blank_target
+    for slot in refs.get(None, []):
+        data[slot:slot + 4] = struct.pack("<I", blank_ram)
 
     report = {"used": used, "capacity": capacity, "free": capacity - used, "entries": []}
     for e in flowable:

@@ -4,7 +4,7 @@ functions/sop_editor.py for the scanning/packing logic this wraps).
 Same tree-on-left/text-on-right, foldable-pool-budget pattern as
 MainExeViewer - lines share one fixed-capacity pool, tightly repacked
 and reference-patched on save (see sop_editor's own docstring for the
-reference table this relies on).
+reference table and shared "blank" pointer this relies on).
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
