@@ -179,7 +179,7 @@ class MainExeViewer(QWidget):
                 self._entry_items[e["offset"]] = item
                 root.appendRow(item)
 
-        self.tree.expandAll()
+        #self.tree.expandAll()
         self._update_pool_label()
 
     @staticmethod
