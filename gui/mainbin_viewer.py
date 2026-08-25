@@ -42,6 +42,12 @@ class MainExeViewer(QWidget):
         self._loading = False
         self._entry_items = {}
         self._entries_by_offset = {}
+        # Category-folder bookkeeping (see load_exe) - lets an entry's
+        # edit state mark/unmark a "*" on the folder it lives in, the
+        # same way MainWindow marks the DAT Assets/MAIN.EXE/BINs tabs.
+        self._folders = {}          # label -> QStandardItem
+        self._folder_labels = {}    # label -> "Label (N)" base text (no "*")
+        self._category_by_offset = {}  # offset -> label
         # offsets only - text lives in self.entries[i]["text"], mutated in place
         self._edited_offsets = set()    # pending edit, not yet exported (orange)
         self._exported_offsets = set()  # edited and exported since (green)
@@ -155,11 +161,15 @@ class MainExeViewer(QWidget):
                 item.setData(e["offset"], ENTRY_LOCATION_ROLE)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._entry_items[e["offset"]] = item
+                self._category_by_offset[e["offset"]] = categories[e["offset"]]
                 folders[categories[e["offset"]]].appendRow(item)
             for label in category_order:
                 folder = folders[label]
                 if folder.rowCount() > 0:
-                    folder.setText(f"{label} ({folder.rowCount()})")
+                    base_label = f"{label} ({folder.rowCount()})"
+                    folder.setText(base_label)
+                    self._folders[label] = folder
+                    self._folder_labels[label] = base_label
                     root.appendRow(folder)
         else:
             for e in self.entries:
@@ -233,6 +243,20 @@ class MainExeViewer(QWidget):
         else:
             item.setData(None, Qt.ItemDataRole.ForegroundRole)
         item.setText(self._entry_label(self._entries_by_offset[offset]))
+        self._refresh_category_marker(self._category_by_offset.get(offset))
+
+    def _refresh_category_marker(self, label):
+        """Marks a category folder with "*" while it contains at least
+        one unsaved (pending, not-yet-exported) edit - mirroring how
+        MainWindow marks the DAT Assets/MAIN.EXE/BINs tabs themselves."""
+        if label is None:
+            return
+        folder = self._folders.get(label)
+        if folder is None:
+            return
+        has_unsaved = any(self._category_by_offset.get(off) == label for off in self._edited_offsets)
+        base_label = self._folder_labels[label]
+        folder.setText(f"{base_label}*" if has_unsaved else base_label)
 
     def _update_status(self, offset, text):
         if not _is_flowable(offset, self.build):
@@ -337,6 +361,9 @@ class MainExeViewer(QWidget):
         self._edited_offsets = set()
         self._exported_offsets = set()
         self._original_texts = {}
+        self._folders = {}
+        self._folder_labels = {}
+        self._category_by_offset = {}
 
         self.tree_model.clear()
         self._loading = True

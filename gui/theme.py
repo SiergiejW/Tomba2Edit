@@ -23,7 +23,7 @@ instead.
 """
 
 from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QApplication, QFileDialog
+from PyQt6.QtWidgets import QApplication
 
 THEMES = ("dark", "bright")
 DEFAULT_THEME = "dark"
@@ -35,8 +35,13 @@ _current_theme = DEFAULT_THEME
 # gap between top-level menu bar entries ("File", "Settings"), and gives
 # them a visible hover/press background (palette(highlight) tracks
 # whichever theme's palette is active, so this one rule works for both).
+# The default (non-hover) state is given the same explicit
+# padding/background here too - leaving it to fall back on the native
+# style's own box model while only :selected/:pressed are styled is what
+# caused the item to change size between its resting and hovered state.
 _BASE_QSS = """
 QMenuBar::item {
+    background-color: transparent;
     padding: 4px 6px;
     margin: 0px;
 }
@@ -99,14 +104,3 @@ def apply_theme(app: QApplication, name: str):
     _current_theme = name
     app.setPalette(_bright_palette() if name == "bright" else _native_palette)
     app.setStyleSheet(_BRIGHT_MENU_QSS if name == "bright" else _BASE_QSS)
-
-
-def file_dialog_options():
-    """Windows' native file dialog follows the OS's own dark-mode
-    setting, ignoring QPalette entirely - so on a system running in
-    Windows dark mode it stays dark even under "bright". Forcing Qt's
-    own dialog (palette-aware) only for "bright" fixes that while
-    leaving "dark" on the native picker it was always using."""
-    if _current_theme == "bright":
-        return QFileDialog.Option.DontUseNativeDialog
-    return QFileDialog.Option(0)

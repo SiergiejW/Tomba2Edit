@@ -274,8 +274,7 @@ class MainWindow(QMainWindow):
                     self,
                     "Save Trail Bytes",
                     f"AREA_{chunk_index:02X}_TRAIL_{trail_index:02X}_OFFSET_{offset:08X}.bin",
-                    "Binary Files (*.bin)",
-                    options=theme.file_dialog_options()
+                    "Binary Files (*.bin)"
                 )
 
             elif additional_data[0] in ("vram_compressed", "vram_uncompressed"):
@@ -299,8 +298,7 @@ class MainWindow(QMainWindow):
                     self,
                     "Save Exported Bytes",
                     f"AREA_{chunk_index:02X}_FILE_{file_index:02X}_ID_{id:X}_OFFSET_{dat_start + offset:08X}.bin",
-                    "Binary Files (*.bin)",
-                    options=theme.file_dialog_options()
+                    "Binary Files (*.bin)"
                 )
 
             if save_path:
@@ -465,10 +463,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
             return
 
-        out_dir = QFileDialog.getExistingDirectory(
-            self, "Choose output folder for the modified DAT + IDX",
-            "", options=QFileDialog.Option.ShowDirsOnly | theme.file_dialog_options()
-        )
+        out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder for the modified DAT + IDX")
         if not out_dir:
             return
 
@@ -586,8 +581,7 @@ class MainWindow(QMainWindow):
         opening an already-extracted folder instead."""
         iso_path, _ = QFileDialog.getOpenFileName(
             self, "Select Tomba! 2 ISO", "",
-            "Disc Images (*.iso *.bin *.img);;All Files (*)",
-            options=theme.file_dialog_options()
+            "Disc Images (*.iso *.bin *.img);;All Files (*)"
         )
         if not iso_path:
             return
@@ -650,8 +644,7 @@ class MainWindow(QMainWindow):
         Accepts either the parent folder (with a CD subfolder) or the CD
         folder itself."""
         folder = QFileDialog.getExistingDirectory(
-            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)",
-            "", options=QFileDialog.Option.ShowDirsOnly | theme.file_dialog_options()
+            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
         )
         if not folder:
             return
@@ -799,8 +792,7 @@ class MainWindow(QMainWindow):
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
         output_path, _ = QFileDialog.getSaveFileName(
-            self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)",
-            options=theme.file_dialog_options()
+            self, "Save rebuilt ISO", default_name, "ISO Image (*.iso)"
         )
         if not output_path:
             return
