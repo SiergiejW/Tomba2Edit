@@ -72,6 +72,40 @@ class MDATViewer(QOpenGLWidget):
         export_action.triggered.connect(self.export_to_glb)
         self.toolbar.addAction(export_action)
 
+        # Stats overlay - tri/quad count (static per model) and live camera
+        # position, updated once per frame in paintGL().
+        self.stats_label = QLabel(self)
+        self.stats_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 128);
+                color: white;
+                padding: 4px 6px;
+                border-radius: 4px;
+                font-family: Consolas, monospace;
+                font-size: 11px;
+            }
+        """)
+        self.stats_label.raise_()
+
+        # Controls hint overlay - static, bottom-right corner.
+        self.controls_label = QLabel(self)
+        self.controls_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 128);
+                color: white;
+                padding: 4px 6px;
+                border-radius: 4px;
+                font-family: Consolas, monospace;
+                font-size: 11px;
+            }
+        """)
+        self.controls_label.setText(
+            "Left-click: toggle freecam\n"
+            "WASD: move | Q/E: up/down\n"
+            "Shift: fast | Scroll: speed/zoom"
+        )
+        self.controls_label.raise_()
+
         # Layout
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # No margins
@@ -175,6 +209,8 @@ class MDATViewer(QOpenGLWidget):
         try:
             self.model_data = mdat.exportMDAT(address, dat_file_path)
             self.prepare_buffers()  # <- use self.
+            self._reset_camera_to_default()
+            self._update_stats_label()
             self.update()
             return True
         except Exception as e:
@@ -341,9 +377,39 @@ class MDATViewer(QOpenGLWidget):
         """Handle window resize"""
         self.camera_controls.display_center = [w // 2, h // 2]
         GL.glViewport(0, 0, w, h)
+        self.stats_label.adjustSize()
+        self.stats_label.move(6, h - self.stats_label.height() - 6)
+        self.controls_label.adjustSize()
+        self.controls_label.move(w - self.controls_label.width() - 6, h - self.controls_label.height() - 6)
+
+    def _reset_camera_to_default(self):
+        """Every freshly loaded MDAT starts from this fixed camera pose
+        instead of wherever the previous model's freecam was left."""
+        cam = self.camera_controls
+        cam.camera_x = 11.36
+        cam.camera_y = -15.70
+        cam.camera_z = 4.98
+        cam.camera_angle_h = 134.5
+        cam.camera_angle_v = 33.2
+
+    def _update_stats_label(self):
+        """Tri/quad count (static per loaded model) plus the live camera
+        position - refreshed every frame from paintGL() since the camera
+        can move on every mouse/key event."""
+        tri_count = self.model_data.get('tri_count', 0) if self.model_data else 0
+        quad_count = self.model_data.get('quad_count', 0) if self.model_data else 0
+        cam = self.camera_controls
+        self.stats_label.setText(
+            f"Tris: {tri_count}  Quads: {quad_count}\n"
+            f"Camera: {cam.camera_x:.2f}, {cam.camera_y:.2f}, {cam.camera_z:.2f}\n"
+            f"Rotation: h {cam.camera_angle_h:.1f}°, v {cam.camera_angle_v:.1f}°"
+        )
+        self.stats_label.adjustSize()
+        self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
 
     def paintGL(self):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        self._update_stats_label()
         if not self.model_data:
             print("❌ No model data to draw.")
             return

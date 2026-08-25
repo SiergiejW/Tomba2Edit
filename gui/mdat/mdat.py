@@ -8,7 +8,9 @@ def exportMDAT(drwa_addr, datpath):
         'vertex_colors': [],
         'faces': [],
         'texture_coords': [],
-        'texture_info': []  # (texture_page, clut_address, is_transparent)
+        'texture_info': [],  # (texture_page, clut_address, is_transparent)
+        'tri_count': 0,
+        'quad_count': 0,
     }
 
     triangles = {32: 0, 34: 0, 37: 0, 38: 0, 39: 0, 48: 0, 50: 1, 52: 0, 54: 1} #this is from PSX draw modes manual
@@ -112,6 +114,7 @@ def exportMDAT(drwa_addr, datpath):
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
                     model_data['texture_coords'].extend([uv1, uv2, uv3])
                     model_data['texture_info'].append(tex_info)
+                    model_data['tri_count'] += 1
 
                     face += 3
                     ind += (36 - 7)
@@ -159,6 +162,7 @@ def exportMDAT(drwa_addr, datpath):
                     model_data['texture_coords'].extend([uv1, uv2, uv3, uv4])
                     model_data['texture_info'].append(tex_info)
                     model_data['texture_info'].append(tex_info)
+                    model_data['quad_count'] += 1
 
                     face += 4
                     ind += (44 - 7)
