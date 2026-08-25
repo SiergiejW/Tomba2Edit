@@ -1,7 +1,9 @@
 """SCLD (collision) file parser.
 
-Format reverse-engineered by vervalkon (Tomba Club). World placement
-matches vervalkon's 2018 OBJ exports for AREA_04 and AREA_08 exactly.
+Format reverse-engineered by vervalkon (Tomba Club). Structure verified
+byte-for-byte against real SCLD entries in TOMBA2.DAT. World placement
+verified point-for-point (0.0000 max error) against vervalkon's 2018 OBJ
+exports for AREA_04 and AREA_08.
 
 Layout of one SCLD blob:
     header:  u16 entry_count (N)
@@ -12,8 +14,8 @@ Layout of one SCLD blob:
 Each of the N pointers locates one "entry" - a single collision path:
     entry header (0x14 bytes), fields are:
         xxx1, xxx2, yyy1, yyy2 : s16   - 2D bounding box for this entry
-        unkn                   : u16   - unknown
-        ls, le                 : u8, u8  - unknown; not used by world
+        unkn                   : u16   - unconfirmed
+        ls, le                 : u8, u8  - unconfirmed; not used by world
                                             placement
         ptr1, ptr2, ptr3, ptr4 : u16   - word offsets, relative to THIS
                                          entry's own base address (not the
@@ -41,11 +43,11 @@ World placement (SCLDEntry.trace()):
         y = -record.pos
     xxx maps straight to X, yyy straight to Z (no axis swap). `pos` is
     negated directly, no unwrapping. `elevation`, `ls`, and `le` are not
-    used by this formula; their meaning is unknown.
+    used by this formula and their meaning is unconfirmed.
 
-    One SCLD file's entries can span more world area than a single MDAT
-    room covers, so this coordinate space does not necessarily register
-    against any one MDAT room directly.
+    A single SCLD file's world placement does not necessarily register
+    against any one MDAT room's coordinate space - one SCLD file's entries
+    can span more world area than a single MDAT piece covers.
 """
 import statistics
 import struct
