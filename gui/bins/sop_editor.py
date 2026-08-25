@@ -1,36 +1,18 @@
 """
 Fixed-budget editor for BIN/SOP.BIN's intro story-crawl text.
 
-SOP.BIN is a raw overlay (no PS-EXE header) found alongside MAIN.EXE at
-BIN/SOP.BIN on the disc. Its first 0x58 bytes are a fixed 20-entry
-table whose values are always base+constant offsets - cross-checked
-identical (same offset, every entry) across English/German/Spanish/
-Japanese builds, so none of them are text pointers.
+The 12 story lines are addressed through REF_TABLE, a scroll-animation
+reference table: one RAM address per animation frame, mostly repeating
+the previous line's address (hold on screen) or one shared "blank"
+address used between lines. Every slot in every known build resolves to
+one of the 12 lines or that one blank address.
 
-The 12 story lines ARE individually addressed: a scroll-animation
-reference table further into the file (REF_TABLE, found by brute-force
-address search after a naive repack broke display) holds one RAM
-address per animation frame - most frames just repeat the previous
-line's address ("hold" this line on screen) or a single shared "blank"
-address used during pause frames between lines, and each of the 12
-lines' addresses appears there exactly once. Fully mapped and
-cross-checked across all three known builds: every slot in every
-build's table is accounted for as either one of the 12 real lines or
-that one repeated blank address - nothing unexplained left over.
-
-The blank address matters here for a specific reason: it isn't a
-special sentinel the code compares against (confirmed by an actual
-in-game test - if it were, the display would have stayed blank
-regardless of what byte ended up there; instead it rendered whatever
-real text a naive repack put at that old address). It's read through
-the exact same generic pointer-dereference path as every real line,
-and just happens to point at a run of original padding bytes that
-decodes to an empty string. So repacking is safe as long as: (1) every
-real line's own reference is repatched to its new position (already
-required), and (2) the blank address is *also* repatched, to some
-byte that's still guaranteed to be zero after the repack - one spare
-byte, reserved from the pool's own budget, is enough since every one
-of its several dozen occurrences shares that single address anyway.
+The blank address is not a special-cased sentinel - it's read through
+the same pointer-dereference path as any line, and happens to point at
+padding that decodes to an empty string. Repacking must repatch it to a
+byte still guaranteed zero afterward, alongside every real line's own
+reference; one spare pool byte covers every occurrence, since they all
+share that single address.
 """
 
 import hashlib

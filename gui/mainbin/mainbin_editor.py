@@ -3,14 +3,11 @@ Fixed-budget editor for MAIN.EXE's string pool (see mainbin_parser.py
 for the pool scanner/encoder this builds on).
 
 Each build (English/Spanish/German) relinks the executable at a
-different absolute offset, but the pool layout itself is identical:
-the same leading pinned fragments at the same file offset, the same
-pointer-table structure (just at different addresses), and the same
-single pinned '!' entry closing the pool. BUILDS below records each
-build's own table/pool offsets, found by the same technique the
-English ones were: scan the pool for text, then search the whole exe
-for 4-byte pointers to each entry's RAM address - the hits cluster
-into the table ranges below.
+different absolute offset, but the pool layout itself is identical: the
+same leading pinned fragments at the same file offset, the same
+pointer-table structure (at different addresses), and the same single
+pinned '!' entry closing the pool. BUILDS below records each build's own
+table/pool offsets.
 """
 
 import hashlib
