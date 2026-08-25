@@ -1,9 +1,6 @@
 """SCLD (collision) file parser.
 
-Format reverse-engineered by vervalkon (Tomba Club). Structure verified
-byte-for-byte against real SCLD entries in TOMBA2.DAT. World placement
-verified point-for-point (0.0000 max error) against vervalkon's 2018 OBJ
-exports for AREA_04 and AREA_08.
+Thanks to vervalkon (Tomba Club).
 
 Layout of one SCLD blob:
     header:  u16 entry_count (N)
