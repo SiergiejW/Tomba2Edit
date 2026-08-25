@@ -126,7 +126,7 @@ class SCLDEntry:
         x = self.xxx1 + (self.xxx2 - self.xxx1) * t
         z = self.yyy1 + (self.yyy2 - self.yyy1) * t
         y = -p.pos
-        return x, y, z
+        return z, y, x
 
 
 @dataclass
