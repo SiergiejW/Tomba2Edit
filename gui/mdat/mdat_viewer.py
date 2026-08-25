@@ -10,9 +10,12 @@ from PyQt6.QtOpenGL import (
 )
 from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
+import colorsys
 import gui.mdat.mdat as mdat
-from gui.mdat_export import export_mdat_to_gltf
+from gui.mdat.mdat_export import export_mdat_to_gltf
 from functions.camera_controls import CameraControls  # Importing the camera controls class
+from gui.scld.scld_parser import load_scld, find_area_scld_location
+from gui.scld.scld_viewer import GOLDEN_RATIO_CONJUGATE
 import ctypes
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
@@ -31,6 +34,13 @@ class MDATViewer(QOpenGLWidget):
         self.vram_texture = None  # OpenGL texture ID
         # Initialize the camera controls
         self.camera_controls = CameraControls(self)
+
+        self.collision_data = None
+        self.collision_vao = QOpenGLVertexArrayObject()
+        self.collision_vbo = QOpenGLBuffer()
+        self.collision_cbo = QOpenGLBuffer()
+        self.collision_vertex_count = 0
+        self.show_collision = False
         self.clut_quad_tex = None
         self.clut_tri_tex = None
         self.clut_map = {}  # address -> GL texture ID
@@ -65,6 +75,14 @@ class MDATViewer(QOpenGLWidget):
         self.culling_action.setCheckable(True)
         self.culling_action.toggled.connect(self.toggle_culling)
         self.toolbar.addAction(self.culling_action)
+
+        # Collision overlay toggle - off by default, drawn once its SCLD
+        # data has been loaded via load_collision_data().
+        self.collision_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning), "Show Collision", self)
+        self.collision_action.setCheckable(True)
+        self.collision_action.setChecked(False)
+        self.collision_action.toggled.connect(self.toggle_collision)
+        self.toolbar.addAction(self.collision_action)
 
         # Export button
         export_action_icon = QIcon("icons/graphics/address-book.png")
@@ -133,6 +151,71 @@ class MDATViewer(QOpenGLWidget):
     def toggle_texture_mode(self, checked):
         self.texture_mode_enabled = checked
         self.update()
+
+    def toggle_collision(self, checked):
+        self.show_collision = checked
+        self.update()
+
+    def load_collision_data(self, dat_file_path, dat_start, offset, size):
+        """Load and buffer the SCLD collision data for the area currently
+        on screen, so toggling "Show Collision" is instant. Safe to call
+        with no matching SCLD (e.g. an area that has none) - just clears
+        any previous overlay."""
+        self.collision_data = None
+        self.collision_vertex_count = 0
+        if dat_start is None:
+            self.update()
+            return False
+        try:
+            self.collision_data = load_scld(dat_file_path, dat_start, offset, size)
+            self._prepare_collision_buffers()
+            self.update()
+            return True
+        except Exception as e:
+            print(f"Error loading collision data: {e}")
+            return False
+
+    def _prepare_collision_buffers(self):
+        verts = []
+        colors = []
+        entries = self.collision_data.entries if self.collision_data else []
+
+        for entry in entries:
+            # golden-ratio hue step: adjacent entries land far apart on the
+            # wheel instead of fading into each other like i/n would with
+            # dozens of entries - each one reads as its own color.
+            hue = (entry.index * GOLDEN_RATIO_CONJUGATE) % 1.0
+            rgb = colorsys.hsv_to_rgb(hue, 0.75, 1.0)
+            for run in entry.polylines():
+                for a, b in zip(run, run[1:]):
+                    verts.append(a)
+                    verts.append(b)
+                    colors.append(rgb)
+                    colors.append(rgb)
+
+        self.makeCurrent()
+        if verts:
+            arr = (np.array(verts, dtype=np.float32) / 1000.0).flatten()
+            carr = np.array(colors, dtype=np.float32).flatten()
+        else:
+            arr = np.zeros(0, dtype=np.float32)
+            carr = np.zeros(0, dtype=np.float32)
+        self.collision_vertex_count = len(verts)
+
+        if not self.collision_vbo.isCreated():
+            self.collision_vbo.create()
+        if not self.collision_cbo.isCreated():
+            self.collision_cbo.create()
+        self.collision_vao.bind()
+        self.collision_vbo.bind()
+        self.collision_vbo.allocate(arr.tobytes(), arr.nbytes)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self.collision_cbo.bind()
+        self.collision_cbo.allocate(carr.tobytes(), carr.nbytes)
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self.collision_vao.release()
 
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
@@ -373,6 +456,10 @@ class MDATViewer(QOpenGLWidget):
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
+        self.collision_vao.create()
+        self.collision_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.collision_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+
     def resizeGL(self, w, h):
         """Handle window resize"""
         self.camera_controls.display_center = [w // 2, h // 2]
@@ -462,8 +549,11 @@ class MDATViewer(QOpenGLWidget):
             if not is_transparent:
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
 
-        # Second Pass: Transparent objects
+        # Second Pass: Transparent objects - additive blending (matches the
+        # PSX's own "add" semi-transparency mode used by these draw types),
+        # so overlapping transparent faces brighten instead of just alpha-mixing.
         GL.glDepthMask(GL.GL_FALSE)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE)
 
         current_tex_id = None
         for clut_address, tex_id in self.clut_map.items():
@@ -481,9 +571,25 @@ class MDATViewer(QOpenGLWidget):
             if is_transparent:
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
 
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)  # Restore normal alpha blending
         GL.glDepthMask(GL.GL_TRUE)  # Restore normal state
 
         self.vao.release()
+
+        if self.show_collision and self.collision_vertex_count:
+            # X-ray: collision geometry genuinely sits inside the model
+            # (e.g. a spiral staircase inside its tower's solid walls), so
+            # depth-testing it normally hides most of the data behind
+            # opaque geometry - the opposite of what a verification
+            # overlay is for.
+            GL.glDisable(GL.GL_DEPTH_TEST)
+            self.shader_program.setUniformValue("useTextures", False)
+            GL.glLineWidth(1.0)  # thinnest width most GL drivers support
+            self.collision_vao.bind()
+            GL.glDrawArrays(GL.GL_LINES, 0, self.collision_vertex_count)
+            self.collision_vao.release()
+            GL.glEnable(GL.GL_DEPTH_TEST)
+
         self.shader_program.release()
 
     def wheelEvent(self, event):

@@ -2,7 +2,7 @@
 GUI section listing every .BIN overlay file found alongside MAIN.EXE
 (BIN/A00.BIN..A0L.BIN, CRD.BIN, DEMO.BIN, GAME.BIN, OPN.BIN, SOP.BIN,
 START.BIN). Only SOP.BIN - the intro story-crawl overlay, see
-functions/sop_editor.py - is currently understood well enough to edit;
+gui/bins/sop_editor.py - is currently understood well enough to edit;
 every other file is listed for visibility only.
 """
 
@@ -10,8 +10,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, QStackedWidget
 
-from gui.sop_viewer import SopViewer
-from gui.txtd_viewer import EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR
+from gui.bins.sop_viewer import SopViewer
+from gui.txtd.txtd_viewer import EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR
 from gui import panel_title
 
 BIN_LOCATION_ROLE = Qt.ItemDataRole.UserRole + 1

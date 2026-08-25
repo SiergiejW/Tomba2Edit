@@ -13,17 +13,19 @@ from icons.icons import (icon_window, icon_disc,
                          icon_VRAM, icon_CVRAM,
                          )
 from main import version
-from gui.txtd_viewer import TXTDViewer
-from gui.txt2_viewer import TXT2Viewer
-from gui.mdat_viewer import MDATViewer
-from gui.mainbin_viewer import MainExeViewer
-from gui.bins_viewer import BinsViewer
+from gui.txtd.txtd_viewer import TXTDViewer
+from gui.txtd.txt2_viewer import TXT2Viewer
+from gui.mdat.mdat_viewer import MDATViewer
+from gui.scld.scld_viewer import SCLDViewer
+from gui.scld.scld_parser import find_area_scld_location
+from gui.mainbin.mainbin_viewer import MainExeViewer
+from gui.bins.bins_viewer import BinsViewer
 from gui import theme
 from gui import panel_title
 from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
-from functions.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
-from functions.sop_editor import repack_pool as sop_repack_pool, SopEditError
+from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
+from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
@@ -747,8 +749,8 @@ class MainWindow(QMainWindow):
         either. This is the single place that packs BOTH file types, and
         is now used by both export_all_files() and export_iso() so the
         logic only exists once."""
-        from functions import txtd_packer
-        from functions import txt2_packer
+        from gui.txtd import txtd_packer
+        from gui.txtd import txt2_packer
         edits = []
         try:
             for (chunk_index, file_index), info in self.pending_txtd_edits.items():
@@ -908,6 +910,7 @@ class MainWindow(QMainWindow):
         self.txtd_viewer = TXTDViewer()
         self.txt2_viewer = TXT2Viewer()
         self.mdat_viewer = MDATViewer()
+        self.scld_viewer = SCLDViewer()
         self.vram_viewer = VRAMViewer()  # Add this line
 
         self.widgets = {
@@ -917,6 +920,7 @@ class MainWindow(QMainWindow):
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_viewer,
+            "SCLD": self.scld_viewer,
             "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
         }
@@ -1075,6 +1079,7 @@ class MainWindow(QMainWindow):
                                 elif parent.text().startswith("AREA_"):
                                     area_name = parent.text()
 
+                            chunk_index = None
                             if area_name:
                                 area_number = area_name.split("_")[1].split()[0]  # e.g., "04" from "AREA_04 (41)"
                                 try:
@@ -1118,11 +1123,36 @@ class MainWindow(QMainWindow):
                                 success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
+
+                                self.mdat_viewer.load_collision_data(None, None, None, None)
+                                if chunk_index is not None:
+                                    try:
+                                        idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                                        scld_location = find_area_scld_location(idx_path, chunk_index)
+                                        if scld_location:
+                                            scld_dat_start, scld_offset, scld_size = scld_location
+                                            self.mdat_viewer.load_collision_data(
+                                                self.dat_file, scld_dat_start, scld_offset, scld_size)
+                                    except Exception as e:
+                                        print(f"Could not load collision data for AREA_{chunk_index:02X}: {e}")
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")
                         except Exception as e:
                             print(f"Error loading MDAT file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load MDAT file: {e}")
+
+                    elif widget == self.widgets["SCLD"]:
+                        try:
+                            if self.dat_file:
+                                print("Loading SCLD data...")
+                                success = self.scld_viewer.load_scld_data(self.dat_file, dat_start, offset, entry_size)
+                                if not success:
+                                    QMessageBox.critical(self, "Error", "Failed to load SCLD data")
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading SCLD file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load SCLD file: {e}")
 
                     else:
                         print(f"No specialized viewer for {file_type} files")

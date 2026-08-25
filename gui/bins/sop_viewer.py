@@ -1,6 +1,6 @@
 """
 GUI viewer/editor for BIN/SOP.BIN's intro story-crawl text (see
-functions/sop_editor.py for the scanning/packing logic this wraps).
+gui/bins/sop_editor.py for the scanning/packing logic this wraps).
 Same tree-on-left/text-on-right, foldable-pool-budget pattern as
 MainExeViewer - lines share one fixed-capacity pool, tightly repacked
 and reference-patched on save (see sop_editor's own docstring for the
@@ -11,11 +11,11 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, QToolButton, QTextEdit
 
-from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
+from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui.margin_text_edit import MarginTextEdit
 from gui import panel_title
-from functions.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
-from functions.mainbin_parser import encode_bytes, MainBinParseError
+from gui.bins.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
+from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
 SCREEN_OVERFLOW_COLOR = "#e67e22"

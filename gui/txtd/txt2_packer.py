@@ -8,7 +8,7 @@ interleaved as discovered) to preserve correct data structures.
 
 import struct
 
-from functions.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN, _REVERSE_LETTERS
+from gui.txtd.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN, _REVERSE_LETTERS
 
 # Marker used for a table entry whose pointer resolves outside
 # this file's own bytes.

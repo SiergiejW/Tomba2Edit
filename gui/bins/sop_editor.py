@@ -36,7 +36,7 @@ of its several dozen occurrences shares that single address anyway.
 import hashlib
 import struct
 
-from functions.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
+from gui.mainbin.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
 
 TEXT_REGION_START = 0x58  # fixed header size, identical across every known build
 

@@ -1,6 +1,6 @@
 """
-GUI viewer/editor for MAIN.EXE's string pool (see functions/mainbin_parser.py
-and functions/mainbin_editor.py for the scanning/packing logic this wraps).
+GUI viewer/editor for MAIN.EXE's string pool (see gui/mainbin/mainbin_parser.py
+and gui/mainbin/mainbin_editor.py for the scanning/packing logic this wraps).
 Same tree-on-left/text-on-right pattern as TXTDViewer/TXT2Viewer, but
 simpler: entries are a flat list (offset, length, text).
 
@@ -13,13 +13,13 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
 
-from gui.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
+from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui import panel_title
-from functions.mainbin_editor import (
+from gui.mainbin.mainbin_editor import (
     _mainbin_entries, compute_pool_state, detect_build, _is_flowable, UnsupportedExeError,
     categorize_entries, PINNED_CATEGORY,
 )
-from functions.mainbin_parser import encode_bytes, MainBinParseError
+from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
 POOL_OK_COLOR = "#1e7d32"

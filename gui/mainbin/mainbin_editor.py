@@ -16,7 +16,7 @@ into the table ranges below.
 import hashlib
 import struct
 
-from functions.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
+from gui.mainbin.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
 
 EXE_HEADER_SIZE = 0x800
 RAM_BASE = 0x80010000

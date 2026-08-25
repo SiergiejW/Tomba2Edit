@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (
     QTextEdit, QLabel
 )
 import gui.txtd.txt2 as txt2
-from gui.txtd_viewer import (
+from gui.txtd.txtd_viewer import (
     EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE,
 )
-from functions.txt2_packer import encode_text, TxtdPackError
+from gui.txtd.txt2_packer import encode_text, TxtdPackError
 from gui import panel_title
 
 from icons.icons import icon_TXT2_entry
