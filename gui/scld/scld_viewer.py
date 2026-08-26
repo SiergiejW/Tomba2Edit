@@ -39,7 +39,7 @@ class SCLDViewer(QOpenGLWidget):
         # manual, per-entry override for live visual checking, not a
         # parser-level rule (most entries are provably wrong when
         # reversed - see SCLDEntry.trace()).
-        self.reversed_entries = set()
+        self.reversed_entries = {}
 
         # entry.index -> (start, count) into the point buffer, so a single
         # entry's points can be redrawn on their own for the highlight pulse.
@@ -250,12 +250,17 @@ class SCLDViewer(QOpenGLWidget):
         self.update()
 
     def set_entry_reversed(self, entry_base, reversed_):
-        if reversed_:
-            self.reversed_entries.add(entry_base)
+        """Force this entry's direction, or pass None to hand it back to
+        SCLDEntry.auto_reverse."""
+        if reversed_ is None:
+            self.reversed_entries.pop(entry_base, None)
         else:
-            self.reversed_entries.discard(entry_base)
+            self.reversed_entries[entry_base] = reversed_
         self.prepare_buffers()
         self.update()
+
+    def _reverse_for(self, entry):
+        return self.reversed_entries.get(entry.base, entry.auto_reverse)
 
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
         """Parse and load an SCLD blob. Every entry renders as one
@@ -264,7 +269,7 @@ class SCLDViewer(QOpenGLWidget):
         load_level_mesh() to find this area's matching MDAT room."""
         try:
             self.scld_data = load_scld(dat_file_path, dat_start, offset, size)
-            self.reversed_entries = set()
+            self.reversed_entries = {}
             self._dat_file_path = dat_file_path
             self._chunk_index = chunk_index
             if chunk_index != self._level_loaded_for_chunk:
@@ -303,7 +308,7 @@ class SCLDViewer(QOpenGLWidget):
             # a line isn't settled, so drawing one would show a guess as
             # if it were fact.
             start = len(point_verts)
-            pts = entry.trace(reverse=entry.base in self.reversed_entries)
+            pts = entry.trace(reverse=self._reverse_for(entry))
             for pt in pts:
                 point_verts.append(pt)
                 point_colors.append((r, g, b))
@@ -759,6 +764,10 @@ class SCLDDebugPanel(QWidget):
         entry_base = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
 
         self.verification_state[entry_base] = state
-        self.viewer.set_entry_reversed(entry_base, state == Qt.CheckState.Checked.value)
+        if state == Qt.CheckState.Unchecked.value:
+            forced = None
+        else:
+            forced = state == Qt.CheckState.Checked.value
+        self.viewer.set_entry_reversed(entry_base, forced)
         self.table.item(row, 4).setText(self._REV_COLUMN_TEXT[state])
         self.reverse_checkbox.setText(self._CHECKBOX_LABEL[state])

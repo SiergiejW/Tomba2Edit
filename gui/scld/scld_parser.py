@@ -89,6 +89,7 @@ World placement (SCLDEntry.trace()):
     room covers, so this coordinate space does not necessarily register
     against any one MDAT room directly.
 """
+import bisect
 import struct
 from dataclasses import dataclass, field
 
@@ -150,20 +151,178 @@ class SCLDEntry:
         return [self._point(p, t) for p, t in zip(self.path, fracs)]
 
     def polylines(self, reverse=False):
-        """trace() as a single connected track covering every record in
-        file order, matching vervalkon's own OBJ export (one `l` line
-        through every vertex of an entry, in order). Returns a list
-        containing that one run (or none, if this entry has no path)."""
+        """trace() split into one connected run per sub-path (see
+        branch_blocks). Entries that aren't split come back as a single
+        run covering every record in file order, matching vervalkon's own
+        OBJ export (one `l` line through every vertex, in order)."""
         pts = self.trace(reverse)
-        return [pts] if pts else []
+        if not pts:
+            return []
+        blocks = self.branch_blocks() if self.use_table1_groups else []
+        if not blocks:
+            return [pts]
+        bounds = [s for _, s in blocks]
+        edges = bounds + [len(pts)]
+        runs = sorted(range(len(bounds)), key=lambda k: blocks[k][0])
+        return [pts[edges[k]:edges[k + 1]] for k in runs]
+
+    def _walk(self):
+        """Each real table1 record as the (start, end) span of table3
+        records it covers. The run==0 markers (0x8000) that only delimit
+        sub-lists are skipped.
+
+        A record's `index` is normally absolute, but the C0xx-flagged
+        sub-lists restart theirs from 0, so those are relative to wherever
+        the previous list left off - taken absolutely they orphan the
+        records in between, which all collapse onto one station. So the
+        walk keeps a cursor and only believes `index` when it hasn't gone
+        backwards. That lands exactly on the last record for 89% of
+        entries, against 65% for trusting `run` alone.
+
+        A C0xx record's `run` is not reliable either - it reads 2 where
+        the station is plainly 3 - so those end at the next anchor
+        instead, which is what the records themselves say. That only
+        moves entries whose C0xx run disagrees with their anchors."""
+        n = len(self.path)
+        if not self.path:
+            return []
+        anchor = self.path[0].kind
+        spans = []
+        cursor = 0
+        for flags, index, run, _pad in self.assets:
+            if run == 0:
+                continue
+            start = index if index >= cursor else cursor
+            if start >= n:
+                break
+            end = start + run
+            if flags & 0xC000 == 0xC000:
+                nxt = next((i for i in range(start + 1, n)
+                            if self.path[i].kind == anchor), None)
+                if nxt is not None:
+                    end = nxt
+            spans.append((start, end))
+            cursor = end
+        return spans
+
+    def _asset_starts(self):
+        """Each table1 record's first table3 record, in table1 order, with
+        None for the records _walk() skips - see there."""
+        spans = iter(self._walk())
+        out = []
+        for _flags, _index, run, _pad in self.assets:
+            out.append(next(spans, (None,))[0] if run else None)
+        return out
 
     def group_starts(self):
         """This entry's table1 group boundaries as record indices into
         `path`. Empty if table1 doesn't describe this entry's records
-        (no assets, or it doesn't start at record 0)."""
+        (no assets, or it doesn't start at record 0).
+
+        table1 doesn't always account for every record: a run can end
+        short of where the next one's `index` picks up. Such a stretch
+        only starts a new station where it repeats this entry's own
+        anchor record - the fixed reference every station opens with.
+        Without an anchor it is the tail of the station before it, and
+        cutting it off there splits one station across two positions.
+        Both cases are common (38 gaps hold an anchor, 32 don't)."""
         n = len(self.path)
-        bounds = sorted({a[1] for a in self.assets if a[1] < n})
-        return bounds if bounds and bounds[0] == 0 else []
+        if not self.path:
+            return []
+        anchor = self.path[0].kind
+        starts = []
+        cursor = 0
+        for start, end in self._walk():
+            starts.extend(i for i in range(cursor, start)
+                          if self.path[i].kind == anchor)
+            starts.append(start)
+            cursor = end
+        starts.extend(i for i in range(cursor, n)
+                      if self.path[i].kind == anchor)
+        return starts if starts and starts[0] == 0 else []
+
+    @property
+    def auto_reverse(self):
+        """Whether this entry's records run against its bounding box, so
+        record 0 belongs at the xxx2/yyy2 end. True when the box's z runs
+        backwards (xxx2 < xxx1), or - for an entry with no z extent at
+        all - when its x does.
+
+        Derived from AREA_16, whose 9 entries ring a loop and whose flipped
+        set was established by eye: the 4 flipped are exactly the 4 with
+        xxx2 < xxx1, and z decides it even where z is the *minor* axis
+        (entries 1 and 2 share a dx of +1215 and differ only in the sign
+        of dz - and only entry 1 is flipped). Also matches all three
+        known AREA_05 entries (14 flipped, 9 and 15 not). Known
+        exception: AREA_04 entry 12, flipped by eye but with a dz of
+        +63 against a dx of -447 - a near-vertical entry whose small
+        positive dz may just be path thickness. Override per entry in
+        the viewer where this gets one wrong."""
+        dz = self.xxx2 - self.xxx1
+        return dz < 0 or (dz == 0 and self.yyy2 < self.yyy1)
+
+    def branch_blocks(self):
+        """This entry's sub-paths as (branch id, first record), in file
+        order. data0 is a list of (branch, table1 index) pairs terminated
+        by FFFF; consecutive pairs sharing a branch are one sub-path.
+
+        The branch id is the sub-path's place along the walked path, and
+        it counts DOWN through the file - so the pieces are stored back
+        to front and have to be walked by ascending id. Doing that turns
+        the height profile of every multi-sub-path entry checked into a
+        single monotonic ramp; in file order it resets at each boundary,
+        which is the sawtooth.
+
+        Empty unless data0 really is describing sub-paths here - about
+        half of all entries reuse it as a plain counter - so each field
+        is checked rather than assumed, and table1 has to agree on where
+        the pieces start."""
+        d0 = self.data0
+        pairs = [(d0[k], d0[k + 1]) for k in range(0, len(d0) - 1, 2)]
+        heads = []
+        for branch, t1 in pairs:
+            if branch == 0xFFFF:
+                break
+            if not heads or heads[-1][0] != branch:
+                heads.append((branch, t1))
+        if len(heads) < 2:
+            return []
+        ids = [b for b, _ in heads]
+        if ids[-1] != 0 or any(ids[k] <= ids[k + 1] for k in range(len(ids) - 1)):
+            return []
+        if any(t1 >= len(self.assets) for _, t1 in heads):
+            return []
+        resolved = self._asset_starts()
+        # A head can point at one of the run==0 markers that open a
+        # sub-list rather than at the run itself - take the first real
+        # record at or after it.
+        starts = []
+        for _, t1 in heads:
+            nxt = next((s for s in resolved[t1:] if s is not None), None)
+            starts.append(nxt)
+        if any(s is None for s in starts):
+            return []
+        # table1 has to agree: every sub-path must begin on a record whose
+        # flags open a run (bit 1 set, bit 3 clear). data0 alone is not
+        # enough - plenty of entries reuse it as a counter and pass the
+        # checks above while pointing at the middle of a run, which splits
+        # the entry somewhere it doesn't divide.
+        opens = {s for (flags, _i, _r, _p), s in zip(self.assets, resolved)
+                 if s is not None and flags & 0x2 and not flags & 0x8}
+        if not set(starts) <= opens:
+            return []
+        if starts[0] != 0 or starts[-1] >= len(self.path):
+            return []
+        if len(set(starts)) != len(starts) or starts != sorted(starts):
+            return []
+        # A run of ids straight down from len-1 to 0 carries no ordering:
+        # that is data0 numbering the pieces off as it lists them, and the
+        # file order is already the walk order. Only ids with gaps in them
+        # are naming positions, and those are the entries whose profile
+        # needs reordering to come out monotonic.
+        if ids == list(range(len(ids) - 1, -1, -1)):
+            return []
+        return list(zip(ids, starts))
 
     def _fractions(self, reverse):
         """Fraction along the bounding box (t in x/z = a + (b-a)*t), one
@@ -173,17 +332,31 @@ class SCLDEntry:
         one record long the two are identical anyway."""
         n = len(self.path)
         starts = self.group_starts() if self.use_table1_groups else []
-        if starts:
-            count = len(starts)
-            fracs = []
-            gi = 0
-            for i in range(n):
-                while gi + 1 < count and starts[gi + 1] <= i:
-                    gi += 1
-                fracs.append(gi / count)
-        else:
+        if not starts:
             fracs = [i / n for i in range(n)]
-        return list(reversed(fracs)) if reverse else fracs
+            return list(reversed(fracs)) if reverse else fracs
+
+        edges = starts + [n]
+        order = list(range(len(starts)))
+        blocks = self.branch_blocks() if self.use_table1_groups else []
+        if blocks:
+            # Walk the sub-paths by ascending branch id, keeping each
+            # one's own stations in file order.
+            bounds = [s for _, s in blocks]
+            ids = [b for b, _ in blocks]
+            block_of = [bisect.bisect_right(bounds, s) - 1 for s in starts]
+            order.sort(key=lambda k: (ids[block_of[k]], k))
+
+        count = len(starts)
+        fracs = [0.0] * n
+        for step, k in enumerate(order):
+            # Flip the station, not the record order - reversing the list
+            # itself would tear records off their own group whenever
+            # groups differ in length.
+            g = count - 1 - step if reverse else step
+            for i in range(edges[k], edges[k + 1]):
+                fracs[i] = g / count
+        return fracs
 
     def _point(self, p, t):
         x = self.yyy1 + (self.yyy2 - self.yyy1) * t
