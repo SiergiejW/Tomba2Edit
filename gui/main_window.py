@@ -16,7 +16,7 @@ from main import version
 from gui.txtd.txtd_viewer import TXTDViewer
 from gui.txtd.txt2_viewer import TXT2Viewer
 from gui.mdat.mdat_viewer import MDATViewer
-from gui.scld.scld_viewer import SCLDViewer
+from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
@@ -911,6 +911,7 @@ class MainWindow(QMainWindow):
         self.txt2_viewer = TXT2Viewer()
         self.mdat_viewer = MDATViewer()
         self.scld_viewer = SCLDViewer()
+        self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.vram_viewer = VRAMViewer()  # Add this line
 
         self.widgets = {
@@ -920,7 +921,7 @@ class MainWindow(QMainWindow):
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_viewer,
-            "SCLD": self.scld_viewer,
+            "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
         }
@@ -1145,8 +1146,26 @@ class MainWindow(QMainWindow):
                         try:
                             if self.dat_file:
                                 print("Loading SCLD data...")
-                                success = self.scld_viewer.load_scld_data(self.dat_file, dat_start, offset, entry_size)
-                                if not success:
+                                area_name = None
+                                parent = selected_item.parent()
+                                if parent:
+                                    grandparent = parent.parent()
+                                    if grandparent and grandparent.text().startswith("AREA_"):
+                                        area_name = grandparent.text()
+                                    elif parent.text().startswith("AREA_"):
+                                        area_name = parent.text()
+                                chunk_index = None
+                                if area_name:
+                                    area_number = area_name.split("_")[1].split()[0]
+                                    try:
+                                        chunk_index = int(area_number, 16)
+                                    except ValueError:
+                                        chunk_index = None
+                                success = self.scld_viewer.load_scld_data(
+                                    self.dat_file, dat_start, offset, entry_size, chunk_index=chunk_index)
+                                if success:
+                                    self.scld_panel.populate_table()
+                                else:
                                     QMessageBox.critical(self, "Error", "Failed to load SCLD data")
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")

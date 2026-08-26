@@ -40,6 +40,10 @@ class MDATViewer(QOpenGLWidget):
         self.collision_vbo = QOpenGLBuffer()
         self.collision_cbo = QOpenGLBuffer()
         self.collision_vertex_count = 0
+        self.collision_point_vao = QOpenGLVertexArrayObject()
+        self.collision_point_vbo = QOpenGLBuffer()
+        self.collision_point_cbo = QOpenGLBuffer()
+        self.collision_point_count = 0
         self.show_collision = False
         self.clut_quad_tex = None
         self.clut_tri_tex = None
@@ -163,6 +167,7 @@ class MDATViewer(QOpenGLWidget):
         any previous overlay."""
         self.collision_data = None
         self.collision_vertex_count = 0
+        self.collision_point_count = 0
         if dat_start is None:
             self.update()
             return False
@@ -178,7 +183,34 @@ class MDATViewer(QOpenGLWidget):
     def _prepare_collision_buffers(self):
         verts = []
         colors = []
+        point_verts = []
+        point_colors = []
         entries = self.collision_data.entries if self.collision_data else []
+
+        # One SCLD file's entries can span more world area than this one
+        # MDAT room covers - and a single entry can too (a long corridor's
+        # entry may pass through several rooms), so an entry that merely
+        # overlaps this room's bounding box can still be mostly made of
+        # points nowhere near it. Filter individual points against the
+        # room's own vertex bounding box (with a margin, so a path running
+        # along the room's edge isn't cut off), not whole entries.
+        room_bbox = None
+        if entries and self.model_data and self.model_data.get("vertices"):
+            mxs = [v[0] for v in self.model_data["vertices"]]
+            mzs = [v[2] for v in self.model_data["vertices"]]
+            mx0, mx1 = min(mxs), max(mxs)
+            mz0, mz1 = min(mzs), max(mzs)
+            margin_x = (mx1 - mx0) * 0.1
+            margin_z = (mz1 - mz0) * 0.1
+            room_bbox = (mx0 - margin_x, mx1 + margin_x, mz0 - margin_z, mz1 + margin_z)
+
+            def overlaps_room(e):
+                ex0, ex1 = sorted((e.yyy1, e.yyy2))
+                ez0, ez1 = sorted((e.xxx1, e.xxx2))
+                rx0, rx1, rz0, rz1 = room_bbox
+                return ex0 <= rx1 and ex1 >= rx0 and ez0 <= rz1 and ez1 >= rz0
+
+            entries = [e for e in entries if overlaps_room(e)]
 
         for entry in entries:
             # golden-ratio hue step: adjacent entries land far apart on the
@@ -186,12 +218,16 @@ class MDATViewer(QOpenGLWidget):
             # dozens of entries - each one reads as its own color.
             hue = (entry.index * GOLDEN_RATIO_CONJUGATE) % 1.0
             rgb = colorsys.hsv_to_rgb(hue, 0.75, 1.0)
-            for run in entry.polylines():
-                for a, b in zip(run, run[1:]):
-                    verts.append(a)
-                    verts.append(b)
-                    colors.append(rgb)
-                    colors.append(rgb)
+            # Points only for now - which records should be connected into
+            # a line isn't settled, so drawing one would show a guess as
+            # if it were fact.
+            for pt in entry.trace():
+                if room_bbox is not None:
+                    rx0, rx1, rz0, rz1 = room_bbox
+                    if not (rx0 <= pt[0] <= rx1 and rz0 <= pt[2] <= rz1):
+                        continue
+                point_verts.append(pt)
+                point_colors.append(rgb)
 
         self.makeCurrent()
         if verts:
@@ -216,6 +252,29 @@ class MDATViewer(QOpenGLWidget):
         GL.glEnableVertexAttribArray(1)
         GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self.collision_vao.release()
+
+        if point_verts:
+            parr = (np.array(point_verts, dtype=np.float32) / 1000.0).flatten()
+            pcarr = np.array(point_colors, dtype=np.float32).flatten()
+        else:
+            parr = np.zeros(0, dtype=np.float32)
+            pcarr = np.zeros(0, dtype=np.float32)
+        self.collision_point_count = len(point_verts)
+
+        if not self.collision_point_vbo.isCreated():
+            self.collision_point_vbo.create()
+        if not self.collision_point_cbo.isCreated():
+            self.collision_point_cbo.create()
+        self.collision_point_vao.bind()
+        self.collision_point_vbo.bind()
+        self.collision_point_vbo.allocate(parr.tobytes(), parr.nbytes)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self.collision_point_cbo.bind()
+        self.collision_point_cbo.allocate(pcarr.tobytes(), pcarr.nbytes)
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self.collision_point_vao.release()
 
     def extract_clut_from_vram(self, clut_address, transparent=False):
         clut = []
@@ -430,7 +489,8 @@ class MDATViewer(QOpenGLWidget):
                 uniform sampler2D indexTexture;
                 uniform sampler1D clutTexture;
                 uniform bool useTextures;  // <---- NEW UNIFORM
-                
+                uniform float alpha;
+
                 void main() {
                     if (useTextures) {
                         float index = texture(indexTexture, fragTexCoord).r * 15.0;
@@ -438,8 +498,9 @@ class MDATViewer(QOpenGLWidget):
                         if (clutColor.a < 0.01)
                             discard;
                         outColor = clutColor * vec4(fragColor, 1.0);
+                        outColor.a *= alpha;
                     } else {
-                        outColor = vec4(fragColor, 1.0);  // Just vertex color
+                        outColor = vec4(fragColor, alpha);  // Just vertex color
                     }
                 }
                 """
@@ -459,6 +520,10 @@ class MDATViewer(QOpenGLWidget):
         self.collision_vao.create()
         self.collision_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.collision_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+
+        self.collision_point_vao.create()
+        self.collision_point_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.collision_point_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
     def resizeGL(self, w, h):
         """Handle window resize"""
@@ -514,6 +579,7 @@ class MDATViewer(QOpenGLWidget):
             print("❌ Shader bind failed.")
             return
         self.shader_program.setUniformValue("modelViewProjection", model_view_projection)
+        self.shader_program.setUniformValue("alpha", 1.0)
 
         self.vao.bind()
 
@@ -576,19 +642,44 @@ class MDATViewer(QOpenGLWidget):
 
         self.vao.release()
 
-        if self.show_collision and self.collision_vertex_count:
-            # X-ray: collision geometry genuinely sits inside the model
-            # (e.g. a spiral staircase inside its tower's solid walls), so
-            # depth-testing it normally hides most of the data behind
-            # opaque geometry - the opposite of what a verification
-            # overlay is for.
-            GL.glDisable(GL.GL_DEPTH_TEST)
+        if self.show_collision and (self.collision_vertex_count or self.collision_point_count):
+            # Two depth-tested passes instead of one depth-disabled x-ray:
+            # collision geometry genuinely sits inside the model (e.g. a
+            # spiral staircase inside its tower's solid walls), so the part
+            # behind a wall needs to stay visible somehow - full x-ray
+            # (depth test off) showed it at the same strength as the part
+            # that's actually unobstructed, which reads as noise. Instead,
+            # draw normally-depth-tested (GL_LESS) at full opacity for what
+            # isn't blocked, then again with the depth test reversed
+            # (GL_GREATER) at low alpha for the part a wall would otherwise
+            # hide completely - a ghost-through-geometry look rather than
+            # true x-ray.
             self.shader_program.setUniformValue("useTextures", False)
-            GL.glLineWidth(1.0)  # thinnest width most GL drivers support
-            self.collision_vao.bind()
-            GL.glDrawArrays(GL.GL_LINES, 0, self.collision_vertex_count)
-            self.collision_vao.release()
-            GL.glEnable(GL.GL_DEPTH_TEST)
+            GL.glDepthMask(GL.GL_FALSE)
+
+            def draw_collision():
+                if self.collision_vertex_count:
+                    GL.glLineWidth(1.0)  # thinnest width most GL drivers support
+                    self.collision_vao.bind()
+                    GL.glDrawArrays(GL.GL_LINES, 0, self.collision_vertex_count)
+                    self.collision_vao.release()
+                if self.collision_point_count:
+                    GL.glPointSize(6.0)
+                    self.collision_point_vao.bind()
+                    GL.glDrawArrays(GL.GL_POINTS, 0, self.collision_point_count)
+                    self.collision_point_vao.release()
+
+            self.shader_program.setUniformValue("alpha", 1.0)
+            GL.glDepthFunc(GL.GL_LESS)
+            draw_collision()
+
+            self.shader_program.setUniformValue("alpha", 0.12)
+            GL.glDepthFunc(GL.GL_GREATER)
+            draw_collision()
+
+            GL.glDepthFunc(GL.GL_LESS)
+            GL.glDepthMask(GL.GL_TRUE)
+            self.shader_program.setUniformValue("alpha", 1.0)
 
         self.shader_program.release()
 

@@ -1,6 +1,26 @@
 import struct
 import io
 
+
+def find_area_mdat_location(idx_path, chunk_index):
+    """Scan one AREA's SDAT pointer table in TOMBA2.IDX for its MDAT
+    (id 8) entry - same chunk layout idx_parser.parse_idx_file() reads,
+    and the same scan gui.scld.scld_parser.find_area_scld_location does
+    for id 7. Returns (dat_start, offset), or None if this area has no
+    MDAT."""
+    chunk_size = 0x800
+    with open(idx_path, "rb") as idx:
+        idx.seek(chunk_index * chunk_size)
+        _, _, dat_start, dat_end, pointer_amount = struct.unpack("<5I", idx.read(20))
+        raw = idx.read(pointer_amount * 4)
+    pointers = struct.unpack(f"<{pointer_amount}I", raw)
+    entries = [(v >> 24, v & 0xFFFFFF) for v in pointers]
+    for id_, offset in entries:
+        if id_ == 8:
+            return dat_start, offset
+    return None
+
+
 def exportMDAT(drwa_addr, datpath):
     base_idx = 0
     model_data = {

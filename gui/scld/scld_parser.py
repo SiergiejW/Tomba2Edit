@@ -5,15 +5,20 @@ Thanks to vervalkon (Tomba Club).
 Layout of one SCLD blob:
     header:  u16 entry_count (N)
     pointer table: (N + 1) x u16, word offsets from the START OF THE BLOB
-                   (multiply by 2 for the byte offset). Last one is a 0000
-                   terminator, not a real entry.
+                   (multiply by 2 for the byte offset). The last one isn't
+                   a real entry - it's only used as the final entry's
+                   `next_base`, unused elsewhere, and isn't always 0000.
 
 Each of the N pointers locates one "entry" - a single collision path:
     entry header (0x14 bytes), fields are:
         xxx1, xxx2, yyy1, yyy2 : s16   - 2D bounding box for this entry
-        unkn                   : u16   - unconfirmed
-        ls, le                 : u8, u8  - unconfirmed; not used by world
-                                            placement
+        unkn                   : u16   - alternates between 2 values around
+                                          one ls/le loop; likely a side/rail
+                                          tag, not a count
+        ls, le                 : u8, u8  - this entry's own link id, and the
+                                            link id of the entry that
+                                            continues after it (see
+                                            "World placement" below)
         ptr1, ptr2, ptr3, ptr4 : u16   - word offsets, relative to THIS
                                          entry's own base address (not the
                                          blob start like the outer table).
@@ -22,31 +27,68 @@ Each of the N pointers locates one "entry" - a single collision path:
 
     data0  [header_end   .. ptr1) : u16 order/index map, pairs like
                                      (0000,0000) (0000,0001) (0000,0002)...
-    table1 [ptr1 .. ptr2)         : 8-byte records - per-segment asset/type
-                                     list (u16 flags, u16 index, u16 type,
-                                     u16 pad); C0xx-flagged words mark
-                                     special multi-slot entries.
+    table1 [ptr1 .. ptr2)         : 8-byte records - (u16 flags, u16 index,
+                                     u16 run, u16 pad). `index` is a record
+                                     index into table3 and `run` is that
+                                     group's length, i.e. table1 partitions
+                                     table3 into groups: index[k+1] ==
+                                     index[k] + run[k]. Holds for 89% of
+                                     flags==0 records across every area;
+                                     C0xx-flagged records interleave a
+                                     second list and break the walk.
+                                     Each group is one sample station along
+                                     the entry - see "World placement".
     table2 [ptr2 .. ptr3)         : 16-byte records - door/crossroad object
                                      placements, referencing a segment index.
     table3 [ptr3 .. ptr4)         : 8-byte records - the elevation/path
                                      samples: (u16 kind, s16 pos, s16 elev,
                                      u16 seg_index), in walk order.
+    tail   [ptr4 .. next_base)    : 3-byte records, one per distinct
+                                     seg_index, padded to a word. Last two
+                                     bytes are a signed vector of magnitude
+                                     ~64 (a normal/tangent at 1.0 == 64);
+                                     the first is a separate signed scalar.
+                                     Not used for placement - it is 0 for
+                                     every record of some entries, which
+                                     still need placement corrections.
 
 World placement (SCLDEntry.trace()):
-    for i, record in enumerate(entry.path), N = len(entry.path):
-        t = i / N                                  # NOT i/(N-1)
-        x = xxx1 + (xxx2 - xxx1) * t
-        z = yyy1 + (yyy2 - yyy1) * t
         y = -record.pos
-    xxx maps straight to X, yyy straight to Z (no axis swap). `pos` is
-    negated directly, no unwrapping. `elevation`, `ls`, and `le` are not
-    used by this formula and their meaning is unconfirmed.
+        x = yyy1 + (yyy2 - yyy1) * t
+        z = xxx1 + (xxx2 - xxx1) * t
+    where t is the record's fraction along the entry (see _fractions).
 
-    A single SCLD file's world placement does not necessarily register
-    against any one MDAT room's coordinate space - one SCLD file's entries
-    can span more world area than a single MDAT piece covers.
+    t = group_index / group_count, using the table1 groups above: every
+    record in one group is the SAME station and shares one t. Records do
+    NOT each get their own step - a group is a station sampled several
+    ways (a ground reference, then the surface(s) there), so spreading
+    them out stretches the entry. Checked against two entries hand-fixed
+    against real level geometry (AREA_05 entries 9 and 15): fit of the
+    records that fix actually moved rises from R2 0.91 -> 0.99 and
+    0.93 -> 0.99 respectively. Nothing is fitted - the grouping is read
+    from the file.
+
+    t = i / N (vervalkon's original) is what `use_table1_groups = False`
+    restores. It reproduces his own OBJ export for AREA_08 exactly (max
+    error 0.0, X/Z swapped by his export convention) - which is why that
+    OBJ can't be used to check any of this: it is that formula's own
+    output, not an independent record of the level. Where the two differ
+    it is by up to ~2300 units, on 92% of AREA_08's records.
+
+    `elevation`, `ls`, and `le` are not used by this formula. `ls`/`le`
+    link entries into a loop (`le` equals another entry's own `ls`,
+    usually but not always that entry's index); entries 0..9 of AREA_05
+    are contiguous along z (each entry's xxx2 + 1 == the next's xxx1),
+    so a loop is a corridor split into pieces, but treating it as one
+    continuous walked path did not match ground truth.
+
+    His OBJ connects every record of an entry in file order as a single
+    line - polylines() matches that.
+
+    One SCLD file's entries can span more world area than a single MDAT
+    room covers, so this coordinate space does not necessarily register
+    against any one MDAT room directly.
 """
-import statistics
 import struct
 from dataclasses import dataclass, field
 
@@ -89,44 +131,65 @@ class SCLDEntry:
     path: list = field(default_factory=list)     # PathPoint, in file order
     tail: bytes = b""
 
-    def trace(self):
+    # Class-wide so the viewer can A/B this against vervalkon's i/N.
+    use_table1_groups = True
+
+    def trace(self, reverse=False):
         """This entry's path as a list of (x, y, z) world points, one per
         table3 record, in file order. See the world-placement formula in
-        this module's docstring."""
+        this module's docstring. `reverse=True` swaps which end of the
+        bounding box record index 0 lands on (x/z only, y unaffected) -
+        confirmed necessary for specific entries by direct visual check
+        against level geometry, but false by default since it's wrong
+        for most entries (e.g. every entry in AREA_08, verified exactly
+        against vervalkon's own OBJ export)."""
         n = len(self.path)
         if n == 0:
             return []
-        return [self._point(i, p) for i, p in enumerate(self.path)]
+        fracs = self._fractions(reverse)
+        return [self._point(p, t) for p, t in zip(self.path, fracs)]
 
-    def polylines(self):
-        """trace() split into separate connected runs wherever two
-        consecutive records' `pos` differs by an extreme amount relative
-        to this entry's own typical step - e.g. one record set per stair
-        tread, where `pos` resets back near its start every repeat instead
-        of continuing to climb. Point values are unchanged from trace();
-        this only decides which consecutive points get a line drawn
-        between them, so a reset doesn't draw a spike across the jump."""
-        pts = self.trace()
-        if len(pts) < 2:
-            return [pts] if pts else []
+    def polylines(self, reverse=False):
+        """trace() as a single connected track covering every record in
+        file order, matching vervalkon's own OBJ export (one `l` line
+        through every vertex of an entry, in order). Returns a list
+        containing that one run (or none, if this entry has no path)."""
+        pts = self.trace(reverse)
+        return [pts] if pts else []
 
-        deltas = [abs(self.path[i].pos - self.path[i - 1].pos) for i in range(1, len(self.path))]
-        typical = statistics.median(deltas) or 1
-        cap = max(typical * 6, 256)
+    def group_starts(self):
+        """This entry's table1 group boundaries as record indices into
+        `path`. Empty if table1 doesn't describe this entry's records
+        (no assets, or it doesn't start at record 0)."""
+        n = len(self.path)
+        bounds = sorted({a[1] for a in self.assets if a[1] < n})
+        return bounds if bounds and bounds[0] == 0 else []
 
-        runs = [[pts[0]]]
-        for i, d in enumerate(deltas, start=1):
-            if d > cap:
-                runs.append([])
-            runs[-1].append(pts[i])
-        return [r for r in runs if r]
+    def _fractions(self, reverse):
+        """Fraction along the bounding box (t in x/z = a + (b-a)*t), one
+        per record - see the world-placement formula in this module's
+        docstring. Falls back to vervalkon's i/N when table1 doesn't
+        cover this entry; note that for an entry whose groups are all
+        one record long the two are identical anyway."""
+        n = len(self.path)
+        starts = self.group_starts() if self.use_table1_groups else []
+        if starts:
+            count = len(starts)
+            fracs = []
+            gi = 0
+            for i in range(n):
+                while gi + 1 < count and starts[gi + 1] <= i:
+                    gi += 1
+                fracs.append(gi / count)
+        else:
+            fracs = [i / n for i in range(n)]
+        return list(reversed(fracs)) if reverse else fracs
 
-    def _point(self, i, p):
-        t = i / len(self.path)
-        x = self.xxx1 + (self.xxx2 - self.xxx1) * t
-        z = self.yyy1 + (self.yyy2 - self.yyy1) * t
+    def _point(self, p, t):
+        x = self.yyy1 + (self.yyy2 - self.yyy1) * t
         y = -p.pos
-        return z, y, x
+        z = self.xxx1 + (self.xxx2 - self.xxx1) * t
+        return x, y, z
 
 
 @dataclass
