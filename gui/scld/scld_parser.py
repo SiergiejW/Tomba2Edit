@@ -379,6 +379,98 @@ class SCLDEntry:
             return []
         return list(zip(ids, starts))
 
+    def surfaces(self, reverse=None):
+        """This entry's records regrouped into the runs that read as lines
+        along it - the walkable surfaces.
+
+        A station holds several records at one position: a ground
+        reference and the surface(s) found there. Joining them in file
+        order, as polylines() does, stitches up and down between those
+        heights instead of running along the entry. A surface runs the
+        other way - sampled again at each station - so a run carries on
+        to whichever record at the next station continues it.
+
+        Which record that is comes from `elevation`, the only field that
+        says anything about how a surface moves. Where it is 0 the height
+        does not change: of the 21630 pairings across the game whose
+        first record has elevation 0, 21284 (98.4%) hold their height to
+        within 2 units. So elevation bounds the step, and a pairing is
+        only allowed while
+
+            |height change| <= |elevation a| + |elevation b| + 64
+
+        (the 64 being the one tile a surface may step without saying so).
+        That is what keeps two surfaces passing at one station from being
+        swapped: in AREA_04 entry 27 the leftover pairing of record 25 to
+        17 asks for 1189 units against a budget of 127, and in entry 28
+        record 87 to 89 asks 2849. Both are refused.
+
+        Neither `kind` nor `seg_index` identifies a surface, so neither
+        is used to group. Both change along one: entry 27 walks a single
+        surface through nibbles 2, 4, 8, 2 and segments 7, 8, 9, 10, and
+        keying on either cuts it at every change.
+
+        Ties - two records at one station equally far in height - are
+        settled on elevation as well, since the record continuing a
+        surface carries a similar one.
+
+        A run that skips stations is broken there rather than joined
+        across the gap - drawing that as one line throws a bar across
+        everything in between.
+
+        Returns a list of runs of (x, y, z), each with 2+ points, ordered
+        along the entry. Runs left with a single point are dropped - that
+        is a point, not a line."""
+        n = len(self.path)
+        if n == 0:
+            return []
+        if reverse is None:
+            reverse = self.auto_reverse
+        fracs = self._fractions(reverse)
+        pts = [self._point(p, t) for p, t in zip(self.path, fracs)]
+        ordered = sorted(set(fracs))
+        step = min((b - a for a, b in zip(ordered, ordered[1:])), default=0.0)
+        gap = step * 1.75 if step else float("inf")
+
+        by_station = {}
+        for i in range(n):
+            by_station.setdefault(fracs[i], []).append(i)
+
+        runs, open_runs = [], []
+        for f in sorted(by_station):
+            free = list(by_station[f])
+            cand = []
+            for ri, (lf, run) in enumerate(open_runs):
+                if f - lf > gap:
+                    continue
+                a = self.path[run[-1]]
+                for i in by_station[f]:
+                    b = self.path[i]
+                    rise = abs(a.pos - b.pos)
+                    if rise > abs(a.elevation) + abs(b.elevation) + 64:
+                        continue
+                    cand.append((rise + abs(a.elevation - b.elevation), ri, i))
+            cand.sort()
+            taken_run, taken_rec = set(), set()
+            for _score, ri, i in cand:
+                if ri in taken_run or i in taken_rec:
+                    continue
+                taken_run.add(ri)
+                taken_rec.add(i)
+                open_runs[ri] = (f, open_runs[ri][1] + [i])
+                free.remove(i)
+            still = []
+            for ri, (lf, run) in enumerate(open_runs):
+                if ri in taken_run:
+                    still.append((lf, run))
+                elif len(run) > 1:
+                    runs.append(run)
+            open_runs = still + [(f, [i]) for i in free]
+        for _lf, run in open_runs:
+            if len(run) > 1:
+                runs.append(run)
+        return [[pts[i] for i in run] for run in runs]
+
     def _join_stations(self):
         """Stations whose table1 record both closes one sub-list and opens
         the next (end bit 0 and start bit 1 set together). Such a station
@@ -434,7 +526,6 @@ class SCLDEntry:
             slot[k] = count
             if k not in joins or step == len(order) - 1:
                 count += 1
-        count = count or 1
         fracs = [0.0] * n
         for k in order:
             # Flip the station, not the record order - reversing the list
@@ -445,10 +536,25 @@ class SCLDEntry:
                 fracs[i] = g / count
         return fracs
 
+    @staticmethod
+    def _extent(a0, a1):
+        """An axis's length. The box corners are both inside it, so a box
+        running 0..63 is 64 units long, not 63 - every extent in the file
+        is tiles * 64 - 1. Dropping that unit shortens each station step
+        below one tile, and the entry drifts further off the level the
+        longer it runs. With it, 448 of the 593 entries that span any
+        distance step exactly 64 - one tile - and a station lands the
+        same 64 further on across the seam between two entries as it does
+        inside one."""
+        d = a1 - a0
+        if d == 0:
+            return 0
+        return d + (1 if d > 0 else -1)
+
     def _point(self, p, t):
-        x = self.yyy1 + (self.yyy2 - self.yyy1) * t
+        x = self.yyy1 + self._extent(self.yyy1, self.yyy2) * t
         y = -p.pos
-        z = self.xxx1 + (self.xxx2 - self.xxx1) * t
+        z = self.xxx1 + self._extent(self.xxx1, self.xxx2) * t
         return x, y, z
 
 
@@ -457,6 +563,78 @@ class SCLDFile:
     entry_count: int
     pointers: list
     entries: list
+
+    def _walk_ends(self, entry):
+        """(first-station records, last-station records, start xz, end xz)
+        in walk order, or None for an empty entry."""
+        n = len(entry.path)
+        if n == 0:
+            return None
+        fracs = entry._fractions(entry.auto_reverse)
+        pts = entry.trace()
+        lo, hi = min(fracs), max(fracs)
+        first = [i for i in range(n) if fracs[i] == lo]
+        last = [i for i in range(n) if fracs[i] == hi]
+        return (first, last,
+                (pts[first[0]][0], pts[first[0]][2]),
+                (pts[last[0]][0], pts[last[0]][2]), pts)
+
+    def seams(self, max_gap=96.0):
+        """Segments joining one entry's last station to the next entry's
+        first, so a surface running on past the end of its own entry
+        reads as one line instead of stopping at the boundary.
+
+        Nothing in an entry points at whichever one continues it. ls/le
+        link entries into loops that skip a neighbour (AREA_08 entry 1's
+        le is 3, but entry 2 is what follows it), and ls + 1 is no good
+        either - it is ambiguous, since many entries share an ls of 0,
+        and only a third of those pairs have boxes that meet. What does
+        hold is position: an entry's walk-end lands one tile short of its
+        successor's walk-start. Records are then paired across the seam
+        exactly as surfaces() pairs them along one entry - same surface
+        nibble, nearest height.
+
+        Returns a list of 2-point runs, each ((x, y, z), (x, y, z))."""
+        ends = {}
+        for e in self.entries:
+            w = self._walk_ends(e)
+            if w:
+                ends[e.index] = (e, w)
+
+        # Nearest first, and an entry's start can only continue one other,
+        # so a fork doesn't get stitched twice.
+        cands = []
+        for i, (ea, (fa, la, sa, na, pa)) in ends.items():
+            for j, (eb, (fb, lb, sb, nb, pb)) in ends.items():
+                if i == j:
+                    continue
+                d = ((na[0] - sb[0]) ** 2 + (na[1] - sb[1]) ** 2) ** 0.5
+                if d <= max_gap:
+                    cands.append((d, i, j))
+        cands.sort()
+
+        runs, used_from, used_to = [], set(), set()
+        for _d, i, j in cands:
+            if i in used_from or j in used_to:
+                continue
+            used_from.add(i)
+            used_to.add(j)
+            ea, (fa, la, sa, na, pa) = ends[i]
+            eb, (fb, lb, sb, nb, pb) = ends[j]
+            free = list(fb)
+            pairs = sorted(
+                ((abs(ea.path[x].pos - eb.path[y].pos), x, y)
+                 for x in la for y in fb
+                 if ea.path[x].kind & 0x0F == eb.path[y].kind & 0x0F),
+                key=lambda t: (t[0], t[1], t[2]))
+            taken_a, taken_b = set(), set()
+            for _dp, x, y in pairs:
+                if x in taken_a or y in taken_b:
+                    continue
+                taken_a.add(x)
+                taken_b.add(y)
+                runs.append([pa[x], pb[y]])
+        return runs
 
 
 def parse_scld(blob: bytes) -> SCLDFile:

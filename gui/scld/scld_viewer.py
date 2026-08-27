@@ -24,6 +24,14 @@ from PyQt6.QtWidgets import (
 # path lines up against an MDAT room rendered at the same camera position.
 UNIT_SCALE = 1000.0
 
+# Cross-entry seams draw in this instead of an entry colour, since they
+# belong to two entries at once.
+SEAM_COLOR = (0.93, 0.93, 0.85)
+
+# How visible the records are once their surfaces are drawn over them -
+# they read as scaffolding under the lines rather than competing with them.
+SCAFFOLD_ALPHA = 0.5
+
 # Golden-ratio conjugate, used to space entry colors around the hue wheel -
 # see the comment where it's used below.
 GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
@@ -34,6 +42,14 @@ class SCLDViewer(QOpenGLWidget):
         super().__init__(parent)
         self.scld_data = None
         self.show_markers = True
+        # Join each walkable surface into a line along the entry - see
+        # SCLDEntry.surfaces().
+        self.show_surfaces = True
+        # Number every record of the selected entry in 3D, so a specific
+        # point can be named when comparing against the level.
+        self.show_point_ids = False
+        # entry.index -> [(x, y, z), ...] in record order, for those labels.
+        self.entry_record_pos = {}
 
         # entry.base -> a hand-set direction, for checking one entry
         # against the level by eye. Entries absent from this are left to
@@ -111,6 +127,28 @@ class SCLDViewer(QOpenGLWidget):
         self.view_level_action.toggled.connect(self.toggle_level)
         self.toolbar.addAction(self.view_level_action)
 
+        self.surfaces_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
+            "Surfaces", self)
+        self.surfaces_action.setCheckable(True)
+        self.surfaces_action.setChecked(True)
+        self.surfaces_action.setToolTip(
+            "Join each (seg_index, kind) into a line along the entry - the "
+            "walkable surfaces - instead of leaving loose points")
+        self.surfaces_action.toggled.connect(self.toggle_surfaces)
+        self.toolbar.addAction(self.surfaces_action)
+
+        self.point_ids_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
+            "Point IDs", self)
+        self.point_ids_action.setCheckable(True)
+        self.point_ids_action.setChecked(False)
+        self.point_ids_action.setToolTip(
+            "Number every record of the selected entry, so points can be "
+            "referred to by index")
+        self.point_ids_action.toggled.connect(self.toggle_point_ids)
+        self.toolbar.addAction(self.point_ids_action)
+
         self.group_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView),
             "Group Placement", self)
@@ -166,6 +204,16 @@ class SCLDViewer(QOpenGLWidget):
         self.show_level = checked
         if checked and self._level_loaded_for_chunk != self._chunk_index:
             self.load_level_mesh()
+        self.update()
+
+    def toggle_surfaces(self, checked):
+        self.show_surfaces = checked
+        if self.scld_data is not None:
+            self.prepare_buffers()
+        self.update()
+
+    def toggle_point_ids(self, checked):
+        self.show_point_ids = checked
         self.update()
 
     def toggle_group_placement(self, checked):
@@ -297,6 +345,7 @@ class SCLDViewer(QOpenGLWidget):
         point_colors = []
         self.entry_point_ranges = {}
         self.entry_label_pos = {}
+        self.entry_record_pos = {}
 
         entries = self.scld_data.entries
         for entry in entries:
@@ -305,19 +354,42 @@ class SCLDViewer(QOpenGLWidget):
             # dozens of entries - each one reads as its own color.
             hue = (entry.index * GOLDEN_RATIO_CONJUGATE) % 1.0
             r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
-            # Points only for now - which records should be connected into
-            # a line isn't settled, so drawing one would show a guess as
-            # if it were fact.
+            rev = self._reverse_for(entry)
+            if self.show_surfaces:
+                # One run per walkable surface, dimmer than the points so
+                # the records still read on top of them - see
+                # SCLDEntry.surfaces() for why file order is the wrong
+                # thing to join.
+                lr, lg, lb = colorsys.hsv_to_rgb(hue, 0.70, 1.0)
+                for run in entry.surfaces(reverse=rev):
+                    for a, b_ in zip(run, run[1:]):
+                        line_verts.append(a)
+                        line_verts.append(b_)
+                        line_colors.append((lr, lg, lb))
+                        line_colors.append((lr, lg, lb))
             start = len(point_verts)
-            pts = entry.trace(reverse=self._reverse_for(entry))
+            pts = entry.trace(reverse=rev)
             for pt in pts:
                 point_verts.append(pt)
                 point_colors.append((r, g, b))
             self.entry_point_ranges[entry.index] = (start, len(point_verts) - start)
+            self.entry_record_pos[entry.index] = [
+                (p[0] / UNIT_SCALE, p[1] / UNIT_SCALE, p[2] / UNIT_SCALE) for p in pts]
             if pts:
                 mid = pts[len(pts) // 2]
                 self.entry_label_pos[entry.index] = (
                     mid[0] / UNIT_SCALE, mid[1] / UNIT_SCALE, mid[2] / UNIT_SCALE)
+
+        if self.show_surfaces:
+            # Cross-entry joins: a surface that carries on past the end of
+            # its own entry - see SCLDFile.seams(). Drawn pale so a seam is
+            # tellable from the entry-coloured runs it bridges.
+            for run in self.scld_data.seams():
+                for a, b in zip(run, run[1:]):
+                    line_verts.append(a)
+                    line_verts.append(b)
+                    line_colors.append(SEAM_COLOR)
+                    line_colors.append(SEAM_COLOR)
 
         self.makeCurrent()
 
@@ -542,10 +614,15 @@ class SCLDViewer(QOpenGLWidget):
             self.grid_vao.release()
 
         if self.line_vertex_count:
-            GL.glLineWidth(1.0)  # thinnest width most GL drivers support
+            # The surfaces are the thing being read; the records are only
+            # scaffolding under them, so the lines get the weight and full
+            # opacity and the points are drawn back at SCAFFOLD_ALPHA.
+            GL.glLineWidth(2.0)
+            self.shader_program.setUniformValue("alpha", 1.0)
             self.line_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.line_vertex_count)
             self.line_vao.release()
+            GL.glLineWidth(1.0)
 
         if self.show_markers and self.point_vertex_count:
             highlight_rng = None
@@ -555,6 +632,7 @@ class SCLDViewer(QOpenGLWidget):
                     highlight_rng = rng
 
             def draw_points(alpha_scale):
+                alpha_scale *= (SCAFFOLD_ALPHA if self.line_vertex_count else 1.0)
                 GL.glPointSize(6.0)
                 if highlight_rng is None:
                     self.shader_program.setUniformValue("alpha", alpha_scale)
@@ -598,6 +676,8 @@ class SCLDViewer(QOpenGLWidget):
 
         if self.highlighted_entry is not None:
             self._draw_entry_label(mvp)
+            if self.show_point_ids:
+                self._draw_point_ids(mvp)
 
     def _draw_entry_label(self, mvp):
         """Number of the selected entry, placed in 3D at that entry's own
@@ -625,6 +705,34 @@ class SCLDViewer(QOpenGLWidget):
             painter.drawText(int(sx) + dx, int(sy) + dy, text)
         painter.setPen(QColor(255, 255, 255))
         painter.drawText(int(sx), int(sy), text)
+        painter.end()
+
+    def _draw_point_ids(self, mvp):
+        """Record index beside every point of the selected entry, so a
+        specific one can be named. Only the selected entry is numbered -
+        all of them at once is unreadable, and these are the records
+        SCLDEntry.trace() returns, in file order."""
+        recs = self.entry_record_pos.get(self.highlighted_entry)
+        if not recs:
+            return
+        painter = QPainter(self)
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSize(8)
+        painter.setFont(font)
+        for i, pos in enumerate(recs):
+            ndc = mvp.map(QVector3D(*pos))
+            if not (-1.0 < ndc.x() < 1.0 and -1.0 < ndc.y() < 1.0
+                    and -1.0 < ndc.z() < 1.0):
+                continue
+            sx = int((ndc.x() * 0.5 + 0.5) * self.width()) + 5
+            sy = int((1.0 - (ndc.y() * 0.5 + 0.5)) * self.height()) - 3
+            text = str(i)
+            painter.setPen(QColor(0, 0, 0))
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                painter.drawText(sx + dx, sy + dy, text)
+            painter.setPen(QColor(255, 235, 140))
+            painter.drawText(sx, sy, text)
         painter.end()
 
     def wheelEvent(self, event):
