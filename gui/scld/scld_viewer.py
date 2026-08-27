@@ -12,7 +12,7 @@ from PyQt6.QtOpenGL import (
 )
 from PyQt6.QtGui import QMatrix4x4, QAction, QVector3D, QPainter, QColor, QFont
 from OpenGL import GL
-from gui.scld.scld_parser import load_scld, SCLDEntry
+from gui.scld.scld_parser import load_scld
 from gui.scld.scld_render import (
     UNIT_SCALE, SCAFFOLD_ALPHA, build_points, build_lines, unkn_color,
 )
@@ -20,7 +20,7 @@ from gui.mdat.mdat import exportMDAT, find_area_mdat_location
 from functions.camera_controls import CameraControls
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
 
@@ -32,26 +32,23 @@ class SCLDViewer(QOpenGLWidget):
         # Join each walkable surface into a line along the entry - see
         # SCLDEntry.surfaces().
         self.show_surfaces = True
-        # Number every record of the selected entry in 3D, so a specific
-        # point can be named when comparing against the level.
-        self.show_point_ids = False
         # Colour entries by their header's `unkn` value instead of by
         # index, to see whether entries sharing one have anything in
         # common on screen.
         self.color_by_unkn = False
+        # Draw every vertical pair at a station - candidate side walls,
+        # undecoded. See SCLDEntry.wall_candidates().
+        self.show_walls = False
         # entry.index -> [(x, y, z), ...] in record order, for those labels.
         self.entry_record_pos = {}
-
-        # entry.base -> a hand-set direction, for checking one entry
-        # against the level by eye. Entries absent from this are left to
-        # place themselves from their own header (SCLDEntry.trace()).
-        self.reversed_entries = {}
 
         # entry.index -> (start, count) into the point buffer, so a single
         # entry's points can be redrawn on their own for the highlight pulse.
         self.entry_point_ranges = {}
         self.entry_label_pos = {}
         self.highlighted_entry = None
+        # Entries sharing the selected one's `unkn`, pulsed alongside it.
+        self.related_entries = set()
         self._highlight_phase = 0.0
         self._highlight_timer = QTimer(self)
         self._highlight_timer.setInterval(33)
@@ -129,6 +126,17 @@ class SCLDViewer(QOpenGLWidget):
         self.surfaces_action.toggled.connect(self.toggle_surfaces)
         self.toolbar.addAction(self.surfaces_action)
 
+        self.walls_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
+            "Walls?", self)
+        self.walls_action.setCheckable(True)
+        self.walls_action.setChecked(False)
+        self.walls_action.setToolTip(
+            "UNDECODED: join every record at a station to the one above "
+            "it - candidate side walls, for checking by eye")
+        self.walls_action.toggled.connect(self.toggle_walls)
+        self.toolbar.addAction(self.walls_action)
+
         self.unkn_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton),
             "Colour by unkn", self)
@@ -139,28 +147,6 @@ class SCLDViewer(QOpenGLWidget):
             "value are drawn alike, and unkn == 0 is grey")
         self.unkn_action.toggled.connect(self.toggle_color_by_unkn)
         self.toolbar.addAction(self.unkn_action)
-
-        self.point_ids_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
-            "Point IDs", self)
-        self.point_ids_action.setCheckable(True)
-        self.point_ids_action.setChecked(False)
-        self.point_ids_action.setToolTip(
-            "Number every record of the selected entry, so points can be "
-            "referred to by index")
-        self.point_ids_action.toggled.connect(self.toggle_point_ids)
-        self.toolbar.addAction(self.point_ids_action)
-
-        self.group_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView),
-            "Group Placement", self)
-        self.group_action.setCheckable(True)
-        self.group_action.setChecked(SCLDEntry.use_table1_groups)
-        self.group_action.setToolTip(
-            "Place one station per table1 group (on) instead of one per "
-            "table3 record (off, vervalkon's i/N)")
-        self.group_action.toggled.connect(self.toggle_group_placement)
-        self.toolbar.addAction(self.group_action)
 
         self.stats_label = QLabel(self)
         self.stats_label.setStyleSheet("""
@@ -214,18 +200,14 @@ class SCLDViewer(QOpenGLWidget):
             self.prepare_buffers()
         self.update()
 
-    def toggle_color_by_unkn(self, checked):
-        self.color_by_unkn = checked
+    def toggle_walls(self, checked):
+        self.show_walls = checked
         if self.scld_data is not None:
             self.prepare_buffers()
         self.update()
 
-    def toggle_point_ids(self, checked):
-        self.show_point_ids = checked
-        self.update()
-
-    def toggle_group_placement(self, checked):
-        SCLDEntry.use_table1_groups = checked
+    def toggle_color_by_unkn(self, checked):
+        self.color_by_unkn = checked
         if self.scld_data is not None:
             self.prepare_buffers()
         self.update()
@@ -290,9 +272,20 @@ class SCLDViewer(QOpenGLWidget):
 
     def set_highlighted_entry(self, entry_index):
         """Pulse one entry's points (alpha oscillating 10%-100%) so it's
-        easy to pick out among dozens of same-sized dots. Pass None to
+        easy to pick out among dozens of same-sized dots.
+
+        Every other entry sharing its non-zero `unkn` pulses with it, so
+        whatever a value has in common is visible at once. Pass None to
         stop."""
         self.highlighted_entry = entry_index
+        self.related_entries = set()
+        if entry_index is not None and self.scld_data:
+            by_index = {e.index: e for e in self.scld_data.entries}
+            entry = by_index.get(entry_index)
+            if entry is not None and entry.unkn:
+                self.related_entries = {
+                    e.index for e in self.scld_data.entries
+                    if e.unkn == entry.unkn and e.index != entry_index}
         if entry_index is None:
             self._highlight_timer.stop()
         else:
@@ -304,21 +297,6 @@ class SCLDViewer(QOpenGLWidget):
         self._highlight_phase += 0.12
         self.update()
 
-    def set_entry_reversed(self, entry_base, reversed_):
-        """Force this entry's direction, or pass None to hand it back to
-        SCLDEntry.auto_reverse."""
-        if reversed_ is None:
-            self.reversed_entries.pop(entry_base, None)
-        else:
-            self.reversed_entries[entry_base] = reversed_
-        self.prepare_buffers()
-        self.update()
-
-    def _reverse_for(self, entry):
-        """This entry's manual override, or None to let the parser place
-        it from its own header."""
-        return self.reversed_entries.get(entry.base)
-
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
         """Parse and load an SCLD blob. Every entry renders as one
         connected line along its branch (see SCLDEntry.trace()).
@@ -326,7 +304,6 @@ class SCLDViewer(QOpenGLWidget):
         load_level_mesh() to find this area's matching MDAT room."""
         try:
             self.scld_data = load_scld(dat_file_path, dat_start, offset, size)
-            self.reversed_entries = {}
             self._dat_file_path = dat_file_path
             self._chunk_index = chunk_index
             if chunk_index != self._level_loaded_for_chunk:
@@ -351,12 +328,11 @@ class SCLDViewer(QOpenGLWidget):
         entries = self.scld_data.entries
         tint = unkn_color if self.color_by_unkn else None
         line_verts, line_colors = build_lines(
-            self.scld_data, entries, reverse_for=self._reverse_for,
-            surfaces=self.show_surfaces, seams=self.show_surfaces,
-            color_by=tint)
+            self.scld_data, entries, surfaces=self.show_surfaces,
+            seams=self.show_surfaces, walls=self.show_walls, color_by=tint)
         (point_verts, point_colors, self.entry_point_ranges,
          self.entry_record_pos) = build_points(
-            entries, reverse_for=self._reverse_for, color_by=tint)
+            entries, color_by=tint)
         for index, pts in self.entry_record_pos.items():
             if pts:
                 self.entry_label_pos[index] = pts[len(pts) // 2]
@@ -595,34 +571,38 @@ class SCLDViewer(QOpenGLWidget):
             GL.glLineWidth(1.0)
 
         if self.show_markers and self.point_vertex_count:
-            highlight_rng = None
+            pulsed = []
             if self.highlighted_entry is not None:
-                rng = self.entry_point_ranges.get(self.highlighted_entry)
-                if rng and rng[1] > 0:
-                    highlight_rng = rng
+                for index in [self.highlighted_entry] + sorted(self.related_entries):
+                    rng = self.entry_point_ranges.get(index)
+                    if rng and rng[1] > 0:
+                        pulsed.append(rng)
+                pulsed.sort()
 
             def draw_points(alpha_scale):
                 alpha_scale *= (SCAFFOLD_ALPHA if self.line_vertex_count else 1.0)
                 GL.glPointSize(6.0)
-                if highlight_rng is None:
+                if not pulsed:
                     self.shader_program.setUniformValue("alpha", alpha_scale)
                     GL.glDrawArrays(GL.GL_POINTS, 0, self.point_vertex_count)
                     return
-                # Same points redrawn for the highlighted range - its own
-                # opacity pulses, and it's drawn slightly larger, instead
-                # of a second point stacked over it.
-                start, count = highlight_rng
+                # The same points redrawn: everything else at its usual
+                # opacity, then the pulsed ranges over it, larger and
+                # oscillating, rather than a second point stacked on top.
                 self.shader_program.setUniformValue("alpha", alpha_scale)
-                if start > 0:
-                    GL.glDrawArrays(GL.GL_POINTS, 0, start)
-                after = start + count
-                if after < self.point_vertex_count:
-                    GL.glDrawArrays(GL.GL_POINTS, after, self.point_vertex_count - after)
+                at = 0
+                for start, count in pulsed:
+                    if start > at:
+                        GL.glDrawArrays(GL.GL_POINTS, at, start - at)
+                    at = max(at, start + count)
+                if at < self.point_vertex_count:
+                    GL.glDrawArrays(GL.GL_POINTS, at, self.point_vertex_count - at)
 
                 pulse = 0.1 + 0.9 * (0.5 + 0.5 * math.sin(self._highlight_phase))
                 self.shader_program.setUniformValue("alpha", pulse * alpha_scale)
                 GL.glPointSize(9.0)
-                GL.glDrawArrays(GL.GL_POINTS, start, count)
+                for start, count in pulsed:
+                    GL.glDrawArrays(GL.GL_POINTS, start, count)
                 GL.glPointSize(6.0)
 
             GL.glPointSize(6.0)
@@ -646,8 +626,7 @@ class SCLDViewer(QOpenGLWidget):
 
         if self.highlighted_entry is not None:
             self._draw_entry_label(mvp)
-            if self.show_point_ids:
-                self._draw_point_ids(mvp)
+            self._draw_point_ids(mvp)
 
     def _draw_entry_label(self, mvp):
         """Number of the selected entry, placed in 3D at that entry's own
@@ -721,59 +700,33 @@ class SCLDViewer(QOpenGLWidget):
         self.camera_controls.keyReleaseEvent(event)
 
 
-class _NoResetTriStateCheckBox(QCheckBox):
-    """Tri-state checkbox that only cycles Unchecked -> one of the two
-    "checked" states on the first click; after that, clicking only
-    toggles between Checked and PartiallyChecked - it never goes back
-    to Unchecked once a choice has actually been made."""
-
-    def nextCheckState(self):
-        cs = self.checkState()
-        if cs == Qt.CheckState.Checked:
-            self.setCheckState(Qt.CheckState.PartiallyChecked)
-        else:
-            self.setCheckState(Qt.CheckState.Checked)
-
-
 class SCLDDebugPanel(QWidget):
-    """Debug companion for SCLDViewer: an entry table next to the 3D
-    view. Selecting a row pulses that entry's points (10%-100% alpha)
-    so it's easy to pick out among however many other entries share the
-    screen. Each row is addressable by its `ls_into_le` name (matches
-    vervalkon's own OBJ object naming) and its byte offset into the
-    SCLD blob, for cross-referencing against a hex editor."""
+    """Entry table beside the 3D view.
+
+    Selecting a row pulses that entry's points and numbers its records,
+    along with any other entry sharing its `unkn`. Rows carry the
+    `ls_into_le` name and the byte offset into the blob, for
+    cross-referencing against a hex editor, and every column sorts."""
 
     def __init__(self, viewer: SCLDViewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
 
-        self.table = QTableWidget(0, 6, self)
-        self.table.setHorizontalHeaderLabels(["#", "Name (ls_into_le)", "Base", "Points", "unkn", "Rev"])
+        self.table = QTableWidget(0, 5, self)
+        self.table.setHorizontalHeaderLabels(["#", "Name (ls_into_le)", "Base", "Points", "unkn"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
-
-        # entry.base -> Qt.CheckState.value for whichever row was last set;
-        # absent means unvisited (unchecked/indeterminate default). Separate
-        # from viewer.reversed_entries, which only tracks the render state -
-        # this also remembers "checked and confirmed already correct" so it
-        # isn't re-litigated next time this file is opened.
-        self.verification_state = {}
-
-        self.reverse_checkbox = _NoResetTriStateCheckBox("X/Z direction: not checked yet", self)
-        self.reverse_checkbox.setTristate(True)
-        self.reverse_checkbox.setEnabled(False)
-        self.reverse_checkbox.stateChanged.connect(self._on_reverse_state_changed)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.table)
-        left_layout.addWidget(self.reverse_checkbox)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(left)
@@ -786,68 +739,37 @@ class SCLDDebugPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
 
-    _REV_COLUMN_TEXT = {
-        Qt.CheckState.Unchecked.value: "",
-        Qt.CheckState.Checked.value: "Yes",
-        Qt.CheckState.PartiallyChecked.value: "No",
-    }
-    _CHECKBOX_LABEL = {
-        Qt.CheckState.Unchecked.value: "X/Z direction: not checked yet",
-        Qt.CheckState.Checked.value: "X/Z direction: REVERSED (checked visually)",
-        Qt.CheckState.PartiallyChecked.value: "X/Z direction: unreversed (checked visually)",
-    }
-
     def populate_table(self):
         self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
         entries = self.viewer.scld_data.entries if self.viewer.scld_data else []
         self.table.setRowCount(len(entries))
-        self.verification_state = {}
         for row, e in enumerate(entries):
             name = f"{e.ls:02X}_into_{e.le:02X}"
-            index_item = QTableWidgetItem(str(e.index))
+            index_item = QTableWidgetItem()
+            index_item.setData(Qt.ItemDataRole.DisplayRole, e.index)
             index_item.setData(Qt.ItemDataRole.UserRole, e.index)
             index_item.setData(Qt.ItemDataRole.UserRole + 1, e.base)
             self.table.setItem(row, 0, index_item)
             self.table.setItem(row, 1, QTableWidgetItem(name))
             self.table.setItem(row, 2, QTableWidgetItem(f"0x{e.base:X}"))
-            self.table.setItem(row, 3, QTableWidgetItem(str(len(e.path))))
-            self.table.setItem(row, 4, QTableWidgetItem(f"0x{e.unkn:04X}"))
-            self.table.setItem(row, 5, QTableWidgetItem(""))
+            points_item = QTableWidgetItem()
+            points_item.setData(Qt.ItemDataRole.DisplayRole, len(e.path))
+            self.table.setItem(row, 3, points_item)
+            # Sorts on the number while showing hex, so the column groups
+            # entries that share a value.
+            unkn_item = QTableWidgetItem(f"0x{e.unkn:04X}")
+            unkn_item.setData(Qt.ItemDataRole.UserRole, e.unkn)
+            self.table.setItem(row, 4, unkn_item)
+        self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
-        self.reverse_checkbox.setEnabled(False)
         self.viewer.set_highlighted_entry(None)
 
     def _on_selection_changed(self):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
-            self.reverse_checkbox.setEnabled(False)
             self.viewer.set_highlighted_entry(None)
             return
         item = self.table.item(rows[0].row(), 0)
         entry_index = item.data(Qt.ItemDataRole.UserRole)
-        entry_base = item.data(Qt.ItemDataRole.UserRole + 1)
         self.viewer.set_highlighted_entry(entry_index)
-
-        state = self.verification_state.get(entry_base, Qt.CheckState.Unchecked.value)
-        self.reverse_checkbox.blockSignals(True)
-        self.reverse_checkbox.setCheckState(Qt.CheckState(state))
-        self.reverse_checkbox.setText(self._CHECKBOX_LABEL[state])
-        self.reverse_checkbox.setEnabled(True)
-        self.reverse_checkbox.blockSignals(False)
-
-    def _on_reverse_state_changed(self, state):
-        state = int(state)
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return
-        row = rows[0].row()
-        entry_base = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
-
-        self.verification_state[entry_base] = state
-        if state == Qt.CheckState.Unchecked.value:
-            forced = None
-        else:
-            forced = state == Qt.CheckState.Checked.value
-        self.viewer.set_entry_reversed(entry_base, forced)
-        self.table.item(row, 5).setText(self._REV_COLUMN_TEXT[state])
-        self.reverse_checkbox.setText(self._CHECKBOX_LABEL[state])

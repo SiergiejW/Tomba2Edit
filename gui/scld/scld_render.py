@@ -22,6 +22,10 @@ GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
 # Records drop to this opacity when their surfaces are drawn over them.
 SCAFFOLD_ALPHA = 0.5
 
+# Undecoded candidate walls - deliberately unlike anything else on
+# screen, so a guess is never mistaken for decoded geometry.
+WALL_CANDIDATE_COLOR = (1.0, 0.35, 0.75)
+
 # Cross-entry joins, which belong to two entries at once and so take
 # neither entry's colour.
 SEAM_COLOR = (0.93, 0.93, 0.85)
@@ -84,11 +88,9 @@ def contains(bounds, point):
     return x0 <= point[0] <= x1 and z0 <= point[2] <= z1
 
 
-def build_points(entries, reverse_for=None, bounds=None, color_by=None):
+def build_points(entries, bounds=None, color_by=None):
     """One point per table3 record.
 
-    `reverse_for(entry)` may return True/False to force an entry's
-    direction, or None to leave it to the entry's own header.
     `color_by(entry)` overrides the per-entry colour.
 
     Returns (verts, colors, ranges, positions):
@@ -99,8 +101,7 @@ def build_points(entries, reverse_for=None, bounds=None, color_by=None):
     verts, colors, ranges, positions = [], [], {}, {}
     for entry in entries:
         rgb = color_by(entry) if color_by else entry_color(entry.index)
-        rev = reverse_for(entry) if reverse_for else None
-        pts = entry.trace(reverse=rev)
+        pts = entry.trace()
         start = len(verts)
         for pt in pts:
             if not contains(bounds, pt):
@@ -113,12 +114,13 @@ def build_points(entries, reverse_for=None, bounds=None, color_by=None):
     return verts, colors, ranges, positions
 
 
-def build_lines(scld_file, entries, reverse_for=None, bounds=None,
-                surfaces=True, seams=True, color_by=None):
+def build_lines(scld_file, entries, bounds=None,
+                surfaces=True, seams=True, walls=False, color_by=None):
     """Line geometry as consecutive vertex pairs, ready for GL_LINES.
 
     `surfaces` draws each walkable surface along its entry, `seams` the
-    joins where one carries on into the next entry.
+    joins where one carries on into the next entry, `walls` the undecoded
+    candidate verticals.
 
     Returns (verts, colors)."""
     verts, colors = [], []
@@ -133,12 +135,14 @@ def build_lines(scld_file, entries, reverse_for=None, bounds=None,
             colors.append(rgb)
 
     for entry in entries:
-        rev = reverse_for(entry) if reverse_for else None
         if surfaces:
             rgb = (color_by(entry, saturation=0.70, value=1.0) if color_by
                    else entry_color(entry.index, saturation=0.70, value=1.0))
-            for run in entry.surfaces(reverse=rev):
+            for run in entry.surfaces():
                 add(run, rgb)
+        if walls:
+            for run in entry.wall_candidates():
+                add(run, WALL_CANDIDATE_COLOR)
     if seams and scld_file is not None:
         for run in scld_file.seams():
             add(run, SEAM_COLOR)

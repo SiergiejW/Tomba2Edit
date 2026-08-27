@@ -80,8 +80,6 @@ World placement (SCLDEntry.trace()):
 
     Every record of a table1 group shares one t: a group is a single
     station sampled several ways - a ground reference, then the
-    surface(s) found there. `use_table1_groups = False` restores t = i/N,
-    one step per record.
 
     A SCLD file's entries can span more world than one MDAT room, so this
     space does not register against any single room.
@@ -129,9 +127,6 @@ class SCLDEntry:
     path: list = field(default_factory=list)     # PathPoint, in file order
     tail: bytes = b""
 
-    # Class-wide so the viewer can A/B this against vervalkon's i/N.
-    use_table1_groups = True
-
     def trace(self, reverse=None):
         """This entry's path as a list of (x, y, z) world points, one per
         table3 record, in file order. See the world-placement formula in
@@ -156,7 +151,7 @@ class SCLDEntry:
         pts = self.trace(reverse)
         if not pts:
             return []
-        blocks = self.branch_blocks() if self.use_table1_groups else []
+        blocks = self.branch_blocks()
         if not blocks:
             return [pts]
         bounds = [s for _, s in blocks]
@@ -336,6 +331,69 @@ class SCLDEntry:
             return []
         return list(zip(ids, starts))
 
+    # What ending a run, or starting one, costs against carrying an
+    # existing run on. A pairing dearer than this is not a continuation.
+    BREAK_PENALTY = 512
+
+    def _match_column(self, tails, column, budget=64):
+        """Carry open runs on to the records of one station.
+
+        `tails` are the runs' last records and `column` the station's
+        records, both sorted by height; the matching keeps that order.
+        Surfaces lie over one another and do not cross, so a run above
+        another stays above it at the next station. Choosing pairs by
+        distance alone lets the closest single pair win and forces the
+        rest to swap, which reads as two surfaces trading places.
+
+        A pair is allowed only within its elevation budget, and the whole
+        column is settled at once for the least total cost, counting
+        BREAK_PENALTY for each run that ends and each record that starts
+        one. Carrying on as many runs as possible is the wrong aim: it
+        buys one more join at any price, and a dear one is a surface
+        grabbing the wrong neighbour.
+
+        Returns the matched (position in `tails`, position in `column`)
+        pairs."""
+        n, m = len(tails), len(column)
+        cost = {}
+        for x, t in enumerate(tails):
+            a = self.path[t]
+            for y, i in enumerate(column):
+                b = self.path[i]
+                rise = abs(a.pos - b.pos)
+                if rise <= abs(a.elevation) + abs(b.elevation) + budget:
+                    cost[(x, y)] = rise + abs(a.elevation - b.elevation)
+
+        best = {}
+
+        def solve(x, y):
+            """Cheapest settlement of tails[x:] against column[y:]."""
+            if x == n and y == m:
+                return 0
+            if (x, y) not in best:
+                options = []
+                if x < n:
+                    options.append(solve(x + 1, y) + self.BREAK_PENALTY)
+                if y < m:
+                    options.append(solve(x, y + 1) + self.BREAK_PENALTY)
+                if (x, y) in cost:
+                    options.append(solve(x + 1, y + 1) + cost[(x, y)])
+                best[(x, y)] = min(options)
+            return best[(x, y)]
+
+        out, x, y = [], 0, 0
+        while x < n and y < m:
+            here = solve(x, y)
+            if (x, y) in cost and solve(x + 1, y + 1) + cost[(x, y)] == here:
+                out.append((x, y))
+                x += 1
+                y += 1
+            elif solve(x + 1, y) + self.BREAK_PENALTY == here:
+                x += 1
+            else:
+                y += 1
+        return out
+
     def surfaces(self, reverse=None):
         """This entry's records regrouped into the runs that read as lines
         along it - the walkable surfaces.
@@ -379,38 +437,55 @@ class SCLDEntry:
 
         runs, open_runs = [], []
         for f in sorted(by_station):
-            free = list(by_station[f])
-            cand = []
-            for ri, (lf, run) in enumerate(open_runs):
-                if f - lf > gap:
-                    continue
-                a = self.path[run[-1]]
-                for i in by_station[f]:
-                    b = self.path[i]
-                    rise = abs(a.pos - b.pos)
-                    if rise > abs(a.elevation) + abs(b.elevation) + 64:
-                        continue
-                    cand.append((rise + abs(a.elevation - b.elevation), ri, i))
-            cand.sort()
+            live = [ri for ri, (lf, _r) in enumerate(open_runs) if f - lf <= gap]
+            live.sort(key=lambda ri: self.path[open_runs[ri][1][-1]].pos)
+            column = sorted(by_station[f], key=lambda i: self.path[i].pos)
+            tails = [open_runs[ri][1][-1] for ri in live]
             taken_run, taken_rec = set(), set()
-            for _score, ri, i in cand:
-                if ri in taken_run or i in taken_rec:
-                    continue
+            for x, y in self._match_column(tails, column):
+                ri, i = live[x], column[y]
                 taken_run.add(ri)
                 taken_rec.add(i)
                 open_runs[ri] = (f, open_runs[ri][1] + [i])
-                free.remove(i)
             still = []
             for ri, (lf, run) in enumerate(open_runs):
                 if ri in taken_run:
-                    still.append((lf, run))
+                    still.append(open_runs[ri])
                 elif len(run) > 1:
                     runs.append(run)
-            open_runs = still + [(f, [i]) for i in free]
+            open_runs = still + [(f, [i]) for i in by_station[f]
+                                 if i not in taken_rec]
         for _lf, run in open_runs:
             if len(run) > 1:
                 runs.append(run)
         return [[pts[i] for i in run] for run in runs]
+
+    def wall_candidates(self, reverse=None):
+        """Every vertical pair: at each station, each record joined to the
+        one directly above it.
+
+        Records at one station form a column at a single position, and a
+        surface outline closes across them where the collision has a side
+        wall. Which pairs those are is not decoded - these are all of
+        them, for checking by eye, and are not part of surfaces().
+
+        Returns 2-point runs of (x, y, z)."""
+        n = len(self.path)
+        if n == 0:
+            return []
+        if reverse is None:
+            reverse = self.auto_reverse
+        fracs = self._fractions(reverse)
+        pts = [self._point(p, t) for p, t in zip(self.path, fracs)]
+        by_station = {}
+        for i in range(n):
+            by_station.setdefault(fracs[i], []).append(i)
+        out = []
+        for f in sorted(by_station):
+            column = sorted(by_station[f], key=lambda i: self.path[i].pos)
+            for a, b in zip(column, column[1:]):
+                out.append([pts[a], pts[b]])
+        return out
 
     def _join_stations(self):
         """Stations whose table1 record both closes one sub-list and opens
@@ -434,16 +509,16 @@ class SCLDEntry:
         its box, so walking them in order also flips it.
 
         Falls back to i/N per record when table1 does not cover this
-        entry, or when `use_table1_groups` is off."""
+        entry."""
         n = len(self.path)
-        starts = self.group_starts() if self.use_table1_groups else []
+        starts = self.group_starts()
         if not starts:
             fracs = [i / n for i in range(n)]
             return list(reversed(fracs)) if reverse else fracs
 
         edges = starts + [n]
         order = list(range(len(starts)))
-        blocks = self.branch_blocks() if self.use_table1_groups else []
+        blocks = self.branch_blocks()
         if blocks:
             # Walk the sub-paths by ascending branch id, keeping each
             # one's own stations in file order.
