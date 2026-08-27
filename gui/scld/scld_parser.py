@@ -135,22 +135,26 @@ class SCLDEntry:
     # Class-wide so the viewer can A/B this against vervalkon's i/N.
     use_table1_groups = True
 
-    def trace(self, reverse=False):
+    def trace(self, reverse=None):
         """This entry's path as a list of (x, y, z) world points, one per
         table3 record, in file order. See the world-placement formula in
-        this module's docstring. `reverse=True` swaps which end of the
-        bounding box record index 0 lands on (x/z only, y unaffected) -
-        confirmed necessary for specific entries by direct visual check
-        against level geometry, but false by default since it's wrong
-        for most entries (e.g. every entry in AREA_08, verified exactly
-        against vervalkon's own OBJ export)."""
+        this module's docstring.
+
+        `reverse` swaps which end of the bounding box the first station
+        lands on (x/z only, y unaffected). Leave it None - the default -
+        to let the entry decide from its own header via auto_reverse,
+        which is what any caller that just wants this entry drawn in the
+        right place should do. Pass True/False only to override that by
+        hand, as the SCLD viewer's per-entry checkbox does."""
         n = len(self.path)
         if n == 0:
             return []
+        if reverse is None:
+            reverse = self.auto_reverse
         fracs = self._fractions(reverse)
         return [self._point(p, t) for p, t in zip(self.path, fracs)]
 
-    def polylines(self, reverse=False):
+    def polylines(self, reverse=None):
         """trace() split into one connected run per sub-path (see
         branch_blocks). Entries that aren't split come back as a single
         run covering every record in file order, matching vervalkon's own
@@ -179,30 +183,63 @@ class SCLDEntry:
         backwards. That lands exactly on the last record for 89% of
         entries, against 65% for trusting `run` alone.
 
-        A C0xx record's `run` is not reliable either - it reads 2 where
-        the station is plainly 3 - so those end at the next anchor
-        instead, which is what the records themselves say. That only
-        moves entries whose C0xx run disagrees with their anchors."""
+        A C0xx record's `run` is not reliable - it reads 2 where the
+        records plainly want 1 or 3. What does hold is the next ordinary
+        record's index: a whole run of consecutive C0xx records shares
+        the ground up to there, split evenly between them. Believing
+        their `run` instead overshoots that boundary, and then every
+        later index looks like it has gone backwards, so the entire rest
+        of the entry is misread as one long relative chain (AREA_0F
+        entry 0 drifts by 2 from its 41st record onwards that way).
+
+        Where the span doesn't divide evenly the group doesn't fill it,
+        so each record falls back to its own run, stretched to the next
+        anchor when that still fits inside the boundary."""
         n = len(self.path)
         if not self.path:
             return []
         anchor = self.path[0].kind
+        real = [(flags, index, run) for flags, index, run, _pad in self.assets
+                if run]
         spans = []
         cursor = 0
-        for flags, index, run, _pad in self.assets:
-            if run == 0:
+        k = 0
+        while k < len(real):
+            flags, index, run = real[k]
+            if flags & 0xC000 != 0xC000:
+                start = index if index >= cursor else cursor
+                if start >= n:
+                    break
+                spans.append((start, start + run))
+                cursor = start + run
+                k += 1
                 continue
-            start = index if index >= cursor else cursor
+
+            group = []
+            while k < len(real) and real[k][0] & 0xC000 == 0xC000:
+                group.append(real[k])
+                k += 1
+            start = cursor
             if start >= n:
                 break
-            end = start + run
-            if flags & 0xC000 == 0xC000:
-                nxt = next((i for i in range(start + 1, n)
-                            if self.path[i].kind == anchor), None)
-                if nxt is not None:
-                    end = nxt
-            spans.append((start, end))
-            cursor = end
+            nxt_index = real[k][1] if k < len(real) else None
+            limit = nxt_index if nxt_index is not None and nxt_index >= start else n
+            span = limit - start
+            if span > 0 and span % len(group) == 0:
+                each = span // len(group)
+                for _ in group:
+                    spans.append((start, start + each))
+                    start += each
+            else:
+                for gflags, _gi, grun in group:
+                    end = start + grun
+                    hit = next((i for i in range(start + 1, n)
+                                if self.path[i].kind == anchor), None)
+                    if hit is not None and hit <= limit:
+                        end = hit
+                    spans.append((start, end))
+                    start = end
+            cursor = start
         return spans
 
     def _asset_starts(self):
@@ -248,18 +285,24 @@ class SCLDEntry:
         backwards (xxx2 < xxx1), or - for an entry with no z extent at
         all - when its x does.
 
+        Box extents always come in whole 64-unit tiles (every one in the
+        file is tiles * 64 - 1), so a dz of 0 or +-63 is a box one tile
+        deep: that is the path's thickness, not a direction, and x has to
+        decide instead. Only a box that actually runs in z can be read
+        for its z direction.
+
         Derived from AREA_16, whose 9 entries ring a loop and whose flipped
         set was established by eye: the 4 flipped are exactly the 4 with
         xxx2 < xxx1, and z decides it even where z is the *minor* axis
         (entries 1 and 2 share a dx of +1215 and differ only in the sign
-        of dz - and only entry 1 is flipped). Also matches all three
-        known AREA_05 entries (14 flipped, 9 and 15 not). Known
-        exception: AREA_04 entry 12, flipped by eye but with a dz of
-        +63 against a dx of -447 - a near-vertical entry whose small
-        positive dz may just be path thickness. Override per entry in
-        the viewer where this gets one wrong."""
+        of dz - and only entry 1 is flipped). With the one-tile case
+        handled it matches every entry checked by eye so far, across
+        AREA_04, 05, 09, 0F and 16. Override per entry in the viewer
+        where it still gets one wrong."""
         dz = self.xxx2 - self.xxx1
-        return dz < 0 or (dz == 0 and self.yyy2 < self.yyy1)
+        if abs(dz) < 64:
+            return self.yyy2 < self.yyy1
+        return dz < 0
 
     def branch_blocks(self):
         """This entry's sub-paths as (branch id, first record), in file
@@ -307,8 +350,20 @@ class SCLDEntry:
         # enough - plenty of entries reuse it as a counter and pass the
         # checks above while pointing at the middle of a run, which splits
         # the entry somewhere it doesn't divide.
-        opens = {s for (flags, _i, _r, _p), s in zip(self.assets, resolved)
-                 if s is not None and flags & 0x2 and not flags & 0x8}
+        # A run opens either on its own flags (bit 1 set, bit 3 clear) or
+        # by being the first record after one of the run==0 markers that
+        # close a sub-list - a C0xx sub-list starts that way and carries
+        # no opening flag of its own.
+        opens = set()
+        after_marker = True
+        for (flags, _i, run, _p), s in zip(self.assets, resolved):
+            if run == 0:
+                after_marker = True
+                continue
+            if s is not None and (after_marker
+                                  or (flags & 0x2 and not flags & 0x8)):
+                opens.add(s)
+            after_marker = False
         if not set(starts) <= opens:
             return []
         if starts[0] != 0 or starts[-1] >= len(self.path):
@@ -323,6 +378,23 @@ class SCLDEntry:
         if ids == list(range(len(ids) - 1, -1, -1)):
             return []
         return list(zip(ids, starts))
+
+    def _join_stations(self):
+        """Stations whose table1 record both closes one sub-list and opens
+        the next (end bit 0 and start bit 1 set together). Such a station
+        is the seam itself - the same point written down twice, once
+        ending one list and once starting the next - so it shares its
+        place with the station after it. Give it a slot of its own and
+        the pair sits at two positions a step apart, which is the stair
+        in an otherwise straight slope.
+
+        717 of the 730 in the game hold every reading they share with the
+        next station to within 2 units, and none of the entries checked
+        by eye in AREA_05 has one."""
+        starts = self.group_starts()
+        flags = [f for f, _i, run, _p in self.assets if run]
+        return {k for k in range(len(starts))
+                if k < len(flags) and flags[k] & 0x3 == 0x3}
 
     def _fractions(self, reverse):
         """Fraction along the bounding box (t in x/z = a + (b-a)*t), one
@@ -347,13 +419,28 @@ class SCLDEntry:
             block_of = [bisect.bisect_right(bounds, s) - 1 for s in starts]
             order.sort(key=lambda k: (ids[block_of[k]], k))
 
-        count = len(starts)
-        fracs = [0.0] * n
+        # An entry that stores its sub-paths back to front is itself laid
+        # down against its bounding box, so walking them in order runs from
+        # the xxx2/yyy2 end back - the same flip auto_reverse describes.
+        # Undoing it lines these entries up with their neighbours: along
+        # AREA_05's 16..22 the surface heights then join across entries
+        # (6015->6017, 6079->6081, 6143->6145) exactly as 20..22 already
+        # do, instead of sloping the opposite way.
+        flip = reverse != bool(blocks)
+        joins = self._join_stations()
+        slot = [0] * len(starts)
+        count = 0
         for step, k in enumerate(order):
+            slot[k] = count
+            if k not in joins or step == len(order) - 1:
+                count += 1
+        count = count or 1
+        fracs = [0.0] * n
+        for k in order:
             # Flip the station, not the record order - reversing the list
             # itself would tear records off their own group whenever
             # groups differ in length.
-            g = count - 1 - step if reverse else step
+            g = count - 1 - slot[k] if flip else slot[k]
             for i in range(edges[k], edges[k + 1]):
                 fracs[i] = g / count
         return fracs

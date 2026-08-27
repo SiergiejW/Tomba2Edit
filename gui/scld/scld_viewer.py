@@ -35,10 +35,9 @@ class SCLDViewer(QOpenGLWidget):
         self.scld_data = None
         self.show_markers = True
 
-        # entry.base of every entry currently rendered X/Z-reversed - a
-        # manual, per-entry override for live visual checking, not a
-        # parser-level rule (most entries are provably wrong when
-        # reversed - see SCLDEntry.trace()).
+        # entry.base -> a hand-set direction, for checking one entry
+        # against the level by eye. Entries absent from this are left to
+        # place themselves from their own header (SCLDEntry.trace()).
         self.reversed_entries = {}
 
         # entry.index -> (start, count) into the point buffer, so a single
@@ -260,7 +259,9 @@ class SCLDViewer(QOpenGLWidget):
         self.update()
 
     def _reverse_for(self, entry):
-        return self.reversed_entries.get(entry.base, entry.auto_reverse)
+        """This entry's manual override, or None to let the parser place
+        it from its own header."""
+        return self.reversed_entries.get(entry.base)
 
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
         """Parse and load an SCLD blob. Every entry renders as one
