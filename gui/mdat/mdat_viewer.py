@@ -10,12 +10,13 @@ from PyQt6.QtOpenGL import (
 )
 from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
-import colorsys
 import gui.mdat.mdat as mdat
 from gui.mdat.mdat_export import export_mdat_to_gltf
 from functions.camera_controls import CameraControls  # Importing the camera controls class
 from gui.scld.scld_parser import load_scld, find_area_scld_location
-from gui.scld.scld_viewer import GOLDEN_RATIO_CONJUGATE
+from gui.scld.scld_render import (
+    UNIT_SCALE, build_points, build_lines, room_bounds, entries_in_bounds,
+)
 import ctypes
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
@@ -181,57 +182,27 @@ class MDATViewer(QOpenGLWidget):
             return False
 
     def _prepare_collision_buffers(self):
-        verts = []
-        colors = []
-        point_verts = []
-        point_colors = []
+        """Build the collision overlay for the room on screen.
+
+        Geometry comes from gui.scld.scld_render, the same builders the
+        SCLD viewer uses, so both draw whatever the parser currently
+        decodes. Only the room filtering is particular to this viewer:
+        one SCLD file covers more world than a single room, and a long
+        entry can pass through several, so entries are cut against the
+        room's bounds and then their points individually."""
         entries = self.collision_data.entries if self.collision_data else []
+        bounds = room_bounds(self.model_data.get("vertices")
+                             if self.model_data else None)
+        entries = entries_in_bounds(entries, bounds)
 
-        # One SCLD file's entries can span more world area than this one
-        # MDAT room covers - and a single entry can too (a long corridor's
-        # entry may pass through several rooms), so an entry that merely
-        # overlaps this room's bounding box can still be mostly made of
-        # points nowhere near it. Filter individual points against the
-        # room's own vertex bounding box (with a margin, so a path running
-        # along the room's edge isn't cut off), not whole entries.
-        room_bbox = None
-        if entries and self.model_data and self.model_data.get("vertices"):
-            mxs = [v[0] for v in self.model_data["vertices"]]
-            mzs = [v[2] for v in self.model_data["vertices"]]
-            mx0, mx1 = min(mxs), max(mxs)
-            mz0, mz1 = min(mzs), max(mzs)
-            margin_x = (mx1 - mx0) * 0.1
-            margin_z = (mz1 - mz0) * 0.1
-            room_bbox = (mx0 - margin_x, mx1 + margin_x, mz0 - margin_z, mz1 + margin_z)
-
-            def overlaps_room(e):
-                ex0, ex1 = sorted((e.yyy1, e.yyy2))
-                ez0, ez1 = sorted((e.xxx1, e.xxx2))
-                rx0, rx1, rz0, rz1 = room_bbox
-                return ex0 <= rx1 and ex1 >= rx0 and ez0 <= rz1 and ez1 >= rz0
-
-            entries = [e for e in entries if overlaps_room(e)]
-
-        for entry in entries:
-            # golden-ratio hue step: adjacent entries land far apart on the
-            # wheel instead of fading into each other like i/n would with
-            # dozens of entries - each one reads as its own color.
-            hue = (entry.index * GOLDEN_RATIO_CONJUGATE) % 1.0
-            rgb = colorsys.hsv_to_rgb(hue, 0.75, 1.0)
-            # Points only for now - which records should be connected into
-            # a line isn't settled, so drawing one would show a guess as
-            # if it were fact.
-            for pt in entry.trace():
-                if room_bbox is not None:
-                    rx0, rx1, rz0, rz1 = room_bbox
-                    if not (rx0 <= pt[0] <= rx1 and rz0 <= pt[2] <= rz1):
-                        continue
-                point_verts.append(pt)
-                point_colors.append(rgb)
+        verts, colors = build_lines(self.collision_data, entries,
+                                    bounds=bounds)
+        point_verts, point_colors, _ranges, _pos = build_points(
+            entries, bounds=bounds)
 
         self.makeCurrent()
         if verts:
-            arr = (np.array(verts, dtype=np.float32) / 1000.0).flatten()
+            arr = (np.array(verts, dtype=np.float32) / UNIT_SCALE).flatten()
             carr = np.array(colors, dtype=np.float32).flatten()
         else:
             arr = np.zeros(0, dtype=np.float32)
@@ -254,7 +225,7 @@ class MDATViewer(QOpenGLWidget):
         self.collision_vao.release()
 
         if point_verts:
-            parr = (np.array(point_verts, dtype=np.float32) / 1000.0).flatten()
+            parr = (np.array(point_verts, dtype=np.float32) / UNIT_SCALE).flatten()
             pcarr = np.array(point_colors, dtype=np.float32).flatten()
         else:
             parr = np.zeros(0, dtype=np.float32)
@@ -372,7 +343,7 @@ class MDATViewer(QOpenGLWidget):
             index_offset = 0
             indices = []
             vertices = np.array([
-                [v[0] / 1000.0, v[1] / 1000.0, v[2] / 1000.0]
+                [v[0] / UNIT_SCALE, v[1] / UNIT_SCALE, v[2] / UNIT_SCALE]
                 for v in self.model_data['vertices']
             ], dtype=np.float32).flatten()
 

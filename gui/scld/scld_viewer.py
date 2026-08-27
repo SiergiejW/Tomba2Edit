@@ -13,28 +13,15 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QAction, QVector3D, QPainter, QColor, QFont
 from OpenGL import GL
 from gui.scld.scld_parser import load_scld, SCLDEntry
+from gui.scld.scld_render import (
+    UNIT_SCALE, SCAFFOLD_ALPHA, build_points, build_lines, unkn_color,
+)
 from gui.mdat.mdat import exportMDAT, find_area_mdat_location
 from functions.camera_controls import CameraControls
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox,
 )
-
-# Same world-unit scale MDATViewer uses (raw PSX units / 1000), so an SCLD
-# path lines up against an MDAT room rendered at the same camera position.
-UNIT_SCALE = 1000.0
-
-# Cross-entry seams draw in this instead of an entry colour, since they
-# belong to two entries at once.
-SEAM_COLOR = (0.93, 0.93, 0.85)
-
-# How visible the records are once their surfaces are drawn over them -
-# they read as scaffolding under the lines rather than competing with them.
-SCAFFOLD_ALPHA = 0.5
-
-# Golden-ratio conjugate, used to space entry colors around the hue wheel -
-# see the comment where it's used below.
-GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
 
 
 class SCLDViewer(QOpenGLWidget):
@@ -48,6 +35,10 @@ class SCLDViewer(QOpenGLWidget):
         # Number every record of the selected entry in 3D, so a specific
         # point can be named when comparing against the level.
         self.show_point_ids = False
+        # Colour entries by their header's `unkn` value instead of by
+        # index, to see whether entries sharing one have anything in
+        # common on screen.
+        self.color_by_unkn = False
         # entry.index -> [(x, y, z), ...] in record order, for those labels.
         self.entry_record_pos = {}
 
@@ -138,6 +129,17 @@ class SCLDViewer(QOpenGLWidget):
         self.surfaces_action.toggled.connect(self.toggle_surfaces)
         self.toolbar.addAction(self.surfaces_action)
 
+        self.unkn_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton),
+            "Colour by unkn", self)
+        self.unkn_action.setCheckable(True)
+        self.unkn_action.setChecked(False)
+        self.unkn_action.setToolTip(
+            "Colour entries by the header's unkn field - entries sharing a "
+            "value are drawn alike, and unkn == 0 is grey")
+        self.unkn_action.toggled.connect(self.toggle_color_by_unkn)
+        self.toolbar.addAction(self.unkn_action)
+
         self.point_ids_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
             "Point IDs", self)
@@ -208,6 +210,12 @@ class SCLDViewer(QOpenGLWidget):
 
     def toggle_surfaces(self, checked):
         self.show_surfaces = checked
+        if self.scld_data is not None:
+            self.prepare_buffers()
+        self.update()
+
+    def toggle_color_by_unkn(self, checked):
+        self.color_by_unkn = checked
         if self.scld_data is not None:
             self.prepare_buffers()
         self.update()
@@ -339,57 +347,19 @@ class SCLDViewer(QOpenGLWidget):
         if not self.scld_data:
             return
 
-        line_verts = []
-        line_colors = []
-        point_verts = []
-        point_colors = []
-        self.entry_point_ranges = {}
         self.entry_label_pos = {}
-        self.entry_record_pos = {}
-
         entries = self.scld_data.entries
-        for entry in entries:
-            # golden-ratio hue step: adjacent entries land far apart on the
-            # wheel instead of fading into each other like i/n would with
-            # dozens of entries - each one reads as its own color.
-            hue = (entry.index * GOLDEN_RATIO_CONJUGATE) % 1.0
-            r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
-            rev = self._reverse_for(entry)
-            if self.show_surfaces:
-                # One run per walkable surface, dimmer than the points so
-                # the records still read on top of them - see
-                # SCLDEntry.surfaces() for why file order is the wrong
-                # thing to join.
-                lr, lg, lb = colorsys.hsv_to_rgb(hue, 0.70, 1.0)
-                for run in entry.surfaces(reverse=rev):
-                    for a, b_ in zip(run, run[1:]):
-                        line_verts.append(a)
-                        line_verts.append(b_)
-                        line_colors.append((lr, lg, lb))
-                        line_colors.append((lr, lg, lb))
-            start = len(point_verts)
-            pts = entry.trace(reverse=rev)
-            for pt in pts:
-                point_verts.append(pt)
-                point_colors.append((r, g, b))
-            self.entry_point_ranges[entry.index] = (start, len(point_verts) - start)
-            self.entry_record_pos[entry.index] = [
-                (p[0] / UNIT_SCALE, p[1] / UNIT_SCALE, p[2] / UNIT_SCALE) for p in pts]
+        tint = unkn_color if self.color_by_unkn else None
+        line_verts, line_colors = build_lines(
+            self.scld_data, entries, reverse_for=self._reverse_for,
+            surfaces=self.show_surfaces, seams=self.show_surfaces,
+            color_by=tint)
+        (point_verts, point_colors, self.entry_point_ranges,
+         self.entry_record_pos) = build_points(
+            entries, reverse_for=self._reverse_for, color_by=tint)
+        for index, pts in self.entry_record_pos.items():
             if pts:
-                mid = pts[len(pts) // 2]
-                self.entry_label_pos[entry.index] = (
-                    mid[0] / UNIT_SCALE, mid[1] / UNIT_SCALE, mid[2] / UNIT_SCALE)
-
-        if self.show_surfaces:
-            # Cross-entry joins: a surface that carries on past the end of
-            # its own entry - see SCLDFile.seams(). Drawn pale so a seam is
-            # tellable from the entry-coloured runs it bridges.
-            for run in self.scld_data.seams():
-                for a, b in zip(run, run[1:]):
-                    line_verts.append(a)
-                    line_verts.append(b)
-                    line_colors.append(SEAM_COLOR)
-                    line_colors.append(SEAM_COLOR)
+                self.entry_label_pos[index] = pts[len(pts) // 2]
 
         self.makeCurrent()
 
@@ -777,8 +747,8 @@ class SCLDDebugPanel(QWidget):
         super().__init__(parent)
         self.viewer = viewer
 
-        self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(["#", "Name (ls_into_le)", "Base", "Points", "Rev"])
+        self.table = QTableWidget(0, 6, self)
+        self.table.setHorizontalHeaderLabels(["#", "Name (ls_into_le)", "Base", "Points", "unkn", "Rev"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -841,7 +811,8 @@ class SCLDDebugPanel(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(name))
             self.table.setItem(row, 2, QTableWidgetItem(f"0x{e.base:X}"))
             self.table.setItem(row, 3, QTableWidgetItem(str(len(e.path))))
-            self.table.setItem(row, 4, QTableWidgetItem(""))
+            self.table.setItem(row, 4, QTableWidgetItem(f"0x{e.unkn:04X}"))
+            self.table.setItem(row, 5, QTableWidgetItem(""))
         self.table.blockSignals(False)
         self.reverse_checkbox.setEnabled(False)
         self.viewer.set_highlighted_entry(None)
@@ -878,5 +849,5 @@ class SCLDDebugPanel(QWidget):
         else:
             forced = state == Qt.CheckState.Checked.value
         self.viewer.set_entry_reversed(entry_base, forced)
-        self.table.item(row, 4).setText(self._REV_COLUMN_TEXT[state])
+        self.table.item(row, 5).setText(self._REV_COLUMN_TEXT[state])
         self.reverse_checkbox.setText(self._CHECKBOX_LABEL[state])

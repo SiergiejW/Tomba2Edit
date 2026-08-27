@@ -4,90 +4,87 @@ Thanks to vervalkon (Tomba Club).
 
 Layout of one SCLD blob:
     header:  u16 entry_count (N)
-    pointer table: (N + 1) x u16, word offsets from the START OF THE BLOB
-                   (multiply by 2 for the byte offset). The last one isn't
-                   a real entry - it's only used as the final entry's
-                   `next_base`, unused elsewhere, and isn't always 0000.
+    pointer table: (N + 1) x u16, word offsets from the start of the blob
+                   (x2 for the byte offset). The last is not an entry -
+                   it serves as the final entry's `next_base`.
 
-Each of the N pointers locates one "entry" - a single collision path:
-    entry header (0x14 bytes), fields are:
-        xxx1, xxx2, yyy1, yyy2 : s16   - 2D bounding box for this entry
-        unkn                   : u16   - alternates between 2 values around
-                                          one ls/le loop; likely a side/rail
-                                          tag, not a count
-        ls, le                 : u8, u8  - this entry's own link id, and the
-                                            link id of the entry that
-                                            continues after it (see
-                                            "World placement" below)
-        ptr1, ptr2, ptr3, ptr4 : u16   - word offsets, relative to THIS
-                                         entry's own base address (not the
-                                         blob start like the outer table).
-                                         Multiply by 2 and add entry base for
-                                         the byte address.
+Each of the N pointers locates one entry - a single collision path:
+    entry header (0x14 bytes):
+        xxx1, xxx2, yyy1, yyy2 : s16   - 2D bounding box. The corners are
+                                         both inside it, so an axis of
+                                         0..63 is 64 units long; every
+                                         extent is tiles * 64 - 1.
+        unkn                   : u16   - alternates between two values
+                                         around one ls/le loop
+        ls, le                 : u8    - this entry's link id, and the
+                                         link id of another entry
+        ptr1..ptr4             : u16   - word offsets from THIS entry's
+                                         base (x2 for bytes)
 
-    data0  [header_end   .. ptr1) : u16 order/index map, pairs like
-                                     (0000,0000) (0000,0001) (0000,0002)...
-    table1 [ptr1 .. ptr2)         : 8-byte records - (u16 flags, u16 index,
-                                     u16 run, u16 pad). `index` is a record
-                                     index into table3 and `run` is that
-                                     group's length, i.e. table1 partitions
-                                     table3 into groups: index[k+1] ==
-                                     index[k] + run[k]. Holds for 89% of
-                                     flags==0 records across every area;
-                                     C0xx-flagged records interleave a
-                                     second list and break the walk.
-                                     Each group is one sample station along
-                                     the entry - see "World placement".
-    table2 [ptr2 .. ptr3)         : 16-byte records - door/crossroad object
-                                     placements, referencing a segment index.
-    table3 [ptr3 .. ptr4)         : 8-byte records - the elevation/path
-                                     samples: (u16 kind, s16 pos, s16 elev,
-                                     u16 seg_index), in walk order.
-    tail   [ptr4 .. next_base)    : 3-byte records, one per distinct
-                                     seg_index, padded to a word. Last two
-                                     bytes are a signed vector of magnitude
-                                     ~64 (a normal/tangent at 1.0 == 64);
-                                     the first is a separate signed scalar.
-                                     Not used for placement - it is 0 for
-                                     every record of some entries, which
-                                     still need placement corrections.
+    data0  [header_end .. ptr1) : (branch, table1 index) u16 pairs,
+                                  terminated by FFFF. Pairs sharing a
+                                  branch are one sub-path; the branch is
+                                  its place along the walked path and
+                                  counts down through the file. A run of
+                                  branches straight down from len-1 to 0
+                                  is a plain counter and carries no
+                                  ordering.
+    table1 [ptr1 .. ptr2)       : 8-byte records - (u16 flags, u16 index,
+                                  u16 run, u16 pad). Partitions table3
+                                  into groups, one group per sample
+                                  station along the entry.
+                                    index - first table3 record, absolute
+                                            except on C0xx records, where
+                                            it restarts and is relative to
+                                            the previous list's end
+                                    run   - records in the group; on C0xx
+                                            records it is unreliable, and
+                                            a run of consecutive C0xx
+                                            records shares the ground up
+                                            to the next ordinary index,
+                                            split evenly between them
+                                    flags - bit 0 closes a sub-list, bit 1
+                                            opens one, both together mark
+                                            a seam station written down
+                                            twice; run == 0 marks a
+                                            delimiter, not a group
+    table2 [ptr2 .. ptr3)       : 16-byte records - (u16 kind, u16 first
+                                  record, u16 count, ...). Describes the
+                                  C0xx sub-elements of table3.
+    table3 [ptr3 .. ptr4)       : 8-byte records - the path samples:
+                                  (u16 kind, s16 pos, s16 elevation,
+                                  u16 seg_index), in walk order.
+                                    kind      - low nibble is a surface
+                                                type; only 1, 2, 4 and 8
+                                                occur
+                                    pos       - depth; height is -pos
+                                    elevation - how far this surface may
+                                                move to the next station;
+                                                0 means it does not
+                                    seg_index - which stretch of level the
+                                                record sits in
+    tail   [ptr4 .. next_base)  : 3-byte records, one per seg_index,
+                                  padded to a word. The last two bytes are
+                                  a signed vector of magnitude ~64 (1.0 ==
+                                  64) whose frame is unidentified; the
+                                  first is a separate signed scalar. Not
+                                  used.
 
 World placement (SCLDEntry.trace()):
         y = -record.pos
-        x = yyy1 + (yyy2 - yyy1) * t
-        z = xxx1 + (xxx2 - xxx1) * t
-    where t is the record's fraction along the entry (see _fractions).
+        x = yyy1 + extent(yyy1, yyy2) * t
+        z = xxx1 + extent(xxx1, xxx2) * t
+    where extent() is the inclusive axis length and t is the record's
+    fraction along the entry (see _fractions). Stations sit one 64-unit
+    tile apart, within an entry and across the join to the next.
 
-    t = group_index / group_count, using the table1 groups above: every
-    record in one group is the SAME station and shares one t. Records do
-    NOT each get their own step - a group is a station sampled several
-    ways (a ground reference, then the surface(s) there), so spreading
-    them out stretches the entry. Checked against two entries hand-fixed
-    against real level geometry (AREA_05 entries 9 and 15): fit of the
-    records that fix actually moved rises from R2 0.91 -> 0.99 and
-    0.93 -> 0.99 respectively. Nothing is fitted - the grouping is read
-    from the file.
+    Every record of a table1 group shares one t: a group is a single
+    station sampled several ways - a ground reference, then the
+    surface(s) found there. `use_table1_groups = False` restores t = i/N,
+    one step per record.
 
-    t = i / N (vervalkon's original) is what `use_table1_groups = False`
-    restores. It reproduces his own OBJ export for AREA_08 exactly (max
-    error 0.0, X/Z swapped by his export convention) - which is why that
-    OBJ can't be used to check any of this: it is that formula's own
-    output, not an independent record of the level. Where the two differ
-    it is by up to ~2300 units, on 92% of AREA_08's records.
-
-    `elevation`, `ls`, and `le` are not used by this formula. `ls`/`le`
-    link entries into a loop (`le` equals another entry's own `ls`,
-    usually but not always that entry's index); entries 0..9 of AREA_05
-    are contiguous along z (each entry's xxx2 + 1 == the next's xxx1),
-    so a loop is a corridor split into pieces, but treating it as one
-    continuous walked path did not match ground truth.
-
-    His OBJ connects every record of an entry in file order as a single
-    line - polylines() matches that.
-
-    One SCLD file's entries can span more world area than a single MDAT
-    room covers, so this coordinate space does not necessarily register
-    against any one MDAT room directly.
+    A SCLD file's entries can span more world than one MDAT room, so this
+    space does not register against any single room.
 """
 import bisect
 import struct
@@ -141,11 +138,9 @@ class SCLDEntry:
         this module's docstring.
 
         `reverse` swaps which end of the bounding box the first station
-        lands on (x/z only, y unaffected). Leave it None - the default -
-        to let the entry decide from its own header via auto_reverse,
-        which is what any caller that just wants this entry drawn in the
-        right place should do. Pass True/False only to override that by
-        hand, as the SCLD viewer's per-entry checkbox does."""
+        lands on (x/z only; y is unaffected). None, the default, lets the
+        entry decide from its own header - see auto_reverse. Pass
+        True/False only to override that by hand."""
         n = len(self.path)
         if n == 0:
             return []
@@ -156,9 +151,8 @@ class SCLDEntry:
 
     def polylines(self, reverse=None):
         """trace() split into one connected run per sub-path (see
-        branch_blocks). Entries that aren't split come back as a single
-        run covering every record in file order, matching vervalkon's own
-        OBJ export (one `l` line through every vertex, in order)."""
+        branch_blocks), each in file order. An entry with no sub-paths
+        comes back as a single run over every record."""
         pts = self.trace(reverse)
         if not pts:
             return []
@@ -171,30 +165,15 @@ class SCLDEntry:
         return [pts[edges[k]:edges[k + 1]] for k in runs]
 
     def _walk(self):
-        """Each real table1 record as the (start, end) span of table3
-        records it covers. The run==0 markers (0x8000) that only delimit
-        sub-lists are skipped.
+        """Each table1 group as the (start, end) span of table3 records it
+        covers. Records with run == 0 delimit sub-lists and are skipped.
 
-        A record's `index` is normally absolute, but the C0xx-flagged
-        sub-lists restart theirs from 0, so those are relative to wherever
-        the previous list left off - taken absolutely they orphan the
-        records in between, which all collapse onto one station. So the
-        walk keeps a cursor and only believes `index` when it hasn't gone
-        backwards. That lands exactly on the last record for 89% of
-        entries, against 65% for trusting `run` alone.
-
-        A C0xx record's `run` is not reliable - it reads 2 where the
-        records plainly want 1 or 3. What does hold is the next ordinary
-        record's index: a whole run of consecutive C0xx records shares
-        the ground up to there, split evenly between them. Believing
-        their `run` instead overshoots that boundary, and then every
-        later index looks like it has gone backwards, so the entire rest
-        of the entry is misread as one long relative chain (AREA_0F
-        entry 0 drifts by 2 from its 41st record onwards that way).
-
-        Where the span doesn't divide evenly the group doesn't fill it,
-        so each record falls back to its own run, stretched to the next
-        anchor when that still fits inside the boundary."""
+        `index` is trusted only while it has not gone backwards; a C0xx
+        sub-list restarts its own from 0, so it is relative to wherever
+        the previous list ended. A C0xx record's `run` is not used: a run
+        of consecutive C0xx records shares the ground up to the next
+        ordinary index, split evenly between them, falling back to `run`
+        where that does not divide."""
         n = len(self.path)
         if not self.path:
             return []
@@ -252,17 +231,13 @@ class SCLDEntry:
         return out
 
     def group_starts(self):
-        """This entry's table1 group boundaries as record indices into
-        `path`. Empty if table1 doesn't describe this entry's records
-        (no assets, or it doesn't start at record 0).
+        """Group boundaries as record indices into `path`. Empty when
+        table1 does not describe this entry's records.
 
-        table1 doesn't always account for every record: a run can end
-        short of where the next one's `index` picks up. Such a stretch
-        only starts a new station where it repeats this entry's own
-        anchor record - the fixed reference every station opens with.
-        Without an anchor it is the tail of the station before it, and
-        cutting it off there splits one station across two positions.
-        Both cases are common (38 gaps hold an anchor, 32 don't)."""
+        table1 need not account for every record. A stretch it leaves out
+        starts a new station only where it repeats this entry's anchor -
+        the fixed reference each station opens with; otherwise it is the
+        tail of the station before it."""
         n = len(self.path)
         if not self.path:
             return []
@@ -281,45 +256,27 @@ class SCLDEntry:
     @property
     def auto_reverse(self):
         """Whether this entry's records run against its bounding box, so
-        record 0 belongs at the xxx2/yyy2 end. True when the box's z runs
-        backwards (xxx2 < xxx1), or - for an entry with no z extent at
-        all - when its x does.
+        that record 0 belongs at the xxx2/yyy2 end.
 
-        Box extents always come in whole 64-unit tiles (every one in the
-        file is tiles * 64 - 1), so a dz of 0 or +-63 is a box one tile
-        deep: that is the path's thickness, not a direction, and x has to
-        decide instead. Only a box that actually runs in z can be read
-        for its z direction.
-
-        Derived from AREA_16, whose 9 entries ring a loop and whose flipped
-        set was established by eye: the 4 flipped are exactly the 4 with
-        xxx2 < xxx1, and z decides it even where z is the *minor* axis
-        (entries 1 and 2 share a dx of +1215 and differ only in the sign
-        of dz - and only entry 1 is flipped). With the one-tile case
-        handled it matches every entry checked by eye so far, across
-        AREA_04, 05, 09, 0F and 16. Override per entry in the viewer
-        where it still gets one wrong."""
+        The box's z decides it, even where z is the minor axis. A box one
+        tile deep in z (|dz| < 64) has no z direction to read - that is
+        the path's thickness - and x decides instead."""
         dz = self.xxx2 - self.xxx1
         if abs(dz) < 64:
             return self.yyy2 < self.yyy1
         return dz < 0
 
     def branch_blocks(self):
-        """This entry's sub-paths as (branch id, first record), in file
-        order. data0 is a list of (branch, table1 index) pairs terminated
-        by FFFF; consecutive pairs sharing a branch are one sub-path.
+        """This entry's sub-paths as (branch, first record), in file
+        order, or empty when data0 is not describing sub-paths here.
 
-        The branch id is the sub-path's place along the walked path, and
-        it counts DOWN through the file - so the pieces are stored back
-        to front and have to be walked by ascending id. Doing that turns
-        the height profile of every multi-sub-path entry checked into a
-        single monotonic ramp; in file order it resets at each boundary,
-        which is the sawtooth.
-
-        Empty unless data0 really is describing sub-paths here - about
-        half of all entries reuse it as a plain counter - so each field
-        is checked rather than assumed, and table1 has to agree on where
-        the pieces start."""
+        The branch is a sub-path's place along the walked path and counts
+        down through the file, so the pieces are stored back to front and
+        are walked by ascending branch. Each field is checked rather than
+        assumed: branches must descend to 0, resolve to strictly
+        increasing in-range records that table1 also opens a run on, and
+        carry gaps - a plain descending counter means file order is
+        already walk order."""
         d0 = self.data0
         pairs = [(d0[k], d0[k + 1]) for k in range(0, len(d0) - 1, 2)]
         heads = []
@@ -384,43 +341,27 @@ class SCLDEntry:
         along it - the walkable surfaces.
 
         A station holds several records at one position: a ground
-        reference and the surface(s) found there. Joining them in file
-        order, as polylines() does, stitches up and down between those
-        heights instead of running along the entry. A surface runs the
-        other way - sampled again at each station - so a run carries on
-        to whichever record at the next station continues it.
+        reference and the surface(s) there. Joining them in file order
+        stitches up and down between those heights; a surface runs the
+        other way, sampled again at each station, so a run carries on to
+        whichever record at the next station continues it.
 
-        Which record that is comes from `elevation`, the only field that
-        says anything about how a surface moves. Where it is 0 the height
-        does not change: of the 21630 pairings across the game whose
-        first record has elevation 0, 21284 (98.4%) hold their height to
-        within 2 units. So elevation bounds the step, and a pairing is
-        only allowed while
+        `elevation` decides which one. It bounds how far a surface may
+        move between stations, and a pairing is allowed only while
 
             |height change| <= |elevation a| + |elevation b| + 64
 
-        (the 64 being the one tile a surface may step without saying so).
-        That is what keeps two surfaces passing at one station from being
-        swapped: in AREA_04 entry 27 the leftover pairing of record 25 to
-        17 asks for 1189 units against a budget of 127, and in entry 28
-        record 87 to 89 asks 2849. Both are refused.
+        the 64 being the one tile a surface may step without saying so.
+        That keeps two surfaces passing at one station from being
+        swapped. Ties are settled on elevation as well, since the record
+        continuing a surface carries a similar one.
 
-        Neither `kind` nor `seg_index` identifies a surface, so neither
-        is used to group. Both change along one: entry 27 walks a single
-        surface through nibbles 2, 4, 8, 2 and segments 7, 8, 9, 10, and
-        keying on either cuts it at every change.
+        Neither `kind` nor `seg_index` groups records: both change along
+        a single surface. A run that skips stations is broken there
+        rather than joined across the gap.
 
-        Ties - two records at one station equally far in height - are
-        settled on elevation as well, since the record continuing a
-        surface carries a similar one.
-
-        A run that skips stations is broken there rather than joined
-        across the gap - drawing that as one line throws a bar across
-        everything in between.
-
-        Returns a list of runs of (x, y, z), each with 2+ points, ordered
-        along the entry. Runs left with a single point are dropped - that
-        is a point, not a line."""
+        Returns runs of (x, y, z), each with 2+ points, ordered along the
+        entry."""
         n = len(self.path)
         if n == 0:
             return []
@@ -473,27 +414,27 @@ class SCLDEntry:
 
     def _join_stations(self):
         """Stations whose table1 record both closes one sub-list and opens
-        the next (end bit 0 and start bit 1 set together). Such a station
-        is the seam itself - the same point written down twice, once
-        ending one list and once starting the next - so it shares its
-        place with the station after it. Give it a slot of its own and
-        the pair sits at two positions a step apart, which is the stair
-        in an otherwise straight slope.
+        the next (flag bits 0 and 1 together).
 
-        717 of the 730 in the game hold every reading they share with the
-        next station to within 2 units, and none of the entries checked
-        by eye in AREA_05 has one."""
+        Such a station is the seam itself - the same point written down
+        twice, once ending one list and once starting the next - so it
+        shares its place with the station after it rather than taking a
+        slot of its own."""
         starts = self.group_starts()
         flags = [f for f, _i, run, _p in self.assets if run]
         return {k for k in range(len(starts))
                 if k < len(flags) and flags[k] & 0x3 == 0x3}
 
     def _fractions(self, reverse):
-        """Fraction along the bounding box (t in x/z = a + (b-a)*t), one
-        per record - see the world-placement formula in this module's
-        docstring. Falls back to vervalkon's i/N when table1 doesn't
-        cover this entry; note that for an entry whose groups are all
-        one record long the two are identical anyway."""
+        """Each record's fraction along the bounding box, one per record.
+
+        Stations are the table1 groups, walked in branch order (see
+        branch_blocks) with join stations sharing a slot. An entry whose
+        sub-paths are stored back to front is itself laid down against
+        its box, so walking them in order also flips it.
+
+        Falls back to i/N per record when table1 does not cover this
+        entry, or when `use_table1_groups` is off."""
         n = len(self.path)
         starts = self.group_starts() if self.use_table1_groups else []
         if not starts:
@@ -511,13 +452,9 @@ class SCLDEntry:
             block_of = [bisect.bisect_right(bounds, s) - 1 for s in starts]
             order.sort(key=lambda k: (ids[block_of[k]], k))
 
-        # An entry that stores its sub-paths back to front is itself laid
-        # down against its bounding box, so walking them in order runs from
-        # the xxx2/yyy2 end back - the same flip auto_reverse describes.
-        # Undoing it lines these entries up with their neighbours: along
-        # AREA_05's 16..22 the surface heights then join across entries
-        # (6015->6017, 6079->6081, 6143->6145) exactly as 20..22 already
-        # do, instead of sloping the opposite way.
+        # Sub-paths stored back to front mean the entry is itself laid
+        # down against its box, the same flip auto_reverse describes, so
+        # walking them in order also reverses it.
         flip = reverse != bool(blocks)
         joins = self._join_stations()
         slot = [0] * len(starts)
@@ -538,14 +475,8 @@ class SCLDEntry:
 
     @staticmethod
     def _extent(a0, a1):
-        """An axis's length. The box corners are both inside it, so a box
-        running 0..63 is 64 units long, not 63 - every extent in the file
-        is tiles * 64 - 1. Dropping that unit shortens each station step
-        below one tile, and the entry drifts further off the level the
-        longer it runs. With it, 448 of the 593 entries that span any
-        distance step exactly 64 - one tile - and a station lands the
-        same 64 further on across the seam between two entries as it does
-        inside one."""
+        """An axis's length. Both corners are inside the box, so 0..63 is
+        64 units long, not 63."""
         d = a1 - a0
         if d == 0:
             return 0
@@ -581,20 +512,17 @@ class SCLDFile:
 
     def seams(self, max_gap=96.0):
         """Segments joining one entry's last station to the next entry's
-        first, so a surface running on past the end of its own entry
-        reads as one line instead of stopping at the boundary.
+        first, so a surface running past the end of its own entry reads
+        as one line.
 
-        Nothing in an entry points at whichever one continues it. ls/le
-        link entries into loops that skip a neighbour (AREA_08 entry 1's
-        le is 3, but entry 2 is what follows it), and ls + 1 is no good
-        either - it is ambiguous, since many entries share an ls of 0,
-        and only a third of those pairs have boxes that meet. What does
-        hold is position: an entry's walk-end lands one tile short of its
-        successor's walk-start. Records are then paired across the seam
-        exactly as surfaces() pairs them along one entry - same surface
-        nibble, nearest height.
+        Nothing in an entry points at whichever one continues it, and
+        ls/le do not: they link entries into loops that skip a
+        neighbour. Position does - an entry's walk-end lands one tile
+        short of its successor's walk-start. Records are then paired
+        across the seam as surfaces() pairs them along one entry, under
+        the same elevation budget.
 
-        Returns a list of 2-point runs, each ((x, y, z), (x, y, z))."""
+        Returns 2-point runs of (x, y, z)."""
         ends = {}
         for e in self.entries:
             w = self._walk_ends(e)
