@@ -1,0 +1,49 @@
+000000-002307 : SPRD : unknown
+002308-005D17 : SMST : Weapon set
+005D18-006BB7 : TXTD : Status changes text
+006BB8-00789F : TXTD : Item use text
+0078A0-01F7FF : TAND : Tomba Animation
+01F800-0212FF : SMST : Zippo
+021300-023BDB : MDAD : Zippo
+023BDC-0261EF : SMST : Charles
+0261F0-02C593 : MDAT : Intro Scene
+02C594-030787 : SMST : Tabby from Intro
+030788-03164F : ALFD : Tabby
+031650-031663 : ____ : _
+031664-032FFF : BGMP : Intro scene
+033000-044BBB : SMST : Windmill assets
+044BBC-046563 : SMST : Ark
+046564-047733 : ALFD : _
+047734-049983 : SMST : Win
+049984-04BE0B : ____ : Lots of pointers length 81
+04BE0C-0521FF : SCLD : Town of the Fishermen collision
+052200-07380B : MDAT : Town of the Fishermen
+07380C-07429B : DRWB : 00s type row length 52
+07429C-075F2B : SMST : Seesaws
+075F2C-0761D3 : SPRD : Sprite Pointers for Town of the Fishermen
+0761D4-0780CB : TXTD : Text for Town of the Fishermen
+0780CC-07C2CF : SMST : Pig Enemy
+07C2D0-085227 : ALFD : Pig Enemy
+085228-08782B : SMST : Kainen
+08782C-089A33 : ALFD : Kainen
+089A34-08BEB3 : SMST : Nishiki bird (adult)
+08BEB4-08DA9B : ALFD : _
+08DA9C-0966AF : SMST : Large asset pack, Fishermens Town
+0966B0-098543 : SMST : Water Pipes
+098544-09A2EB : SMST : Fisherman with a fishing rod
+09A2EC-09C073 : ALFD : Fisherman with a fishing rod
+09C074-09D4CB : BGMP : Town of Fishermen
+09D4CC-09EFCB : SMST : Zippo
+09EFCC-0A18A7 : ALFD : Zippo
+0A18A8-0A239B : SMST : Demo magic flower
+0A239C-0A27FF : ALFD : Demo magic flower
+0A2800-0A672C : SMST : Tomba_model
+0A6800-0AB6E0 : SMST : Squirrel_suit
+0AB800-0AF918 : SMST : Wing_suit
+0B0000-0B4858 : SMST : Pig_Suit
+0B5000-0B984C : SMST : Fire_Pig_Robe
+0BA000-0BE84C : SMST : Ice_Pig_Robe
+0BF000-0C384C : SMST : Ghost_Pig_Robe
+0C4000-0C884C : SMST : Earth_Pig_Robe
+0C9000-0CD84C : SMST : Water_Pig_Robe
+0CE000-0D1C34 : SMST : Invisible_Tomba

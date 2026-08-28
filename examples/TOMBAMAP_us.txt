@@ -1,0 +1,614 @@
+﻿000000-00288F : SPRP : _
+002890-006F0B : SMST : Weapon set chests AP box
+006F0C-0081D3 : TXTD : General text
+0081D4-0091CB : TXTD : General text
+0091CC-02125F : TANP : Tomba Animation Pointers 1152
+021260-023A9B : SMST : Baron
+023A9C-0247FF : MDAP : Model Animation Pointers for Baron
+024800-026307 : SMST : Intro Zippo
+026308-028A67 : MDAP : Model Animation Pointers for Intro Zippo
+028A68-02B07B : SMST : Charles from Intro
+02B07C-03141F : MDAT : Intro scene
+031420-035613 : SMST : Tabby from Intro
+035614-0364DB : ALFP : Tabby
+0364DC-0364EF : ____ : _
+0364F0-037FFF : BGMP : Intro scene
+038000-049DA3 : SMST : Fishermens hut windmill waterplant
+049DA4-04AF73 : ALFP : _
+04AF74-04D3FB : ____ : _
+04D3FC-053723 : SCLD : Town of the Fishermen collision
+053724-075FDB : MDAT : Town of the Fishermen
+075FDC-076A6B : DRWB : 00s type row length 52
+076A6C-0786FB : SMST : Seesaws
+0786FC-078A07 : SPRT : Sprite Pointers for Town of the Fishermen
+078A08-07B2EB : TXTD : Town of the Fishermen
+07B2EC-07F4EF : SMST : Pig enemy (Town of the Fishermen)
+07F4F0-088447 : ALFP : _
+088448-08AA4B : SMST : Kainen
+08AA4C-08C3AF : ALFP : _
+08C3B0-08E82F : SMST : Nishiki bird (adult)
+08E830-090417 : ____ : _
+090418-0996DF : SMST : Asset pack Fishermens Town
+0996E0-09B573 : SMST : Water pipes
+09B574-09D207 : SMST : Fisherman with a fishing rod
+09D208-09EF8F : ALFP : _
+09EF90-0A03E7 : BGMP : Town of Fishermen
+0A03E8-0A1EEF : SMST : Zippo
+0A1EF0-0A464F : ALFP : _
+0A4650-0A541B : SMST : Magic Flower
+0A541C-0A566F : ALFP : _
+0A5670-0A57FF : ____ : _
+0A5800-0A7307 : SMST : Zippo
+0A7308-0A9A67 : ALFP : _
+0A9A68-0BF7DB : MDAT : Cursed Pipe Area
+0BF7DC-0DB53F : SMST : Asset pack Cursed Pipe Area (roomsenemies)
+0DB540-0E22AF : ____ : _
+0E22B0-0E5337 : TXTD : Cursed Pipe Area
+0E5338-0E56C3 : ____ : _
+0E56C4-0E7E43 : ____ : _
+0E7E44-0E932B : SMST : Pink Sea Anemone segments (mouth closed)
+0E932C-0EAA23 : SMST : Pink Sea Anemone segments (mouth opened var 1)
+0EAA24-0EC71B : SMST : Pink Sea Anemone segments (mouth opened var 2)
+0EC71C-0EFB5B : ____ : test
+0EFB5C-0F1A63 : SMST : Gran
+0F1A64-0F3473 : SMST : Mole
+0F3474-0F5B37 : SMST : Mining Town Miner 01 and 02
+0F5B38-0F75AB : SMST : Mining Town Miner 03
+0F75AC-0F84DF : SMST : Hammers pickaxe shovel knife
+0F84E0-0FBE47 : SMST : Pig enemy (Pipe Area)
+0FBE48-0FED83 : ____ : _
+0FED84-1004F7 : ____ : _
+1004F8-1012C3 : SMST : Magic Flower
+1012C4-101517 : ____ : _
+101518-1017FF : ____ : _
+101800-103307 : SMST : Zippo
+103308-105A67 : ____ : minimap
+105A68-127AFB : SMST : Asset pack Mining Town
+127AFC-13FA17 : MDAT : Cursed Coal Mining Town
+13FA18-145A27 : TXTD : Cursed Coal Mining Town
+145A28-14D903 : BETP : animations
+14D904-14F313 : SMST : Mole
+14F314-151927 : SMST : Charles
+151928-153FEB : SMST : Mining Town Miner 01 and 02
+153FEC-155A5F : SMST : Mining Town Miner 03
+155A60-157E53 : SMST : Chef
+157E54-159D5B : SMST : Gran
+159D5C-15BADF : SMST : Mining Town Mothers son
+15BAE0-15D893 : SMST : Mining Town Woman 01
+15D894-15F87F : SMST : Mining Town Woman 02
+15F880-1607B3 : SMST : Hammers pickaxe shovel knife
+1607B4-160B7B : ____ : animation maybe
+160B7C-169D7B : SMST : Underground Machine room + assets
+169D7C-16A2B7 : ____ : _
+16A2B8-16BFFF : SMST : Conveyor belts
+16C000-16CCEF : SMST : Trolley model
+16CCF0-1A55F7 : MDAT : Trolley Minigame
+1A55F8-1A5E9B : ____ : _
+1A5E9C-1A5FFF : ____ : _
+1A6000-1A7B07 : SMST : Zippo
+1A7B08-1AA267 : ____ : _
+1AA268-1AB12F : SMST : Transparent Ice crystals
+1AB130-1B2E6F : ____ : _
+1B2E70-1CBF6F : MDAT : Cursed Kujara Ranch Area
+1CBF70-1D0807 : MDAT : Cursed Holy Tree Flight
+1D0808-1D3447 : TXTD : Cursed Kujara Ranch Area
+1D3448-1E5AC3 : SMST : Asset pack - Kujara Ranch Area
+1E5AC4-1E80AF : SMST : Kokka Bird (blue)
+1E80B0-1EA69B : SMST : Kokka Bird (red)
+1EA69C-1EC2C7 : ____ : _
+1EC2C8-1EEAD3 : SMST : Giant Ice pig enemy
+1EEAD4-1EF6B3 : ____ : _
+1EF6B4-1F2C53 : SMST : Armadillo enemy
+1F2C54-1F3263 : ____ : _
+1F3264-1F7233 : ____ : _
+1F7234-1F8DF7 : SMST : Phams Daughter 01
+1F8DF8-1FA80B : SMST : Phams Daughter 02
+1FA80C-1FC137 : SMST : Phams Daugther 03
+1FC138-1FE1C7 : SMST : Leaf Traveller
+1FE1C8-2002FB : SMST : Kujara Ranch Man (green beard)
+2002FC-200523 : ____ : _
+200524-202CA3 : ____ : _
+202CA4-20418B : SMST : Blue Sea Anemone segments (mouth closed)
+20418C-205883 : SMST : Blue Sea Anemone segments (mouth opened var 1)
+205884-20757B : SMST : Blue Sea Anemone segments (mouth opened var 2)
+20757C-209F03 : SMST : Pig enemy (Kujara Ranch)
+209F04-20F217 : ____ : _
+20F218-20F9CF : SMST : Kujara Bird
+20F9D0-20FCD7 : ____ : _
+20FCD8-21144B : ____ : _
+21144C-2129B3 : SMST : Dwarf (brown)
+2129B4-212FD3 : ____ : _
+212FD4-2141F3 : SMST : Dwarf (green)
+2141F4-2148FB : ____ : _
+2148FC-214FFF : ____ : _
+215000-216B07 : SMST : Zippo
+216B08-219267 : ____ : _
+219268-21A12F : SMST : Transparent Ice crystals
+21A130-2374CF : SMST : Asset pack - Kujara Ranch Summit
+2374D0-24A35F : MDAT : Cursed Kujara Ranch Summit
+24A360-25371B : MDAT : Kujara Washing Minigame
+25371C-2587BF : TXTD : Cursed Kujara Ranch Summit
+2587C0-25DA67 : ____ : _
+25DA68-264C17 : ____ : _
+264C18-2667DB : SMST : Phams Daughter 01
+2667DC-2681EF : SMST : Phams Daughter 02
+2681F0-269B1B : SMST : Phams Daughter 03
+269B1C-26BC4F : SMST : Kujara Ranch Man (green beard)
+26BC50-26DC03 : SMST : Kujara Ranch Man (washing minigame)
+26DC04-26F05B : BGMP : _
+26F05C-26F47B : ____ : _
+26F47C-271BCB : SMST : Toradako enemy
+271BCC-272DD7 : ____ : _
+272DD8-2735C7 : SMST : Kujara Bird (burned gray)
+2735C8-273D7F : SMST : Kujara Bird
+273D80-27439F : SMST : Kujara Bird (shaved)
+2743A0-274BB7 : SMST : Kujara Bird (burned black)
+274BB8-2752F7 : SMST : Kujara Bird (fat shaved dorito)
+2752F8-2756F7 : ____ : _
+2756F8-277CFB : SMST : Kainen
+277CFC-27A067 : SMST : Kainen (swimming suit)
+27A068-27B973 : ____ : _
+27B974-27C73F : SMST : Magic Flower
+27C740-27C993 : ____ : _
+27C994-27CFFF : ____ : _
+27D000-27EB07 : SMST : Zippo
+27EB08-281267 : ____ : _
+281268-2ACE6B : MDAT : Cursed Donglin Forest
+2ACE6C-2AD8FB : DRWB : _
+2AD8FC-2B7E73 : ____ : _
+2B7E74-2CD133 : SMST : Asset pack Donglin Forest
+2CD134-2CE947 : SMST : Trap mechanisms
+2CE948-2CECB7 : ____ : _
+2CECB8-2D2F53 : ____ : _
+2D2F54-2D580F : SMST : Donglin Forest Inhabitant 01 and 02
+2D5810-2D9507 : TXTD : Cursed Donglin Forest
+2D9508-2D9CA7 : SMST : Rock Crab
+2D9CA8-2D9D37 : ____ : _
+2D9D38-2DADC7 : SMST : Ghost enemy
+2DADC8-2DB047 : ____ : _
+2DB048-2DC9F3 : SMST : Pig enemy (Donglin Forest)
+2DC9F4-2DCC0F : ____ : _
+2DCC10-2DD647 : BGMP : _
+2DD648-2E0057 : SMST : Skeleton Ghost enemy
+2E0058-2E3947 : ____ : _
+2E3948-2E796B : SMST : Ghost Guard
+2E796C-2E9CCF : ____ : _
+2E9CD0-2E9EDB : ____ : _
+2E9EDC-2EB64F : ____ : _
+2EB650-2EC323 : ____ : _
+2EC324-2EC7FF : ____ : _
+2EC800-2EE307 : SMST : Zippo
+2EE308-2F0A67 : ____ : _
+2F0A68-30471B : MDAT : Cursed Circus Village
+30471C-31BFCF : SMST : Asset pack Circus Village
+31BFD0-31D427 : BGMP : Cursed Circus Village
+31D428-31D6C7 : ____ : _
+31D6C8-31E493 : SMST : Magic Flower
+31E494-31E6E7 : ____ : _
+31E6E8-3258E7 : ____ : _
+3258E8-32941B : SMST : Fountain Statue
+32941C-32F9CF : TXTD : Cursed Circus Village
+32F9D0-3320B7 : SMST : Pig Elder
+3320B8-33435B : SMST : Cursed Villager 01 (man)
+33435C-33667F : SMST : Cursed Villager 02 (woman)
+336680-339093 : SMST : Cursed Villager 03 (clown)
+339094-33B183 : SMST : Traveller (visible)
+33B184-33CC93 : SMST : Traveller (invisible)
+33CC94-33EA17 : SMST : The son from Coal Mining Town
+33EA18-341933 : SMST : Woman with basket on her head
+341934-3438EB : SMST : Flying Paon (elephant)
+3438EC-3450EF : ____ : _
+3450F0-3468C3 : SMST : Parrot
+3468C4-346B73 : ____ : _
+346B74-346F0F : ____ : _
+346F10-34A2E3 : SMST : Pigsuit Kid
+34A2E4-34BA57 : ____ : _
+34BA58-34F177 : SMST : Tiny Mouse with different colored tails
+34F178-350F27 : SMST : Yan of The Hidden Village
+350F28-350FFF : ____ : _
+351000-352B07 : SMST : Zippo
+352B08-355267 : ____ : _
+355268-35F00F : ____ : _
+35F010-364797 : TXTD : Water Temple
+364798-386BD3 : SMST : Asset pack Water Temple
+386BD4-386D77 : ____ : _
+386D78-3888BB : SMST : Mermaid 01 (with a harp)
+3888BC-38A23B : SMST : Mermaid 02
+38A23C-38B963 : ____ : _
+38B964-38CE43 : SMST : Flying Spiker enemy
+38CE44-38DB27 : ____ : _
+38DB28-392413 : SMST : Crab enemy
+392414-394C83 : ____ : _
+394C84-3988BF : SMST : Pig enemy (Water Temple)
+3988C0-39A9FB : ____ : _
+39A9FC-39E4FF : ____ : _
+39E500-3A11F3 : SMST : Starving Traveller
+3A11F4-3A30B7 : SMST : Water Temple man (Spiked Hair)
+3A30B8-3A5483 : SMST : Water Temple man (Blue beard)
+3A5484-3A82D7 : SMST : Water Temple men (Brown hair and Blue hair)
+3A82D8-3A90A3 : SMST : Magic Flower
+3A90A4-3A92F7 : ____ : _
+3A92F8-3AB5F3 : SMST : The Giant Fish
+3AB5F4-3ABA53 : ____ : _
+3ABA54-3AD1C7 : ____ : _
+3AD1C8-3AEF57 : SMST : Nishiki Bird
+3AEF58-3AF8E7 : ____ : _
+3AF8E8-3AFFFF : ____ : _
+3B0000-3B1B07 : SMST : Zippo
+3B1B08-3B4267 : ALFP : _
+3B4268-3C5717 : MDAT : unused Ranch Summit
+3C5718-3C5C9B : ____ : unknown
+3C5C9C-3D6583 : SMST : Last room and Pig Statues
+3D6584-3D6FFF : TXTD : Time Stopped
+3D7000-3D8B07 : SMST : Zippo
+3D8B08-3DB267 : ALFP : _
+3DB268-3E234B : MDAT : Flame Pig Boss
+3E234C-3E3B8B : ____ : _
+3E3B8C-3E5223 : BGMP : Flame Pig Boss
+3E5224-3E841B : SMST : Asset pack Flame Pig Boss
+3E841C-3EC437 : SMST : Flame Pig Boss
+3EC438-3EDF0F : SCLD : Flame Pig Boss
+3EDF10-3EED73 : TXTD : Flame Pig Boss
+3EED74-3F08BF : SMST : Flame Pig Robe
+3F08C0-3F0FFF : ____ : _
+3F1000-3F2B07 : SMST : Zippo
+3F2B08-3F5267 : ____ : _
+3F5268-3FF717 : MDAT : Ice Pig Boss
+3FF718-401A77 : ____ : _
+401A78-40310F : BGMP : Ice Pig Boss
+403110-409543 : SMST : Asset pack Ice Pig Boss
+409544-40D5D3 : SMST : Ice Pig Boss
+40D5D4-40FA5B : ____ : _
+40FA5C-410917 : TXTD : Ice Pig Boss
+410918-410C97 : ____ : _
+410C98-4127E3 : SMST : Ice Pig Robe
+4127E4-41285F : ____ : _
+412860-4137FF : SMST : Ice crytals
+413800-415307 : SMST : Zippo
+415308-417A67 : ALFP : _
+417A68-421FC7 : MDAT : Ghost Pig Boss
+421FC8-423807 : SCLD : _
+423808-427C3B : SMST : Asset pack Ghost Pig Boss
+427C3C-4292D3 : BGMP : Ghost Pig Boss
+4292D4-42E987 : SMST : Ghost Pig Boss
+42E988-431D33 : ALFP : _
+431D34-432BA7 : TXTD : Ghost Pig Boss
+432BA8-4346F3 : SMST : Ghost Pig Robe
+4346F4-43476F : ____ : _
+434770-4357FF : SMST : Ghost enemy
+435800-435FFF : UNKB : _
+436000-437B07 : SMST : Zippo
+437B08-43A267 : ____ : _
+43A268-44679F : MDAT : Earth Pig Boss
+4467A0-4482E3 : ____ : _
+4482E4-44C35F : SMST : Asset pack Earth Pig Boss
+44C360-44D9F7 : BGMP : Earth Pig Boss
+44D9F8-4515AB : SMST : Earth Pig Boss
+4515AC-45A057 : ____ : _
+45A058-45AF7B : TXTD : Earth Pig Boss
+45AF7C-45CAC7 : SMST : Earth Pig Robe
+45CAC8-45CFFF : ____ : _
+45D000-45EB07 : SMST : Zippo
+45EB08-461267 : ____ : _
+461268-4715B7 : MDAT : Water Pig Boss
+4715B8-472EE3 : ____ : _
+472EE4-47457B : BGMP : Water Pig Boss
+47457C-47745B : SMST : Asset pack Water Pig Boss
+47745C-47BF4F : SMST : _
+47BF50-483FF7 : ____ : _
+483FF8-484F33 : TXTD : Water Pig Boss
+484F34-486A7F : SMST : Water Pig Robe
+486A80-486FFF : ____ : _
+487000-488B07 : SMST : Zippo
+488B08-48B267 : ____ : _
+48B268-49583B : MDAT : Last Pig Boss
+49583C-4977A7 : ____ : _
+4977A8-498E3F : BGMP : Last Pig Boss
+498E40-49BFCB : SMST : Asset pack Last Pig Boss
+49BFCC-4A5077 : SMST : Last Pig Boss
+4A5078-4A74D3 : ____ : _
+4A74D4-4A7EAB : TXTD : Last Pig Boss
+4A7EAC-4ABA7F : SMST : Tabby
+4ABA80-4AF653 : SMST : Petrified Tabby
+4AF654-4B0823 : ____ : _
+4B0824-4B0FFF : ____ : _
+4B1000-4B5F3F : ____ : _
+4B5F40-4BC837 : MDAT : Tower of Courage
+4BC838-4BCE93 : SMST : Doors
+4BCE94-4BCFFF : SCLD : Tower of Courage
+4BD000-4C1187 : ____ : _
+4C1188-4C787F : MDAT : Tower of Strength
+4C7880-4C7D23 : SMST : Asset pack Tower of Strength
+4C7D24-4C7FFF : ____ : _
+4C8000-4CABAB : ____ : _
+4CABAC-4D130F : MDAT : Tower of Wisdom
+4D1310-4D1763 : SMST : Asset pack Tower of Wisdom
+4D1764-4D1FFF : ____ : _
+4D2000-4D3B07 : SMST : Zippo
+4D3B08-4D6267 : ____ : _
+4D6268-4D9537 : ____ : _
+4D9538-4E13C3 : MDAT : Golden Tower
+4E13C4-4E16CF : SMST : Asset pack Golden Tower
+4E16D0-4E17D3 : ____ : _
+4E17D4-4E2133 : ____ : _
+4E2134-4E481B : SMST : Pig Elder
+4E481C-4E4FFF : TXTD : Golden Tower
+4E5000-4E90D3 : SMST : Tiny Mouse with different colored tails
+4E90D4-4EA847 : ____ : _
+4EA848-4F1DC3 : SMST : Tiny Mouses Room doors
+4F1DC4-4F1E27 : ____ : _
+4F1E28-504D07 : MDAT : Tiny Mouses Minigame
+504D08-505FFF : TXTD : Tiny Mouses House
+506000-507AFF : SMST : Zippo
+507B00-508DB3 : ____ : _
+508DB4-5098C7 : TXTD : Outro Scene
+5098C8-50AD1F : BGMP : Outro Scene
+50AD20-518B3B : MDAT : Outro Scene
+518B3C-525F9F : SMST : Wins boat Kainens ending chest
+525FA0-52608F : ____ : _
+526090-52A083 : ____ : _
+52A084-52C2D3 : SMST : _
+52C2D4-52DC7B : SMST : Ark
+52DC7C-534D33 : SMST : Tabby
+534D34-536507 : SMST : Parrot
+536508-5387CB : SMST : Kainen
+5387CC-53A877 : SMST : Pham
+53A878-53C43B : SMST : Phams Daughter 01
+53C43C-53DE4F : SMST : Phams Daughter 02
+53DE50-53F77B : SMST : Phams daughter 03
+53F77C-54118B : SMST : Mole
+54118C-5440A7 : SMST : Woman with basket on her head
+5440A8-545FAF : SMST : Gran
+545FB0-54717F : ____ : _
+547180-54742F : ____ : _
+547430-547F73 : ____ : _
+547F74-54839B : ____ : _
+54839C-548A97 : ____ : _
+548A98-548B87 : ____ : _
+548B88-54B19B : SMST : Charles
+54B19C-54F637 : SMST : Tuxedo Tomba (black)
+54F638-553FFF : SMST : Tuxedo Tomba (red)
+554000-555B07 : SMST : Zippo
+555B08-558267 : ____ : _
+558268-56DBF7 : MDAT : Purified Pipe Area
+56DBF8-56E687 : DRWB : _
+56E688-58A3EB : SMST : Asset pack Cursed Pipe Area (roomsenemies)
+58A3EC-594E3B : ____ : _
+594E3C-597EC3 : TXTD : Purified Pipe Area
+597EC4-59824F : ____ : _
+598250-59A9CF : ____ : _
+59A9D0-59BEB7 : SMST : Pink Sea Anemone segments (mouth closed)
+59BEB8-59D5AF : SMST : Pink Sea Anemone segments (mouth opened var 1)
+59D5B0-59F2A7 : SMST : Pink Sea Anemone segments (mouth opened var 2)
+59F2A8-5A26E7 : ____ : _
+5A26E8-5A4DAB : SMST : Mining Town Miner 01 and 02
+5A4DAC-5A681F : SMST : Mining Town Miner 03
+5A6820-5A7753 : SMST : Hammers pickaxe shovel knife
+5A7754-5AB0BB : SMST : Pig enemy (Pipe Area)
+5AB0BC-5ADFF7 : ____ : _
+5ADFF8-5AF76B : ____ : _
+5AF76C-5B0537 : SMST : Magic Flower
+5B0538-5B078B : ____ : _
+5B078C-5B703B : MDAT : Underground Tunnels
+5B703C-5BA2F3 : SMST : Kainen (Staff lit)
+5BA2F4-5BB2DF : ____ : _
+5BB2E0-5BE597 : SMST : Kainen (Staff unlit)
+5BE598-5BE7FF : ____ : _
+5BE800-5D66D3 : MDAT : Purified Coal Mining Town
+5D66D4-5D81DB : SMST : Zippo
+5D81DC-5DA93B : ____ : _
+5DA93C-5FC9CF : SMST : Asset pack Purified Coal Mining Town
+5FC9D0-6029DF : TXTD : Purified Coal Mining Town
+6029E0-60A8BB : ____ : _
+60A8BC-60C2CB : SMST : Mole
+60C2CC-60E8DF : SMST : Charles
+60E8E0-610FA3 : SMST : Mining Town Miner 01 and 02
+610FA4-612A17 : SMST : Mining Town Miner 03
+612A18-614E0B : SMST : Chef
+614E0C-616D13 : SMST : Gran
+616D14-618A97 : SMST : Mining Town Mothers son
+618A98-61A84B : SMST : Mining Town Woman 01
+61A84C-61C837 : SMST : Mining Town Woman 02
+61C838-61D76B : SMST : Hammers pickaxe shovel knife
+61D76C-61DB33 : ____ : _
+61DB34-626D33 : SMST : Underground Machine room + assets
+626D34-62726F : ____ : _
+627270-6287FF : SMST : Conveyor belts
+628800-62A307 : SMST : Trolley model
+62A308-62CA67 : ____ : _
+62CA68-62D92F : ____ : _
+62D930-634CDB : ____ : _
+634CDC-64DD9B : MDAT : Purified Kujara Ranch Area
+64DD9C-652633 : MDAT : Purified Holy Tree Flight
+652634-655273 : TXTD : Purified Kujara Ranch Area
+655274-66795F : SMST : Asset pack - Purified Kujara Ranch Area
+667960-669F4B : SMST : Kokka Bird (blue)
+669F4C-66C537 : SMST : Kokka Bird (red)
+66C538-66E163 : ____ : _
+66E164-67096F : SMST : Giant Ice pig enemy
+670970-67154F : ____ : _
+671550-674AEF : SMST : Armadillo enemy
+674AF0-6750FF : ____ : _
+675100-6790CF : ____ : _
+6790D0-67AC93 : SMST : Phams Daughter 01
+67AC94-67C6A7 : SMST : Phams Daughter 02
+67C6A8-67DFD3 : SMST : Phams Daugther 03s
+67DFD4-680063 : SMST : Leaf Traveller
+680064-681ECF : SMST : Kujara Ranch Man (green hair)
+681ED0-6820F7 : ____ : _
+6820F8-684877 : ____ : _
+684878-685D5F : SMST : Blue Sea Anemone segments (mouth closed)
+685D60-687457 : SMST : Blue Sea Anemone segments (mouth opened var 1)
+687458-68914F : SMST : Blue Sea Anemone segments (mouth opened var 2)
+689150-68BAD7 : SMST : Pig enemy (Kujara Ranch)
+68BAD8-690DEB : ____ : _
+690DEC-6915A3 : SMST : Kujara Bird
+6915A4-6918AB : ____ : _
+6918AC-69301F : ____ : _
+693020-694587 : SMST : Dwarf (brown)
+694588-694BA7 : ____ : _
+694BA8-695DC7 : SMST : Dwarf (green)
+695DC8-6964CF : ____ : _
+6964D0-697927 : BGMP : Purified Kujara Ranch Area
+697928-697FFF : ____ : _
+698000-699B07 : SMST : Zippo
+699B08-69C267 : ____ : _
+69C268-69D12F : SMST : Transparent Ice crystals
+69D130-6BB5DB : SMST : Asset pack - Purified Kujara Ranch Summit
+6BB5DC-6CB6C7 : MDAT : Purified Kujara Ranch Summit
+6CB6C8-6D4A83 : MDAT : Kujara Washing Minigame
+6D4A84-6D9B27 : TXTD : Purified Kujara Ranch Summit
+6D9B28-6DEDCF : ____ : _
+6DEDD0-6E5F7F : ____ : _
+6E5F80-6E7B43 : SMST : Phams Daughter 01
+6E7B44-6E9557 : SMST : Phams Daughter 02
+6E9558-6EAE83 : SMST : Phams Daughter 03
+6EAE84-6ECCEF : SMST : Kujara Ranch Man (green hair)
+6ECCF0-6EEA0F : SMST : Kujara Ranch Man (washing minigame)
+6EEA10-6EFE67 : BGMP : Purified Kujara Ranch Summit
+6EFE68-6F0287 : ____ : _
+6F0288-6F29D7 : SMST : Toradako enemy
+6F29D8-6F3BE3 : ____ : _
+6F3BE4-6F43D3 : SMST : Kujara Bird (burned gray)
+6F43D4-6F4B8B : SMST : Kujara Bird
+6F4B8C-6F51AB : SMST : Kujara Bird (shaved)
+6F51AC-6F59C3 : SMST : Kujara Bird (burned black)
+6F59C4-6F6103 : SMST : Kujara Bird (fat shaved dorito)
+6F6104-6F6503 : ____ : _
+6F6504-6F8B07 : SMST : Kainen
+6F8B08-6FAE73 : SMST : Kainen (swimming suit)
+6FAE74-6FC77F : ____ : _
+6FC780-6FD54B : SMST : Magic Flower
+6FD54C-6FD79F : ____ : _
+6FD7A0-6FD7FF : ____ : _
+6FD800-6FF307 : SMST : Zippo
+6FF308-701A67 : ____ : _
+701A68-731B5F : MDAT : Purified Donglin Forest
+731B60-7325EF : DRWB : _
+7325F0-73CB67 : ____ : _
+73CB68-752D23 : SMST : Asset pack Purified Donglin Forest
+752D24-754537 : SMST : Trap mechanisms
+754538-7548A7 : ____ : _
+7548A8-758B43 : ____ : _
+758B44-75B3FF : SMST : Donglin Forest Inhabitant 01 and 02
+75B400-75F0F7 : TXTD : Purified Donglin Forest
+75F0F8-75F897 : SMST : Rock Crab
+75F898-75F927 : ____ : _
+75F928-7612D3 : SMST : Pig enemy (Donglin Forest)
+7612D4-7614EF : ____ : _
+7614F0-761F27 : BGMP : Purified Donglin Forest
+761F28-764937 : SMST : Skeleton Ghost enemy
+764938-768227 : ____ : _
+768228-768433 : ____ : _
+768434-769BA7 : ____ : _
+769BA8-769FFF : ____ : _
+76A000-76BB07 : SMST : Zippo
+76BB08-76E267 : ____ : _
+76E268-781F1B : MDAT : Purified Circus Village
+781F1C-7997CF : SMST : Asset pack Purified Circus Village
+7997D0-79AC27 : BGMP : Purified Circus Village
+79AC28-79AEB3 : SPRT : Little pig sprites and
+79AEB4-79BC7F : SMST : Magic Flower
+79BC80-79BED3 : ____ : _
+79BED4-7A30D3 : ____ : _
+7A30D4-7A6C07 : SMST : Fountain Statue
+7A6C08-7AD1BB : TXTD : Purified Circus Village
+7AD1BC-7AF8A3 : SMST : Pig Elder
+7AF8A4-7B24A7 : SMST : Purified Villager 01 (man)
+7B24A8-7B4C43 : SMST : Purified Villager 02 (woman)
+7B4C44-7B7E33 : SMST : Purified Villager 03 (clown)
+7B7E34-7B9F23 : SMST : Traveller (visible)
+7B9F24-7BBA33 : SMST : Traveller (invisible)
+7BBA34-7BD7B7 : SMST : The son from Coal Mining Town
+7BD7B8-7C06D3 : SMST : Woman with basket on her head
+7C06D4-7C268B : SMST : Flying Paon (elephant)
+7C268C-7C3E8F : ____ : _
+7C3E90-7C5663 : SMST : Parrot
+7C5664-7C5913 : ____ : _
+7C5914-7C5CAF : ____ : _
+7C5CB0-7C9083 : SMST : Pigsuit Kid
+7C9084-7CA7F7 : ____ : _
+7CA7F8-7CDF17 : SMST : Tiny Mouse with different colored tails
+7CDF18-7CFCC7 : SMST : Yan of The Hidden Village
+7CFCC8-7CFFFF : ____ : _
+7D0000-7D1B07 : SMST : Zippo
+7D1B08-7D4267 : ____ : _
+7D4268-7DE00F : ____ : _
+7DE010-7E3797 : TXTD : Water Temple
+7E3798-805BD3 : SMST : Asset pack Purified Water Temple
+805BD4-805D77 : ____ : _
+805D78-8078BB : SMST : Mermaid with harp
+8078BC-80923B : SMST : Mermaid
+80923C-80A963 : ____ : _
+80A964-80BE43 : SMST : Flying Spiker enemy
+80BE44-80CB27 : ____ : _
+80CB28-811413 : SMST : Crab enemy
+811414-813C83 : ____ : _
+813C84-8178BF : SMST : Pig enemy (Water Temple)
+8178C0-8199FB : ____ : _
+8199FC-81D4FF : ____ : _
+81D500-8201F3 : SMST : Starving Traveller
+8201F4-8220B7 : SMST : Water Temple man (Spiked Hair)
+8220B8-824483 : SMST : Water Temple man (Blue beard)
+824484-8272D7 : SMST : Water Temple men (Brown hair and Blue hair)
+8272D8-8280A3 : SMST : Magic Flower
+8280A4-8282F7 : ____ : _
+8282F8-82A5F3 : SMST : The Giant Fish
+82A5F4-82AA53 : ____ : _
+82AA54-82C1C7 : ____ : _
+82C1C8-82DF57 : SMST : Nishiki Bird
+82DF58-82E8E7 : ____ : _
+82E8E8-82EFFF : ____ : _
+82F000-832F2C : SMST : Tomba model
+833000-837FD4 : SMST : Squirrel Suit Tomba
+838000-83C118 : SMST : Wingsuit Tomba
+83C800-841058 : SMST : Pink pigsuit Tomba
+841800-84604C : SMST : Fire Pig Robe Tomba
+846800-84B04C : SMST : Ice Pig Robe
+84B800-85004C : SMST : Ghost Pig Robe
+850800-85504C : SMST : Earth Pig Robe
+855800-85A04C : SMST : Water Pig Robe
+85A800-85E434 : SMST : Invisible Tomba
+85E800-863058 : SMST : Water Pig Suit
+863800-865E14 : SMST : Charles model
+866000-869720 : SMST : Tiny Mouse models
+869800-86B1A8 : SMST : Ark
+86B800-86DA50 : SMST : Win
+86E000-8700F0 : SMST : Thirsty Traveller
+870800-8728F0 : SMST : Laughing Traveller
+873000-8753D0 : SMST : Santa
+875800-877834 : SMST : Pham Outside clothes
+878000-87A3D0 : SMST : Sant Weird textures
+87A800-87C8AC : SMST : Pham Yellow suit
+87D000-87F0F0 : SMST : Oil-Smeared Traveller
+87F800-8819B0 : SMST : Collector
+882000-884034 : SMST : Pham Blue Suit
+884800-886A8C : SMST : Sculptor
+887000-8890F0 : SMST : Oil-Smeared Traveller
+889800-88B424 : SMST : Collector
+88B800-88D8AC : SMST : Pham Yellow suit
+88E000-890064 : SMST : Sculptor
+890800-89293C : SMST : Painter
+893000-895604 : SMST : Kainen
+895800-8976D4 : SMST : Mizuno
+897800-8998F0 : SMST : Laughing Traveller
+89A000-89C13C : SMST : Painter
+89C800-89EE04 : SMST : Kainen
+89F000-8A0ED4 : SMST : Mizuno
+8A1000-8A30F0 : SMST : Laughing Traveller
+8A3800-8A5590 : SMST : Nishiki Bird
+8A5800-8A72A4 : SMST : 100 Year Old Man
+8A7800-8A9BCC : SMST : Water Temple Man Blue mustache
+8AA000-8ABD18 : SMST : Mermaid
+8AC000-8BBE5C : MDAT : Cursed Water Temple 1-2
+8BC000-8C9CE4 : MDAT : Cursed Water Temple 2-2
+8CA000-8D73D8 : MDAT : Cursed Water Temple 3 Golden Tower part
+8D7800-8DD9A0 : MDAT : Cursed Water Temple Room above enterance
+8DE000-8DFD90 : SMST : Nishiki Bird
+8E0000-8E1AA4 : SMST : 100 Year Old Man
+8E2000-8E43CC : SMST : Water Temple Man Blue mustache
+8E4800-8E6518 : SMST : Mermaid
+8E6800-8F665C : MDAT : Purified Water Temple 1-2
+8F6800-9044E4 : MDAT : Purified Water Temple 2-2
+904800-911BD8 : MDAT : Purified Water Temple 3 Golden Tower part
+912000-9181A0 : MDAT : Purified Water Temple Room above enterance

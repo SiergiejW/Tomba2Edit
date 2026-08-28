@@ -17,6 +17,7 @@ from gui.txtd.txtd_viewer import TXTDViewer
 from gui.txtd.txt2_viewer import TXT2Viewer
 from gui.mdat.mdat_viewer import MDATViewer
 from gui.drwa.drwa_viewer import DRWAViewer
+from gui.drwb.drwb_viewer import DRWBViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.sprt.sprt_viewer import SPRTViewer
@@ -959,6 +960,9 @@ class MainWindow(QMainWindow):
         self.mdat_tabs = QTabWidget()
         self.mdat_tabs.addTab(self.mdat_viewer, "3D View")
         self.mdat_tabs.addTab(self.drwa_viewer, "Drawmap (DRWA)")
+        # DRWB, unlike DRWA, IS a file of its own - four of them - so
+        # it gets the tree rows the IDX already labels DRWB.
+        self.drwb_viewer = DRWBViewer()
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.sprt_viewer = SPRTViewer()
@@ -973,6 +977,7 @@ class MainWindow(QMainWindow):
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_tabs,
+            "DRWB": self.drwb_viewer,
             "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
@@ -1231,6 +1236,26 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             print(f"Error loading SCLD file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load SCLD file: {e}")
+
+                    elif widget == self.widgets["DRWB"]:
+                        # Needs the IDX as well as the DAT: the map is
+                        # compared against its area's MDATs, and which
+                        # of them it belongs to is measured rather than
+                        # assumed (see DRWBViewer._match_level).
+                        try:
+                            if self.dat_file:
+                                print("Loading DRWB data...")
+                                chunk_index = self._area_chunk_index(selected_item)
+                                idx_path = os.path.join(
+                                    os.path.dirname(self.dat_file), "TOMBA2.IDX")
+                                self.drwb_viewer.load_drwb_data(
+                                    self.dat_file, dat_start, offset, entry_size,
+                                    chunk_index=chunk_index, idx_path=idx_path)
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading DRWB file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load DRWB file: {e}")
 
                     elif widget in (self.widgets["SPRT"], self.widgets["BGMP"]):
                         # Both formats are nothing but references into the

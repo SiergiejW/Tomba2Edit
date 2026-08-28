@@ -21,6 +21,38 @@ def find_area_mdat_location(idx_path, chunk_index):
     return None
 
 
+def area_mdat_entries(idx_path, dat_path, chunk_index):
+    """Every MDAT in one AREA, as [(file_index, dat_start, offset,
+    size), ...].
+
+    find_area_mdat_location() above stops at the first id 8, which is
+    all a level room needs. This one finds them all, and uses the same
+    test gui.main_window.id_convert does - id 8 or 18-and-up, with
+    0xFFFF at +4, which is the first word of the entry's drawmap - so
+    an area's second MDAT is found too (AREA_1B keeps one at id 0x20,
+    and it is the one that area's DRWB belongs to)."""
+    chunk_size = 0x800
+    with open(idx_path, "rb") as idx:
+        idx.seek(chunk_index * chunk_size)
+        _, _, dat_start, dat_end, pointer_amount = struct.unpack("<5I", idx.read(20))
+        raw = idx.read(pointer_amount * 4)
+    pointers = struct.unpack(f"<{pointer_amount}I", raw)
+    entries = []
+    with open(dat_path, "rb") as dat:
+        for i, value in enumerate(pointers):
+            id_, offset = value >> 24, value & 0xFFFFFF
+            if id_ != 8 and id_ < 18:
+                continue
+            next_offset = (pointers[i + 1] & 0xFFFFFF if i + 1 < len(pointers)
+                           else dat_end - dat_start)
+            dat.seek(dat_start + offset + 4)
+            head = dat.read(2)
+            if len(head) < 2 or struct.unpack("<h", head)[0] != -1:
+                continue
+            entries.append((i, dat_start, offset, next_offset - offset))
+    return entries
+
+
 def exportMDAT(drwa_addr, datpath):
     base_idx = 0
     model_data = {
