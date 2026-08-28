@@ -19,6 +19,7 @@ from gui.mdat.mdat_viewer import MDATViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.sprt.sprt_viewer import SPRTViewer
+from gui.bgmp.bgmp_viewer import BGMPViewer
 from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
 from gui import theme
@@ -952,11 +953,13 @@ class MainWindow(QMainWindow):
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.sprt_viewer = SPRTViewer()
+        self.bgmp_viewer = BGMPViewer()
         self.vram_viewer = VRAMViewer()  # Add this line
 
         self.widgets = {
             "Folder": QLabel("This is a folder"),
             "SPRT": self.sprt_viewer,
+            "BGMP": self.bgmp_viewer,
             "TXTD": self.txtd_viewer,
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
@@ -1213,23 +1216,26 @@ class MainWindow(QMainWindow):
                             print(f"Error loading SCLD file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load SCLD file: {e}")
 
-                    elif widget == self.widgets["SPRT"]:
+                    elif widget in (self.widgets["SPRT"], self.widgets["BGMP"]):
+                        # Both formats are nothing but references into the
+                        # area's VRAM, and both still parse and lay out
+                        # without it - a missing or unreadable VRAM only
+                        # costs the artwork, so it's never fatal here.
+                        kind = "SPRT" if widget == self.widgets["SPRT"] else "BGMP"
                         try:
                             if self.dat_file:
-                                print("Loading SPRT data...")
+                                print(f"Loading {kind} data...")
                                 chunk_index = self._area_chunk_index(selected_item)
-                                # Sprites are cut out of the area's VRAM, but a
-                                # missing/unreadable one only costs the textures -
-                                # the viewer still lays the pieces out.
                                 vram_bytes = self._load_area_vram_bytes(chunk_index)
-                                self.sprt_viewer.load_sprt_data(
-                                    self.dat_file, dat_start, offset, entry_size,
-                                    chunk_index=chunk_index, vram_bytes=vram_bytes)
+                                loader = (self.sprt_viewer.load_sprt_data if kind == "SPRT"
+                                          else self.bgmp_viewer.load_bgmp_data)
+                                loader(self.dat_file, dat_start, offset, entry_size,
+                                       chunk_index=chunk_index, vram_bytes=vram_bytes)
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")
                         except Exception as e:
-                            print(f"Error loading SPRT file: {e}")
-                            QMessageBox.critical(self, "Error", f"Failed to load SPRT file: {e}")
+                            print(f"Error loading {kind} file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load {kind} file: {e}")
 
                     else:
                         print(f"No specialized viewer for {file_type} files")

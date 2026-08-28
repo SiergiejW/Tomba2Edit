@@ -69,6 +69,14 @@ class BackgroundTextures:
                             bgmp.clut_address + index * PALETTE_STRIDE,
                             transparent_zero=self.transparent_zero)
 
+    def is_blank_palette(self, bgmp, index):
+        """Whether a palette is entirely black - which is what an area's
+        VRAM looks like where nothing was ever loaded into it. Three
+        backgrounds on the retail disc point at palettes their own area
+        never fills in, and come out black; saying so beats letting it
+        look like a decoding failure."""
+        return all(color[:3] == (0, 0, 0) for color in self.palette(bgmp, index))
+
     def page_image(self, bgmp, palette_index):
         """The whole 256x256 tile page, coloured with one palette."""
         key = (bgmp.texpage, bgmp.clut, palette_index, self.transparent_zero)
