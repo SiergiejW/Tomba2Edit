@@ -18,7 +18,8 @@ share that single address.
 import hashlib
 import struct
 
-from gui.mainbin.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
+from gui.mainbin.mainbin_parser import (
+    scan_entries, encode_bytes, heuristic_pool_bounds, MainBinParseError)
 
 TEXT_REGION_START = 0x58  # fixed header size, identical across every known build
 
@@ -89,24 +90,14 @@ def verify_supported(sop_path):
     detect_build(sop_path)
 
 
-def _heuristic_scan_end(sop_path, window=12, noise_threshold=0.5, probe_len=4000):
-    """For a build with no known text-layout mapping (e.g. Japanese, or
-    any other unrecognized SOP.BIN): estimate where the story text ends
-    and code begins, the same way mainbin_editor's fallback does. Good
-    enough for read-only viewing only."""
-    entries = scan_entries(sop_path, region_start=TEXT_REGION_START, region_end=TEXT_REGION_START + probe_len)
-    if not entries:
-        return TEXT_REGION_START
-    boundary_idx = len(entries)
-    for i in range(len(entries) - window):
-        seg = entries[i:i + window]
-        total = sum(len(e["text"]) for e in seg) or 1
-        escaped = sum(e["text"].count("{$") * 6 for e in seg)
-        if escaped / total > noise_threshold:
-            boundary_idx = max(i, 1)
-            break
-    last = entries[boundary_idx - 1]
-    return last["offset"] + last["length"] + 1
+def _heuristic_scan_end(sop_path):
+    """Where the story text ends, for a build whose layout isn't mapped
+    (the prototypes, the Japanese disc). The start is not guessed: 0x58
+    is the header size and holds on every SOP.BIN seen, prototypes
+    included. See mainbin_parser.heuristic_pool_bounds."""
+    _start, end = heuristic_pool_bounds(sop_path, TEXT_REGION_START,
+                                        probe_len=4000)
+    return end
 
 
 def sop_entries(sop_path):

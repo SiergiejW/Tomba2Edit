@@ -62,6 +62,61 @@ def scan_entries(path, region_start=TEXT_REGION_START, region_end=None):
     return entries
 
 
+def _noise(entries):
+    """How much of a run of entries is escaped bytes rather than
+    readable text - the tell that the scanner has walked off the string
+    pool and is reading code."""
+    total = sum(len(e["text"]) for e in entries) or 1
+    return sum(e["text"].count("{$") * 6 for e in entries) / total
+
+
+def heuristic_pool_bounds(path, region_start, probe_len,
+                          window=12, noise_threshold=0.5):
+    """(start, end) of the string pool in `path`, for a build whose
+    layout nobody has mapped. Shared by the MAIN.EXE and SOP.BIN
+    editors, which face the same problem with different constants.
+
+    Two things it has to get right, and each was got wrong before:
+
+    START. The pool does not always begin where a known build puts it -
+    the 28-09-99 prototype's MAIN.EXE has it 0x88 bytes further in, so
+    scanning from the usual place lands mid-code and, the scanner being
+    NUL-delimited, yields one enormous unreadable entry. So walk forward
+    to the first sustained run of readable entries instead of assuming.
+
+    END. A window is called noisy once it is HALF noise, which happens
+    half a window BEFORE the pool really ends - that alone was costing
+    the prototypes six entries off MAIN.EXE and, worse, seven of
+    SOP.BIN's twelve story lines. So once a noisy window is found,
+    step through it for the first entry that is noisy on its own and cut
+    there.
+
+    Taking the first noisy run rather than the last still matters: code
+    further out holds scattered debug strings that would otherwise drag
+    the boundary well past the real pool."""
+    entries = scan_entries(path, region_start=region_start,
+                           region_end=region_start + probe_len)
+    if len(entries) < window:
+        return region_start, region_start
+
+    first = 0
+    while (first + window <= len(entries)
+           and _noise(entries[first:first + window]) > noise_threshold):
+        first += 1
+    if first + window > len(entries):
+        return region_start, region_start
+
+    boundary = len(entries)
+    for i in range(first + 1, len(entries) - window + 1):
+        if _noise(entries[i:i + window]) > noise_threshold:
+            boundary = next((j for j in range(i, len(entries))
+                             if _noise([entries[j]]) > noise_threshold), i)
+            break
+
+    last = entries[max(boundary, first + 1) - 1]
+    return entries[first]["offset"], last["offset"] + last["length"] + 1
+
+
 def encode_bytes(text):
     """
     Displayed text -> raw bytes, inverse of decode_bytes(). Raises

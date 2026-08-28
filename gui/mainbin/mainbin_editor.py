@@ -13,7 +13,8 @@ table/pool offsets.
 import hashlib
 import struct
 
-from gui.mainbin.mainbin_parser import scan_entries, encode_bytes, MainBinParseError
+from gui.mainbin.mainbin_parser import (
+    scan_entries, encode_bytes, heuristic_pool_bounds, MainBinParseError)
 
 EXE_HEADER_SIZE = 0x800
 RAM_BASE = 0x80010000
@@ -102,40 +103,31 @@ def verify_supported(exe_path):
     detect_build(exe_path)
 
 
-def _heuristic_scan_end(exe_path, window=12, noise_threshold=0.5, probe_len=60000):
-    """For a build with no known table mapping: estimate where real pool
-    text stops and code begins, by scanning forward and stopping at the
-    FIRST sustained run of mostly non-printable/escaped-byte entries
-    (code misread as text) - not the last such run found, since code
-    often contains scattered legitimate debug strings further out that
-    would otherwise pull the boundary too far past the real pool. Good
-    enough for read-only viewing - NOT precise enough to trust for
-    editing, since there's no known pointer table to repatch."""
-    entries = scan_entries(exe_path, region_start=TEXT_REGION_START, region_end=TEXT_REGION_START + probe_len)
-    if not entries:
-        return TEXT_REGION_START
-    boundary_idx = len(entries)
-    for i in range(len(entries) - window):
-        seg = entries[i:i + window]
-        total = sum(len(e["text"]) for e in seg) or 1
-        escaped = sum(e["text"].count("{$") * 6 for e in seg)
-        if escaped / total > noise_threshold:
-            boundary_idx = max(i, 1)
-            break
-    last = entries[boundary_idx - 1]
-    return last["offset"] + last["length"] + 1
+def _heuristic_pool_bounds(exe_path):
+    """The pool's extent for a build with no known table mapping - see
+    mainbin_parser.heuristic_pool_bounds for how it is found and why it
+    is only good enough to read, never to edit against."""
+    return heuristic_pool_bounds(exe_path, TEXT_REGION_START, probe_len=60000)
+
+
+def pool_bounds(exe_path):
+    """(start, end) of the string pool in this exe, and whether they were
+    mapped or worked out. A mapped build's own extent is exact; anything
+    else gets _heuristic_pool_bounds."""
+    try:
+        return TEXT_REGION_START, detect_build(exe_path)["scan_end"], True
+    except UnsupportedExeError:
+        start, end = _heuristic_pool_bounds(exe_path)
+        return start, end, False
 
 
 def _mainbin_entries(exe_path):
     """scan_entries() against the exe's own file offsets, bounded by the
     detected build's own pool extent - or, for an unmapped build, a
-    heuristic estimate (see _heuristic_scan_end) good enough to browse
+    heuristic estimate (see _heuristic_pool_bounds) good enough to browse
     but not to trust for editing."""
-    try:
-        region_end = detect_build(exe_path)["scan_end"]
-    except UnsupportedExeError:
-        region_end = _heuristic_scan_end(exe_path)
-    return scan_entries(exe_path, region_start=TEXT_REGION_START, region_end=region_end)
+    start, end, _mapped = pool_bounds(exe_path)
+    return scan_entries(exe_path, region_start=start, region_end=end)
 
 
 def build_reference_index(exe_path, entries):
