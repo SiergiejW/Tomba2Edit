@@ -188,14 +188,18 @@ def _euler_matrix(rx, ry, rz):
     return AXIS_CHANGE @ (mz @ my @ mx) @ AXIS_CHANGE.T
 
 
-def pose_transforms(frame, hierarchy, pivots, translation_scale=1.0):
+def pose_transforms(rotations, translation, hierarchy, pivots,
+                    translation_scale=1.0):
     """(rotation, offset) per limb, so a vertex v of limb i in the rest
     model poses to `rotation @ (v - pivot) + offset`.
 
+    `rotations` is one (x, y, z) in radians per limb and `translation`
+    the root's - straight off a frame, or blended between two of them
+    (see anmp_parser.blend).
+
     Composed down the hierarchy: a limb carries its parent's rotation,
     so bending an elbow takes the hand with it."""
-    rotations = frame.rotations()
-    root = np.array(frame.translation(), dtype=np.float64) * translation_scale
+    root = np.array(translation, dtype=np.float64) * translation_scale
 
     out = [None] * len(hierarchy)
     order = sorted(range(len(hierarchy)),

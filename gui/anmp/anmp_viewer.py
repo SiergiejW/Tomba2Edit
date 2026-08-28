@@ -19,14 +19,21 @@ from PyQt6.QtWidgets import (
 )
 
 from gui import panel_title
-from gui.anmp.anmp_parser import ANMPError, load_anmp
+from gui.anmp.anmp_parser import ANMPError, blend, load_anmp
 from gui.anmp.skeleton import (
     hierarchy_for, pose_transforms, rest_pivots, rest_pose)
 from gui.smst.smst_parser import load_smst
 from gui.smst.smst_viewer import SMSTViewer
 
 # The game runs at 30fps; the transport defaults there.
-DEFAULT_FPS = 17
+DEFAULT_FPS = 30
+
+# Poses rendered per table frame. The game eases between frames rather
+# than snapping, but nothing in the file says by how much - the frames
+# are the whole of it - so this is a viewing aid with a mild default
+# rather than a measurement. 1 turns it off and shows exactly what is
+# stored.
+DEFAULT_STEPS = 2
 
 
 class ANMPViewer(QWidget):
@@ -39,6 +46,7 @@ class ANMPViewer(QWidget):
         self._hierarchy = ()
         self._named_hierarchy = False
         self._measured_rest = False
+        self._where = 0.0                 # position in table frames
         self._source = None               # (dat_path, address, size)
 
         self.viewer = SMSTViewer()
@@ -79,7 +87,7 @@ class ANMPViewer(QWidget):
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setMinimum(0)
-        self.slider.valueChanged.connect(self.show_frame)
+        self.slider.valueChanged.connect(self.show_position)
 
         self.fps_box = QSpinBox()
         self.fps_box.setRange(1, 60)
@@ -87,8 +95,19 @@ class ANMPViewer(QWidget):
         self.fps_box.setSuffix(" fps")
         self.fps_box.valueChanged.connect(self._retime)
 
+        self.steps_box = QSpinBox()
+        self.steps_box.setRange(1, 16)
+        self.steps_box.setValue(DEFAULT_STEPS)
+        self.steps_box.setPrefix("blend x")
+        self.steps_box.setToolTip(
+            "How many poses to render between one table frame and the next, "
+            "easing between them instead of snapping. The game does ease; "
+            "how much isn't in the file, so this is a choice. 1 shows the "
+            "frames exactly as stored.")
+        self.steps_box.valueChanged.connect(self._on_steps_changed)
+
         self.frame_label = QLabel("-")
-        self.frame_label.setMinimumWidth(110)
+        self.frame_label.setMinimumWidth(130)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
@@ -98,6 +117,7 @@ class ANMPViewer(QWidget):
         transport.addWidget(self.play_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
+        transport.addWidget(self.steps_box)
         transport.addWidget(self.fps_box)
 
         left = QWidget(self)
@@ -159,7 +179,7 @@ class ANMPViewer(QWidget):
         self._candidates = list(candidates or [])
         self._fill_frames()
         self._fill_models()
-        self.slider.setMaximum(max(len(self.anmp) - 1, 0))
+        self._rescale_slider()
         self.slider.setValue(0)
         if self.frames_table.rowCount():
             self.frames_table.selectRow(0)
@@ -255,28 +275,69 @@ class ANMPViewer(QWidget):
 
     # --- transport ---------------------------------------------------
 
+    @property
+    def steps(self):
+        return self.steps_box.value()
+
+    def _rescale_slider(self):
+        """The slider counts sub-steps, so changing the blend keeps the
+        place in the animation rather than jumping.
+
+        Off self._where rather than the slider: by the time this runs the
+        step count has already changed, so reading the slider would
+        divide by the new one and land somewhere else entirely."""
+        if not self.anmp:
+            return
+        where = self._where
+        self.slider.blockSignals(True)
+        self.slider.setMaximum(max((len(self.anmp) - 1) * self.steps, 0))
+        self.slider.setValue(int(round(where * self.steps)))
+        self.slider.blockSignals(False)
+
+    def position(self):
+        """Where the transport is, in table frames, as a float."""
+        return self._where
+
     def show_frame(self, index):
+        """Jump to a whole frame - what the frame list selects."""
+        self.slider.setValue(int(index) * self.steps)
+
+    def show_position(self, sub):
+        """Pose at `sub` sub-steps in: between two frames when the blend
+        is on, exactly on one when it isn't."""
         if not self.anmp or not self.model or self._pivots is None:
             return
-        if not 0 <= index < len(self.anmp):
-            return
+        steps = max(self.steps, 1)
+        index, part = divmod(int(sub), steps)
+        index = max(0, min(index, len(self.anmp) - 1))
+        amount = part / steps
         frame = self.anmp.frames[index]
-        transforms = pose_transforms(frame, self._hierarchy, self._pivots)
+        following = (self.anmp.frames[index + 1]
+                     if amount and index + 1 < len(self.anmp) else None)
+        rotations, translation = (blend(frame, following, amount) if amount
+                                  else (frame.rotations(), frame.translation()))
+        transforms = pose_transforms(rotations, translation,
+                                     self._hierarchy, self._pivots)
         self.viewer.set_pose(transforms, self._pivots)
-        self.frame_label.setText(f"{index + 1} / {len(self.anmp)}")
-        self._fill_limbs(frame)
-        if self.slider.value() != index:
-            self.slider.blockSignals(True)
-            self.slider.setValue(index)
-            self.slider.blockSignals(False)
+        self._where = index + amount
+        between = f" + {part}/{steps}" if part else ""
+        self.frame_label.setText(f"{index + 1}{between} / {len(self.anmp)}")
+        self._fill_limbs(frame, rotations, translation)
 
-    def _fill_limbs(self, frame):
+    def _on_steps_changed(self):
+        self._rescale_slider()
+        self._retime()
+        self.show_position(self.slider.value())
+
+    def _fill_limbs(self, frame, rotations=None, translation=None):
         import math
+        rotations = frame.rotations() if rotations is None else rotations
+        translation = frame.translation() if translation is None else translation
         rows = []
         if frame.root:
-            x, y, z = frame.translation()
-            rows.append(("root (move)", f"{x:.0f}", f"{y:.0f}", f"{z:.0f}"))
-        for i, (x, y, z) in enumerate(frame.rotations()):
+            x, y, z = translation
+            rows.append(("root (move)", f"{x:.1f}", f"{y:.1f}", f"{z:.1f}"))
+        for i, (x, y, z) in enumerate(rotations):
             name = self._hierarchy[i][0] if i < len(self._hierarchy) else f"limb {i}"
             rows.append((name, f"{math.degrees(x):7.1f}",
                          f"{math.degrees(y):7.1f}", f"{math.degrees(z):7.1f}"))
@@ -298,13 +359,18 @@ class ANMPViewer(QWidget):
             self._timer.stop()
 
     def _retime(self):
+        # fps is table frames per second; the blend subdivides each of
+        # them, so the tick rate scales with it and the animation still
+        # takes the same time to play through.
         if self.play_button.isChecked():
-            self._timer.start(max(1000 // self.fps_box.value(), 1))
+            rate = self.fps_box.value() * max(self.steps, 1)
+            self._timer.start(max(1000 // rate, 1))
 
     def _advance(self):
         if not self.anmp:
             return
-        self.show_frame((self.slider.value() + 1) % len(self.anmp))
+        end = self.slider.maximum()
+        self.slider.setValue(self.slider.value() + 1 if self.slider.value() < end else 0)
 
     # --- status ------------------------------------------------------
 

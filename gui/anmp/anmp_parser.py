@@ -115,6 +115,45 @@ class Frame:
         return (float(x), float(y), float(z))
 
 
+def _shortest_step(a, b):
+    """How far to turn from raw angle `a` to raw angle `b`, the short way
+    round. These are 12-bit angles that wrap, so going from 0xFF0 to
+    0x010 is 32 units forwards, not 4064 units back - lerping the raw
+    numbers would spin the limb most of a turn the wrong way."""
+    half = (VALUE_MASK + 1) // 2
+    return (b - a + half) % (VALUE_MASK + 1) - half
+
+
+def blend(first, second, amount):
+    """A pose part-way between two frames, as (rotations, translation).
+
+    `amount` runs 0 at `first` to 1 at `second`. Rotations take the
+    short way round each axis; the root translation is a plain lerp.
+
+    Frames of different shapes are not blended - the limbs would not
+    line up - so a pair with different limb counts snaps to whichever
+    of the two is nearer."""
+    import math
+
+    if second is None or first.limb_count != second.limb_count:
+        frame = first if amount < 0.5 or second is None else second
+        return frame.rotations(), frame.translation()
+
+    turn = VALUE_MASK + 1
+    rotations = []
+    for (ay, az, ax), (by, bz, bx) in zip(first.limbs, second.limbs):
+        y = ay + _shortest_step(ay, by) * amount
+        z = az + _shortest_step(az, bz) * amount
+        x = ax + _shortest_step(ax, bx) * amount
+        rotations.append((x / turn * math.tau,
+                          y / turn * math.tau,
+                          z / turn * math.tau))
+
+    ta, tb = first.translation(), second.translation()
+    translation = tuple(a + (b - a) * amount for a, b in zip(ta, tb))
+    return rotations, translation
+
+
 @dataclass
 class ANMPFile:
     address: int = 0
