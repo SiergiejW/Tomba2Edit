@@ -67,6 +67,40 @@ def page_origin(texpage):
     return (texpage & 0xF) * PAGE_BYTES, ((texpage >> 4) & 1) * PAGE_ROWS
 
 
+# The 3D views hand the whole of VRAM to the GPU as one texture and let
+# the UVs pick out of it: 16 texture pages across and two down, 256
+# texels each at 4bpp (see gui.vram_viewer.vram_index_image).
+ATLAS_COLUMNS = 16
+ATLAS_ROWS = 2
+ATLAS_PAGE = UV_WRAP
+ATLAS_WIDTH = ATLAS_COLUMNS * ATLAS_PAGE
+ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_PAGE
+
+
+def atlas_uv(u, v, texpage):
+    """One packet's UV as a coordinate in that atlas, aimed at the
+    MIDDLE of the texel rather than at its corner.
+
+    The half texel is not cosmetic. A UV in a packet is a whole texel
+    number, so u / ATLAS_WIDTH lands exactly on the boundary between
+    texel u - 1 and texel u, and which side of it a fragment comes down
+    on is settled by the last bit of the interpolator. That is fine
+    right up until a face gives every one of its vertices the SAME UV -
+    which is how this game paints a flat colour out of a texture page,
+    and it does it constantly: 123 of the 292 faces on the Nishiki bird
+    (AREA_08's 20-3FAC4.SMST) are one repeated texel. On those the whole
+    polygon is that single sample, so the last bit of the interpolator
+    swaps the colour of the entire face, and it swaps back and forth as
+    the camera moves. The PSX had no such problem - it addresses texels
+    as integers and never interpolates its way onto a boundary.
+
+    Sampling the middle leaves half a texel of clearance on every side,
+    which no rounding can cross, and it is the truer reading anyway:
+    texel u means texel u, not the seam in front of it."""
+    return (((texpage % ATLAS_COLUMNS) * ATLAS_PAGE + u + 0.5) / ATLAS_WIDTH,
+            ((texpage // ATLAS_COLUMNS) * ATLAS_PAGE + v + 0.5) / ATLAS_HEIGHT)
+
+
 def read_palette(vram, address, count=16, transparent_zero=True):
     """`count` colours from VRAM at `address`, as RGBA tuples.
 

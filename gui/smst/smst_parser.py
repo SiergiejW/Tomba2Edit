@@ -57,6 +57,7 @@ MainWindow._load_area_vram_bytes(merge_common=True).
 import struct
 from dataclasses import dataclass
 
+from functions import psx_vram
 from functions.format_detect import FormatError, smst_groups
 
 TRI_SIZE = 36
@@ -82,12 +83,9 @@ QUAD_VERTS = ((33, 31, 29), (21, 19, 17), (23, 27, 25), (35, 39, 37))
 QUAD_UVS = ((13, 14), (5, 6), (9, 10), (15, 16))
 QUAD_COLORS = ((1, 2, 3, 0), (-3, -2, -1, 0), (-3, -2, -1, 1), (1, 2, 3, 1))
 
-# The VRAM atlas the UVs are resolved against: 16 texture pages across,
-# two down, 256 texels each.
-ATLAS_COLUMNS = 16
-PAGE_TEXELS = 256
-ATLAS_WIDTH = ATLAS_COLUMNS * PAGE_TEXELS
-ATLAS_HEIGHT = 2 * PAGE_TEXELS
+# UVs are resolved against the VRAM atlas by functions.psx_vram.atlas_uv,
+# which both this and gui/mdat/mdat.py call - see its docstring for why
+# it aims at the middle of a texel.
 
 
 @dataclass
@@ -136,12 +134,6 @@ def _clut_address(word):
     return x * 2 + y * 0x800
 
 
-def _uv(u, v, page):
-    """A packet's UV as a coordinate in the 4096x512 VRAM atlas."""
-    return ((page % ATLAS_COLUMNS) * PAGE_TEXELS + u) / ATLAS_WIDTH, \
-           ((page // ATLAS_COLUMNS) * PAGE_TEXELS + v) / ATLAS_HEIGHT
-
-
 def _color(data, ind, r, g, b, low):
     """One vertex's colour, as three floats. The nibbles run 0-15 and
     9 is neutral, which is the scaling gui/mdat/mdat.py settled on."""
@@ -171,7 +163,7 @@ def _read_packets(data, at, count, stride, layout, codes, model):
             model["vertices"].append([x, -y, z])          # Y up, as MDAT does
             model["vertex_colors"].append(_color(data, ind, cr, cg, cb, low))
             model["texture_coords"].append(
-                _uv(data[ind + ou], data[ind + ov], page))
+                psx_vram.atlas_uv(data[ind + ou], data[ind + ov], page))
 
         info = (page, clut, transparent)
         if len(verts) == 3:

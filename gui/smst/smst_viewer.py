@@ -476,8 +476,14 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
 
                 void main() {
                     if (useTextures) {
-                        float index = texture(indexTexture, fragTexCoord).r * 15.0;
-                        vec4 clutColor = texture(clutTexture, index / 16.0);
+                        // The atlas holds each 4-bit index as index * 17
+                        // over 255, so this comes back a whisker either
+                        // side of a whole number - round it to one, then
+                        // read the MIDDLE of that palette entry. Sampling
+                        // at index / 16.0 is the entry's own edge, and a
+                        // whisker short of it is the entry before.
+                        float index = floor(texture(indexTexture, fragTexCoord).r * 15.0 + 0.5);
+                        vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
                         outColor = clutColor * vec4(fragColor, 1.0);

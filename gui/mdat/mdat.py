@@ -1,6 +1,8 @@
 import struct
 import io
 
+from functions import psx_vram
+
 
 def find_area_mdat_location(idx_path, chunk_index):
     """Scan one AREA's SDAT pointer table in TOMBA2.IDX for its MDAT
@@ -98,16 +100,12 @@ def exportMDAT(drwa_addr, datpath):
         return [short(rom, ind, x), -short(rom, ind, y), short(rom, ind, z)]  # Flip Y
 
     def adjust_uv(raw_u, raw_v, page):
-        # Determine atlas position (16 pages per row, 2 rows)
-        page_col = page % 16
-        page_row = page // 16
-
-        # Compute absolute pixel coordinates in the atlas
-        full_u = page_col * 256 + raw_u  # **Do NOT double raw_u**; raw_u is already 0–255 within the 256px page
-        full_v = page_row * 256 + raw_v
-
-        # Normalize to [0,1]
-        return (full_u / 4096.0, full_v / 512.0)
+        # Where in the 4096x512 VRAM atlas this texel is - see
+        # functions.psx_vram.atlas_uv, which aims at the middle of the
+        # texel so a face whose vertices all share one UV keeps the one
+        # colour it is meant to be instead of flickering between that
+        # texel and its neighbour as the camera moves.
+        return psx_vram.atlas_uv(raw_u, raw_v, page)
 
 
     with open(datpath, "rb") as rom:
@@ -146,8 +144,17 @@ def exportMDAT(drwa_addr, datpath):
                     v3 = xyz(rom, ind, 29, 27, 25)
                     c3 = vtx(rom, ind, 1, 2, 3, 1, 1, 1)
 
-                    # Get texture info
-                    texture_page = char(rom, ind, 11)
+                    # Masked to the five bits that are the page, as the
+                    # quad path below already did. The rest of a PSX
+                    # texpage attribute is the semi-transparency mode and
+                    # the colour depth, and 273 triangles on the disc set
+                    # them. This is tidying rather than a fix: an
+                    # unmasked page lands off the bottom of the atlas and
+                    # the texture wrap brings it back to the same texel,
+                    # so the 3D view drew these correctly either way. It
+                    # matters to anything that gets the UVs without the
+                    # wrap - the GLTF export, for one.
+                    texture_page = char(rom, ind, 11) & 0x1F
                     clut_coords = getClutCoords(short(rom, ind, 7))
                     clut_address = clutCoords2Address(clut_coords)
 

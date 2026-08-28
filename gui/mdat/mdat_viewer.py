@@ -471,8 +471,12 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
 
                 void main() {
                     if (useTextures) {
-                        float index = texture(indexTexture, fragTexCoord).r * 15.0;
-                        vec4 clutColor = texture(clutTexture, index / 16.0);
+                        // Round to the whole 4-bit index the atlas
+                        // encodes, then read the middle of that palette
+                        // entry rather than its edge - same reasoning as
+                        // functions.psx_vram.atlas_uv, one level down.
+                        float index = floor(texture(indexTexture, fragTexCoord).r * 15.0 + 0.5);
+                        vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
                         outColor = clutColor * vec4(fragColor, 1.0);
