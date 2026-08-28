@@ -18,17 +18,24 @@ from gui.scld.scld_render import (
     unkn_color,
 )
 from gui.mdat.mdat import exportMDAT, find_area_mdat_location
-from functions.camera_controls import CameraControls
+from functions.camera_controls import (
+    CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
+    CameraEventMixin, scene_of,
+)
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
 
-class SCLDViewer(QOpenGLWidget):
+class SCLDViewer(CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scld_data = None
+        # How big the collision on screen is, in GL units - the clip
+        # planes are set from it, and so is every camera step.
+        self.scene_radius = 0.0
+        self._scene_points = ()
         self.show_markers = True
         # Join each walkable surface into a line along the entry - see
         # SCLDEntry.surfaces().
@@ -149,6 +156,13 @@ class SCLDViewer(QOpenGLWidget):
         self.unkn_action.toggled.connect(self.toggle_color_by_unkn)
         self.toolbar.addAction(self.unkn_action)
 
+        frame_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
+            "Frame", self)
+        frame_action.setToolTip("Put the whole of this file's collision back in shot")
+        frame_action.triggered.connect(lambda: self.frame_collision())
+        self.toolbar.addAction(frame_action)
+
         self.stats_label = QLabel(self)
         self.stats_label.setStyleSheet("""
             QLabel {
@@ -173,11 +187,7 @@ class SCLDViewer(QOpenGLWidget):
                 font-size: 11px;
             }
         """)
-        self.controls_label.setText(
-            "Left-click: toggle freecam\n"
-            "WASD: move | Q/E: up/down\n"
-            "Shift: fast | Scroll: speed/zoom"
-        )
+        self.controls_label.setText(CONTROLS_HINT)
         self.controls_label.raise_()
 
         layout = QVBoxLayout(self)
@@ -313,7 +323,7 @@ class SCLDViewer(QOpenGLWidget):
                 if self.show_level:
                     self.load_level_mesh()
             self.prepare_buffers()
-            self._reset_camera_to_default()
+            self.frame_collision()
             self._update_stats_label()
             self.update()
             return True
@@ -357,6 +367,11 @@ class SCLDViewer(QOpenGLWidget):
             pcarr = np.zeros(0, dtype=np.float32)
         self.point_vertex_count = len(point_verts)
         self._upload(self.point_vao, self.point_vbo, self.point_cbo, parr, pcarr)
+
+        # What frame_collision() measures. The points are every path
+        # sample in the file, so they bound the collision whether or not
+        # the surfaces between them are being drawn.
+        self._scene_points = parr if point_verts else arr
 
     def _upload(self, vao, vbo, cbo, vertices, colors):
         if not vbo.isCreated():
@@ -473,25 +488,30 @@ class SCLDViewer(QOpenGLWidget):
         self.controls_label.adjustSize()
         self.controls_label.move(w - self.controls_label.width() - 6, h - self.controls_label.height() - 6)
 
-    def _reset_camera_to_default(self):
-        """Same fixed starting pose MDATViewer opens every model at, so
-        switching between an area's MDAT and SCLD tree items doesn't
-        reorient the camera."""
-        cam = self.camera_controls
-        cam.camera_x = 11.36
-        cam.camera_y = -15.70
-        cam.camera_z = 4.98
-        cam.camera_angle_h = 134.5
-        cam.camera_angle_v = 33.2
+    def frame_collision(self, heading=LEVEL_HEADING, pitch=LEVEL_PITCH):
+        """Open every file with the whole of its collision in shot, from
+        the same angle MDATViewer opens a room at - so switching between
+        an area's MDAT and SCLD tree items doesn't reorient the camera,
+        while a file that covers far more or far less world than the
+        last one is still framed for its own size.
+
+        Framed on the points rather than the level mesh: one SCLD covers
+        more ground than the single room the mesh is, and it is the
+        collision this view is for."""
+        scene = scene_of(self._scene_points)
+        if scene is None:
+            return
+        centre, radius = scene
+        self.scene_radius = radius
+        self.camera_controls.frame(centre, radius, heading, pitch)
+        self.update()
 
     def _update_stats_label(self):
         n_entries = len(self.scld_data.entries) if self.scld_data else 0
         n_points = sum(len(e.path) for e in self.scld_data.entries) if self.scld_data else 0
         cam = self.camera_controls
         self.stats_label.setText(
-            f"Entries: {n_entries}  Path samples: {n_points}\n"
-            f"Camera: {cam.camera_x:.2f}, {cam.camera_y:.2f}, {cam.camera_z:.2f}\n"
-            f"Rotation: h {cam.camera_angle_h:.1f}°, v {cam.camera_angle_v:.1f}°"
+            f"Entries: {n_entries}  Path samples: {n_points}\n" + cam.status_text()
         )
         self.stats_label.adjustSize()
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
@@ -512,7 +532,10 @@ class SCLDViewer(QOpenGLWidget):
         self._update_stats_label()
 
         projection = QMatrix4x4()
-        projection.perspective(45.0, self.width() / max(self.height(), 1), 0.05, 500.0)
+        # Clip planes off the file's own size - see MDATViewer.paintGL.
+        radius = self.scene_radius or 5.0
+        projection.perspective(45.0, self.width() / max(self.height(), 1),
+                               max(0.01, radius / 500), max(500.0, radius * 10))
         view = QMatrix4x4()
         view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
         view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
@@ -684,21 +707,6 @@ class SCLDViewer(QOpenGLWidget):
             painter.setPen(QColor(255, 235, 140))
             painter.drawText(sx, sy, text)
         painter.end()
-
-    def wheelEvent(self, event):
-        self.camera_controls.wheelEvent(event)
-
-    def mousePressEvent(self, event):
-        self.camera_controls.mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self.camera_controls.mouseMoveEvent(event)
-
-    def keyPressEvent(self, event):
-        self.camera_controls.keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
-        self.camera_controls.keyReleaseEvent(event)
 
 
 class SCLDDebugPanel(QWidget):

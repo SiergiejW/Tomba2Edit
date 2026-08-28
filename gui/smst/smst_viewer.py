@@ -29,10 +29,13 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
-from functions.camera_controls import CameraControls
+from functions.camera_controls import (
+    CONTROLS_HINT, MODEL_HEADING, MODEL_PITCH, CameraControls,
+    CameraEventMixin, scene_of,
+)
 from functions.format_detect import FormatError
 from gui.mdat.mdat_export import export_mdat_to_gltf
-from gui.smst.smst_parser import load_smst, model_bounds
+from gui.smst.smst_parser import load_smst
 
 # World units per GL unit. A level MDAT is thousands of units across and
 # is drawn at 1000 (gui/scld/scld_render.UNIT_SCALE); a character is
@@ -47,7 +50,7 @@ SPREAD_GAP = 1.35
 DIMMED_ALPHA = 0.15
 
 
-class SMSTViewer(QOpenGLWidget):
+class SMSTViewer(CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
@@ -162,11 +165,7 @@ class SMSTViewer(QOpenGLWidget):
 
         self.controls_label = QLabel(self)
         self.controls_label.setStyleSheet(self.stats_label.styleSheet())
-        self.controls_label.setText(
-            "Left-click: toggle freecam\n"
-            "WASD: move | Q/E: up/down\n"
-            "Shift: fast | Scroll: speed/zoom"
-        )
+        self.controls_label.setText(CONTROLS_HINT)
         self.controls_label.raise_()
 
         layout = QVBoxLayout(self)
@@ -422,36 +421,17 @@ class SMSTViewer(QOpenGLWidget):
 
     # --- camera ------------------------------------------------------
 
-    def frame_model(self, heading=20.0, pitch=12.0):
-        """Put the whole model in shot from `heading`/`pitch`.
-
-        20 degrees is the front: these models face +Z, so the opposite
-        heading opens every character showing the back of its head.
-
-        paintGL builds the view as rotate(v) * rotate(h) * translate(t),
-        so framing is a matter of solving that for the t which lands the
-        model's centre `distance` in front of the camera."""
-        if not model_bounds(self.model_data):
+    def frame_model(self, heading=MODEL_HEADING, pitch=MODEL_PITCH):
+        """Put the whole model in shot, from the angle a character reads
+        best at. Everything the camera does after that - how far a wheel
+        notch moves it, how fast WASD flies - is measured off the size
+        this finds (see functions/camera_controls.py)."""
+        scene = scene_of(self._positions()) if self.model_data else None
+        if scene is None:
             return
-        verts = self._positions()
-        centre = (verts.min(axis=0) + verts.max(axis=0)) / 2
-        radius = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) / 2
+        centre, radius = scene
         self.scene_radius = radius
-        distance = max(radius * 2.5, 0.5)
-
-        h, v = math.radians(heading), math.radians(pitch)
-        eye = (distance * math.cos(v) * math.sin(h),
-               -distance * math.sin(v),
-               -distance * math.cos(v) * math.cos(h))
-
-        cam = self.camera_controls
-        cam.camera_x = eye[0] - float(centre[0])
-        cam.camera_y = eye[1] - float(centre[1])
-        cam.camera_z = eye[2] - float(centre[2])
-        cam.camera_angle_h = heading
-        cam.camera_angle_v = pitch
-        # A model is small, so the default step would cross it in a frame.
-        cam.camera_speed = max(radius / 30.0, cam.camera_speed_min)
+        self.camera_controls.frame(centre, radius, heading, pitch)
         self.update()
 
     # --- GL ----------------------------------------------------------
@@ -538,8 +518,7 @@ class SMSTViewer(QOpenGLWidget):
         self.stats_label.setText(
             f"Parts: {shown}/{parts}  Tris: {model.get('tri_count', 0) if model else 0}"
             f"  Quads: {model.get('quad_count', 0) if model else 0}\n"
-            f"Camera: {cam.camera_x:.2f}, {cam.camera_y:.2f}, {cam.camera_z:.2f}\n"
-            f"Rotation: h {cam.camera_angle_h:.1f}°, v {cam.camera_angle_v:.1f}°"
+            + cam.status_text()
         )
         self._place_labels()
 
@@ -610,22 +589,6 @@ class SMSTViewer(QOpenGLWidget):
             GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT,
                               ctypes.c_void_p(offset))
 
-    # --- input -------------------------------------------------------
-
-    def wheelEvent(self, event):
-        self.camera_controls.wheelEvent(event)
-
-    def mousePressEvent(self, event):
-        self.camera_controls.mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self.camera_controls.mouseMoveEvent(event)
-
-    def keyPressEvent(self, event):
-        self.camera_controls.keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
-        self.camera_controls.keyReleaseEvent(event)
 
 
 class SMSTPanel(QWidget):

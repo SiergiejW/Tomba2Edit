@@ -12,7 +12,10 @@ from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from gui.mdat.mdat_export import export_mdat_to_gltf
-from functions.camera_controls import CameraControls  # Importing the camera controls class
+from functions.camera_controls import (
+    CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
+    CameraEventMixin, scene_of,
+)
 from gui.scld.scld_parser import load_scld, find_area_scld_location
 from gui.scld.scld_render import (
     UNIT_SCALE, SURFACE_LINE_WIDTH, build_points, build_lines, room_bounds,
@@ -23,10 +26,13 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
-class MDATViewer(QOpenGLWidget):
+class MDATViewer(CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
+        # How big the room on screen is, in GL units - the clip planes
+        # are set from it, and so is every step the camera takes.
+        self.scene_radius = 0.0
         self.vao = QOpenGLVertexArrayObject()
         self.vertex_buffer = QOpenGLBuffer()
         self.color_buffer = QOpenGLBuffer()
@@ -92,6 +98,11 @@ class MDATViewer(QOpenGLWidget):
         self.collision_action.toggled.connect(self.toggle_collision)
         self.toolbar.addAction(self.collision_action)
 
+        frame_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "Frame Level", self)
+        frame_action.setToolTip("Put the whole room back in shot")
+        frame_action.triggered.connect(lambda: self.frame_level())
+        self.toolbar.addAction(frame_action)
+
         # Export button
         export_action_icon = QIcon("icons/graphics/address-book.png")
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export GLTF", self)
@@ -125,11 +136,7 @@ class MDATViewer(QOpenGLWidget):
                 font-size: 11px;
             }
         """)
-        self.controls_label.setText(
-            "Left-click: toggle freecam\n"
-            "WASD: move | Q/E: up/down\n"
-            "Shift: fast | Scroll: speed/zoom"
-        )
+        self.controls_label.setText(CONTROLS_HINT)
         self.controls_label.raise_()
 
         # Layout
@@ -322,7 +329,7 @@ class MDATViewer(QOpenGLWidget):
         try:
             self.model_data = mdat.exportMDAT(address, dat_file_path)
             self.prepare_buffers()  # <- use self.
-            self._reset_camera_to_default()
+            self.frame_level()
             self._update_stats_label()
             self.update()
             return True
@@ -505,15 +512,26 @@ class MDATViewer(QOpenGLWidget):
         self.controls_label.adjustSize()
         self.controls_label.move(w - self.controls_label.width() - 6, h - self.controls_label.height() - 6)
 
-    def _reset_camera_to_default(self):
-        """Every freshly loaded MDAT starts from this fixed camera pose
-        instead of wherever the previous model's freecam was left."""
-        cam = self.camera_controls
-        cam.camera_x = 11.36
-        cam.camera_y = -15.70
-        cam.camera_z = 4.98
-        cam.camera_angle_h = 134.5
-        cam.camera_angle_v = 33.2
+    def frame_level(self, heading=LEVEL_HEADING, pitch=LEVEL_PITCH):
+        """Open every room with the whole of it in shot, from the angle
+        a level reads best at.
+
+        This used to be one fixed position for every file, which suits
+        the rooms that happen to be that size and leaves a small one as
+        a speck in the corner and a big one running off the screen.
+        Rooms on the disc differ by more than an order of magnitude in
+        area, so the position is measured from the geometry - which also
+        tells the camera how far a step should be (see
+        functions/camera_controls.py)."""
+        vertices = self.model_data.get("vertices") if self.model_data else None
+        scene = scene_of(np.array(vertices, dtype=np.float32) / UNIT_SCALE
+                         if vertices else ())
+        if scene is None:
+            return
+        centre, radius = scene
+        self.scene_radius = radius
+        self.camera_controls.frame(centre, radius, heading, pitch)
+        self.update()
 
     def _update_stats_label(self):
         """Tri/quad count (static per loaded model) plus the live camera
@@ -523,9 +541,7 @@ class MDATViewer(QOpenGLWidget):
         quad_count = self.model_data.get('quad_count', 0) if self.model_data else 0
         cam = self.camera_controls
         self.stats_label.setText(
-            f"Tris: {tri_count}  Quads: {quad_count}\n"
-            f"Camera: {cam.camera_x:.2f}, {cam.camera_y:.2f}, {cam.camera_z:.2f}\n"
-            f"Rotation: h {cam.camera_angle_h:.1f}°, v {cam.camera_angle_v:.1f}°"
+            f"Tris: {tri_count}  Quads: {quad_count}\n" + cam.status_text()
         )
         self.stats_label.adjustSize()
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
@@ -543,8 +559,13 @@ class MDATViewer(QOpenGLWidget):
             return
 
         # Camera setup
+        # Clip planes off the room's own size: the disc's levels differ
+        # by more than an order of magnitude, and a fixed 0.1-100
+        # frustum clips the big ones away entirely.
+        radius = self.scene_radius or 5.0
         projection = QMatrix4x4()
-        projection.perspective(45.0, self.width() / self.height(), 0.1, 100.0)
+        projection.perspective(45.0, self.width() / max(self.height(), 1),
+                               max(0.01, radius / 500), max(100.0, radius * 10))
         view = QMatrix4x4()
         view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
         view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
@@ -659,17 +680,3 @@ class MDATViewer(QOpenGLWidget):
 
         self.shader_program.release()
 
-    def wheelEvent(self, event):
-        self.camera_controls.wheelEvent(event)
-
-    def mousePressEvent(self, event):
-        self.camera_controls.mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self.camera_controls.mouseMoveEvent(event)
-
-    def keyPressEvent(self, event):
-        self.camera_controls.keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
-        self.camera_controls.keyReleaseEvent(event)
