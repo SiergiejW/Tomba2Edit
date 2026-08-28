@@ -6,7 +6,7 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
-    QTabWidget, QApplication,
+    QTabWidget, QApplication, QAbstractItemView, QMenu,
 )
 from icons.icons import (icon_window, icon_disc,
                          icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
@@ -204,8 +204,8 @@ class MainWindow(QMainWindow):
 
         export_labels_action = QAction("Export Labels...", self)
         export_labels_action.setToolTip(
-            "Write the names now on the tree out as a labels file. Rows are "
-            "renamed by double-clicking them, and only the name changes - "
+            "Write the names now on the tree out as a labels file. Rename a "
+            "row with F2 or the right-click menu; only the name changes - "
             "the address and the type stay as they are."
         )
         export_labels_action.triggered.connect(self.export_labels_dialog)
@@ -1132,6 +1132,43 @@ class MainWindow(QMainWindow):
         # Renaming a row edits only the name part of it - the address and
         # the type aren't anyone's to change (see LabelNameDelegate).
         self.tree_view.setItemDelegate(LabelNameDelegate(self.rename_row, self))
+        # F2 only. Qt's default triggers include DoubleClicked and
+        # SelectedClicked, and this tree is browsed by clicking - double
+        # click is how a folder opens and how a file gets looked at, so
+        # either of those would put a text box where the user wanted the
+        # thing they clicked on. Right-click offers Rename as well, since
+        # a keyboard shortcut on its own is undiscoverable.
+        self.tree_view.setEditTriggers(
+            QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.tree_view.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self._tree_context_menu)
+
+    def _tree_context_menu(self, position):
+        """Right-click menu for the tree: rename, and export the bytes
+        of whatever was clicked."""
+        index = self.tree_view.indexAt(position)
+        if not index.isValid():
+            return
+        item = self.tree_view.model().itemFromIndex(index)
+        if item is None:
+            return
+
+        menu = QMenu(self)
+        renameable = bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
+        rename = menu.addAction("Rename\tF2")
+        rename.setEnabled(renameable)
+        rename.triggered.connect(lambda: self.tree_view.edit(index))
+        if not renameable:
+            rename.setToolTip(
+                "Only AREA folders and the files in them carry names")
+
+        if item.data(Qt.ItemDataRole.UserRole):
+            menu.addSeparator()
+            export = menu.addAction("Export File...")
+            export.triggered.connect(self.export_selected_bytes)
+
+        menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
     def setup_widgets(self):
         self.txtd_viewer = TXTDViewer()
