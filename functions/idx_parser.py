@@ -4,6 +4,55 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import QStyle
 
+from functions import format_detect
+
+
+def _trail_type(dat_path, address, size, cache):
+    """What the trail file at `address` is, read out of its own bytes -
+    the trailer gives no type id, so this is the only thing there is to
+    go on. Returns (type, tooltip); the type is "bin" when nothing
+    reads, which on the retail disc never happens (all 53 come back
+    SMST or MDAT, and all 53 agree with TOMBAMAP_us.txt).
+
+    The same blob is listed by most of the 48 areas, so the answer is
+    cached on address and size rather than worked out ~660 times."""
+    key = (address, size)
+    if key in cache:
+        return cache[key]
+    try:
+        matches = format_detect.identify_at(dat_path, address, size)
+    except OSError as e:
+        matches = []
+        print(f"Could not read trail file at 0x{address:X}: {e}")
+    if matches:
+        tooltip = "\n".join(str(m) for m in matches)
+        result = (matches[0].kind, f"0x{address:X}, {size} bytes\n{tooltip}")
+    else:
+        result = ("bin", f"0x{address:X}, {size} bytes\nreads as no known format")
+    cache[key] = result
+    return result
+
+
+def _type_icon(main_window, filetype, default):
+    """The tree icon for a file type, whether the type came from the
+    IDX's id or was read out of the bytes."""
+    icons = {
+        "SPRT": main_window.sprt_icon,
+        "TXTD": main_window.txtd_icon,
+        "TXT1": main_window.txt2_icon,
+        "TXT2": main_window.txt2_icon,
+        "TANP": main_window.tanp_icon,
+        "ANMP": main_window.tanp_icon,
+        "SMST": main_window.smst_icon,
+        "SCLD": main_window.scld_icon,
+        "MDAT": main_window.mdat_icon,
+        "DRWB": main_window.drwb_icon,
+        "BGMP": main_window.bgmp_icon,
+        "BETP": main_window.betp_icon,
+        "ALFD": main_window.alfd_icon,
+    }
+    return icons.get(filetype, default)
+
 
 def parse_idx_file(main_window, cd_folder):
     idx_path = os.path.join(cd_folder, "TOMBA2.IDX")
@@ -30,6 +79,10 @@ def parse_idx_file(main_window, cd_folder):
     # regardless of type, since `i` below comes from the same enumerated
     # sdat_pointers list either way. Reset on every (re)parse.
     main_window.txtd_item_lookup = {}
+
+    # (address, size) -> (type, tooltip) for the trail files, which most
+    # of the 48 areas list the same copies of.
+    trail_types = {}
 
     folder_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
     file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
@@ -82,36 +135,13 @@ def parse_idx_file(main_window, cd_folder):
 
                 file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-                # Set icon
-                if filetype == "SPRT":
-                    file_item.setIcon(main_window.sprt_icon)
-                elif filetype == "TXTD":
-                    file_item.setIcon(main_window.txtd_icon)
-                    file_path = f"{dat_start + offset:08X}.txtd"
-                    file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
-                    main_window.txtd_item_lookup[(chunk_index, i)] = file_item
-                elif filetype in ("TXT1", "TXT2"):
-                    # same layout, different SDAT id - separate labels
-                    file_item.setIcon(main_window.txt2_icon)
+                file_item.setIcon(_type_icon(main_window, filetype, file_icon))
+                if filetype in ("TXTD", "TXT1", "TXT2"):
+                    # TXT1 and TXT2 are the same layout under different
+                    # SDAT ids - separate labels, one viewer.
                     file_path = f"{dat_start + offset:08X}.{filetype.lower()}"
                     file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
                     main_window.txtd_item_lookup[(chunk_index, i)] = file_item
-                elif filetype == "TANP":
-                    file_item.setIcon(main_window.tanp_icon)
-                elif filetype == "SMST":
-                    file_item.setIcon(main_window.smst_icon)
-                elif filetype == "SCLD":
-                    file_item.setIcon(main_window.scld_icon)
-                elif filetype == "MDAT":
-                    file_item.setIcon(main_window.mdat_icon)
-                elif filetype == "DRWB":
-                    file_item.setIcon(main_window.drwb_icon)
-                elif filetype == "BGMP":
-                    file_item.setIcon(main_window.bgmp_icon)
-                elif filetype == "BETP":
-                    file_item.setIcon(main_window.betp_icon)
-                elif filetype == "ALFD":
-                    file_item.setIcon(main_window.alfd_icon)
 
                 sdat_item.appendRow(file_item)
 
@@ -136,10 +166,16 @@ def parse_idx_file(main_window, cd_folder):
             area_item.appendRow(trail_item)
             for i in range(len(trail_list)):
                 adr, end, sz = trail_list[i]
-                trail_file_item = QStandardItem(file_icon, f"{adr:04X}-{end:04X}.bin")
+                # The trailer carries no type id, so the type is read out
+                # of the blob itself (see _trail_type above).
+                filetype, tooltip = _trail_type(dat_path, adr, sz, trail_types)
+                trail_file_item = QStandardItem(
+                    _type_icon(main_window, filetype, file_icon),
+                    f"{adr:04X}-{end:04X}.{filetype}")
                 trail_file_item.setFlags(trail_file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 trail_file_item.setData(("trail", adr, end - adr, dat_start), Qt.ItemDataRole.UserRole)
                 trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
+                trail_file_item.setToolTip(tooltip)
                 trail_item.appendRow(trail_file_item)
 
         main_window.update_folder_name(area_item)

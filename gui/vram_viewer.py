@@ -9,6 +9,7 @@ from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QPainter
 from PIL import Image
 import io
 import struct
+import numpy as np
 # 🔗 Attach external zoom-related methods to VRAMViewer
 import functions.graphic_controls as ctrl
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
@@ -71,6 +72,32 @@ def decode_vram_bytes(img_data):
             vram_bytes[vram_offset:vram_offset + w * 2] = shard_data[shard_start:shard_end]
 
     return vram_bytes
+
+
+def vram_index_image(vram_bytes):
+    """The 4096x512 image the 3D viewers sample as an index map.
+
+    VRAM is 4bpp here, so each byte is two texels and each texel's
+    4-bit index is spread over R, G and B as index * 17 - which is what
+    the fragment shader's `texture(...).r * 15.0` reads back out. Same
+    picture VRAMViewer.process_vram() builds pixel by pixel, done as
+    array work because a model viewer rebuilds it on every selection."""
+    raw = np.frombuffer(bytes(vram_bytes[:1024 * 512 * 2]), dtype=np.uint8)
+    if raw.size < 1024 * 512 * 2:
+        raw = np.pad(raw, (0, 1024 * 512 * 2 - raw.size))
+    rows = raw.reshape(512, 0x800)
+
+    texels = np.empty((512, 4096), dtype=np.uint8)
+    texels[:, 0::2] = (rows & 0x0F) * 17
+    texels[:, 1::2] = (rows >> 4) * 17
+
+    rgba = np.empty((512, 4096, 4), dtype=np.uint8)
+    rgba[..., 0] = rgba[..., 1] = rgba[..., 2] = texels
+    rgba[..., 3] = 255
+    # QImage doesn't own the buffer it's handed, so copy() before the
+    # array goes out of scope.
+    return QImage(rgba.tobytes(), 4096, 512, 4096 * 4,
+                  QImage.Format.Format_RGBA8888).copy()
 
 
 class VRAMViewer(QWidget):

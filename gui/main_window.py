@@ -1,5 +1,6 @@
 import os
 import struct
+import numpy as np
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup, QIcon, QImage, QPixmap, QColor, QBrush
 from PyQt6.QtWidgets import (
@@ -20,6 +21,7 @@ from gui.drwa.drwa_viewer import DRWAViewer
 from gui.drwb.drwb_viewer import DRWBViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
+from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
 from gui.mainbin.mainbin_viewer import MainExeViewer
@@ -30,7 +32,7 @@ from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
-from gui.vram_viewer import VRAMViewer, decode_vram_bytes
+from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
 # Colors used to flag a file's row in the main file tree,
@@ -39,6 +41,11 @@ from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to Q
 # have been exported.
 EDITED_TXTD_ITEM_COLOR = "orange"
 EXPORTED_TXTD_ITEM_COLOR = "green"
+
+# The area whose VRAM chunk holds the art every area shares - the
+# character models' texture pages live only here. See
+# _load_area_vram_bytes(merge_common=True).
+COMMON_VRAM_AREA = 1
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -558,11 +565,18 @@ class MainWindow(QMainWindow):
                     return None
         return None
 
-    def _load_area_vram_bytes(self, chunk_index):
+    def _load_area_vram_bytes(self, chunk_index, merge_common=False):
         """This area's TOMBA2.IMG chunk, decompressed to raw VRAM - what
         SPRT pieces are cut out of. None (with a printed reason) if the
         area has no VRAM or it can't be read; callers are expected to
-        carry on without it."""
+        carry on without it.
+
+        `merge_common` fills in what AREA_01 holds wherever this area's
+        own VRAM is empty. The character models sample texture pages
+        that are only ever in AREA_01's chunk - it is loaded once and
+        stays resident - and the two never overlap by a byte on the
+        retail disc, so the merge adds their art without touching the
+        area's own."""
         if chunk_index is None or not self.dat_file:
             return None
         cd_folder = os.path.dirname(self.dat_file)
@@ -572,12 +586,26 @@ class MainWindow(QMainWindow):
                 IDX.seek(chunk_index * 0x800)
                 img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
                 if img_end <= img_start:
-                    return None
-                IMG.seek(img_start)
-                return decode_vram_bytes(IMG.read(img_end - img_start))
+                    vram = None
+                else:
+                    IMG.seek(img_start)
+                    vram = decode_vram_bytes(IMG.read(img_end - img_start))
         except Exception as e:
             print(f"Could not load VRAM for AREA_{chunk_index:02X}: {e}")
             return None
+
+        if not merge_common or chunk_index == COMMON_VRAM_AREA:
+            return vram
+        common = self._load_area_vram_bytes(COMMON_VRAM_AREA)
+        if common is None:
+            return vram
+        if vram is None:
+            return common
+        own = np.frombuffer(bytes(vram), dtype=np.uint8).copy()
+        shared = np.frombuffer(bytes(common), dtype=np.uint8)
+        empty = own == 0
+        own[empty] = shared[:own.size][empty]
+        return bytearray(own.tobytes())
 
     def count_items(self, item):
         count = 0
@@ -963,6 +991,11 @@ class MainWindow(QMainWindow):
         # DRWB, unlike DRWA, IS a file of its own - four of them - so
         # it gets the tree rows the IDX already labels DRWB.
         self.drwb_viewer = DRWBViewer()
+        # An SMST is the same polygons as an MDAT with no drawmap over
+        # them - a model's parts rather than a level - so it gets its
+        # own 3D view with a part list beside it.
+        self.smst_viewer = SMSTViewer()
+        self.smst_panel = SMSTPanel(self.smst_viewer)
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.sprt_viewer = SPRTViewer()
@@ -977,6 +1010,7 @@ class MainWindow(QMainWindow):
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_tabs,
+            "SMST": self.smst_panel,
             "DRWB": self.drwb_viewer,
             "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
@@ -1072,6 +1106,15 @@ class MainWindow(QMainWindow):
                         # used elsewhere in this same method for VRAM.
                         entry_size = additional_data[3] if len(additional_data) > 3 else None
                         print(f"ID: {id:X}, DAT Start: {dat_start:X}, Offset: {offset:X}")
+                    elif id == "trail":
+                        # A trail file is named by an absolute address
+                        # rather than an area-relative offset, and has no
+                        # id at all - its type was read out of its bytes
+                        # (functions/idx_parser._trail_type). Presented to
+                        # the viewers below the same way an SDAT entry is.
+                        _, address, entry_size, _ = additional_data
+                        dat_start, offset, id = address, 0, None
+                        print(f"Trail file at {address:X}, {entry_size} bytes")
                     else:
                         print(f"Special file type: {id}")
 
@@ -1205,6 +1248,35 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             print(f"Error loading MDAT file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load MDAT file: {e}")
+
+                    elif widget == self.widgets["SMST"]:
+                        # The VRAM has to be in place before the model
+                        # is parsed - the CLUTs are cut out of it while
+                        # the buffers are built - and it needs AREA_01
+                        # merged in, which is where every character
+                        # model's texture pages actually live.
+                        try:
+                            if self.dat_file:
+                                print("Loading SMST data...")
+                                chunk_index = self._area_chunk_index(selected_item)
+                                vram_bytes = self._load_area_vram_bytes(
+                                    chunk_index, merge_common=True)
+                                self.smst_viewer.set_vram(
+                                    vram_bytes,
+                                    vram_index_image(vram_bytes) if vram_bytes else None)
+                                success = self.smst_viewer.load_smst_data(
+                                    self.dat_file, dat_start + offset, entry_size)
+                                self.smst_panel.populate_table()
+                                if not success:
+                                    QMessageBox.critical(
+                                        self, "Error",
+                                        "Failed to load SMST data - see the console "
+                                        "for what didn't read.")
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading SMST file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load SMST file: {e}")
 
                     elif widget == self.widgets["SCLD"]:
                         try:
