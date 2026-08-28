@@ -437,7 +437,7 @@ class SMSTViewer(QOpenGLWidget):
         centre = (verts.min(axis=0) + verts.max(axis=0)) / 2
         radius = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) / 2
         self.scene_radius = radius
-        distance = max(radius * 2.2, 0.5)
+        distance = max(radius * 2.5, 0.5)
 
         h, v = math.radians(heading), math.radians(pitch)
         eye = (distance * math.cos(v) * math.sin(h),
