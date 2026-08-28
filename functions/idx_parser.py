@@ -2,7 +2,7 @@ import os
 import struct
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
-from PyQt6.QtWidgets import QStyle
+from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
 
 from functions import format_detect
 
@@ -134,6 +134,59 @@ def apply_labels(main_window):
     return named
 
 
+def row_label_data(item):
+    """(stem, type, address, tooltip) for a file row, or None if this
+    item isn't one (a folder, a VRAM row)."""
+    return item.data(_ROW_LABEL_DATA)
+
+
+def area_index_of(item):
+    """The AREA number this item is, or None if it isn't an AREA
+    folder. Public counterpart of _chunk_index_of."""
+    return _chunk_index_of(item) if item.parent() is None else None
+
+
+class LabelNameDelegate(QStyledItemDelegate):
+    """Renaming in the tree edits the NAME and nothing else.
+
+    A row reads "8-1B724 Town of the Fishermen.MDAT", but only the
+    middle of that is anybody's to change: the id and offset are where
+    the file is, and the type is what the bytes say it is. So the editor
+    opens on the name alone and hands the name alone back, and the row
+    is rebuilt around it. `renamed(item, text)` is called with whatever
+    was typed - it is up to the caller to put it somewhere."""
+
+    def __init__(self, renamed, parent=None):
+        super().__init__(parent)
+        self._renamed = renamed
+
+    @staticmethod
+    def _current_name(item):
+        data = row_label_data(item)
+        if data:
+            stem = data[0]
+            # Split off the type from the right - the row may be showing
+            # a name the labels file gave it rather than data[1].
+            text = item.text().rsplit(".", 1)[0]
+            if text.startswith(stem):
+                text = text[len(stem):]
+            return text.strip()
+        index = area_index_of(item)
+        if index is not None:
+            text = item.text()[len("AREA_XX"):]
+            return text.rsplit(" (", 1)[0].strip() if " (" in text else text.strip()
+        return item.text()
+
+    def setEditorData(self, editor, index):
+        item = index.model().itemFromIndex(index)
+        editor.setText(self._current_name(item) if item else "")
+
+    def setModelData(self, editor, model, index):
+        item = model.itemFromIndex(index)
+        if item is not None:
+            self._renamed(item, editor.text())
+
+
 def _chunk_index_of(area_item):
     """The number out of an "AREA_04 Something (41)" folder label."""
     text = area_item.text()
@@ -217,7 +270,9 @@ def parse_idx_file(main_window, cd_folder):
                 trail_list.append((dat_trail_start, dat_trail_end, dat_trail_size))
 
         area_item = QStandardItem(folder_icon, f"AREA_{chunk_index:02X}")
-        area_item.setFlags(area_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # The only folder anyone may rename - the NN_DATA / NN_VRAM /
+        # NN_TRAIL ones below are structure, not names.
+        area_item.setFlags(area_item.flags() | Qt.ItemFlag.ItemIsEditable)
         root_item.appendRow(area_item)
 
         if datdata:
@@ -245,7 +300,7 @@ def parse_idx_file(main_window, cd_folder):
                     (stem, filetype, dat_start + offset, f"id {id}, {detail}"),
                     _ROW_LABEL_DATA)
 
-                file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                file_item.setFlags(file_item.flags() | Qt.ItemFlag.ItemIsEditable)
 
                 file_item.setIcon(_type_icon(main_window, filetype, file_icon))
                 if filetype in ("TXTD", "TXT1", "TXT2"):
@@ -285,7 +340,7 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item = QStandardItem(
                     _type_icon(main_window, filetype, file_icon),
                     f"{stem}.{filetype}")
-                trail_file_item.setFlags(trail_file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                trail_file_item.setFlags(trail_file_item.flags() | Qt.ItemFlag.ItemIsEditable)
                 trail_file_item.setData(("trail", adr, end - adr, dat_start), Qt.ItemDataRole.UserRole)
                 trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
                 trail_file_item.setData((stem, filetype, adr, tooltip), _ROW_LABEL_DATA)

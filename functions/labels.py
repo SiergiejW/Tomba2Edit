@@ -92,6 +92,34 @@ class LabelSet:
     def bin_name(self, filename):
         return self.bins.get(filename.upper(), "")
 
+    def rename(self, address, name, kind="", end=0):
+        """Give the file at `address` a name, adding an entry for it if
+        this set has never heard of it - which is how a build with no
+        labels of its own gets its first ones, typed into the tree.
+
+        An empty name clears it back to unnamed rather than recording an
+        empty string, so an entry that was named by mistake goes back to
+        being an address like any other."""
+        label = self.entries.get(address)
+        if label is None:
+            label = Label(start=address, end=end, kind=kind)
+            self.entries[address] = label
+        label.name = name.strip()
+        if kind and not label.kind:
+            label.kind = kind
+        if end and not label.end:
+            label.end = end
+        return label
+
+    def rename_area(self, chunk_index, name):
+        """Name an AREA folder, or clear it back to whatever the level
+        inside it is called (see idx_parser._area_name_from_mdat)."""
+        name = name.strip()
+        if name:
+            self.areas[chunk_index] = name
+        else:
+            self.areas.pop(chunk_index, None)
+
     @property
     def named(self):
         """How many entries actually carry a name - the TOMBAMAP files
@@ -277,8 +305,12 @@ def save(label_set, path, keep_existing=True):
     document.update({
         "name": label_set.name or document.get("name", ""),
         "build": label_set.build or document.get("build", ""),
+        "serial": label_set.serial or document.get("serial", ""),
         "source": label_set.source or document.get("source", ""),
         "dat_size": label_set.dat_size or document.get("dat_size", 0),
+        "areas": {f"{index:02X}": name
+                  for index, name in sorted(label_set.areas.items())},
+        "bins": dict(sorted(label_set.bins.items())),
         "entries": [
             {
                 "start": f"{label.start:06X}",

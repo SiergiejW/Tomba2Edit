@@ -29,7 +29,9 @@ from gui.bins.bins_viewer import BinsViewer
 from gui import theme
 from gui import panel_title
 from functions import labels as labels_module
-from functions.idx_parser import parse_idx_file, apply_labels
+from functions.idx_parser import (
+    parse_idx_file, apply_labels, row_label_data, area_index_of,
+    LabelNameDelegate)
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
@@ -141,6 +143,8 @@ class MainWindow(QMainWindow):
         # load_labels_for_disc).
         self.labels = None
         self.labels_override = None
+        # Set when a row has been renamed and not exported since.
+        self.labels_dirty = False
 
         self.setup_tree_view()
         self.setup_widgets()
@@ -190,13 +194,21 @@ class MainWindow(QMainWindow):
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
 
-        load_labels_action = QAction("Load Labels...", self)
-        load_labels_action.setToolTip(
-            "Load a labels file - the JSON that names this build's files "
+        import_labels_action = QAction("Import Labels...", self)
+        import_labels_action.setToolTip(
+            "Import a labels file - the JSON that names this build's files "
             "in the tree. One ships for each build the tool knows; this is "
             "for one of your own."
         )
-        load_labels_action.triggered.connect(self.load_labels_dialog)
+        import_labels_action.triggered.connect(self.load_labels_dialog)
+
+        export_labels_action = QAction("Export Labels...", self)
+        export_labels_action.setToolTip(
+            "Write the names now on the tree out as a labels file. Rows are "
+            "renamed by double-clicking them, and only the name changes - "
+            "the address and the type stay as they are."
+        )
+        export_labels_action.triggered.connect(self.export_labels_dialog)
 
         builtin_labels_action = QAction("Use Built-in Labels", self)
         builtin_labels_action.setToolTip(
@@ -210,7 +222,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(open_action)
         file_menu.addAction(open_folder_action)
         file_menu.addSeparator()
-        file_menu.addAction(load_labels_action)
+        file_menu.addAction(import_labels_action)
+        file_menu.addAction(export_labels_action)
         file_menu.addAction(builtin_labels_action)
         file_menu.addSeparator()
         file_menu.addAction(export_action)
@@ -284,6 +297,65 @@ class MainWindow(QMainWindow):
             f"Named {named} rows from the {source} labels for "
             f"\"{self.labels.name}\" ({self.labels.named} names){fit}", 15000)
 
+    def rename_row(self, item, name):
+        """A row was renamed in the tree. Names live in the labels file,
+        not in the tree, so this writes it there and lets apply_labels
+        redraw - which is also what makes the name survive switching to
+        another file and back.
+
+        A disc with no labels of its own gets an empty set made for it
+        on the first rename. That is the way to start naming a build
+        nobody has mapped: open it, type names in, File > Export
+        Labels."""
+        if self.labels is None:
+            self.labels = labels_module.LabelSet(
+                name=os.path.basename(os.path.dirname(self.dat_file or "")) or "Untitled",
+                build="custom")
+            self.labels_override = self.labels
+
+        data = row_label_data(item)
+        if data:
+            stem, filetype, address, _detail = data
+            size = (item.data(Qt.ItemDataRole.UserRole) or (None,) * 4)[3]
+            end = address + size - 1 if isinstance(size, int) and size else 0
+            self.labels.rename(address, name, kind=filetype, end=end)
+        else:
+            index = area_index_of(item)
+            if index is None:
+                return
+            self.labels.rename_area(index, name)
+
+        self.labels_dirty = True
+        apply_labels(self)
+        self._refresh_edit_status()
+
+    def export_labels_dialog(self):
+        """Write the names currently on the tree out as a labels file."""
+        if self.labels is None:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "No names are loaded or typed in yet. Rename something in the "
+                "tree first, or import a labels file.")
+            return
+        suggested = os.path.join(
+            labels_module.labels_dir(),
+            f"{self.labels.build or 'custom'}.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export labels", suggested, "Labels files (*.json)")
+        if not path:
+            return
+        try:
+            labels_module.save(self.labels, path)
+        except OSError as e:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
+            return
+        self.labels.path = path
+        self.labels_dirty = False
+        self._refresh_edit_status()
+        self.statusBar().showMessage(
+            f"Exported {self.labels.named} names ({len(self.labels)} entries) "
+            f"to {os.path.basename(path)}", 15000)
+
     def load_labels_dialog(self):
         """Load a labels file the user points at, and keep it."""
         path, _ = QFileDialog.getOpenFileName(
@@ -299,6 +371,7 @@ class MainWindow(QMainWindow):
             return
 
         self.labels_override = label_set
+        self.labels_dirty = False
         if not self.dat_file:
             # Nothing open yet - it'll be applied when a disc is.
             self.statusBar().showMessage(
@@ -453,12 +526,16 @@ class MainWindow(QMainWindow):
         self.main_tabs.setTabText(1, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
         self.main_tabs.setTabText(2, "BINs*" if n_sop else "BINs")
 
+        renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
+
         if n_txtd == 0 and n_mainexe == 0 and n_sop == 0:
-            self.statusBar().showMessage("No pending edits.")
+            self.statusBar().showMessage(
+                ("No pending edits." + renamed) if renamed else "No pending edits.")
         else:
             self.statusBar().showMessage(
                 f"{n_txtd} disc file(s), {n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
-                f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button when ready."
+                f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button "
+                f"when ready.{renamed}"
             )
 
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
@@ -1052,6 +1129,9 @@ class MainWindow(QMainWindow):
     def setup_tree_view(self):
         self.tree_view.setModel(QStandardItemModel())
         self.tree_view.setHeaderHidden(False)
+        # Renaming a row edits only the name part of it - the address and
+        # the type aren't anyone's to change (see LabelNameDelegate).
+        self.tree_view.setItemDelegate(LabelNameDelegate(self.rename_row, self))
 
     def setup_widgets(self):
         self.txtd_viewer = TXTDViewer()
