@@ -82,6 +82,10 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         self.draw_ranges = []
         self.hidden_groups = set()
         self.highlighted_group = None
+        # An animation frame's transforms, or None for the rest pose -
+        # see set_pose and gui/anmp/anmp_viewer.py.
+        self.pose = None
+        self.pose_pivots = None
         # On by default: stacked at the origin is how the file has the
         # parts, but it is not how anyone wants to first see a model.
         self.spread = True
@@ -201,6 +205,10 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
 
         self.hidden_groups = set()
         self.highlighted_group = None
+        # An animation frame's transforms, or None for the rest pose -
+        # see set_pose and gui/anmp/anmp_viewer.py.
+        self.pose = None
+        self.pose_pivots = None
         self.prepare_buffers()
         self.frame_model()
         self.update()
@@ -240,10 +248,36 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             )
         return offsets
 
+    def set_pose(self, transforms, pivots):
+        """Pose the parts from an animation frame.
+
+        `transforms` is one (rotation, offset) per group, and `pivots`
+        the point each group turns about - see gui/anmp/skeleton.py.
+        None puts the model back in its rest pose. Spread and pose are
+        mutually exclusive: a model laid out on a grid isn't a pose."""
+        self.pose = transforms
+        self.pose_pivots = pivots
+        if transforms is not None and self.spread:
+            self.spread_action.setChecked(False)   # rebuilds on its own
+            return
+        if self.model_data:
+            self.prepare_buffers()
+        self.update()
+
     def _positions(self):
-        """Every vertex in GL units, with the spread applied if it's on."""
+        """Every vertex in GL units, with the spread or the pose applied."""
         verts = np.array(self.model_data["vertices"], dtype=np.float32)
-        if self.spread:
+        if self.pose is not None:
+            for group in self.groups:
+                if not group.vertex_count or group.index >= len(self.pose):
+                    continue
+                rotation, offset = self.pose[group.index]
+                pivot = self.pose_pivots[group.index]
+                at = group.first_vertex
+                block = verts[at:at + group.vertex_count].astype(np.float64)
+                verts[at:at + group.vertex_count] = (
+                    (block - pivot) @ rotation.T + offset).astype(np.float32)
+        elif self.spread:
             offsets = self._spread_offsets()
             for group in self.groups:
                 offset = offsets.get(group.index)

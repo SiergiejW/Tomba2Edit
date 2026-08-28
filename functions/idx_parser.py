@@ -1,10 +1,24 @@
 import os
 import struct
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
 
 from functions import format_detect
+
+
+# A slot the IDX names but gives no bytes to: its offset is the same as
+# the next entry's, so its size works out at zero. Nine of them on the
+# retail disc - AREA_0C and AREA_22 one each, AREA_1B two, AREA_20 five
+# - and they are why an area can seem to list the same file two or three
+# times over. Without this they would each be typed, and named, from the
+# blob that starts where they do, which belongs to the entry after them.
+EMPTY_TYPE = "EMPTY"
+
+# What an empty slot's row is drawn in, so it reads as structure rather
+# than as a file. Fixed rather than from the palette: it has to stay
+# quieter than ordinary rows under either theme.
+EMPTY_ROW_COLOR = "#8a8a8a"
 
 
 def _entry_type(dat_file, address, size, cache):
@@ -20,6 +34,9 @@ def _entry_type(dat_file, address, size, cache):
     Cached on (address, size): the trail lists the same handful of
     files under nearly every area, so this is asked ~660 times for 53
     distinct blobs."""
+    if size <= 0:
+        return EMPTY_TYPE, (f"0x{address:X}, no bytes of its own\n"
+                            "the next entry starts at this same offset")
     key = (address, size)
     if key not in cache:
         cache[key] = format_detect.entry_type(dat_file, address, size)
@@ -296,19 +313,29 @@ def parse_idx_file(main_window, cd_folder):
                 file_item.setData((id, dat_start, offset, size), Qt.ItemDataRole.UserRole)
                 # ✅ Store AREA and file index
                 file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)
-                file_item.setData(
-                    (stem, filetype, dat_start + offset, f"id {id}, {detail}"),
-                    _ROW_LABEL_DATA)
 
-                file_item.setFlags(file_item.flags() | Qt.ItemFlag.ItemIsEditable)
-
-                file_item.setIcon(_type_icon(main_window, filetype, file_icon))
-                if filetype in ("TXTD", "TXT1", "TXT2"):
-                    # TXT1 and TXT2 are the same layout under different
-                    # SDAT ids - separate labels, one viewer.
-                    file_path = f"{dat_start + offset:08X}.{filetype.lower()}"
-                    file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
-                    main_window.txtd_item_lookup[(chunk_index, i)] = file_item
+                if filetype == EMPTY_TYPE:
+                    # An empty slot shares its address with the entry
+                    # after it, so leaving the label data off is what
+                    # keeps apply_labels away from it - otherwise it
+                    # takes that file's name and the area looks like it
+                    # holds the same thing twice. Nothing to rename
+                    # either, so the row isn't editable.
+                    file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    file_item.setForeground(QBrush(QColor(EMPTY_ROW_COLOR)))
+                    file_item.setToolTip(f"id {id}, {detail}")
+                else:
+                    file_item.setData(
+                        (stem, filetype, dat_start + offset, f"id {id}, {detail}"),
+                        _ROW_LABEL_DATA)
+                    file_item.setFlags(file_item.flags() | Qt.ItemFlag.ItemIsEditable)
+                    file_item.setIcon(_type_icon(main_window, filetype, file_icon))
+                    if filetype in ("TXTD", "TXT1", "TXT2"):
+                        # TXT1 and TXT2 are the same layout under different
+                        # SDAT ids - separate labels, one viewer.
+                        file_path = f"{dat_start + offset:08X}.{filetype.lower()}"
+                        file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
+                        main_window.txtd_item_lookup[(chunk_index, i)] = file_item
 
                 sdat_item.appendRow(file_item)
 

@@ -21,6 +21,7 @@ from gui.drwa.drwa_viewer import DRWAViewer
 from gui.drwb.drwb_viewer import DRWBViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
+from gui.anmp.anmp_viewer import ANMPViewer
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
@@ -296,6 +297,41 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Named {named} rows from the {source} labels for "
             f"\"{self.labels.name}\" ({self.labels.named} names){fit}", 15000)
+
+    def _smst_candidates(self, limit=400):
+        """Every SMST on the disc, as (label, address, size) - what the
+        animation viewer offers as models to pose. Taken off the tree,
+        which has already typed and named everything, with the trail's
+        repeated copies listed once."""
+        model = self.tree_view.model()
+        if model is None:
+            return []
+        found = []
+        seen = set()
+
+        def walk(item):
+            for row in range(item.rowCount()):
+                child = item.child(row)
+                if child.hasChildren():
+                    walk(child)
+                    continue
+                data = row_label_data(child)
+                if not data or data[1] != "SMST":
+                    continue
+                address = data[2]
+                if address in seen:
+                    continue
+                entry = child.data(Qt.ItemDataRole.UserRole) or ()
+                size = entry[3] if len(entry) > 3 else 0
+                if isinstance(entry[0], str):        # a trail row
+                    size = entry[2]
+                if not size:
+                    continue
+                seen.add(address)
+                found.append((child.text(), address, size))
+
+        walk(model.invisibleRootItem())
+        return found[:limit]
 
     def rename_row(self, item, name):
         """A row was renamed in the tree. Names live in the labels file,
@@ -1190,6 +1226,9 @@ class MainWindow(QMainWindow):
         # own 3D view with a part list beside it.
         self.smst_viewer = SMSTViewer()
         self.smst_panel = SMSTPanel(self.smst_viewer)
+        # TANP/BETP/ALFD/MDAP are all the same animation container, so
+        # one viewer serves every name a labels file may give them.
+        self.anmp_viewer = ANMPViewer()
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.sprt_viewer = SPRTViewer()
@@ -1205,6 +1244,12 @@ class MainWindow(QMainWindow):
             "TXT2": self.txt2_viewer,
             "MDAT": self.mdat_tabs,
             "SMST": self.smst_panel,
+            "ANMP": self.anmp_viewer,
+            "TANP": self.anmp_viewer,
+            "BETP": self.anmp_viewer,
+            "ALFD": self.anmp_viewer,
+            "ALFP": self.anmp_viewer,
+            "MDAP": self.anmp_viewer,
             "DRWB": self.drwb_viewer,
             "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
@@ -1471,6 +1516,28 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             print(f"Error loading SMST file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load SMST file: {e}")
+
+                    elif widget == self.widgets["ANMP"]:
+                        # An animation names no model, so the viewer is
+                        # handed every SMST on the disc to choose from
+                        # (see ANMPViewer.load_anmp_data).
+                        try:
+                            if self.dat_file:
+                                print("Loading ANMP data...")
+                                chunk_index = self._area_chunk_index(selected_item)
+                                vram_bytes = self._load_area_vram_bytes(
+                                    chunk_index, merge_common=True)
+                                self.anmp_viewer.load_anmp_data(
+                                    self.dat_file, dat_start + offset, entry_size,
+                                    candidates=self._smst_candidates(),
+                                    vram_bytes=vram_bytes,
+                                    vram_image=(vram_index_image(vram_bytes)
+                                                if vram_bytes else None))
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading ANMP file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load animation: {e}")
 
                     elif widget == self.widgets["SCLD"]:
                         try:
