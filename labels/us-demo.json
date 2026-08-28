@@ -1,0 +1,302 @@
+{
+ "name": "Tomba! 2: The Evil Swine Return (USA) (Demo)",
+ "build": "us-demo",
+ "source": "TOMBAMAPdemo_us.txt",
+ "dat_size": 860160,
+ "entries": [
+  {
+   "start": "000000",
+   "end": "002307",
+   "type": "SPRD",
+   "name": "unknown"
+  },
+  {
+   "start": "002308",
+   "end": "005D17",
+   "type": "SMST",
+   "name": "Weapon set"
+  },
+  {
+   "start": "005D18",
+   "end": "006BB7",
+   "type": "TXTD",
+   "name": "Status changes text"
+  },
+  {
+   "start": "006BB8",
+   "end": "00789F",
+   "type": "TXTD",
+   "name": "Item use text"
+  },
+  {
+   "start": "0078A0",
+   "end": "01F7FF",
+   "type": "TAND",
+   "name": "Tomba Animation"
+  },
+  {
+   "start": "01F800",
+   "end": "0212FF",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "021300",
+   "end": "023BDB",
+   "type": "MDAD",
+   "name": "Zippo"
+  },
+  {
+   "start": "023BDC",
+   "end": "0261EF",
+   "type": "SMST",
+   "name": "Charles"
+  },
+  {
+   "start": "0261F0",
+   "end": "02C593",
+   "type": "MDAT",
+   "name": "Intro Scene"
+  },
+  {
+   "start": "02C594",
+   "end": "030787",
+   "type": "SMST",
+   "name": "Tabby from Intro"
+  },
+  {
+   "start": "030788",
+   "end": "03164F",
+   "type": "ALFD",
+   "name": "Tabby"
+  },
+  {
+   "start": "031650",
+   "end": "031663",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "031664",
+   "end": "032FFF",
+   "type": "BGMP",
+   "name": "Intro scene"
+  },
+  {
+   "start": "033000",
+   "end": "044BBB",
+   "type": "SMST",
+   "name": "Windmill assets"
+  },
+  {
+   "start": "044BBC",
+   "end": "046563",
+   "type": "SMST",
+   "name": "Ark"
+  },
+  {
+   "start": "046564",
+   "end": "047733",
+   "type": "ALFD",
+   "name": ""
+  },
+  {
+   "start": "047734",
+   "end": "049983",
+   "type": "SMST",
+   "name": "Win"
+  },
+  {
+   "start": "049984",
+   "end": "04BE0B",
+   "type": "____",
+   "name": "Lots of pointers length 81"
+  },
+  {
+   "start": "04BE0C",
+   "end": "0521FF",
+   "type": "SCLD",
+   "name": "Town of the Fishermen collision"
+  },
+  {
+   "start": "052200",
+   "end": "07380B",
+   "type": "MDAT",
+   "name": "Town of the Fishermen"
+  },
+  {
+   "start": "07380C",
+   "end": "07429B",
+   "type": "DRWB",
+   "name": "00s type row length 52"
+  },
+  {
+   "start": "07429C",
+   "end": "075F2B",
+   "type": "SMST",
+   "name": "Seesaws"
+  },
+  {
+   "start": "075F2C",
+   "end": "0761D3",
+   "type": "SPRD",
+   "name": "Sprite Pointers for Town of the Fishermen"
+  },
+  {
+   "start": "0761D4",
+   "end": "0780CB",
+   "type": "TXTD",
+   "name": "Text for Town of the Fishermen"
+  },
+  {
+   "start": "0780CC",
+   "end": "07C2CF",
+   "type": "SMST",
+   "name": "Pig Enemy"
+  },
+  {
+   "start": "07C2D0",
+   "end": "085227",
+   "type": "ALFD",
+   "name": "Pig Enemy"
+  },
+  {
+   "start": "085228",
+   "end": "08782B",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "08782C",
+   "end": "089A33",
+   "type": "ALFD",
+   "name": "Kainen"
+  },
+  {
+   "start": "089A34",
+   "end": "08BEB3",
+   "type": "SMST",
+   "name": "Nishiki bird (adult)"
+  },
+  {
+   "start": "08BEB4",
+   "end": "08DA9B",
+   "type": "ALFD",
+   "name": ""
+  },
+  {
+   "start": "08DA9C",
+   "end": "0966AF",
+   "type": "SMST",
+   "name": "Large asset pack, Fishermens Town"
+  },
+  {
+   "start": "0966B0",
+   "end": "098543",
+   "type": "SMST",
+   "name": "Water Pipes"
+  },
+  {
+   "start": "098544",
+   "end": "09A2EB",
+   "type": "SMST",
+   "name": "Fisherman with a fishing rod"
+  },
+  {
+   "start": "09A2EC",
+   "end": "09C073",
+   "type": "ALFD",
+   "name": "Fisherman with a fishing rod"
+  },
+  {
+   "start": "09C074",
+   "end": "09D4CB",
+   "type": "BGMP",
+   "name": "Town of Fishermen"
+  },
+  {
+   "start": "09D4CC",
+   "end": "09EFCB",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "09EFCC",
+   "end": "0A18A7",
+   "type": "ALFD",
+   "name": "Zippo"
+  },
+  {
+   "start": "0A18A8",
+   "end": "0A239B",
+   "type": "SMST",
+   "name": "Demo magic flower"
+  },
+  {
+   "start": "0A239C",
+   "end": "0A27FF",
+   "type": "ALFD",
+   "name": "Demo magic flower"
+  },
+  {
+   "start": "0A2800",
+   "end": "0A672C",
+   "type": "SMST",
+   "name": "Tomba_model"
+  },
+  {
+   "start": "0A6800",
+   "end": "0AB6E0",
+   "type": "SMST",
+   "name": "Squirrel_suit"
+  },
+  {
+   "start": "0AB800",
+   "end": "0AF918",
+   "type": "SMST",
+   "name": "Wing_suit"
+  },
+  {
+   "start": "0B0000",
+   "end": "0B4858",
+   "type": "SMST",
+   "name": "Pig_Suit"
+  },
+  {
+   "start": "0B5000",
+   "end": "0B984C",
+   "type": "SMST",
+   "name": "Fire_Pig_Robe"
+  },
+  {
+   "start": "0BA000",
+   "end": "0BE84C",
+   "type": "SMST",
+   "name": "Ice_Pig_Robe"
+  },
+  {
+   "start": "0BF000",
+   "end": "0C384C",
+   "type": "SMST",
+   "name": "Ghost_Pig_Robe"
+  },
+  {
+   "start": "0C4000",
+   "end": "0C884C",
+   "type": "SMST",
+   "name": "Earth_Pig_Robe"
+  },
+  {
+   "start": "0C9000",
+   "end": "0CD84C",
+   "type": "SMST",
+   "name": "Water_Pig_Robe"
+  },
+  {
+   "start": "0CE000",
+   "end": "0D1C34",
+   "type": "SMST",
+   "name": "Invisible_Tomba"
+  }
+ ]
+}

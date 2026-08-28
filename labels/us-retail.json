@@ -1,0 +1,3692 @@
+{
+ "name": "Tomba! 2: The Evil Swine Return (USA)",
+ "build": "us-retail",
+ "source": "TOMBAMAP_us.txt",
+ "dat_size": 9537536,
+ "entries": [
+  {
+   "start": "000000",
+   "end": "00288F",
+   "type": "SPRP",
+   "name": ""
+  },
+  {
+   "start": "002890",
+   "end": "006F0B",
+   "type": "SMST",
+   "name": "Weapon set chests AP box"
+  },
+  {
+   "start": "006F0C",
+   "end": "0081D3",
+   "type": "TXTD",
+   "name": "General text"
+  },
+  {
+   "start": "0081D4",
+   "end": "0091CB",
+   "type": "TXTD",
+   "name": "General text"
+  },
+  {
+   "start": "0091CC",
+   "end": "02125F",
+   "type": "TANP",
+   "name": "Tomba Animation Pointers 1152"
+  },
+  {
+   "start": "021260",
+   "end": "023A9B",
+   "type": "SMST",
+   "name": "Baron"
+  },
+  {
+   "start": "023A9C",
+   "end": "0247FF",
+   "type": "MDAP",
+   "name": "Model Animation Pointers for Baron"
+  },
+  {
+   "start": "024800",
+   "end": "026307",
+   "type": "SMST",
+   "name": "Intro Zippo"
+  },
+  {
+   "start": "026308",
+   "end": "028A67",
+   "type": "MDAP",
+   "name": "Model Animation Pointers for Intro Zippo"
+  },
+  {
+   "start": "028A68",
+   "end": "02B07B",
+   "type": "SMST",
+   "name": "Charles from Intro"
+  },
+  {
+   "start": "02B07C",
+   "end": "03141F",
+   "type": "MDAT",
+   "name": "Intro scene"
+  },
+  {
+   "start": "031420",
+   "end": "035613",
+   "type": "SMST",
+   "name": "Tabby from Intro"
+  },
+  {
+   "start": "035614",
+   "end": "0364DB",
+   "type": "ALFP",
+   "name": "Tabby"
+  },
+  {
+   "start": "0364DC",
+   "end": "0364EF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0364F0",
+   "end": "037FFF",
+   "type": "BGMP",
+   "name": "Intro scene"
+  },
+  {
+   "start": "038000",
+   "end": "049DA3",
+   "type": "SMST",
+   "name": "Fishermens hut windmill waterplant"
+  },
+  {
+   "start": "049DA4",
+   "end": "04AF73",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "04AF74",
+   "end": "04D3FB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "04D3FC",
+   "end": "053723",
+   "type": "SCLD",
+   "name": "Town of the Fishermen collision"
+  },
+  {
+   "start": "053724",
+   "end": "075FDB",
+   "type": "MDAT",
+   "name": "Town of the Fishermen"
+  },
+  {
+   "start": "075FDC",
+   "end": "076A6B",
+   "type": "DRWB",
+   "name": "00s type row length 52"
+  },
+  {
+   "start": "076A6C",
+   "end": "0786FB",
+   "type": "SMST",
+   "name": "Seesaws"
+  },
+  {
+   "start": "0786FC",
+   "end": "078A07",
+   "type": "SPRT",
+   "name": "Sprite Pointers for Town of the Fishermen"
+  },
+  {
+   "start": "078A08",
+   "end": "07B2EB",
+   "type": "TXTD",
+   "name": "Town of the Fishermen"
+  },
+  {
+   "start": "07B2EC",
+   "end": "07F4EF",
+   "type": "SMST",
+   "name": "Pig enemy (Town of the Fishermen)"
+  },
+  {
+   "start": "07F4F0",
+   "end": "088447",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "088448",
+   "end": "08AA4B",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "08AA4C",
+   "end": "08C3AF",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "08C3B0",
+   "end": "08E82F",
+   "type": "SMST",
+   "name": "Nishiki bird (adult)"
+  },
+  {
+   "start": "08E830",
+   "end": "090417",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "090418",
+   "end": "0996DF",
+   "type": "SMST",
+   "name": "Asset pack Fishermens Town"
+  },
+  {
+   "start": "0996E0",
+   "end": "09B573",
+   "type": "SMST",
+   "name": "Water pipes"
+  },
+  {
+   "start": "09B574",
+   "end": "09D207",
+   "type": "SMST",
+   "name": "Fisherman with a fishing rod"
+  },
+  {
+   "start": "09D208",
+   "end": "09EF8F",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "09EF90",
+   "end": "0A03E7",
+   "type": "BGMP",
+   "name": "Town of Fishermen"
+  },
+  {
+   "start": "0A03E8",
+   "end": "0A1EEF",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "0A1EF0",
+   "end": "0A464F",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "0A4650",
+   "end": "0A541B",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "0A541C",
+   "end": "0A566F",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "0A5670",
+   "end": "0A57FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0A5800",
+   "end": "0A7307",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "0A7308",
+   "end": "0A9A67",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "0A9A68",
+   "end": "0BF7DB",
+   "type": "MDAT",
+   "name": "Cursed Pipe Area"
+  },
+  {
+   "start": "0BF7DC",
+   "end": "0DB53F",
+   "type": "SMST",
+   "name": "Asset pack Cursed Pipe Area (roomsenemies)"
+  },
+  {
+   "start": "0DB540",
+   "end": "0E22AF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0E22B0",
+   "end": "0E5337",
+   "type": "TXTD",
+   "name": "Cursed Pipe Area"
+  },
+  {
+   "start": "0E5338",
+   "end": "0E56C3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0E56C4",
+   "end": "0E7E43",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0E7E44",
+   "end": "0E932B",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth closed)"
+  },
+  {
+   "start": "0E932C",
+   "end": "0EAA23",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth opened var 1)"
+  },
+  {
+   "start": "0EAA24",
+   "end": "0EC71B",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth opened var 2)"
+  },
+  {
+   "start": "0EC71C",
+   "end": "0EFB5B",
+   "type": "____",
+   "name": "test"
+  },
+  {
+   "start": "0EFB5C",
+   "end": "0F1A63",
+   "type": "SMST",
+   "name": "Gran"
+  },
+  {
+   "start": "0F1A64",
+   "end": "0F3473",
+   "type": "SMST",
+   "name": "Mole"
+  },
+  {
+   "start": "0F3474",
+   "end": "0F5B37",
+   "type": "SMST",
+   "name": "Mining Town Miner 01 and 02"
+  },
+  {
+   "start": "0F5B38",
+   "end": "0F75AB",
+   "type": "SMST",
+   "name": "Mining Town Miner 03"
+  },
+  {
+   "start": "0F75AC",
+   "end": "0F84DF",
+   "type": "SMST",
+   "name": "Hammers pickaxe shovel knife"
+  },
+  {
+   "start": "0F84E0",
+   "end": "0FBE47",
+   "type": "SMST",
+   "name": "Pig enemy (Pipe Area)"
+  },
+  {
+   "start": "0FBE48",
+   "end": "0FED83",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "0FED84",
+   "end": "1004F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1004F8",
+   "end": "1012C3",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "1012C4",
+   "end": "101517",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "101518",
+   "end": "1017FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "101800",
+   "end": "103307",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "103308",
+   "end": "105A67",
+   "type": "____",
+   "name": "minimap"
+  },
+  {
+   "start": "105A68",
+   "end": "127AFB",
+   "type": "SMST",
+   "name": "Asset pack Mining Town"
+  },
+  {
+   "start": "127AFC",
+   "end": "13FA17",
+   "type": "MDAT",
+   "name": "Cursed Coal Mining Town"
+  },
+  {
+   "start": "13FA18",
+   "end": "145A27",
+   "type": "TXTD",
+   "name": "Cursed Coal Mining Town"
+  },
+  {
+   "start": "145A28",
+   "end": "14D903",
+   "type": "BETP",
+   "name": "animations"
+  },
+  {
+   "start": "14D904",
+   "end": "14F313",
+   "type": "SMST",
+   "name": "Mole"
+  },
+  {
+   "start": "14F314",
+   "end": "151927",
+   "type": "SMST",
+   "name": "Charles"
+  },
+  {
+   "start": "151928",
+   "end": "153FEB",
+   "type": "SMST",
+   "name": "Mining Town Miner 01 and 02"
+  },
+  {
+   "start": "153FEC",
+   "end": "155A5F",
+   "type": "SMST",
+   "name": "Mining Town Miner 03"
+  },
+  {
+   "start": "155A60",
+   "end": "157E53",
+   "type": "SMST",
+   "name": "Chef"
+  },
+  {
+   "start": "157E54",
+   "end": "159D5B",
+   "type": "SMST",
+   "name": "Gran"
+  },
+  {
+   "start": "159D5C",
+   "end": "15BADF",
+   "type": "SMST",
+   "name": "Mining Town Mothers son"
+  },
+  {
+   "start": "15BAE0",
+   "end": "15D893",
+   "type": "SMST",
+   "name": "Mining Town Woman 01"
+  },
+  {
+   "start": "15D894",
+   "end": "15F87F",
+   "type": "SMST",
+   "name": "Mining Town Woman 02"
+  },
+  {
+   "start": "15F880",
+   "end": "1607B3",
+   "type": "SMST",
+   "name": "Hammers pickaxe shovel knife"
+  },
+  {
+   "start": "1607B4",
+   "end": "160B7B",
+   "type": "____",
+   "name": "animation maybe"
+  },
+  {
+   "start": "160B7C",
+   "end": "169D7B",
+   "type": "SMST",
+   "name": "Underground Machine room + assets"
+  },
+  {
+   "start": "169D7C",
+   "end": "16A2B7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "16A2B8",
+   "end": "16BFFF",
+   "type": "SMST",
+   "name": "Conveyor belts"
+  },
+  {
+   "start": "16C000",
+   "end": "16CCEF",
+   "type": "SMST",
+   "name": "Trolley model"
+  },
+  {
+   "start": "16CCF0",
+   "end": "1A55F7",
+   "type": "MDAT",
+   "name": "Trolley Minigame"
+  },
+  {
+   "start": "1A55F8",
+   "end": "1A5E9B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1A5E9C",
+   "end": "1A5FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1A6000",
+   "end": "1A7B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "1A7B08",
+   "end": "1AA267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1AA268",
+   "end": "1AB12F",
+   "type": "SMST",
+   "name": "Transparent Ice crystals"
+  },
+  {
+   "start": "1AB130",
+   "end": "1B2E6F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1B2E70",
+   "end": "1CBF6F",
+   "type": "MDAT",
+   "name": "Cursed Kujara Ranch Area"
+  },
+  {
+   "start": "1CBF70",
+   "end": "1D0807",
+   "type": "MDAT",
+   "name": "Cursed Holy Tree Flight"
+  },
+  {
+   "start": "1D0808",
+   "end": "1D3447",
+   "type": "TXTD",
+   "name": "Cursed Kujara Ranch Area"
+  },
+  {
+   "start": "1D3448",
+   "end": "1E5AC3",
+   "type": "SMST",
+   "name": "Asset pack - Kujara Ranch Area"
+  },
+  {
+   "start": "1E5AC4",
+   "end": "1E80AF",
+   "type": "SMST",
+   "name": "Kokka Bird (blue)"
+  },
+  {
+   "start": "1E80B0",
+   "end": "1EA69B",
+   "type": "SMST",
+   "name": "Kokka Bird (red)"
+  },
+  {
+   "start": "1EA69C",
+   "end": "1EC2C7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1EC2C8",
+   "end": "1EEAD3",
+   "type": "SMST",
+   "name": "Giant Ice pig enemy"
+  },
+  {
+   "start": "1EEAD4",
+   "end": "1EF6B3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1EF6B4",
+   "end": "1F2C53",
+   "type": "SMST",
+   "name": "Armadillo enemy"
+  },
+  {
+   "start": "1F2C54",
+   "end": "1F3263",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1F3264",
+   "end": "1F7233",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "1F7234",
+   "end": "1F8DF7",
+   "type": "SMST",
+   "name": "Phams Daughter 01"
+  },
+  {
+   "start": "1F8DF8",
+   "end": "1FA80B",
+   "type": "SMST",
+   "name": "Phams Daughter 02"
+  },
+  {
+   "start": "1FA80C",
+   "end": "1FC137",
+   "type": "SMST",
+   "name": "Phams Daugther 03"
+  },
+  {
+   "start": "1FC138",
+   "end": "1FE1C7",
+   "type": "SMST",
+   "name": "Leaf Traveller"
+  },
+  {
+   "start": "1FE1C8",
+   "end": "2002FB",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (green beard)"
+  },
+  {
+   "start": "2002FC",
+   "end": "200523",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "200524",
+   "end": "202CA3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "202CA4",
+   "end": "20418B",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth closed)"
+  },
+  {
+   "start": "20418C",
+   "end": "205883",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth opened var 1)"
+  },
+  {
+   "start": "205884",
+   "end": "20757B",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth opened var 2)"
+  },
+  {
+   "start": "20757C",
+   "end": "209F03",
+   "type": "SMST",
+   "name": "Pig enemy (Kujara Ranch)"
+  },
+  {
+   "start": "209F04",
+   "end": "20F217",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "20F218",
+   "end": "20F9CF",
+   "type": "SMST",
+   "name": "Kujara Bird"
+  },
+  {
+   "start": "20F9D0",
+   "end": "20FCD7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "20FCD8",
+   "end": "21144B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "21144C",
+   "end": "2129B3",
+   "type": "SMST",
+   "name": "Dwarf (brown)"
+  },
+  {
+   "start": "2129B4",
+   "end": "212FD3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "212FD4",
+   "end": "2141F3",
+   "type": "SMST",
+   "name": "Dwarf (green)"
+  },
+  {
+   "start": "2141F4",
+   "end": "2148FB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2148FC",
+   "end": "214FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "215000",
+   "end": "216B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "216B08",
+   "end": "219267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "219268",
+   "end": "21A12F",
+   "type": "SMST",
+   "name": "Transparent Ice crystals"
+  },
+  {
+   "start": "21A130",
+   "end": "2374CF",
+   "type": "SMST",
+   "name": "Asset pack - Kujara Ranch Summit"
+  },
+  {
+   "start": "2374D0",
+   "end": "24A35F",
+   "type": "MDAT",
+   "name": "Cursed Kujara Ranch Summit"
+  },
+  {
+   "start": "24A360",
+   "end": "25371B",
+   "type": "MDAT",
+   "name": "Kujara Washing Minigame"
+  },
+  {
+   "start": "25371C",
+   "end": "2587BF",
+   "type": "TXTD",
+   "name": "Cursed Kujara Ranch Summit"
+  },
+  {
+   "start": "2587C0",
+   "end": "25DA67",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "25DA68",
+   "end": "264C17",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "264C18",
+   "end": "2667DB",
+   "type": "SMST",
+   "name": "Phams Daughter 01"
+  },
+  {
+   "start": "2667DC",
+   "end": "2681EF",
+   "type": "SMST",
+   "name": "Phams Daughter 02"
+  },
+  {
+   "start": "2681F0",
+   "end": "269B1B",
+   "type": "SMST",
+   "name": "Phams Daughter 03"
+  },
+  {
+   "start": "269B1C",
+   "end": "26BC4F",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (green beard)"
+  },
+  {
+   "start": "26BC50",
+   "end": "26DC03",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (washing minigame)"
+  },
+  {
+   "start": "26DC04",
+   "end": "26F05B",
+   "type": "BGMP",
+   "name": ""
+  },
+  {
+   "start": "26F05C",
+   "end": "26F47B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "26F47C",
+   "end": "271BCB",
+   "type": "SMST",
+   "name": "Toradako enemy"
+  },
+  {
+   "start": "271BCC",
+   "end": "272DD7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "272DD8",
+   "end": "2735C7",
+   "type": "SMST",
+   "name": "Kujara Bird (burned gray)"
+  },
+  {
+   "start": "2735C8",
+   "end": "273D7F",
+   "type": "SMST",
+   "name": "Kujara Bird"
+  },
+  {
+   "start": "273D80",
+   "end": "27439F",
+   "type": "SMST",
+   "name": "Kujara Bird (shaved)"
+  },
+  {
+   "start": "2743A0",
+   "end": "274BB7",
+   "type": "SMST",
+   "name": "Kujara Bird (burned black)"
+  },
+  {
+   "start": "274BB8",
+   "end": "2752F7",
+   "type": "SMST",
+   "name": "Kujara Bird (fat shaved dorito)"
+  },
+  {
+   "start": "2752F8",
+   "end": "2756F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2756F8",
+   "end": "277CFB",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "277CFC",
+   "end": "27A067",
+   "type": "SMST",
+   "name": "Kainen (swimming suit)"
+  },
+  {
+   "start": "27A068",
+   "end": "27B973",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "27B974",
+   "end": "27C73F",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "27C740",
+   "end": "27C993",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "27C994",
+   "end": "27CFFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "27D000",
+   "end": "27EB07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "27EB08",
+   "end": "281267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "281268",
+   "end": "2ACE6B",
+   "type": "MDAT",
+   "name": "Cursed Donglin Forest"
+  },
+  {
+   "start": "2ACE6C",
+   "end": "2AD8FB",
+   "type": "DRWB",
+   "name": ""
+  },
+  {
+   "start": "2AD8FC",
+   "end": "2B7E73",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2B7E74",
+   "end": "2CD133",
+   "type": "SMST",
+   "name": "Asset pack Donglin Forest"
+  },
+  {
+   "start": "2CD134",
+   "end": "2CE947",
+   "type": "SMST",
+   "name": "Trap mechanisms"
+  },
+  {
+   "start": "2CE948",
+   "end": "2CECB7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2CECB8",
+   "end": "2D2F53",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2D2F54",
+   "end": "2D580F",
+   "type": "SMST",
+   "name": "Donglin Forest Inhabitant 01 and 02"
+  },
+  {
+   "start": "2D5810",
+   "end": "2D9507",
+   "type": "TXTD",
+   "name": "Cursed Donglin Forest"
+  },
+  {
+   "start": "2D9508",
+   "end": "2D9CA7",
+   "type": "SMST",
+   "name": "Rock Crab"
+  },
+  {
+   "start": "2D9CA8",
+   "end": "2D9D37",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2D9D38",
+   "end": "2DADC7",
+   "type": "SMST",
+   "name": "Ghost enemy"
+  },
+  {
+   "start": "2DADC8",
+   "end": "2DB047",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2DB048",
+   "end": "2DC9F3",
+   "type": "SMST",
+   "name": "Pig enemy (Donglin Forest)"
+  },
+  {
+   "start": "2DC9F4",
+   "end": "2DCC0F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2DCC10",
+   "end": "2DD647",
+   "type": "BGMP",
+   "name": ""
+  },
+  {
+   "start": "2DD648",
+   "end": "2E0057",
+   "type": "SMST",
+   "name": "Skeleton Ghost enemy"
+  },
+  {
+   "start": "2E0058",
+   "end": "2E3947",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2E3948",
+   "end": "2E796B",
+   "type": "SMST",
+   "name": "Ghost Guard"
+  },
+  {
+   "start": "2E796C",
+   "end": "2E9CCF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2E9CD0",
+   "end": "2E9EDB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2E9EDC",
+   "end": "2EB64F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2EB650",
+   "end": "2EC323",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2EC324",
+   "end": "2EC7FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2EC800",
+   "end": "2EE307",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "2EE308",
+   "end": "2F0A67",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "2F0A68",
+   "end": "30471B",
+   "type": "MDAT",
+   "name": "Cursed Circus Village"
+  },
+  {
+   "start": "30471C",
+   "end": "31BFCF",
+   "type": "SMST",
+   "name": "Asset pack Circus Village"
+  },
+  {
+   "start": "31BFD0",
+   "end": "31D427",
+   "type": "BGMP",
+   "name": "Cursed Circus Village"
+  },
+  {
+   "start": "31D428",
+   "end": "31D6C7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "31D6C8",
+   "end": "31E493",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "31E494",
+   "end": "31E6E7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "31E6E8",
+   "end": "3258E7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3258E8",
+   "end": "32941B",
+   "type": "SMST",
+   "name": "Fountain Statue"
+  },
+  {
+   "start": "32941C",
+   "end": "32F9CF",
+   "type": "TXTD",
+   "name": "Cursed Circus Village"
+  },
+  {
+   "start": "32F9D0",
+   "end": "3320B7",
+   "type": "SMST",
+   "name": "Pig Elder"
+  },
+  {
+   "start": "3320B8",
+   "end": "33435B",
+   "type": "SMST",
+   "name": "Cursed Villager 01 (man)"
+  },
+  {
+   "start": "33435C",
+   "end": "33667F",
+   "type": "SMST",
+   "name": "Cursed Villager 02 (woman)"
+  },
+  {
+   "start": "336680",
+   "end": "339093",
+   "type": "SMST",
+   "name": "Cursed Villager 03 (clown)"
+  },
+  {
+   "start": "339094",
+   "end": "33B183",
+   "type": "SMST",
+   "name": "Traveller (visible)"
+  },
+  {
+   "start": "33B184",
+   "end": "33CC93",
+   "type": "SMST",
+   "name": "Traveller (invisible)"
+  },
+  {
+   "start": "33CC94",
+   "end": "33EA17",
+   "type": "SMST",
+   "name": "The son from Coal Mining Town"
+  },
+  {
+   "start": "33EA18",
+   "end": "341933",
+   "type": "SMST",
+   "name": "Woman with basket on her head"
+  },
+  {
+   "start": "341934",
+   "end": "3438EB",
+   "type": "SMST",
+   "name": "Flying Paon (elephant)"
+  },
+  {
+   "start": "3438EC",
+   "end": "3450EF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3450F0",
+   "end": "3468C3",
+   "type": "SMST",
+   "name": "Parrot"
+  },
+  {
+   "start": "3468C4",
+   "end": "346B73",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "346B74",
+   "end": "346F0F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "346F10",
+   "end": "34A2E3",
+   "type": "SMST",
+   "name": "Pigsuit Kid"
+  },
+  {
+   "start": "34A2E4",
+   "end": "34BA57",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "34BA58",
+   "end": "34F177",
+   "type": "SMST",
+   "name": "Tiny Mouse with different colored tails"
+  },
+  {
+   "start": "34F178",
+   "end": "350F27",
+   "type": "SMST",
+   "name": "Yan of The Hidden Village"
+  },
+  {
+   "start": "350F28",
+   "end": "350FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "351000",
+   "end": "352B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "352B08",
+   "end": "355267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "355268",
+   "end": "35F00F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "35F010",
+   "end": "364797",
+   "type": "TXTD",
+   "name": "Water Temple"
+  },
+  {
+   "start": "364798",
+   "end": "386BD3",
+   "type": "SMST",
+   "name": "Asset pack Water Temple"
+  },
+  {
+   "start": "386BD4",
+   "end": "386D77",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "386D78",
+   "end": "3888BB",
+   "type": "SMST",
+   "name": "Mermaid 01 (with a harp)"
+  },
+  {
+   "start": "3888BC",
+   "end": "38A23B",
+   "type": "SMST",
+   "name": "Mermaid 02"
+  },
+  {
+   "start": "38A23C",
+   "end": "38B963",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "38B964",
+   "end": "38CE43",
+   "type": "SMST",
+   "name": "Flying Spiker enemy"
+  },
+  {
+   "start": "38CE44",
+   "end": "38DB27",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "38DB28",
+   "end": "392413",
+   "type": "SMST",
+   "name": "Crab enemy"
+  },
+  {
+   "start": "392414",
+   "end": "394C83",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "394C84",
+   "end": "3988BF",
+   "type": "SMST",
+   "name": "Pig enemy (Water Temple)"
+  },
+  {
+   "start": "3988C0",
+   "end": "39A9FB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "39A9FC",
+   "end": "39E4FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "39E500",
+   "end": "3A11F3",
+   "type": "SMST",
+   "name": "Starving Traveller"
+  },
+  {
+   "start": "3A11F4",
+   "end": "3A30B7",
+   "type": "SMST",
+   "name": "Water Temple man (Spiked Hair)"
+  },
+  {
+   "start": "3A30B8",
+   "end": "3A5483",
+   "type": "SMST",
+   "name": "Water Temple man (Blue beard)"
+  },
+  {
+   "start": "3A5484",
+   "end": "3A82D7",
+   "type": "SMST",
+   "name": "Water Temple men (Brown hair and Blue hair)"
+  },
+  {
+   "start": "3A82D8",
+   "end": "3A90A3",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "3A90A4",
+   "end": "3A92F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3A92F8",
+   "end": "3AB5F3",
+   "type": "SMST",
+   "name": "The Giant Fish"
+  },
+  {
+   "start": "3AB5F4",
+   "end": "3ABA53",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3ABA54",
+   "end": "3AD1C7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3AD1C8",
+   "end": "3AEF57",
+   "type": "SMST",
+   "name": "Nishiki Bird"
+  },
+  {
+   "start": "3AEF58",
+   "end": "3AF8E7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3AF8E8",
+   "end": "3AFFFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3B0000",
+   "end": "3B1B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "3B1B08",
+   "end": "3B4267",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "3B4268",
+   "end": "3C5717",
+   "type": "MDAT",
+   "name": "unused Ranch Summit"
+  },
+  {
+   "start": "3C5718",
+   "end": "3C5C9B",
+   "type": "____",
+   "name": "unknown"
+  },
+  {
+   "start": "3C5C9C",
+   "end": "3D6583",
+   "type": "SMST",
+   "name": "Last room and Pig Statues"
+  },
+  {
+   "start": "3D6584",
+   "end": "3D6FFF",
+   "type": "TXTD",
+   "name": "Time Stopped"
+  },
+  {
+   "start": "3D7000",
+   "end": "3D8B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "3D8B08",
+   "end": "3DB267",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "3DB268",
+   "end": "3E234B",
+   "type": "MDAT",
+   "name": "Flame Pig Boss"
+  },
+  {
+   "start": "3E234C",
+   "end": "3E3B8B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3E3B8C",
+   "end": "3E5223",
+   "type": "BGMP",
+   "name": "Flame Pig Boss"
+  },
+  {
+   "start": "3E5224",
+   "end": "3E841B",
+   "type": "SMST",
+   "name": "Asset pack Flame Pig Boss"
+  },
+  {
+   "start": "3E841C",
+   "end": "3EC437",
+   "type": "SMST",
+   "name": "Flame Pig Boss"
+  },
+  {
+   "start": "3EC438",
+   "end": "3EDF0F",
+   "type": "SCLD",
+   "name": "Flame Pig Boss"
+  },
+  {
+   "start": "3EDF10",
+   "end": "3EED73",
+   "type": "TXTD",
+   "name": "Flame Pig Boss"
+  },
+  {
+   "start": "3EED74",
+   "end": "3F08BF",
+   "type": "SMST",
+   "name": "Flame Pig Robe"
+  },
+  {
+   "start": "3F08C0",
+   "end": "3F0FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3F1000",
+   "end": "3F2B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "3F2B08",
+   "end": "3F5267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "3F5268",
+   "end": "3FF717",
+   "type": "MDAT",
+   "name": "Ice Pig Boss"
+  },
+  {
+   "start": "3FF718",
+   "end": "401A77",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "401A78",
+   "end": "40310F",
+   "type": "BGMP",
+   "name": "Ice Pig Boss"
+  },
+  {
+   "start": "403110",
+   "end": "409543",
+   "type": "SMST",
+   "name": "Asset pack Ice Pig Boss"
+  },
+  {
+   "start": "409544",
+   "end": "40D5D3",
+   "type": "SMST",
+   "name": "Ice Pig Boss"
+  },
+  {
+   "start": "40D5D4",
+   "end": "40FA5B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "40FA5C",
+   "end": "410917",
+   "type": "TXTD",
+   "name": "Ice Pig Boss"
+  },
+  {
+   "start": "410918",
+   "end": "410C97",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "410C98",
+   "end": "4127E3",
+   "type": "SMST",
+   "name": "Ice Pig Robe"
+  },
+  {
+   "start": "4127E4",
+   "end": "41285F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "412860",
+   "end": "4137FF",
+   "type": "SMST",
+   "name": "Ice crytals"
+  },
+  {
+   "start": "413800",
+   "end": "415307",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "415308",
+   "end": "417A67",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "417A68",
+   "end": "421FC7",
+   "type": "MDAT",
+   "name": "Ghost Pig Boss"
+  },
+  {
+   "start": "421FC8",
+   "end": "423807",
+   "type": "SCLD",
+   "name": ""
+  },
+  {
+   "start": "423808",
+   "end": "427C3B",
+   "type": "SMST",
+   "name": "Asset pack Ghost Pig Boss"
+  },
+  {
+   "start": "427C3C",
+   "end": "4292D3",
+   "type": "BGMP",
+   "name": "Ghost Pig Boss"
+  },
+  {
+   "start": "4292D4",
+   "end": "42E987",
+   "type": "SMST",
+   "name": "Ghost Pig Boss"
+  },
+  {
+   "start": "42E988",
+   "end": "431D33",
+   "type": "ALFP",
+   "name": ""
+  },
+  {
+   "start": "431D34",
+   "end": "432BA7",
+   "type": "TXTD",
+   "name": "Ghost Pig Boss"
+  },
+  {
+   "start": "432BA8",
+   "end": "4346F3",
+   "type": "SMST",
+   "name": "Ghost Pig Robe"
+  },
+  {
+   "start": "4346F4",
+   "end": "43476F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "434770",
+   "end": "4357FF",
+   "type": "SMST",
+   "name": "Ghost enemy"
+  },
+  {
+   "start": "435800",
+   "end": "435FFF",
+   "type": "UNKB",
+   "name": ""
+  },
+  {
+   "start": "436000",
+   "end": "437B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "437B08",
+   "end": "43A267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "43A268",
+   "end": "44679F",
+   "type": "MDAT",
+   "name": "Earth Pig Boss"
+  },
+  {
+   "start": "4467A0",
+   "end": "4482E3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4482E4",
+   "end": "44C35F",
+   "type": "SMST",
+   "name": "Asset pack Earth Pig Boss"
+  },
+  {
+   "start": "44C360",
+   "end": "44D9F7",
+   "type": "BGMP",
+   "name": "Earth Pig Boss"
+  },
+  {
+   "start": "44D9F8",
+   "end": "4515AB",
+   "type": "SMST",
+   "name": "Earth Pig Boss"
+  },
+  {
+   "start": "4515AC",
+   "end": "45A057",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "45A058",
+   "end": "45AF7B",
+   "type": "TXTD",
+   "name": "Earth Pig Boss"
+  },
+  {
+   "start": "45AF7C",
+   "end": "45CAC7",
+   "type": "SMST",
+   "name": "Earth Pig Robe"
+  },
+  {
+   "start": "45CAC8",
+   "end": "45CFFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "45D000",
+   "end": "45EB07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "45EB08",
+   "end": "461267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "461268",
+   "end": "4715B7",
+   "type": "MDAT",
+   "name": "Water Pig Boss"
+  },
+  {
+   "start": "4715B8",
+   "end": "472EE3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "472EE4",
+   "end": "47457B",
+   "type": "BGMP",
+   "name": "Water Pig Boss"
+  },
+  {
+   "start": "47457C",
+   "end": "47745B",
+   "type": "SMST",
+   "name": "Asset pack Water Pig Boss"
+  },
+  {
+   "start": "47745C",
+   "end": "47BF4F",
+   "type": "SMST",
+   "name": ""
+  },
+  {
+   "start": "47BF50",
+   "end": "483FF7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "483FF8",
+   "end": "484F33",
+   "type": "TXTD",
+   "name": "Water Pig Boss"
+  },
+  {
+   "start": "484F34",
+   "end": "486A7F",
+   "type": "SMST",
+   "name": "Water Pig Robe"
+  },
+  {
+   "start": "486A80",
+   "end": "486FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "487000",
+   "end": "488B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "488B08",
+   "end": "48B267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "48B268",
+   "end": "49583B",
+   "type": "MDAT",
+   "name": "Last Pig Boss"
+  },
+  {
+   "start": "49583C",
+   "end": "4977A7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4977A8",
+   "end": "498E3F",
+   "type": "BGMP",
+   "name": "Last Pig Boss"
+  },
+  {
+   "start": "498E40",
+   "end": "49BFCB",
+   "type": "SMST",
+   "name": "Asset pack Last Pig Boss"
+  },
+  {
+   "start": "49BFCC",
+   "end": "4A5077",
+   "type": "SMST",
+   "name": "Last Pig Boss"
+  },
+  {
+   "start": "4A5078",
+   "end": "4A74D3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4A74D4",
+   "end": "4A7EAB",
+   "type": "TXTD",
+   "name": "Last Pig Boss"
+  },
+  {
+   "start": "4A7EAC",
+   "end": "4ABA7F",
+   "type": "SMST",
+   "name": "Tabby"
+  },
+  {
+   "start": "4ABA80",
+   "end": "4AF653",
+   "type": "SMST",
+   "name": "Petrified Tabby"
+  },
+  {
+   "start": "4AF654",
+   "end": "4B0823",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4B0824",
+   "end": "4B0FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4B1000",
+   "end": "4B5F3F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4B5F40",
+   "end": "4BC837",
+   "type": "MDAT",
+   "name": "Tower of Courage"
+  },
+  {
+   "start": "4BC838",
+   "end": "4BCE93",
+   "type": "SMST",
+   "name": "Doors"
+  },
+  {
+   "start": "4BCE94",
+   "end": "4BCFFF",
+   "type": "SCLD",
+   "name": "Tower of Courage"
+  },
+  {
+   "start": "4BD000",
+   "end": "4C1187",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4C1188",
+   "end": "4C787F",
+   "type": "MDAT",
+   "name": "Tower of Strength"
+  },
+  {
+   "start": "4C7880",
+   "end": "4C7D23",
+   "type": "SMST",
+   "name": "Asset pack Tower of Strength"
+  },
+  {
+   "start": "4C7D24",
+   "end": "4C7FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4C8000",
+   "end": "4CABAB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4CABAC",
+   "end": "4D130F",
+   "type": "MDAT",
+   "name": "Tower of Wisdom"
+  },
+  {
+   "start": "4D1310",
+   "end": "4D1763",
+   "type": "SMST",
+   "name": "Asset pack Tower of Wisdom"
+  },
+  {
+   "start": "4D1764",
+   "end": "4D1FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4D2000",
+   "end": "4D3B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "4D3B08",
+   "end": "4D6267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4D6268",
+   "end": "4D9537",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4D9538",
+   "end": "4E13C3",
+   "type": "MDAT",
+   "name": "Golden Tower"
+  },
+  {
+   "start": "4E13C4",
+   "end": "4E16CF",
+   "type": "SMST",
+   "name": "Asset pack Golden Tower"
+  },
+  {
+   "start": "4E16D0",
+   "end": "4E17D3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4E17D4",
+   "end": "4E2133",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4E2134",
+   "end": "4E481B",
+   "type": "SMST",
+   "name": "Pig Elder"
+  },
+  {
+   "start": "4E481C",
+   "end": "4E4FFF",
+   "type": "TXTD",
+   "name": "Golden Tower"
+  },
+  {
+   "start": "4E5000",
+   "end": "4E90D3",
+   "type": "SMST",
+   "name": "Tiny Mouse with different colored tails"
+  },
+  {
+   "start": "4E90D4",
+   "end": "4EA847",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4EA848",
+   "end": "4F1DC3",
+   "type": "SMST",
+   "name": "Tiny Mouses Room doors"
+  },
+  {
+   "start": "4F1DC4",
+   "end": "4F1E27",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "4F1E28",
+   "end": "504D07",
+   "type": "MDAT",
+   "name": "Tiny Mouses Minigame"
+  },
+  {
+   "start": "504D08",
+   "end": "505FFF",
+   "type": "TXTD",
+   "name": "Tiny Mouses House"
+  },
+  {
+   "start": "506000",
+   "end": "507AFF",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "507B00",
+   "end": "508DB3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "508DB4",
+   "end": "5098C7",
+   "type": "TXTD",
+   "name": "Outro Scene"
+  },
+  {
+   "start": "5098C8",
+   "end": "50AD1F",
+   "type": "BGMP",
+   "name": "Outro Scene"
+  },
+  {
+   "start": "50AD20",
+   "end": "518B3B",
+   "type": "MDAT",
+   "name": "Outro Scene"
+  },
+  {
+   "start": "518B3C",
+   "end": "525F9F",
+   "type": "SMST",
+   "name": "Wins boat Kainens ending chest"
+  },
+  {
+   "start": "525FA0",
+   "end": "52608F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "526090",
+   "end": "52A083",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "52A084",
+   "end": "52C2D3",
+   "type": "SMST",
+   "name": ""
+  },
+  {
+   "start": "52C2D4",
+   "end": "52DC7B",
+   "type": "SMST",
+   "name": "Ark"
+  },
+  {
+   "start": "52DC7C",
+   "end": "534D33",
+   "type": "SMST",
+   "name": "Tabby"
+  },
+  {
+   "start": "534D34",
+   "end": "536507",
+   "type": "SMST",
+   "name": "Parrot"
+  },
+  {
+   "start": "536508",
+   "end": "5387CB",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "5387CC",
+   "end": "53A877",
+   "type": "SMST",
+   "name": "Pham"
+  },
+  {
+   "start": "53A878",
+   "end": "53C43B",
+   "type": "SMST",
+   "name": "Phams Daughter 01"
+  },
+  {
+   "start": "53C43C",
+   "end": "53DE4F",
+   "type": "SMST",
+   "name": "Phams Daughter 02"
+  },
+  {
+   "start": "53DE50",
+   "end": "53F77B",
+   "type": "SMST",
+   "name": "Phams daughter 03"
+  },
+  {
+   "start": "53F77C",
+   "end": "54118B",
+   "type": "SMST",
+   "name": "Mole"
+  },
+  {
+   "start": "54118C",
+   "end": "5440A7",
+   "type": "SMST",
+   "name": "Woman with basket on her head"
+  },
+  {
+   "start": "5440A8",
+   "end": "545FAF",
+   "type": "SMST",
+   "name": "Gran"
+  },
+  {
+   "start": "545FB0",
+   "end": "54717F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "547180",
+   "end": "54742F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "547430",
+   "end": "547F73",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "547F74",
+   "end": "54839B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "54839C",
+   "end": "548A97",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "548A98",
+   "end": "548B87",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "548B88",
+   "end": "54B19B",
+   "type": "SMST",
+   "name": "Charles"
+  },
+  {
+   "start": "54B19C",
+   "end": "54F637",
+   "type": "SMST",
+   "name": "Tuxedo Tomba (black)"
+  },
+  {
+   "start": "54F638",
+   "end": "553FFF",
+   "type": "SMST",
+   "name": "Tuxedo Tomba (red)"
+  },
+  {
+   "start": "554000",
+   "end": "555B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "555B08",
+   "end": "558267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "558268",
+   "end": "56DBF7",
+   "type": "MDAT",
+   "name": "Purified Pipe Area"
+  },
+  {
+   "start": "56DBF8",
+   "end": "56E687",
+   "type": "DRWB",
+   "name": ""
+  },
+  {
+   "start": "56E688",
+   "end": "58A3EB",
+   "type": "SMST",
+   "name": "Asset pack Cursed Pipe Area (roomsenemies)"
+  },
+  {
+   "start": "58A3EC",
+   "end": "594E3B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "594E3C",
+   "end": "597EC3",
+   "type": "TXTD",
+   "name": "Purified Pipe Area"
+  },
+  {
+   "start": "597EC4",
+   "end": "59824F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "598250",
+   "end": "59A9CF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "59A9D0",
+   "end": "59BEB7",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth closed)"
+  },
+  {
+   "start": "59BEB8",
+   "end": "59D5AF",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth opened var 1)"
+  },
+  {
+   "start": "59D5B0",
+   "end": "59F2A7",
+   "type": "SMST",
+   "name": "Pink Sea Anemone segments (mouth opened var 2)"
+  },
+  {
+   "start": "59F2A8",
+   "end": "5A26E7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5A26E8",
+   "end": "5A4DAB",
+   "type": "SMST",
+   "name": "Mining Town Miner 01 and 02"
+  },
+  {
+   "start": "5A4DAC",
+   "end": "5A681F",
+   "type": "SMST",
+   "name": "Mining Town Miner 03"
+  },
+  {
+   "start": "5A6820",
+   "end": "5A7753",
+   "type": "SMST",
+   "name": "Hammers pickaxe shovel knife"
+  },
+  {
+   "start": "5A7754",
+   "end": "5AB0BB",
+   "type": "SMST",
+   "name": "Pig enemy (Pipe Area)"
+  },
+  {
+   "start": "5AB0BC",
+   "end": "5ADFF7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5ADFF8",
+   "end": "5AF76B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5AF76C",
+   "end": "5B0537",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "5B0538",
+   "end": "5B078B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5B078C",
+   "end": "5B703B",
+   "type": "MDAT",
+   "name": "Underground Tunnels"
+  },
+  {
+   "start": "5B703C",
+   "end": "5BA2F3",
+   "type": "SMST",
+   "name": "Kainen (Staff lit)"
+  },
+  {
+   "start": "5BA2F4",
+   "end": "5BB2DF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5BB2E0",
+   "end": "5BE597",
+   "type": "SMST",
+   "name": "Kainen (Staff unlit)"
+  },
+  {
+   "start": "5BE598",
+   "end": "5BE7FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5BE800",
+   "end": "5D66D3",
+   "type": "MDAT",
+   "name": "Purified Coal Mining Town"
+  },
+  {
+   "start": "5D66D4",
+   "end": "5D81DB",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "5D81DC",
+   "end": "5DA93B",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "5DA93C",
+   "end": "5FC9CF",
+   "type": "SMST",
+   "name": "Asset pack Purified Coal Mining Town"
+  },
+  {
+   "start": "5FC9D0",
+   "end": "6029DF",
+   "type": "TXTD",
+   "name": "Purified Coal Mining Town"
+  },
+  {
+   "start": "6029E0",
+   "end": "60A8BB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "60A8BC",
+   "end": "60C2CB",
+   "type": "SMST",
+   "name": "Mole"
+  },
+  {
+   "start": "60C2CC",
+   "end": "60E8DF",
+   "type": "SMST",
+   "name": "Charles"
+  },
+  {
+   "start": "60E8E0",
+   "end": "610FA3",
+   "type": "SMST",
+   "name": "Mining Town Miner 01 and 02"
+  },
+  {
+   "start": "610FA4",
+   "end": "612A17",
+   "type": "SMST",
+   "name": "Mining Town Miner 03"
+  },
+  {
+   "start": "612A18",
+   "end": "614E0B",
+   "type": "SMST",
+   "name": "Chef"
+  },
+  {
+   "start": "614E0C",
+   "end": "616D13",
+   "type": "SMST",
+   "name": "Gran"
+  },
+  {
+   "start": "616D14",
+   "end": "618A97",
+   "type": "SMST",
+   "name": "Mining Town Mothers son"
+  },
+  {
+   "start": "618A98",
+   "end": "61A84B",
+   "type": "SMST",
+   "name": "Mining Town Woman 01"
+  },
+  {
+   "start": "61A84C",
+   "end": "61C837",
+   "type": "SMST",
+   "name": "Mining Town Woman 02"
+  },
+  {
+   "start": "61C838",
+   "end": "61D76B",
+   "type": "SMST",
+   "name": "Hammers pickaxe shovel knife"
+  },
+  {
+   "start": "61D76C",
+   "end": "61DB33",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "61DB34",
+   "end": "626D33",
+   "type": "SMST",
+   "name": "Underground Machine room + assets"
+  },
+  {
+   "start": "626D34",
+   "end": "62726F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "627270",
+   "end": "6287FF",
+   "type": "SMST",
+   "name": "Conveyor belts"
+  },
+  {
+   "start": "628800",
+   "end": "62A307",
+   "type": "SMST",
+   "name": "Trolley model"
+  },
+  {
+   "start": "62A308",
+   "end": "62CA67",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "62CA68",
+   "end": "62D92F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "62D930",
+   "end": "634CDB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "634CDC",
+   "end": "64DD9B",
+   "type": "MDAT",
+   "name": "Purified Kujara Ranch Area"
+  },
+  {
+   "start": "64DD9C",
+   "end": "652633",
+   "type": "MDAT",
+   "name": "Purified Holy Tree Flight"
+  },
+  {
+   "start": "652634",
+   "end": "655273",
+   "type": "TXTD",
+   "name": "Purified Kujara Ranch Area"
+  },
+  {
+   "start": "655274",
+   "end": "66795F",
+   "type": "SMST",
+   "name": "Asset pack - Purified Kujara Ranch Area"
+  },
+  {
+   "start": "667960",
+   "end": "669F4B",
+   "type": "SMST",
+   "name": "Kokka Bird (blue)"
+  },
+  {
+   "start": "669F4C",
+   "end": "66C537",
+   "type": "SMST",
+   "name": "Kokka Bird (red)"
+  },
+  {
+   "start": "66C538",
+   "end": "66E163",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "66E164",
+   "end": "67096F",
+   "type": "SMST",
+   "name": "Giant Ice pig enemy"
+  },
+  {
+   "start": "670970",
+   "end": "67154F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "671550",
+   "end": "674AEF",
+   "type": "SMST",
+   "name": "Armadillo enemy"
+  },
+  {
+   "start": "674AF0",
+   "end": "6750FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "675100",
+   "end": "6790CF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6790D0",
+   "end": "67AC93",
+   "type": "SMST",
+   "name": "Phams Daughter 01"
+  },
+  {
+   "start": "67AC94",
+   "end": "67C6A7",
+   "type": "SMST",
+   "name": "Phams Daughter 02"
+  },
+  {
+   "start": "67C6A8",
+   "end": "67DFD3",
+   "type": "SMST",
+   "name": "Phams Daugther 03s"
+  },
+  {
+   "start": "67DFD4",
+   "end": "680063",
+   "type": "SMST",
+   "name": "Leaf Traveller"
+  },
+  {
+   "start": "680064",
+   "end": "681ECF",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (green hair)"
+  },
+  {
+   "start": "681ED0",
+   "end": "6820F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6820F8",
+   "end": "684877",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "684878",
+   "end": "685D5F",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth closed)"
+  },
+  {
+   "start": "685D60",
+   "end": "687457",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth opened var 1)"
+  },
+  {
+   "start": "687458",
+   "end": "68914F",
+   "type": "SMST",
+   "name": "Blue Sea Anemone segments (mouth opened var 2)"
+  },
+  {
+   "start": "689150",
+   "end": "68BAD7",
+   "type": "SMST",
+   "name": "Pig enemy (Kujara Ranch)"
+  },
+  {
+   "start": "68BAD8",
+   "end": "690DEB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "690DEC",
+   "end": "6915A3",
+   "type": "SMST",
+   "name": "Kujara Bird"
+  },
+  {
+   "start": "6915A4",
+   "end": "6918AB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6918AC",
+   "end": "69301F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "693020",
+   "end": "694587",
+   "type": "SMST",
+   "name": "Dwarf (brown)"
+  },
+  {
+   "start": "694588",
+   "end": "694BA7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "694BA8",
+   "end": "695DC7",
+   "type": "SMST",
+   "name": "Dwarf (green)"
+  },
+  {
+   "start": "695DC8",
+   "end": "6964CF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6964D0",
+   "end": "697927",
+   "type": "BGMP",
+   "name": "Purified Kujara Ranch Area"
+  },
+  {
+   "start": "697928",
+   "end": "697FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "698000",
+   "end": "699B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "699B08",
+   "end": "69C267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "69C268",
+   "end": "69D12F",
+   "type": "SMST",
+   "name": "Transparent Ice crystals"
+  },
+  {
+   "start": "69D130",
+   "end": "6BB5DB",
+   "type": "SMST",
+   "name": "Asset pack - Purified Kujara Ranch Summit"
+  },
+  {
+   "start": "6BB5DC",
+   "end": "6CB6C7",
+   "type": "MDAT",
+   "name": "Purified Kujara Ranch Summit"
+  },
+  {
+   "start": "6CB6C8",
+   "end": "6D4A83",
+   "type": "MDAT",
+   "name": "Kujara Washing Minigame"
+  },
+  {
+   "start": "6D4A84",
+   "end": "6D9B27",
+   "type": "TXTD",
+   "name": "Purified Kujara Ranch Summit"
+  },
+  {
+   "start": "6D9B28",
+   "end": "6DEDCF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6DEDD0",
+   "end": "6E5F7F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6E5F80",
+   "end": "6E7B43",
+   "type": "SMST",
+   "name": "Phams Daughter 01"
+  },
+  {
+   "start": "6E7B44",
+   "end": "6E9557",
+   "type": "SMST",
+   "name": "Phams Daughter 02"
+  },
+  {
+   "start": "6E9558",
+   "end": "6EAE83",
+   "type": "SMST",
+   "name": "Phams Daughter 03"
+  },
+  {
+   "start": "6EAE84",
+   "end": "6ECCEF",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (green hair)"
+  },
+  {
+   "start": "6ECCF0",
+   "end": "6EEA0F",
+   "type": "SMST",
+   "name": "Kujara Ranch Man (washing minigame)"
+  },
+  {
+   "start": "6EEA10",
+   "end": "6EFE67",
+   "type": "BGMP",
+   "name": "Purified Kujara Ranch Summit"
+  },
+  {
+   "start": "6EFE68",
+   "end": "6F0287",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6F0288",
+   "end": "6F29D7",
+   "type": "SMST",
+   "name": "Toradako enemy"
+  },
+  {
+   "start": "6F29D8",
+   "end": "6F3BE3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6F3BE4",
+   "end": "6F43D3",
+   "type": "SMST",
+   "name": "Kujara Bird (burned gray)"
+  },
+  {
+   "start": "6F43D4",
+   "end": "6F4B8B",
+   "type": "SMST",
+   "name": "Kujara Bird"
+  },
+  {
+   "start": "6F4B8C",
+   "end": "6F51AB",
+   "type": "SMST",
+   "name": "Kujara Bird (shaved)"
+  },
+  {
+   "start": "6F51AC",
+   "end": "6F59C3",
+   "type": "SMST",
+   "name": "Kujara Bird (burned black)"
+  },
+  {
+   "start": "6F59C4",
+   "end": "6F6103",
+   "type": "SMST",
+   "name": "Kujara Bird (fat shaved dorito)"
+  },
+  {
+   "start": "6F6104",
+   "end": "6F6503",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6F6504",
+   "end": "6F8B07",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "6F8B08",
+   "end": "6FAE73",
+   "type": "SMST",
+   "name": "Kainen (swimming suit)"
+  },
+  {
+   "start": "6FAE74",
+   "end": "6FC77F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6FC780",
+   "end": "6FD54B",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "6FD54C",
+   "end": "6FD79F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6FD7A0",
+   "end": "6FD7FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "6FD800",
+   "end": "6FF307",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "6FF308",
+   "end": "701A67",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "701A68",
+   "end": "731B5F",
+   "type": "MDAT",
+   "name": "Purified Donglin Forest"
+  },
+  {
+   "start": "731B60",
+   "end": "7325EF",
+   "type": "DRWB",
+   "name": ""
+  },
+  {
+   "start": "7325F0",
+   "end": "73CB67",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "73CB68",
+   "end": "752D23",
+   "type": "SMST",
+   "name": "Asset pack Purified Donglin Forest"
+  },
+  {
+   "start": "752D24",
+   "end": "754537",
+   "type": "SMST",
+   "name": "Trap mechanisms"
+  },
+  {
+   "start": "754538",
+   "end": "7548A7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7548A8",
+   "end": "758B43",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "758B44",
+   "end": "75B3FF",
+   "type": "SMST",
+   "name": "Donglin Forest Inhabitant 01 and 02"
+  },
+  {
+   "start": "75B400",
+   "end": "75F0F7",
+   "type": "TXTD",
+   "name": "Purified Donglin Forest"
+  },
+  {
+   "start": "75F0F8",
+   "end": "75F897",
+   "type": "SMST",
+   "name": "Rock Crab"
+  },
+  {
+   "start": "75F898",
+   "end": "75F927",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "75F928",
+   "end": "7612D3",
+   "type": "SMST",
+   "name": "Pig enemy (Donglin Forest)"
+  },
+  {
+   "start": "7612D4",
+   "end": "7614EF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7614F0",
+   "end": "761F27",
+   "type": "BGMP",
+   "name": "Purified Donglin Forest"
+  },
+  {
+   "start": "761F28",
+   "end": "764937",
+   "type": "SMST",
+   "name": "Skeleton Ghost enemy"
+  },
+  {
+   "start": "764938",
+   "end": "768227",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "768228",
+   "end": "768433",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "768434",
+   "end": "769BA7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "769BA8",
+   "end": "769FFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "76A000",
+   "end": "76BB07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "76BB08",
+   "end": "76E267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "76E268",
+   "end": "781F1B",
+   "type": "MDAT",
+   "name": "Purified Circus Village"
+  },
+  {
+   "start": "781F1C",
+   "end": "7997CF",
+   "type": "SMST",
+   "name": "Asset pack Purified Circus Village"
+  },
+  {
+   "start": "7997D0",
+   "end": "79AC27",
+   "type": "BGMP",
+   "name": "Purified Circus Village"
+  },
+  {
+   "start": "79AC28",
+   "end": "79AEB3",
+   "type": "SPRT",
+   "name": "Little pig sprites and"
+  },
+  {
+   "start": "79AEB4",
+   "end": "79BC7F",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "79BC80",
+   "end": "79BED3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "79BED4",
+   "end": "7A30D3",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7A30D4",
+   "end": "7A6C07",
+   "type": "SMST",
+   "name": "Fountain Statue"
+  },
+  {
+   "start": "7A6C08",
+   "end": "7AD1BB",
+   "type": "TXTD",
+   "name": "Purified Circus Village"
+  },
+  {
+   "start": "7AD1BC",
+   "end": "7AF8A3",
+   "type": "SMST",
+   "name": "Pig Elder"
+  },
+  {
+   "start": "7AF8A4",
+   "end": "7B24A7",
+   "type": "SMST",
+   "name": "Purified Villager 01 (man)"
+  },
+  {
+   "start": "7B24A8",
+   "end": "7B4C43",
+   "type": "SMST",
+   "name": "Purified Villager 02 (woman)"
+  },
+  {
+   "start": "7B4C44",
+   "end": "7B7E33",
+   "type": "SMST",
+   "name": "Purified Villager 03 (clown)"
+  },
+  {
+   "start": "7B7E34",
+   "end": "7B9F23",
+   "type": "SMST",
+   "name": "Traveller (visible)"
+  },
+  {
+   "start": "7B9F24",
+   "end": "7BBA33",
+   "type": "SMST",
+   "name": "Traveller (invisible)"
+  },
+  {
+   "start": "7BBA34",
+   "end": "7BD7B7",
+   "type": "SMST",
+   "name": "The son from Coal Mining Town"
+  },
+  {
+   "start": "7BD7B8",
+   "end": "7C06D3",
+   "type": "SMST",
+   "name": "Woman with basket on her head"
+  },
+  {
+   "start": "7C06D4",
+   "end": "7C268B",
+   "type": "SMST",
+   "name": "Flying Paon (elephant)"
+  },
+  {
+   "start": "7C268C",
+   "end": "7C3E8F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7C3E90",
+   "end": "7C5663",
+   "type": "SMST",
+   "name": "Parrot"
+  },
+  {
+   "start": "7C5664",
+   "end": "7C5913",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7C5914",
+   "end": "7C5CAF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7C5CB0",
+   "end": "7C9083",
+   "type": "SMST",
+   "name": "Pigsuit Kid"
+  },
+  {
+   "start": "7C9084",
+   "end": "7CA7F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7CA7F8",
+   "end": "7CDF17",
+   "type": "SMST",
+   "name": "Tiny Mouse with different colored tails"
+  },
+  {
+   "start": "7CDF18",
+   "end": "7CFCC7",
+   "type": "SMST",
+   "name": "Yan of The Hidden Village"
+  },
+  {
+   "start": "7CFCC8",
+   "end": "7CFFFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7D0000",
+   "end": "7D1B07",
+   "type": "SMST",
+   "name": "Zippo"
+  },
+  {
+   "start": "7D1B08",
+   "end": "7D4267",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7D4268",
+   "end": "7DE00F",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "7DE010",
+   "end": "7E3797",
+   "type": "TXTD",
+   "name": "Water Temple"
+  },
+  {
+   "start": "7E3798",
+   "end": "805BD3",
+   "type": "SMST",
+   "name": "Asset pack Purified Water Temple"
+  },
+  {
+   "start": "805BD4",
+   "end": "805D77",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "805D78",
+   "end": "8078BB",
+   "type": "SMST",
+   "name": "Mermaid with harp"
+  },
+  {
+   "start": "8078BC",
+   "end": "80923B",
+   "type": "SMST",
+   "name": "Mermaid"
+  },
+  {
+   "start": "80923C",
+   "end": "80A963",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "80A964",
+   "end": "80BE43",
+   "type": "SMST",
+   "name": "Flying Spiker enemy"
+  },
+  {
+   "start": "80BE44",
+   "end": "80CB27",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "80CB28",
+   "end": "811413",
+   "type": "SMST",
+   "name": "Crab enemy"
+  },
+  {
+   "start": "811414",
+   "end": "813C83",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "813C84",
+   "end": "8178BF",
+   "type": "SMST",
+   "name": "Pig enemy (Water Temple)"
+  },
+  {
+   "start": "8178C0",
+   "end": "8199FB",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "8199FC",
+   "end": "81D4FF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "81D500",
+   "end": "8201F3",
+   "type": "SMST",
+   "name": "Starving Traveller"
+  },
+  {
+   "start": "8201F4",
+   "end": "8220B7",
+   "type": "SMST",
+   "name": "Water Temple man (Spiked Hair)"
+  },
+  {
+   "start": "8220B8",
+   "end": "824483",
+   "type": "SMST",
+   "name": "Water Temple man (Blue beard)"
+  },
+  {
+   "start": "824484",
+   "end": "8272D7",
+   "type": "SMST",
+   "name": "Water Temple men (Brown hair and Blue hair)"
+  },
+  {
+   "start": "8272D8",
+   "end": "8280A3",
+   "type": "SMST",
+   "name": "Magic Flower"
+  },
+  {
+   "start": "8280A4",
+   "end": "8282F7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "8282F8",
+   "end": "82A5F3",
+   "type": "SMST",
+   "name": "The Giant Fish"
+  },
+  {
+   "start": "82A5F4",
+   "end": "82AA53",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "82AA54",
+   "end": "82C1C7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "82C1C8",
+   "end": "82DF57",
+   "type": "SMST",
+   "name": "Nishiki Bird"
+  },
+  {
+   "start": "82DF58",
+   "end": "82E8E7",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "82E8E8",
+   "end": "82EFFF",
+   "type": "____",
+   "name": ""
+  },
+  {
+   "start": "82F000",
+   "end": "832F2C",
+   "type": "SMST",
+   "name": "Tomba model"
+  },
+  {
+   "start": "833000",
+   "end": "837FD4",
+   "type": "SMST",
+   "name": "Squirrel Suit Tomba"
+  },
+  {
+   "start": "838000",
+   "end": "83C118",
+   "type": "SMST",
+   "name": "Wingsuit Tomba"
+  },
+  {
+   "start": "83C800",
+   "end": "841058",
+   "type": "SMST",
+   "name": "Pink pigsuit Tomba"
+  },
+  {
+   "start": "841800",
+   "end": "84604C",
+   "type": "SMST",
+   "name": "Fire Pig Robe Tomba"
+  },
+  {
+   "start": "846800",
+   "end": "84B04C",
+   "type": "SMST",
+   "name": "Ice Pig Robe"
+  },
+  {
+   "start": "84B800",
+   "end": "85004C",
+   "type": "SMST",
+   "name": "Ghost Pig Robe"
+  },
+  {
+   "start": "850800",
+   "end": "85504C",
+   "type": "SMST",
+   "name": "Earth Pig Robe"
+  },
+  {
+   "start": "855800",
+   "end": "85A04C",
+   "type": "SMST",
+   "name": "Water Pig Robe"
+  },
+  {
+   "start": "85A800",
+   "end": "85E434",
+   "type": "SMST",
+   "name": "Invisible Tomba"
+  },
+  {
+   "start": "85E800",
+   "end": "863058",
+   "type": "SMST",
+   "name": "Water Pig Suit"
+  },
+  {
+   "start": "863800",
+   "end": "865E14",
+   "type": "SMST",
+   "name": "Charles model"
+  },
+  {
+   "start": "866000",
+   "end": "869720",
+   "type": "SMST",
+   "name": "Tiny Mouse models"
+  },
+  {
+   "start": "869800",
+   "end": "86B1A8",
+   "type": "SMST",
+   "name": "Ark"
+  },
+  {
+   "start": "86B800",
+   "end": "86DA50",
+   "type": "SMST",
+   "name": "Win"
+  },
+  {
+   "start": "86E000",
+   "end": "8700F0",
+   "type": "SMST",
+   "name": "Thirsty Traveller"
+  },
+  {
+   "start": "870800",
+   "end": "8728F0",
+   "type": "SMST",
+   "name": "Laughing Traveller"
+  },
+  {
+   "start": "873000",
+   "end": "8753D0",
+   "type": "SMST",
+   "name": "Santa"
+  },
+  {
+   "start": "875800",
+   "end": "877834",
+   "type": "SMST",
+   "name": "Pham Outside clothes"
+  },
+  {
+   "start": "878000",
+   "end": "87A3D0",
+   "type": "SMST",
+   "name": "Sant Weird textures"
+  },
+  {
+   "start": "87A800",
+   "end": "87C8AC",
+   "type": "SMST",
+   "name": "Pham Yellow suit"
+  },
+  {
+   "start": "87D000",
+   "end": "87F0F0",
+   "type": "SMST",
+   "name": "Oil-Smeared Traveller"
+  },
+  {
+   "start": "87F800",
+   "end": "8819B0",
+   "type": "SMST",
+   "name": "Collector"
+  },
+  {
+   "start": "882000",
+   "end": "884034",
+   "type": "SMST",
+   "name": "Pham Blue Suit"
+  },
+  {
+   "start": "884800",
+   "end": "886A8C",
+   "type": "SMST",
+   "name": "Sculptor"
+  },
+  {
+   "start": "887000",
+   "end": "8890F0",
+   "type": "SMST",
+   "name": "Oil-Smeared Traveller"
+  },
+  {
+   "start": "889800",
+   "end": "88B424",
+   "type": "SMST",
+   "name": "Collector"
+  },
+  {
+   "start": "88B800",
+   "end": "88D8AC",
+   "type": "SMST",
+   "name": "Pham Yellow suit"
+  },
+  {
+   "start": "88E000",
+   "end": "890064",
+   "type": "SMST",
+   "name": "Sculptor"
+  },
+  {
+   "start": "890800",
+   "end": "89293C",
+   "type": "SMST",
+   "name": "Painter"
+  },
+  {
+   "start": "893000",
+   "end": "895604",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "895800",
+   "end": "8976D4",
+   "type": "SMST",
+   "name": "Mizuno"
+  },
+  {
+   "start": "897800",
+   "end": "8998F0",
+   "type": "SMST",
+   "name": "Laughing Traveller"
+  },
+  {
+   "start": "89A000",
+   "end": "89C13C",
+   "type": "SMST",
+   "name": "Painter"
+  },
+  {
+   "start": "89C800",
+   "end": "89EE04",
+   "type": "SMST",
+   "name": "Kainen"
+  },
+  {
+   "start": "89F000",
+   "end": "8A0ED4",
+   "type": "SMST",
+   "name": "Mizuno"
+  },
+  {
+   "start": "8A1000",
+   "end": "8A30F0",
+   "type": "SMST",
+   "name": "Laughing Traveller"
+  },
+  {
+   "start": "8A3800",
+   "end": "8A5590",
+   "type": "SMST",
+   "name": "Nishiki Bird"
+  },
+  {
+   "start": "8A5800",
+   "end": "8A72A4",
+   "type": "SMST",
+   "name": "100 Year Old Man"
+  },
+  {
+   "start": "8A7800",
+   "end": "8A9BCC",
+   "type": "SMST",
+   "name": "Water Temple Man Blue mustache"
+  },
+  {
+   "start": "8AA000",
+   "end": "8ABD18",
+   "type": "SMST",
+   "name": "Mermaid"
+  },
+  {
+   "start": "8AC000",
+   "end": "8BBE5C",
+   "type": "MDAT",
+   "name": "Cursed Water Temple 1-2"
+  },
+  {
+   "start": "8BC000",
+   "end": "8C9CE4",
+   "type": "MDAT",
+   "name": "Cursed Water Temple 2-2"
+  },
+  {
+   "start": "8CA000",
+   "end": "8D73D8",
+   "type": "MDAT",
+   "name": "Cursed Water Temple 3 Golden Tower part"
+  },
+  {
+   "start": "8D7800",
+   "end": "8DD9A0",
+   "type": "MDAT",
+   "name": "Cursed Water Temple Room above enterance"
+  },
+  {
+   "start": "8DE000",
+   "end": "8DFD90",
+   "type": "SMST",
+   "name": "Nishiki Bird"
+  },
+  {
+   "start": "8E0000",
+   "end": "8E1AA4",
+   "type": "SMST",
+   "name": "100 Year Old Man"
+  },
+  {
+   "start": "8E2000",
+   "end": "8E43CC",
+   "type": "SMST",
+   "name": "Water Temple Man Blue mustache"
+  },
+  {
+   "start": "8E4800",
+   "end": "8E6518",
+   "type": "SMST",
+   "name": "Mermaid"
+  },
+  {
+   "start": "8E6800",
+   "end": "8F665C",
+   "type": "MDAT",
+   "name": "Purified Water Temple 1-2"
+  },
+  {
+   "start": "8F6800",
+   "end": "9044E4",
+   "type": "MDAT",
+   "name": "Purified Water Temple 2-2"
+  },
+  {
+   "start": "904800",
+   "end": "911BD8",
+   "type": "MDAT",
+   "name": "Purified Water Temple 3 Golden Tower part"
+  },
+  {
+   "start": "912000",
+   "end": "9181A0",
+   "type": "MDAT",
+   "name": "Purified Water Temple Room above enterance"
+  }
+ ]
+}

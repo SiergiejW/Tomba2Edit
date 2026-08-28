@@ -28,7 +28,8 @@ from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
 from gui import theme
 from gui import panel_title
-from functions.idx_parser import parse_idx_file
+from functions import labels as labels_module
+from functions.idx_parser import parse_idx_file, apply_labels
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
@@ -132,6 +133,15 @@ class MainWindow(QMainWindow):
         # carried over from the source image too).
         self.current_iso_path = None
 
+        # The names on the tree's file rows, and where they came from.
+        # `labels` is whichever labels file is in force; `labels_override`
+        # is set only when the user loaded one by hand, and then it stays
+        # in force across opening another disc instead of being replaced
+        # by whatever auto-detection would have picked (see
+        # load_labels_for_disc).
+        self.labels = None
+        self.labels_override = None
+
         self.setup_tree_view()
         self.setup_widgets()
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
@@ -180,9 +190,28 @@ class MainWindow(QMainWindow):
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
 
+        load_labels_action = QAction("Load Labels...", self)
+        load_labels_action.setToolTip(
+            "Load a labels file - the JSON that names this build's files "
+            "in the tree. One ships for each build the tool knows; this is "
+            "for one of your own."
+        )
+        load_labels_action.triggered.connect(self.load_labels_dialog)
+
+        builtin_labels_action = QAction("Use Built-in Labels", self)
+        builtin_labels_action.setToolTip(
+            "Go back to the labels file that matches the open disc"
+        )
+        builtin_labels_action.triggered.connect(self.use_builtin_labels)
+        self.builtin_labels_action = builtin_labels_action
+        builtin_labels_action.setEnabled(False)
+
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(open_action)
         file_menu.addAction(open_folder_action)
+        file_menu.addSeparator()
+        file_menu.addAction(load_labels_action)
+        file_menu.addAction(builtin_labels_action)
         file_menu.addSeparator()
         file_menu.addAction(export_action)
         file_menu.addAction(export_files_action)
@@ -254,6 +283,86 @@ class MainWindow(QMainWindow):
                 return "SMST"
         else:
             return "NULL"
+
+    def load_labels_for_disc(self, idx_path):
+        """Pick the names for the disc that has just been opened and put
+        them on the tree. Called by idx_parser.parse_idx_file once the
+        tree is built.
+
+        A labels file loaded by hand stays in force - someone working on
+        their own map doesn't want reopening the ISO to throw it away -
+        but it's still scored against the disc, so a set of names that
+        doesn't fit says so instead of quietly landing on the wrong
+        files."""
+        try:
+            if self.labels_override is not None:
+                self.labels = self.labels_override
+                score = self.labels.score(labels_module.idx_addresses(idx_path))
+                source = "loaded"
+            else:
+                self.labels, score = labels_module.choose(idx_path)
+                source = "built-in"
+        except Exception as e:
+            print(f"Could not load labels: {e}")
+            self.labels = None
+            score, source = 0.0, "built-in"
+
+        named = apply_labels(self)
+        self.builtin_labels_action.setEnabled(self.labels_override is not None)
+
+        if self.labels is None:
+            self.statusBar().showMessage(
+                "No labels file matches this disc - files are listed by "
+                f"address only (best match {score:.0%})", 15000)
+            return
+        fit = "" if score >= 0.999 else f", {score:.0%} of it found on this disc"
+        # Rows, not files: the trail lists the same handful of files under
+        # nearly every area, so 45 named files fill some 700 rows.
+        self.statusBar().showMessage(
+            f"Named {named} rows from the {source} labels for "
+            f"\"{self.labels.name}\" ({self.labels.named} names){fit}", 15000)
+
+    def load_labels_dialog(self):
+        """Load a labels file the user points at, and keep it."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load labels file", labels_module.labels_dir(),
+            "Labels files (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            label_set = labels_module.load(path)
+        except labels_module.LabelError as e:
+            QMessageBox.critical(self, "Not a labels file",
+                                 f"Couldn't read that as a labels file:\n\n{e}")
+            return
+
+        self.labels_override = label_set
+        if not self.dat_file:
+            # Nothing open yet - it'll be applied when a disc is.
+            self.statusBar().showMessage(
+                f"Labels \"{label_set.name}\" loaded - open a disc to use them", 15000)
+            self.builtin_labels_action.setEnabled(True)
+            return
+        idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+        self.load_labels_for_disc(idx_path)
+        if self.labels.score(labels_module.idx_addresses(idx_path)) < labels_module.MATCH_THRESHOLD:
+            QMessageBox.warning(
+                self, "Labels don't fit this disc",
+                f"\"{label_set.name}\" names {len(label_set)} addresses and "
+                "hardly any of them are in this disc's IDX. The names have "
+                "been applied anyway - they are probably for a different "
+                "build, or for one that hasn't been repacked yet.")
+
+    def use_builtin_labels(self):
+        """Drop a hand-loaded labels file and go back to whichever
+        built-in one matches the open disc."""
+        self.labels_override = None
+        if not self.dat_file:
+            self.labels = None
+            self.builtin_labels_action.setEnabled(False)
+            return
+        self.load_labels_for_disc(
+            os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"))
 
     def export_selected_bytes(self):
         selected_indexes = self.tree_view.selectionModel().selectedIndexes()

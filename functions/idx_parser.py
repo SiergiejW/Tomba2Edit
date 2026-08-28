@@ -54,6 +54,59 @@ def _type_icon(main_window, filetype, default):
     return icons.get(filetype, default)
 
 
+# Everything a file row needs to be re-labelled without rebuilding the
+# tree: (stem, type, absolute DAT address, the row's own tooltip). Kept
+# in UserRole + 3 so apply_labels() can rewrite the text from the stem
+# each time rather than trying to strip the last name back off it.
+_ROW_LABEL_DATA = Qt.ItemDataRole.UserRole + 3
+
+
+def apply_labels(main_window):
+    """Rewrite every file row in the tree from main_window.labels - the
+    names someone worked out for this build of the disc (see
+    functions/labels.py). Returns how many rows got a name.
+
+    Separate from building the tree so that loading a different labels
+    file is a rename pass over what's already there, rather than a
+    reparse that would drop the expanded folders and the edit colouring
+    along with it."""
+    model = main_window.tree_view.model()
+    if model is None:
+        return 0
+    label_set = getattr(main_window, "labels", None)
+    named = 0
+
+    def walk(item):
+        nonlocal named
+        for row in range(item.rowCount()):
+            child = item.child(row)
+            if child.hasChildren():
+                walk(child)
+                continue
+            data = child.data(_ROW_LABEL_DATA)
+            if not data:
+                continue
+            stem, filetype, address, detail = data
+            label = label_set.get(address) if label_set else None
+            name = label.name if label else ""
+            child.setText(f"{stem} {name}.{filetype}" if name
+                          else f"{stem}.{filetype}")
+            tooltip = detail
+            if label:
+                named += bool(name)
+                if label.kind and label.kind != filetype:
+                    # The map's type column is hand-written and is wrong
+                    # in a couple of places on the retail disc; the type
+                    # on the row is the one the tool worked out.
+                    tooltip += f"\nlabels file calls this {label.kind}"
+            elif label_set:
+                tooltip += "\nnot in the labels file"
+            child.setToolTip(tooltip)
+
+    walk(model.invisibleRootItem())
+    return named
+
+
 def parse_idx_file(main_window, cd_folder):
     idx_path = os.path.join(cd_folder, "TOMBA2.IDX")
     dat_path = os.path.join(cd_folder, "TOMBA2.DAT")
@@ -126,12 +179,17 @@ def parse_idx_file(main_window, cd_folder):
 
                 size = next_offset - offset
                 filetype = main_window.id_convert(DAT, id, hex(dat_start + offset))
-                file_item = QStandardItem(file_icon, f"{id}-{offset:04X}.{filetype}")
+                stem = f"{id}-{offset:04X}"
+                file_item = QStandardItem(file_icon, f"{stem}.{filetype}")
 
                 # ✅ Store basic data
                 file_item.setData((id, dat_start, offset, size), Qt.ItemDataRole.UserRole)
                 # ✅ Store AREA and file index
                 file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)
+                file_item.setData(
+                    (stem, filetype, dat_start + offset,
+                     f"id {id}, 0x{dat_start + offset:X}, {size} bytes"),
+                    _ROW_LABEL_DATA)
 
                 file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
@@ -169,12 +227,14 @@ def parse_idx_file(main_window, cd_folder):
                 # The trailer carries no type id, so the type is read out
                 # of the blob itself (see _trail_type above).
                 filetype, tooltip = _trail_type(dat_path, adr, sz, trail_types)
+                stem = f"{adr:04X}-{end:04X}"
                 trail_file_item = QStandardItem(
                     _type_icon(main_window, filetype, file_icon),
-                    f"{adr:04X}-{end:04X}.{filetype}")
+                    f"{stem}.{filetype}")
                 trail_file_item.setFlags(trail_file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 trail_file_item.setData(("trail", adr, end - adr, dat_start), Qt.ItemDataRole.UserRole)
                 trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
+                trail_file_item.setData((stem, filetype, adr, tooltip), _ROW_LABEL_DATA)
                 trail_file_item.setToolTip(tooltip)
                 trail_item.appendRow(trail_file_item)
 
@@ -188,3 +248,6 @@ def parse_idx_file(main_window, cd_folder):
 
     main_window.tree_view.setModel(model)
     main_window.tree_view.selectionModel().selectionChanged.connect(main_window.on_tree_selection_changed)
+
+    # Names last, over the finished tree - see apply_labels above.
+    main_window.load_labels_for_disc(idx_path)

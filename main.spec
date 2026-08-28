@@ -7,7 +7,9 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=icon_files + [('icons', 'icons')],  # Explicitly include the icons directory
+    # The labels folder has to come along too - functions/labels.py looks
+    # for it next to the exe (sys._MEIPASS) when frozen.
+    datas=icon_files + [('icons', 'icons'), ('labels', 'labels')],
     hiddenimports=['gui'],
     hookspath=[],
     hooksconfig={},
