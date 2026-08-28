@@ -1,27 +1,44 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build for Tomba2Edit.
 
-PyInstaller does not cross-compile. This one spec builds for whichever
-OS it is run on - a .exe on Windows, a .app on macOS - and each has to
-be built on that OS, on a machine with the dependencies installed.
+    pyinstaller main.spec
+
+PyInstaller does not cross-compile, and cannot: it builds by copying
+the interpreter and the compiled extensions off the machine it is run
+on. This one spec builds for whichever OS runs it - a .exe on Windows,
+a .app on macOS - but the Mac build has to happen on a Mac, with the
+same dependencies installed there (PyQt6, PyOpenGL, numpy, pillow).
+
+A macOS build is also for one CPU architecture: the one its Python is.
+Built on Apple silicon it will not run on an Intel Mac. `target_arch`
+in EXE below can be set to 'universal2' instead, but only if every
+wheel on that machine is universal2, which is not a given.
+
+An unsigned .app is refused by Gatekeeper on first open. Either
+right-click it and choose Open, or run:
+
+    xattr -dr com.apple.quarantine Tomba2Edit.app
 
 WHAT IS DELIBERATELY LEFT OUT
 
 The unfiltered build came to 60 MB, and most of the difference was
 things the tool never touches:
 
-    icons/          6.9 MB and 3908 files, of which gui/icons.py names
-                    16, totalling 23 KB - and the old datas list picked
-                    the folder up twice over. ICON_FILES below reads
-                    icons.py for the ones it actually asks for, so
-                    adding an icon there is enough to get it bundled.
+    icons/          6.9 MB and 3908 files, of which icons/icons.py
+                    names 16, totalling 23 KB - and the old datas list
+                    picked the whole folder up twice over. _icon_files()
+                    below reads icons.py for the ones it actually asks
+                    for, so adding an icon there is enough to get it
+                    bundled.
     opengl32sw.dll  21 MB of software OpenGL. Qt falls back to it when
                     the machine has no usable GL driver, which for a
                     viewer built entirely out of GL 3.3 shaders is not
-                    a situation worth carrying 21 MB for - it would run
-                    at seconds per frame if it ran at all. SEE THE NOTE
-                    ON IT BELOW before dropping it from a build meant
-                    for a VM or a remote desktop.
+                    worth 21 MB - it would run at seconds per frame if
+                    it ran at all. The exception is a virtual machine or
+                    a remote desktop session, where there may be no GPU
+                    driver to fall back FROM: for a build meant to run
+                    in one of those, take "opengl32sw" back out of
+                    EXCLUDED_BINARIES.
     Qt6Pdf,         12 MB between them, for a PDF engine, a network
     Qt6Network,     stack and its TLS library. Nothing here opens a
     libcrypto/ssl   socket or a PDF.
@@ -83,6 +100,12 @@ def _keep(entry):
     return not any(dropped in name for dropped in EXCLUDED_BINARIES)
 
 
+# Windows takes the .ico straight; for a Mac bundle PyInstaller wants an
+# .icns and will make one from a PNG, so hand it the PNG there.
+APP_ICON = os.path.join(BUILD_DIR, "icons", "tomba",
+                        "tomba1.png" if sys.platform == "darwin" else "tomba1.ico")
+
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
@@ -122,7 +145,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(BUILD_DIR, "icons", "tomba", "tomba1.ico"),
+    icon=APP_ICON,
 )
 
 if sys.platform == "darwin":
@@ -131,7 +154,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         exe,
         name='Tomba2Edit.app',
-        icon=os.path.join(BUILD_DIR, "icons", "tomba", "tomba1.ico"),
+        icon=APP_ICON,
         bundle_identifier='club.tomba.tomba2edit',
         info_plist={
             'NSHighResolutionCapable': True,
