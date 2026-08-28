@@ -16,6 +16,7 @@ from main import version
 from gui.txtd.txtd_viewer import TXTDViewer
 from gui.txtd.txt2_viewer import TXT2Viewer
 from gui.mdat.mdat_viewer import MDATViewer
+from gui.drwa.drwa_viewer import DRWAViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.sprt.sprt_viewer import SPRTViewer
@@ -950,6 +951,14 @@ class MainWindow(QMainWindow):
         self.txtd_viewer = TXTDViewer()
         self.txt2_viewer = TXT2Viewer()
         self.mdat_viewer = MDATViewer()
+        # A DRWA isn't a file of its own - it's the head of an MDAT
+        # entry, and the pointers in it are what reach that entry's
+        # geometry (see gui/drwa/drwa_parser.py). So it hangs off the
+        # MDAT rows as a second tab rather than getting a tree row.
+        self.drwa_viewer = DRWAViewer()
+        self.mdat_tabs = QTabWidget()
+        self.mdat_tabs.addTab(self.mdat_viewer, "3D View")
+        self.mdat_tabs.addTab(self.drwa_viewer, "Drawmap (DRWA)")
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
         self.sprt_viewer = SPRTViewer()
@@ -963,7 +972,7 @@ class MainWindow(QMainWindow):
             "TXTD": self.txtd_viewer,
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
-            "MDAT": self.mdat_viewer,
+            "MDAT": self.mdat_tabs,
             "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
             "DEFAULT": QLabel("File Viewer"),
@@ -1167,6 +1176,13 @@ class MainWindow(QMainWindow):
                                 success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
+
+                                # The drawmap at the head of this same
+                                # entry - never fatal, since the 3D view
+                                # stands on its own if it won't parse.
+                                self.drwa_viewer.load_drwa_data(
+                                    self.dat_file, dat_start, offset, entry_size,
+                                    chunk_index=chunk_index)
 
                                 self.mdat_viewer.load_collision_data(None, None, None, None)
                                 if chunk_index is not None:

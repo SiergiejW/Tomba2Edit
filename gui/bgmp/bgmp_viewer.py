@@ -11,20 +11,25 @@ it.
 import os
 
 from PIL.ImageQt import ImageQt
-from PyQt6.QtCore import Qt, QRect, QSize
+from PyQt6.QtCore import Qt, QRect, QSize, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
-    QLabel, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from functions.psx_vram import VRAMError
 from gui import panel_title
 from gui.bgmp.bgmp_parser import BGMPError, PAGE_TILES, TILE, load_bgmp
 from gui.bgmp.bgmp_render import (
-    BackgroundTextures, palette_swatch, render_background, render_page)
+    BackgroundTextures, detect_page_y_offset, palette_swatch,
+    render_background, render_page)
 from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
+
+# Frames per second for the palette-cycling preview. The real rate is in
+# the game's code, not the file - this is just slow enough to read.
+CYCLE_FPS = 8
 
 # A background is 576x1152 or so - it opens shrunk to fit, where the
 # texture page is small enough to want magnifying instead.
@@ -115,6 +120,11 @@ class BGMPViewer(QWidget):
         self._file_key = None
         self._fitted = {}                 # view -> the file its zoom was fitted to
         self._vram_note = None
+        self.page_y_offset = 0
+        self.phase = 0
+        self._frames = []                 # cached QImages, one per cycle phase
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._next_phase)
 
         self.background_canvas = TileGridCanvas()
         self.background_canvas.clicked.connect(self._on_background_clicked)
@@ -128,8 +138,8 @@ class BGMPViewer(QWidget):
         self.details_table.setHorizontalHeaderLabels(["Field", "Value"])
         _prepare_table(self.details_table)
 
-        self.palette_table = QTableWidget(0, 3)
-        self.palette_table.setHorizontalHeaderLabels(["#", "Colours", "Tiles"])
+        self.palette_table = QTableWidget(0, 4)
+        self.palette_table.setHorizontalHeaderLabels(["#", "Colours", "Tiles", "Cycle"])
         _prepare_table(self.palette_table)
         self.palette_table.itemSelectionChanged.connect(self._on_palette_row_changed)
 
@@ -194,6 +204,22 @@ class BGMPViewer(QWidget):
         self.grid_check.setChecked(True)
         self.grid_check.toggled.connect(self._on_grid_toggled)
 
+        self.offset_spin = QSpinBox()
+        self.offset_spin.setRange(0, TILE - 1)
+        self.offset_spin.setPrefix("Page Y ")
+        self.offset_spin.setToolTip(
+            "How far down the texture page this background's tile grid "
+            "starts. Nothing in the file says - it's detected from the "
+            "artwork, and every background but AREA_04's wants 0.")
+        self.offset_spin.valueChanged.connect(self._on_offset_changed)
+
+        self.cycle_check = QCheckBox("Cycle palettes")
+        self.cycle_check.setToolTip(
+            "Rotate the palettes whose colours form a closed ring - what "
+            "makes the water glitter. The ring is in the data; the speed "
+            "and direction are a reconstruction.")
+        self.cycle_check.toggled.connect(self._on_cycle_toggled)
+
         self.alpha_check = QCheckBox("Colour 0 transparent")
         self.alpha_check.setToolTip(
             "Backgrounds are drawn opaque, so the PSX's transparent colour "
@@ -211,7 +237,8 @@ class BGMPViewer(QWidget):
         export_page_btn.clicked.connect(self.export_page_png)
 
         for w in (zoom_out, zoom_in, zoom_reset, self.zoom_label,
-                  self.grid_check, self.alpha_check, export_btn, export_page_btn):
+                  self.offset_spin, self.grid_check, self.cycle_check,
+                  self.alpha_check, export_btn, export_page_btn):
             bar.addWidget(w)
         return bar
 
@@ -245,8 +272,18 @@ class BGMPViewer(QWidget):
             except VRAMError as e:
                 self._vram_note = str(e)
 
+        self._stop_cycling()
+        self.cycle_check.blockSignals(True)
+        self.cycle_check.setChecked(False)   # a new file starts still
+        self.cycle_check.blockSignals(False)
+        self.page_y_offset = detect_page_y_offset(self.bgmp_data, self.textures)
+        self.offset_spin.blockSignals(True)
+        self.offset_spin.setValue(self.page_y_offset)
+        self.offset_spin.blockSignals(False)
+
         used = self.bgmp_data.palettes_used
         self.page_palette = used[0] if used else 0
+        self.cycle_check.setEnabled(bool(self._cycling_palettes()))
         self.background_canvas.set_selected(None)
         self.background_canvas.set_highlights(())
         self.page_canvas.set_selected(None)
@@ -284,6 +321,14 @@ class BGMPViewer(QWidget):
             parts.append(f"AREA_{chunk:02X}")
         if self._vram_note:
             parts.append(self._vram_note)
+        if self.page_y_offset:
+            parts.append(f"tile grid starts {self.page_y_offset}px down the page")
+        cycling = self._cycling_palettes()
+        if cycling:
+            parts.append("palette{} {} cycle{}".format(
+                "s" if len(cycling) > 1 else "",
+                ",".join(str(i) for i in cycling),
+                "" if len(cycling) > 1 else "s"))
         blank = self._blank_palettes()
         if blank:
             parts.append(
@@ -296,6 +341,13 @@ class BGMPViewer(QWidget):
         if extra:
             parts.insert(0, extra)
         self.info_label.setText("  |  ".join(parts))
+
+    def _cycling_palettes(self):
+        """Palettes the map uses whose colours form a closed ring."""
+        if not self.bgmp_data or self.textures is None:
+            return []
+        return [i for i in self.bgmp_data.palettes_used
+                if self.textures.cycle(self.bgmp_data, i)]
 
     def _blank_palettes(self):
         """Palettes the map uses that this area's VRAM never filled in."""
@@ -314,6 +366,7 @@ class BGMPViewer(QWidget):
             ("CLUT", f"0x{bgmp.clut:04X}"),
             ("CLUT x, y", f"{bgmp.clut_x}, {bgmp.clut_y}"),
             ("Palettes below it", str(bgmp.palettes_fit)),
+            ("Page Y offset", f"{self.page_y_offset} px (detected)"),
             ("Map", f"{bgmp.width} x {bgmp.height} tiles"),
             ("Pixels", "{} x {}".format(*bgmp.pixel_size)),
             ("Map bytes", f"0x{bgmp.map_size:X}"),
@@ -345,6 +398,9 @@ class BGMPViewer(QWidget):
                 palette_swatch(bgmp, self.textures, index))))
             table.setItem(row, 1, swatch)
             table.setItem(row, 2, QTableWidgetItem(str(counts.get(index, 0))))
+            cycle = self.textures.cycle(bgmp, index) if self.textures else None
+            table.setItem(row, 3, QTableWidgetItem(
+                f"{cycle[0]}-{cycle[0] + cycle[1] - 1}" if cycle else "-"))
         table.setIconSize(QSize(16 * 12, 12))
         table.resizeColumnsToContents()
         table.blockSignals(False)
@@ -370,7 +426,9 @@ class BGMPViewer(QWidget):
     def _redraw(self):
         if not self.bgmp_data:
             return
-        self._background_image = render_background(self.bgmp_data, self.textures)
+        self._frames = []
+        self._background_image = render_background(
+            self.bgmp_data, self.textures, self.page_y_offset, self.phase)
         self.background_canvas.set_image(_to_qimage(self._background_image))
         self._fit("background", self._background_image.size,
                   self.background_scroll, self.background_canvas,
@@ -380,12 +438,53 @@ class BGMPViewer(QWidget):
     def _draw_page(self):
         if not self.bgmp_data:
             return
-        self._page_image = render_page(self.bgmp_data, self.textures, self.page_palette)
+        self._page_image = render_page(self.bgmp_data, self.textures,
+                                       self.page_palette, self.page_y_offset,
+                                       self.phase)
         self.page_canvas.set_image(_to_qimage(self._page_image))
         self._fit("page", self._page_image.size, self.page_scroll,
                   self.page_canvas, PAGE_MAX_FIT_ZOOM)
+        offset = (f", rolled up {self.page_y_offset}px to the tile grid"
+                  if self.page_y_offset else "")
         self.page_title.setText(
-            f"Source texture page {self.bgmp_data.texpage}, palette {self.page_palette}")
+            f"Source texture page {self.bgmp_data.texpage}, "
+            f"palette {self.page_palette}{offset}")
+
+    # --- palette cycling ---
+
+    def _on_cycle_toggled(self, checked):
+        if not checked or not self.bgmp_data or self.textures is None:
+            self._stop_cycling()
+            self._redraw()
+            return
+        # Every phase is rendered once up front and then flipped
+        # between - re-rendering a 640x1152 background per tick would
+        # not keep up.
+        length = self.textures.cycle_length(self.bgmp_data,
+                                            self.bgmp_data.palettes_used)
+        if length < 2:
+            self.cycle_check.setChecked(False)
+            return
+        self._frames = [
+            _to_qimage(render_background(self.bgmp_data, self.textures,
+                                         self.page_y_offset, phase))
+            for phase in range(length)
+        ]
+        self._timer.start(max(1000 // CYCLE_FPS, 1))
+        self._update_info(f"cycling {len(self._frames)} phases of "
+                          f"palette(s) {','.join(str(p) for p in self._cycling_palettes())}")
+
+    def _stop_cycling(self):
+        self._timer.stop()
+        self._frames = []
+        self.phase = 0
+
+    def _next_phase(self):
+        if not self._frames:
+            self._timer.stop()
+            return
+        self.phase = (self.phase + 1) % len(self._frames)
+        self.background_canvas.set_image(self._frames[self.phase])
 
     def _fit(self, view, image_size, scroll, canvas, max_zoom):
         """Fit a view the first time this file reaches it, then leave
@@ -437,6 +536,14 @@ class BGMPViewer(QWidget):
 
     # --- toolbar ---
 
+    def _on_offset_changed(self, value):
+        self.page_y_offset = value
+        was_cycling = self.cycle_check.isChecked()
+        self._stop_cycling()
+        self._redraw()
+        if was_cycling:
+            self._on_cycle_toggled(True)
+
     def _on_grid_toggled(self, checked):
         for canvas in (self.background_canvas, self.page_canvas):
             canvas.show_grid = checked
@@ -449,8 +556,12 @@ class BGMPViewer(QWidget):
             self.textures = BackgroundTextures(self.vram_bytes, transparent_zero=checked)
         except VRAMError:
             return
+        was_cycling = self.cycle_check.isChecked()
+        self._stop_cycling()
         self._populate_palettes()
         self._redraw()
+        if was_cycling:
+            self._on_cycle_toggled(True)
 
     def _zoom_by(self, direction):
         self.background_canvas.zoom_by(direction)

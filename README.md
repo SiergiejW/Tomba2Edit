@@ -9,6 +9,7 @@ Currently working:
 - Text editing<br>
 - Level geometry viewing<br>
 - Level collision viewing<br>
+- Level drawmap (DRWA) viewing<br>
 
 ## Special Thanks
 
