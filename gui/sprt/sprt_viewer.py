@@ -181,7 +181,7 @@ class SPRTViewer(QWidget):
         self._prepare_table(self.piece_table)
         self.piece_table.itemSelectionChanged.connect(self._on_piece_row_changed)
 
-        self.info_label = QLabel("No SPRT loaded")
+        self.info_label = panel_title.make_info_label("No SPRT loaded")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -327,7 +327,7 @@ class SPRTViewer(QWidget):
         self.sprite_table.setRowCount(0)
         self.piece_table.setRowCount(0)
         self.canvas.clear()
-        self.info_label.setText(message)
+        panel_title.set_info(self.info_label, message)
 
     def _update_info(self, vram_note=None):
         if not self.sprt_data:
@@ -346,7 +346,7 @@ class SPRTViewer(QWidget):
         if odd:
             parts.append(f"{len(odd)} piece(s) are not axis-aligned rectangles "
                          "and are drawn as if they were")
-        self.info_label.setText("  |  ".join(parts))
+        panel_title.set_info(self.info_label, "  |  ".join(parts))
 
     # --- tables ---
 
@@ -538,7 +538,7 @@ class SPRTViewer(QWidget):
         except OSError as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write {path}:\n\n{e}")
             return
-        self.info_label.setText(f"Wrote {os.path.basename(path)}")
+        panel_title.set_info(self.info_label, f"Wrote {os.path.basename(path)}")
 
 
 def _to_qimage(pil_image):

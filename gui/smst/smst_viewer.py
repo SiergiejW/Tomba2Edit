@@ -79,7 +79,9 @@ class SMSTViewer(QOpenGLWidget):
         self.draw_ranges = []
         self.hidden_groups = set()
         self.highlighted_group = None
-        self.spread = False
+        # On by default: stacked at the origin is how the file has the
+        # parts, but it is not how anyone wants to first see a model.
+        self.spread = True
         # How big the loaded model is, in GL units - the clip planes are
         # set from it. A character is about 1.5 across and a level asset
         # pack over 200, and a fixed 0.1-100 frustum can only show one
@@ -87,7 +89,7 @@ class SMSTViewer(QOpenGLWidget):
         self.scene_radius = 0.0
 
         self.texture_mode_enabled = True
-        self.culling_enabled = False
+        self.culling_enabled = True
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -117,6 +119,7 @@ class SMSTViewer(QOpenGLWidget):
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
             "Backface Culling", self)
         self.culling_action.setCheckable(True)
+        self.culling_action.setChecked(self.culling_enabled)
         self.culling_action.toggled.connect(self.toggle_culling)
         self.toolbar.addAction(self.culling_action)
 
@@ -124,6 +127,7 @@ class SMSTViewer(QOpenGLWidget):
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),
             "Spread Parts", self)
         self.spread_action.setCheckable(True)
+        self.spread_action.setChecked(self.spread)
         self.spread_action.setToolTip(
             "Lay the parts out on a grid. Nothing in an SMST says where a "
             "part belongs - that is in the animation data - so stacked at "
@@ -418,8 +422,11 @@ class SMSTViewer(QOpenGLWidget):
 
     # --- camera ------------------------------------------------------
 
-    def frame_model(self, heading=200.0, pitch=12.0):
+    def frame_model(self, heading=20.0, pitch=12.0):
         """Put the whole model in shot from `heading`/`pitch`.
+
+        20 degrees is the front: these models face +Z, so the opposite
+        heading opens every character showing the back of its head.
 
         paintGL builds the view as rotate(v) * rotate(h) * translate(t),
         so framing is a matter of solving that for the t which lands the

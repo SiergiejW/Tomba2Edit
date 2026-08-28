@@ -15,7 +15,8 @@ from gui.mdat.mdat_export import export_mdat_to_gltf
 from functions.camera_controls import CameraControls  # Importing the camera controls class
 from gui.scld.scld_parser import load_scld, find_area_scld_location
 from gui.scld.scld_render import (
-    UNIT_SCALE, build_points, build_lines, room_bounds, entries_in_bounds,
+    UNIT_SCALE, SURFACE_LINE_WIDTH, build_points, build_lines, room_bounds,
+    entries_in_bounds,
 )
 import ctypes
 from PyQt6.QtWidgets import (
@@ -74,10 +75,12 @@ class MDATViewer(QOpenGLWidget):
         self.texture_mode_action.toggled.connect(self.toggle_texture_mode)
         self.toolbar.addAction(self.texture_mode_action)
 
-        # Culling toggle button
-        self.culling_enabled = False  # Track state
+        # Culling toggle button - on by default, so a room is looked
+        # into rather than at the back of its own far wall.
+        self.culling_enabled = True  # Track state
         self.culling_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Backface Culling", self)
         self.culling_action.setCheckable(True)
+        self.culling_action.setChecked(True)
         self.culling_action.toggled.connect(self.toggle_culling)
         self.toolbar.addAction(self.culling_action)
 
@@ -145,12 +148,9 @@ class MDATViewer(QOpenGLWidget):
                 QMessageBox.critical(self, "Export Failed", "Failed to export model.")
 
     def toggle_culling(self, checked):
-        self.makeCurrent()
-        if checked:
-            GL.glEnable(GL.GL_CULL_FACE)
-            GL.glCullFace(GL.GL_BACK)
-        else:
-            GL.glDisable(GL.GL_CULL_FACE)
+        # Applied in paintGL rather than here: this can be toggled (and
+        # is set) before Qt has given the widget a usable context.
+        self.culling_enabled = checked
         self.update()
 
     def toggle_texture_mode(self, checked):
@@ -532,6 +532,11 @@ class MDATViewer(QOpenGLWidget):
 
     def paintGL(self):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        if self.culling_enabled:
+            GL.glEnable(GL.GL_CULL_FACE)
+            GL.glCullFace(GL.GL_BACK)
+        else:
+            GL.glDisable(GL.GL_CULL_FACE)
         self._update_stats_label()
         if not self.model_data:
             print("❌ No model data to draw.")
@@ -630,7 +635,7 @@ class MDATViewer(QOpenGLWidget):
 
             def draw_collision():
                 if self.collision_vertex_count:
-                    GL.glLineWidth(1.0)  # thinnest width most GL drivers support
+                    GL.glLineWidth(SURFACE_LINE_WIDTH)
                     self.collision_vao.bind()
                     GL.glDrawArrays(GL.GL_LINES, 0, self.collision_vertex_count)
                     self.collision_vao.release()

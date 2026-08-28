@@ -144,7 +144,7 @@ class BGMPViewer(QWidget):
         self.palette_table.itemSelectionChanged.connect(self._on_palette_row_changed)
 
         self.page_title = panel_title.make_panel_title("Source texture page")
-        self.info_label = QLabel("No BGMP loaded")
+        self.info_label = panel_title.make_info_label("No BGMP loaded")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -274,7 +274,7 @@ class BGMPViewer(QWidget):
 
         self._stop_cycling()
         self.cycle_check.blockSignals(True)
-        self.cycle_check.setChecked(False)   # a new file starts still
+        self.cycle_check.setChecked(False)   # cleared here, restarted below
         self.cycle_check.blockSignals(False)
         self.page_y_offset = detect_page_y_offset(self.bgmp_data, self.textures)
         self.offset_spin.blockSignals(True)
@@ -291,6 +291,11 @@ class BGMPViewer(QWidget):
         self._populate_palettes()
         self._redraw()
         self._update_info()
+        # Backgrounds that glitter do it on their own. Started last,
+        # after the views exist: _on_cycle_toggled renders every phase
+        # of the background up front.
+        if self.cycle_check.isEnabled():
+            self.cycle_check.setChecked(True)
         return True
 
     def _clear(self, message):
@@ -302,7 +307,7 @@ class BGMPViewer(QWidget):
         self.palette_table.setRowCount(0)
         self.background_canvas.clear()
         self.page_canvas.clear()
-        self.info_label.setText(message)
+        panel_title.set_info(self.info_label, message)
 
     def _update_info(self, extra=None):
         if not self.bgmp_data:
@@ -340,7 +345,7 @@ class BGMPViewer(QWidget):
             parts.append("header's CLUT x/y disagree with its CLUT word")
         if extra:
             parts.insert(0, extra)
-        self.info_label.setText("  |  ".join(parts))
+        panel_title.set_info(self.info_label, "  |  ".join(parts))
 
     def _cycling_palettes(self):
         """Palettes the map uses whose colours form a closed ring."""
@@ -592,7 +597,7 @@ class BGMPViewer(QWidget):
         except OSError as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write {path}:\n\n{e}")
             return
-        self.info_label.setText(f"Wrote {os.path.basename(path)}")
+        panel_title.set_info(self.info_label, f"Wrote {os.path.basename(path)}")
 
 
 def _scroll_for(canvas):

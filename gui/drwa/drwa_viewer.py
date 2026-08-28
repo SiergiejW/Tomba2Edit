@@ -179,7 +179,7 @@ class DRWAViewer(QWidget):
 
         self.grid_title = panel_title.make_panel_title("Drawmap grid")
         self.footprint_title = panel_title.make_panel_title("Level from above")
-        self.info_label = QLabel("No DRWA loaded")
+        self.info_label = panel_title.make_info_label("No DRWA loaded")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -290,7 +290,7 @@ class DRWAViewer(QWidget):
         self.groups_table.setRowCount(0)
         self.grid_canvas.clear()
         self.footprint_canvas.set_footprint(None)
-        self.info_label.setText(message)
+        panel_title.set_info(self.info_label, message)
 
     # --- drawing ---
 
@@ -473,7 +473,7 @@ class DRWAViewer(QWidget):
             parts.append(f"{drwa.slack} bytes of the entry past the last group")
         if extra:
             parts.insert(0, extra)
-        self.info_label.setText("  |  ".join(parts))
+        panel_title.set_info(self.info_label, "  |  ".join(parts))
 
     # --- toolbar ---
 
@@ -515,7 +515,7 @@ class DRWAViewer(QWidget):
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write {path}:\n\n{e}")
             return
-        self.info_label.setText(f"Wrote {os.path.basename(path)}")
+        panel_title.set_info(self.info_label, f"Wrote {os.path.basename(path)}")
 
 
 def _scroll_for(canvas):

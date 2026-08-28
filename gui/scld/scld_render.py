@@ -22,6 +22,12 @@ GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
 # Records drop to this opacity when their surfaces are drawn over them.
 SCAFFOLD_ALPHA = 0.5
 
+# How heavily a walkable surface is drawn, in both the SCLD viewer and
+# the MDAT view's overlay - one number so the two agree. Wide enough to
+# follow across a textured room, where a hairline disappears into the
+# artwork behind it.
+SURFACE_LINE_WIDTH = 3.0
+
 # Undecoded candidate walls - deliberately unlike anything else on
 # screen, so a guess is never mistaken for decoded geometry.
 WALL_CANDIDATE_COLOR = (1.0, 0.35, 0.75)

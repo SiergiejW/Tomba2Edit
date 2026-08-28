@@ -14,7 +14,8 @@ from PyQt6.QtGui import QMatrix4x4, QAction, QVector3D, QPainter, QColor, QFont
 from OpenGL import GL
 from gui.scld.scld_parser import load_scld
 from gui.scld.scld_render import (
-    UNIT_SCALE, SCAFFOLD_ALPHA, build_points, build_lines, unkn_color,
+    UNIT_SCALE, SCAFFOLD_ALPHA, SURFACE_LINE_WIDTH, build_points, build_lines,
+    unkn_color,
 )
 from gui.mdat.mdat import exportMDAT, find_area_mdat_location
 from functions.camera_controls import CameraControls
@@ -563,7 +564,7 @@ class SCLDViewer(QOpenGLWidget):
             # The surfaces are the thing being read; the records are only
             # scaffolding under them, so the lines get the weight and full
             # opacity and the points are drawn back at SCAFFOLD_ALPHA.
-            GL.glLineWidth(2.0)
+            GL.glLineWidth(SURFACE_LINE_WIDTH)
             self.shader_program.setUniformValue("alpha", 1.0)
             self.line_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.line_vertex_count)

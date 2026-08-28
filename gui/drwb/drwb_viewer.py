@@ -115,7 +115,7 @@ class DRWBViewer(QWidget):
         _prepare_table(self.values_table)
 
         self.grid_title = panel_title.make_panel_title("Flag map")
-        self.info_label = QLabel("No DRWB loaded")
+        self.info_label = panel_title.make_info_label("No DRWB loaded")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -275,7 +275,7 @@ class DRWBViewer(QWidget):
         self.values_table.setRowCount(0)
         self.grid_canvas.clear()
         self.planes_canvas.clear()
-        self.info_label.setText(message)
+        panel_title.set_info(self.info_label, message)
 
     # --- drawing ---
 
@@ -419,7 +419,7 @@ class DRWBViewer(QWidget):
         parts.append("what the flags switch is undecoded")
         if extra:
             parts.insert(0, extra)
-        self.info_label.setText("  |  ".join(parts))
+        panel_title.set_info(self.info_label, "  |  ".join(parts))
 
     # --- toolbar ---
 
@@ -456,7 +456,7 @@ class DRWBViewer(QWidget):
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write {path}:\n\n{e}")
             return
-        self.info_label.setText(f"Wrote {os.path.basename(path)}")
+        panel_title.set_info(self.info_label, f"Wrote {os.path.basename(path)}")
 
 
 def _scroll_for(canvas):
