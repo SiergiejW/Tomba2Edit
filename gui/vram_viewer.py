@@ -13,6 +13,66 @@ import struct
 import functions.graphic_controls as ctrl
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
+
+def decode_vram_bytes(img_data):
+    """Decompress one area's TOMBA2.IMG chunk into a raw 1024x512
+    16-bit VRAM image - 0x800 bytes per row, 1MB in total.
+
+    Split out of VRAMViewer.process_vram() (which still calls it) so
+    anything needing the bytes alone - the SPRT viewer cutting texture
+    pieces out of them - doesn't also pay for building the greyscale
+    preview image process_vram() returns."""
+    img_file = io.BytesIO(img_data)
+    c_header_amount = struct.unpack("<I", img_file.read(4))[0]
+    c_header_size = c_header_amount * 0xC + 4
+    skip = 0x800 - c_header_size
+
+    c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
+    img_file.read(skip)
+
+    # Simulate raw 1MB VRAM as bytearray (1024x512 x 2 bytes per pixel)
+    vram_bytes = bytearray(1024 * 512 * 2)  # 1MB = 524288 words = 1024x512 x 2
+
+    for x, y, w, h, s in c_header_list:
+        shard_data = bytearray()
+        scompare = 0
+        lz = w * 2
+        extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
+
+        # Decompression logic (LZ-style with backrefs)
+        while scompare < s:
+            control_byte = img_file.read(1)
+            if not control_byte:
+                break
+            control = control_byte[0]
+            scompare += 1
+
+            amount = control >> 3
+            extra = control & 0x07
+
+            if extra == 0:
+                chunk = img_file.read(amount)
+                shard_data.extend(chunk)
+                scompare += amount
+            else:
+                ref_offset = extras[extra]
+                for _ in range(amount):
+                    ref_pos = len(shard_data) + ref_offset
+                    if 0 <= ref_pos < len(shard_data):
+                        shard_data.append(shard_data[ref_pos])
+                    else:
+                        shard_data.append(0)
+
+        # Copy shard into simulated VRAM respecting 0x800-byte row stride
+        for row in range(h):
+            shard_start = row * w * 2
+            shard_end = shard_start + w * 2
+            vram_offset = (y + row) * 0x800 + (x * 2)
+            vram_bytes[vram_offset:vram_offset + w * 2] = shard_data[shard_start:shard_end]
+
+    return vram_bytes
+
+
 class VRAMViewer(QWidget):
     def __init__(self):
         super().__init__()
@@ -142,57 +202,7 @@ class VRAMViewer(QWidget):
             return False
 
     def process_vram(self, img_data):
-        import io
-        from PIL import Image
-        import struct
-
-        img_file = io.BytesIO(img_data)
-        c_header_amount = struct.unpack("<I", img_file.read(4))[0]
-        c_header_size = c_header_amount * 0xC + 4
-        skip = 0x800 - c_header_size
-
-        c_header_list = [struct.unpack("<HHHHI", img_file.read(12)) for _ in range(c_header_amount)]
-        img_file.read(skip)
-
-        # Simulate raw 1MB VRAM as bytearray (1024x512 x 2 bytes per pixel)
-        vram_bytes = bytearray(1024 * 512 * 2)  # 1MB = 524288 words = 1024x512 x 2
-
-        for x, y, w, h, s in c_header_list:
-            shard_data = bytearray()
-            scompare = 0
-            lz = w * 2
-            extras = [0, -1, -lz, -lz - 1, -lz - 2, -lz - 3, -lz + 1, -lz + 2]
-
-            # Decompression logic (LZ-style with backrefs)
-            while scompare < s:
-                control_byte = img_file.read(1)
-                if not control_byte:
-                    break
-                control = control_byte[0]
-                scompare += 1
-
-                amount = control >> 3
-                extra = control & 0x07
-
-                if extra == 0:
-                    chunk = img_file.read(amount)
-                    shard_data.extend(chunk)
-                    scompare += amount
-                else:
-                    ref_offset = extras[extra]
-                    for _ in range(amount):
-                        ref_pos = len(shard_data) + ref_offset
-                        if 0 <= ref_pos < len(shard_data):
-                            shard_data.append(shard_data[ref_pos])
-                        else:
-                            shard_data.append(0)
-
-            # Copy shard into simulated VRAM respecting 0x800-byte row stride
-            for row in range(h):
-                shard_start = row * w * 2
-                shard_end = shard_start + w * 2
-                vram_offset = (y + row) * 0x800 + (x * 2)
-                vram_bytes[vram_offset:vram_offset + w * 2] = shard_data[shard_start:shard_end]
+        vram_bytes = decode_vram_bytes(img_data)
 
         #  Convert 4bpp VRAM into RGBA image (4096x512)
         vram_image = Image.new("RGBA", (4096, 512))

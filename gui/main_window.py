@@ -18,6 +18,7 @@ from gui.txtd.txt2_viewer import TXT2Viewer
 from gui.mdat.mdat_viewer import MDATViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
+from gui.sprt.sprt_viewer import SPRTViewer
 from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
 from gui import theme
@@ -26,7 +27,7 @@ from functions.idx_parser import parse_idx_file
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
-from gui.vram_viewer import VRAMViewer
+from gui.vram_viewer import VRAMViewer, decode_vram_bytes
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
 # Colors used to flag a file's row in the main file tree,
@@ -537,6 +538,44 @@ class MainWindow(QMainWindow):
             self.bins_viewer.mark_exported()
         self._refresh_edit_status()
 
+    @staticmethod
+    def _area_chunk_index(item):
+        """The AREA_NN number a file row sits under (its folder's parent,
+        or the folder itself), or None if it isn't under one. The label
+        carries a count - "AREA_04 (41)" - so only the first word of the
+        number is parsed."""
+        parent = item.parent()
+        if parent is None:
+            return None
+        for candidate in (parent.parent(), parent):
+            if candidate is not None and candidate.text().startswith("AREA_"):
+                try:
+                    return int(candidate.text().split("_")[1].split()[0], 16)
+                except ValueError:
+                    return None
+        return None
+
+    def _load_area_vram_bytes(self, chunk_index):
+        """This area's TOMBA2.IMG chunk, decompressed to raw VRAM - what
+        SPRT pieces are cut out of. None (with a printed reason) if the
+        area has no VRAM or it can't be read; callers are expected to
+        carry on without it."""
+        if chunk_index is None or not self.dat_file:
+            return None
+        cd_folder = os.path.dirname(self.dat_file)
+        try:
+            with open(os.path.join(cd_folder, "TOMBA2.IDX"), "rb") as IDX, \
+                    open(os.path.join(cd_folder, "TOMBA2.IMG"), "rb") as IMG:
+                IDX.seek(chunk_index * 0x800)
+                img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
+                if img_end <= img_start:
+                    return None
+                IMG.seek(img_start)
+                return decode_vram_bytes(IMG.read(img_end - img_start))
+        except Exception as e:
+            print(f"Could not load VRAM for AREA_{chunk_index:02X}: {e}")
+            return None
+
     def count_items(self, item):
         count = 0
         for i in range(item.rowCount()):
@@ -912,11 +951,12 @@ class MainWindow(QMainWindow):
         self.mdat_viewer = MDATViewer()
         self.scld_viewer = SCLDViewer()
         self.scld_panel = SCLDDebugPanel(self.scld_viewer)
+        self.sprt_viewer = SPRTViewer()
         self.vram_viewer = VRAMViewer()  # Add this line
 
         self.widgets = {
             "Folder": QLabel("This is a folder"),
-            "SPRT": QLabel("SPRITE Viewer"),
+            "SPRT": self.sprt_viewer,
             "TXTD": self.txtd_viewer,
             "TXT1": self.txt2_viewer,  # same layout as TXT2, shares the viewer
             "TXT2": self.txt2_viewer,
@@ -1172,6 +1212,24 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             print(f"Error loading SCLD file: {e}")
                             QMessageBox.critical(self, "Error", f"Failed to load SCLD file: {e}")
+
+                    elif widget == self.widgets["SPRT"]:
+                        try:
+                            if self.dat_file:
+                                print("Loading SPRT data...")
+                                chunk_index = self._area_chunk_index(selected_item)
+                                # Sprites are cut out of the area's VRAM, but a
+                                # missing/unreadable one only costs the textures -
+                                # the viewer still lays the pieces out.
+                                vram_bytes = self._load_area_vram_bytes(chunk_index)
+                                self.sprt_viewer.load_sprt_data(
+                                    self.dat_file, dat_start, offset, entry_size,
+                                    chunk_index=chunk_index, vram_bytes=vram_bytes)
+                            else:
+                                QMessageBox.critical(self, "Error", "DAT file not loaded.")
+                        except Exception as e:
+                            print(f"Error loading SPRT file: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to load SPRT file: {e}")
 
                     else:
                         print(f"No specialized viewer for {file_type} files")
