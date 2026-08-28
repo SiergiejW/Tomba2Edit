@@ -1,3 +1,4 @@
+Thanks to vervalkon from Tomba Club
 bgmap spec (example is Fisherman village):
 
 000E		texpage

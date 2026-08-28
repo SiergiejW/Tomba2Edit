@@ -1,3 +1,4 @@
+#Thanks to vervalkon from Tomba Club
 baccuscluthack = 0x7FC8
 CW = 64
 CH = 64

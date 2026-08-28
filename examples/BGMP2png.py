@@ -1,4 +1,4 @@
-
+#Thanks to vervalkon from Tomba Club
 import struct
 from PIL import Image
 

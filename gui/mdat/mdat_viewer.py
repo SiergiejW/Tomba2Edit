@@ -104,7 +104,6 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.toolbar.addAction(frame_action)
 
         # Export button
-        export_action_icon = QIcon("icons/graphics/address-book.png")
         export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export GLTF", self)
         export_action.triggered.connect(self.export_to_glb)
         self.toolbar.addAction(export_action)

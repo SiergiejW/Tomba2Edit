@@ -1,3 +1,4 @@
+#Thanks to vervalkon from Tomba Club
 import struct
 
 def getB(number=1):
