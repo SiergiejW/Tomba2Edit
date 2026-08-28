@@ -68,19 +68,22 @@ class BinsViewer(QWidget):
 
         self.tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
 
-    def load_overlays(self, overlays, sop_path):
+    def load_overlays(self, overlays, sop_path, descriptions=None):
         """overlays: [{"name": str, "size": int}, ...] as found on the
         disc (see ISOHandler.bin_overlays). sop_path: extracted SOP.BIN
-        path, or None if it wasn't found. Listed flat, matching how
-        they actually sit loose in the disc's BIN/ folder - no
-        synthetic grouping."""
+        path, or None if it wasn't found. descriptions: {filename: what
+        it is} out of the open labels file, since an overlay called
+        A0F.BIN says nothing on its own. Listed flat, matching how they
+        actually sit loose in the disc's BIN/ folder - no synthetic
+        grouping."""
         self.clear_cache()
         self._overlays = overlays
         self.sop_path = sop_path
+        descriptions = descriptions or {}
 
         root = self.tree_model.invisibleRootItem()
         for o in sorted(overlays, key=lambda o: o["name"]):
-            item = self._make_item(o)
+            item = self._make_item(o, descriptions.get(o["name"].upper(), ""))
             if o["name"].upper() == "SOP.BIN":
                 self._sop_item = item
             root.appendRow(item)
@@ -89,9 +92,32 @@ class BinsViewer(QWidget):
             self.sop_viewer.load_sop(sop_path)
         self._refresh_sop_item_color()
 
+    def set_descriptions(self, descriptions):
+        """Relabel the overlays already listed, from a labels file's
+        "bins" section.
+
+        Separate from load_overlays because loading a different labels
+        file must not reload SOP.BIN along with it: the path it was read
+        from belongs to whichever disc was open at the time, and that
+        can be a temp directory that has since been cleaned up."""
+        descriptions = descriptions or {}
+        by_name = {o["name"]: o for o in self._overlays}
+        root = self.tree_model.invisibleRootItem()
+        for row in range(root.rowCount()):
+            item = root.child(row)
+            overlay = by_name.get(item.data(BIN_LOCATION_ROLE))
+            if overlay is not None:
+                item.setText(self._item_text(
+                    overlay, descriptions.get(overlay["name"].upper(), "")))
+
     @staticmethod
-    def _make_item(overlay):
-        item = QStandardItem(f"{overlay['name']} ({overlay['size']} bytes)")
+    def _item_text(overlay, description=""):
+        label = overlay["name"] + (f" - {description}" if description else "")
+        return f"{label} ({overlay['size']} bytes)"
+
+    @classmethod
+    def _make_item(cls, overlay, description=""):
+        item = QStandardItem(cls._item_text(overlay, description))
         item.setData(overlay["name"], BIN_LOCATION_ROLE)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if overlay["name"].upper() != "SOP.BIN":

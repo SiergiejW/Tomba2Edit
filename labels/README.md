@@ -46,12 +46,38 @@ throw your work away.
   hand-written `TOMBAMAP` txt files wrote them. Only `start` is used to match a
   file; `end` is kept so nothing from the original map is lost.
 - `type` — what the person who mapped it recorded. The tool works the type out
-  for itself and only uses this to notice when the two disagree, which it
-  mentions in the row's tooltip. There are two such disagreements in
-  `us-retail.json`, and in both the tool is right.
+  for itself (`functions/format_detect.py`) and does not take this as
+  authority. It uses it for two things: to say in the tooltip when the two
+  disagree — there are two such disagreements in `us-retail.json`, and in both
+  the tool is right — and to pick a name inside the animation family, where
+  TANP, BETP, ALFD, ALFP and MDAP are all one container and the bytes can only
+  say "ANMP". There is deliberately no id table here: ids mean different things
+  on different builds, so anything that leaned on them would be wrong for every
+  build nobody had written a table for.
 - `name` — what shows in the tree. Leave it out or `""` for an address that is
   recorded but not identified; those rows keep their address and nothing else.
-- `dat_size` — a note to whoever reads the file. Nothing matches on it.
+- `dat_size`, `serial` — notes to whoever reads the file. Nothing matches on
+  them; the disc is identified by the addresses (see above).
+
+## Other sections
+
+```json
+  "bins": {"A0F.BIN": "Last Pig Boss", "SOP.BIN": "Intro"},
+  "areas": {"0C": "Water Temple"}
+```
+
+- `bins` — what each overlay in the disc's `BIN/` folder is, shown beside it in
+  the BINs tab. `A0F.BIN` says nothing on its own.
+- `areas` — a name for an `AREA_nn` folder in the tree. Optional: an area is
+  normally named after the level inside it, taken from its MDAT's own entry, so
+  this is only for areas that have no MDAT or whose level wants a different
+  name. Keys are the hex chunk number.
+
+## Builds
+
+`us-retail.json` is SCUS-94454 and `us-demo.json` the US standalone demo. Other
+regions are different builds with different addresses and need their own file —
+SLPS-02350 and the SCES discs are not covered by these.
 
 ## Converting an old TOMBAMAP
 

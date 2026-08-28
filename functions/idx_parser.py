@@ -7,30 +7,23 @@ from PyQt6.QtWidgets import QStyle
 from functions import format_detect
 
 
-def _trail_type(dat_path, address, size, cache):
-    """What the trail file at `address` is, read out of its own bytes -
-    the trailer gives no type id, so this is the only thing there is to
-    go on. Returns (type, tooltip); the type is "bin" when nothing
-    reads, which on the retail disc never happens (all 53 come back
-    SMST or MDAT, and all 53 agree with TOMBAMAP_us.txt).
+def _entry_type(dat_file, address, size, cache):
+    """What the file at `address` is, read out of its own bytes.
 
-    The same blob is listed by most of the 48 areas, so the answer is
-    cached on address and size rather than worked out ~660 times."""
+    Every row in the tree is typed this way, whether the IDX gave it an
+    id or not. The ids used to decide it, and they can't: they mean
+    different things on different builds - the demo's id 6 is a level
+    where retail's id 6 is an animation - so a table of them is a table
+    per build, and wrong for any build nobody has written one for. The
+    bytes say the same thing on every build.
+
+    Cached on (address, size): the trail lists the same handful of
+    files under nearly every area, so this is asked ~660 times for 53
+    distinct blobs."""
     key = (address, size)
-    if key in cache:
-        return cache[key]
-    try:
-        matches = format_detect.identify_at(dat_path, address, size)
-    except OSError as e:
-        matches = []
-        print(f"Could not read trail file at 0x{address:X}: {e}")
-    if matches:
-        tooltip = "\n".join(str(m) for m in matches)
-        result = (matches[0].kind, f"0x{address:X}, {size} bytes\n{tooltip}")
-    else:
-        result = ("bin", f"0x{address:X}, {size} bytes\nreads as no known format")
-    cache[key] = result
-    return result
+    if key not in cache:
+        cache[key] = format_detect.entry_type(dat_file, address, size)
+    return cache[key]
 
 
 def _type_icon(main_window, filetype, default):
@@ -50,6 +43,10 @@ def _type_icon(main_window, filetype, default):
         "BGMP": main_window.bgmp_icon,
         "BETP": main_window.betp_icon,
         "ALFD": main_window.alfd_icon,
+        # Names a labels file may use for the same animation container.
+        "ALFP": main_window.alfd_icon,
+        "MDAP": main_window.tanp_icon,
+        "SPRP": main_window.sprt_icon,
     }
     return icons.get(filetype, default)
 
@@ -61,10 +58,17 @@ def _type_icon(main_window, filetype, default):
 _ROW_LABEL_DATA = Qt.ItemDataRole.UserRole + 3
 
 
+# TANP, BETP, ALFD and the map's ALFP/MDAP are one container - see
+# format_detect - so the bytes can only ever say ANMP. Which of the
+# names a build uses for a given file is knowledge, not structure, so a
+# labels file is allowed to say, and the row follows it.
+_ANIM_FAMILY = frozenset(("ANMP", "TANP", "BETP", "ALFD", "ALFP", "MDAP"))
+
+
 def apply_labels(main_window):
-    """Rewrite every file row in the tree from main_window.labels - the
-    names someone worked out for this build of the disc (see
-    functions/labels.py). Returns how many rows got a name.
+    """Rewrite every row in the tree from main_window.labels - the names
+    someone worked out for this build of the disc (see
+    functions/labels.py). Returns how many file rows got a name.
 
     Separate from building the tree so that loading a different labels
     file is a rename pass over what's already there, rather than a
@@ -76,35 +80,85 @@ def apply_labels(main_window):
     label_set = getattr(main_window, "labels", None)
     named = 0
 
-    def walk(item):
+    def relabel_file(child):
         nonlocal named
+        data = child.data(_ROW_LABEL_DATA)
+        if not data:
+            return
+        stem, filetype, address, detail = data
+        label = label_set.get(address) if label_set else None
+        name = label.name if label else ""
+        shown = filetype
+        tooltip = detail
+        if label:
+            named += bool(name)
+            if label.kind and label.kind != filetype:
+                if filetype in _ANIM_FAMILY and label.kind in _ANIM_FAMILY:
+                    shown = label.kind
+                else:
+                    # Elsewhere the hand-written type is only a note. It
+                    # is wrong twice on the retail disc, and the type on
+                    # the row is the one the tool read out of the bytes.
+                    tooltip += f"\nlabels file calls this {label.kind}"
+        elif label_set:
+            tooltip += "\nnot in the labels file"
+        child.setText(f"{stem} {name}.{shown}" if name else f"{stem}.{shown}")
+        child.setIcon(_type_icon(main_window, shown, child.icon()))
+        child.setToolTip(tooltip)
+
+    def relabel_area(area_item):
+        """An AREA folder takes the name of the level inside it - which
+        is its MDAT's name, so the folder says what the room is without
+        anyone having to write the area numbers down separately."""
+        index = _chunk_index_of(area_item)
+        if index is None:
+            return
+        name = label_set.area_name(index) if label_set else ""
+        if not name and label_set:
+            name = _area_name_from_mdat(area_item, label_set)
+        count = main_window.count_items(area_item)
+        area_item.setText(f"AREA_{index:02X}" + (f" {name}" if name else "")
+                          + (f" ({count})" if count else ""))
+
+    def walk(item, depth=0):
         for row in range(item.rowCount()):
             child = item.child(row)
-            if child.hasChildren():
-                walk(child)
-                continue
-            data = child.data(_ROW_LABEL_DATA)
-            if not data:
-                continue
-            stem, filetype, address, detail = data
-            label = label_set.get(address) if label_set else None
-            name = label.name if label else ""
-            child.setText(f"{stem} {name}.{filetype}" if name
-                          else f"{stem}.{filetype}")
-            tooltip = detail
-            if label:
-                named += bool(name)
-                if label.kind and label.kind != filetype:
-                    # The map's type column is hand-written and is wrong
-                    # in a couple of places on the retail disc; the type
-                    # on the row is the one the tool worked out.
-                    tooltip += f"\nlabels file calls this {label.kind}"
-            elif label_set:
-                tooltip += "\nnot in the labels file"
-            child.setToolTip(tooltip)
+            if child.hasChildren() or depth == 0:
+                if depth == 0:
+                    relabel_area(child)
+                walk(child, depth + 1)
+            else:
+                relabel_file(child)
 
     walk(model.invisibleRootItem())
     return named
+
+
+def _chunk_index_of(area_item):
+    """The number out of an "AREA_04 Something (41)" folder label."""
+    text = area_item.text()
+    if not text.startswith("AREA_"):
+        return None
+    try:
+        return int(text.split("_", 1)[1][:2], 16)
+    except ValueError:
+        return None
+
+
+def _area_name_from_mdat(area_item, label_set):
+    """The name of the first named MDAT under this area - the level the
+    area holds. Areas that are nothing but a trail listing, or whose
+    level nobody has named, come back empty and keep their number."""
+    for row in range(area_item.rowCount()):
+        folder = area_item.child(row)
+        for k in range(folder.rowCount()):
+            data = folder.child(k).data(_ROW_LABEL_DATA)
+            if not data or data[1] != "MDAT":
+                continue
+            label = label_set.get(data[2])
+            if label and label.name:
+                return label.name
+    return ""
 
 
 def parse_idx_file(main_window, cd_folder):
@@ -133,9 +187,9 @@ def parse_idx_file(main_window, cd_folder):
     # sdat_pointers list either way. Reset on every (re)parse.
     main_window.txtd_item_lookup = {}
 
-    # (address, size) -> (type, tooltip) for the trail files, which most
-    # of the 48 areas list the same copies of.
-    trail_types = {}
+    # (address, size) -> (type, tooltip) for every file, so the trail's
+    # repeated copies are only read once.
+    entry_types = {}
 
     folder_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
     file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
@@ -178,7 +232,8 @@ def parse_idx_file(main_window, cd_folder):
                     next_offset = dat_end - dat_start
 
                 size = next_offset - offset
-                filetype = main_window.id_convert(DAT, id, hex(dat_start + offset))
+                filetype, detail = _entry_type(DAT, dat_start + offset, size,
+                                               entry_types)
                 stem = f"{id}-{offset:04X}"
                 file_item = QStandardItem(file_icon, f"{stem}.{filetype}")
 
@@ -187,8 +242,7 @@ def parse_idx_file(main_window, cd_folder):
                 # ✅ Store AREA and file index
                 file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)
                 file_item.setData(
-                    (stem, filetype, dat_start + offset,
-                     f"id {id}, 0x{dat_start + offset:X}, {size} bytes"),
+                    (stem, filetype, dat_start + offset, f"id {id}, {detail}"),
                     _ROW_LABEL_DATA)
 
                 file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -226,7 +280,7 @@ def parse_idx_file(main_window, cd_folder):
                 adr, end, sz = trail_list[i]
                 # The trailer carries no type id, so the type is read out
                 # of the blob itself (see _trail_type above).
-                filetype, tooltip = _trail_type(dat_path, adr, sz, trail_types)
+                filetype, tooltip = _entry_type(DAT, adr, sz, entry_types)
                 stem = f"{adr:04X}-{end:04X}"
                 trail_file_item = QStandardItem(
                     _type_icon(main_window, filetype, file_icon),

@@ -1,10 +1,12 @@
 """Working out what a DAT blob is from its own bytes.
 
-Every SDAT entry arrives with an id in the IDX, and
-MainWindow.id_convert turns that id into a type. The trailer at the end
-of each IDX chunk - the "trail" - carries no ids at all, only a start
-and an end, so a trail file has nothing to name it by and the tree used
-to call all of them ".bin".
+Every row in the tree is typed from here. The IDX does give each
+SDAT entry an id, and the tool used to read the type off a table of
+them - but those tables are per build (the demo's id 6 is a level where
+retail's is an animation, and its id 7 a drawmap where retail's is
+collision), so they are wrong for any build nobody has written one for,
+and the trailer at the end of each IDX chunk gives no id at all. The
+bytes say the same thing on every build.
 
 Nothing in these formats is tagged - there is no magic number anywhere
 on the disc - so the only thing left to read is the shape. Each format
@@ -41,12 +43,17 @@ WHAT EACH DETECTOR ACTUALLY CHECKS
           begins, every sprite's 16-byte pieces inside the blob.
     TXTD  u16 root, u16 count, twelve zero bytes. root is in words from
           0x10, and has to name the end of the count's own 4-byte
-          table rounded up to 16.
+          table rounded up to 16. Which of the three shapes it is comes
+          from following its pointers: TXTD's reach a sub-table and
+          TXT1's and TXT2's reach text, and between those two it is the
+          slot width that decides, 4 bytes or 2 - the header agrees
+          with either, the pointers only with one.
     ANMP  a plain u32 table of (u24 offset, u8 tag), the offsets
           climbing, the first being the table's own length. This is
           what TANP, BETP, ALFD and the map's "MDAP"/"ALFP" all are -
-          one container, told apart only by the IDX id, so that is as
-          far as the bytes can take it.
+          one container under several names, so ANMP is as far as the
+          bytes go. A labels file that knows which name a given file
+          goes by says so, and the tree follows it.
 
 Confidence is what the walk got through, not a guess: CERTAIN means the
 blob was accounted for to the last byte, STRONG that everything checked
@@ -356,7 +363,60 @@ def _detect_sprt(data):
 # TXTD - dialogue
 # --------------------------------------------------------------------
 
+def _text_run(data, at, limit=120):
+    """How much of the run at `at` decodes as the game's own character
+    set, up to its 0xFF terminator. 1.0 is text, and a pointer table
+    read as text comes out nowhere near it."""
+    from gui.txtd.tombadict import letters
+
+    known = seen = 0
+    for i in range(at, min(at + limit, len(data))):
+        if data[i] == 0xFF:
+            break
+        seen += 1
+        known += data[i] in letters
+    return known / seen if seen else 0.0
+
+
+def _table_reads(data, flat):
+    """How well the master table reads at one of its two slot widths, as
+    (fraction of pointers landing on text, pointers tried).
+
+    TXT2's table is a flat list of 2-byte pointers; TXT1's and TXTD's is
+    (adr, extra) pairs, 4 bytes a slot. The header is self-consistent
+    either way - `root` counts the table's own slots, so both widths
+    agree with it - so the only thing that tells them apart is following
+    the pointers and seeing which width lands on text."""
+    root, count = struct.unpack_from("<HH", data, 0)
+    step = 2 if flat else 4
+    entry_root = root * step + 0x10
+    if not count or entry_root > len(data):
+        return 0.0, 0
+    good = tried = 0
+    for i in range(count):
+        at = 0x10 + i * step
+        if at + step > len(data):
+            break
+        pointer = struct.unpack_from("<H", data, at)[0]
+        if pointer == 0xFFFF:
+            break
+        tried += 1
+        target = entry_root + pointer
+        if target < len(data) and _text_run(data, target) > 0.85:
+            good += 1
+    return (good / tried if tried else 0.0), tried
+
+
 def _detect_txtd(data):
+    """The text container, and which of its three shapes this is.
+
+    All three open the same way, so the header can't tell them apart.
+    What does is where the master pointers land: TXTD's go to a
+    sub-table of (pointer, speaker) pairs and only that sub-table's
+    entries reach the text, while TXT1's and TXT2's go straight at it.
+    Between those two it comes down to the slot width - see
+    _table_reads. Both tests are just following the file's own pointers
+    and asking whether what they name is text."""
     _need(len(data) >= 0x10, "too short for a TXTD header")
     root, amount = struct.unpack_from("<HH", data, 0)
     _need(data[4:0x10] == bytes(12), "the twelve bytes after the header aren't zero")
@@ -367,7 +427,21 @@ def _detect_txtd(data):
           f"{expected + 0x10:#x}")
     _need(0x10 + expected <= len(data),
           f"{amount} master headers don't fit in {len(data):#x} bytes")
-    return Match("TXTD", STRONG, f"{amount} master headers")
+
+    first = struct.unpack_from("<H", data, 0x10)[0]
+    if _text_run(data, (root << 2) + 0x10 + (first << 2)) <= 0.85:
+        return Match("TXTD", STRONG,
+                     f"{amount} master headers, each into its own sub-table")
+
+    flat, flat_tried = _table_reads(data, flat=True)
+    paired, paired_tried = _table_reads(data, flat=False)
+    if flat > paired:
+        return Match("TXT2", STRONG,
+                     f"{flat_tried} messages, flat 2-byte pointer table "
+                     f"({flat:.0%} reach text, {paired:.0%} read as pairs)")
+    return Match("TXT1", STRONG,
+                 f"{paired_tried} messages, paired 4-byte table "
+                 f"({paired:.0%} reach text, {flat:.0%} read flat)")
 
 
 # --------------------------------------------------------------------
@@ -473,6 +547,31 @@ def identify_at(dat_path, address, size):
         return identify(f.read(size))
 
 
+# What the tree calls a blob nothing here can read.
+UNKNOWN = "bin"
+
+
+def entry_type(dat_file, address, size):
+    """The type to put on one DAT entry, and a line saying how it was
+    reached - what the tree labels every file with, SDAT entries and
+    trail files alike.
+
+    `dat_file` is an open binary handle. There is deliberately no id
+    involved: the IDX's ids mean different things on different builds
+    (the demo's id 6 is a level where retail's is an animation), and
+    reading the blob answers the question for any build without needing
+    a table for it."""
+    try:
+        dat_file.seek(address)
+        matches = identify(dat_file.read(size))
+    except (OSError, ValueError) as e:
+        return UNKNOWN, f"0x{address:X}, {size} bytes\ncouldn't be read: {e}"
+    if not matches:
+        return UNKNOWN, f"0x{address:X}, {size} bytes\nreads as no known format"
+    detail = "\n".join(str(m) for m in matches)
+    return matches[0].kind, f"0x{address:X}, {size} bytes\n{detail}"
+
+
 def reasons(data):
     """Why each detector said no, for when a blob won't read as
     anything. Keyed by the format it was refused as."""
@@ -512,6 +611,7 @@ def read_tombamap(path):
 # The map spells some types differently from the tool - one container,
 # two names - so a check against it has to know they're the same thing.
 _MAP_ALIASES = {
+    "TXT1": "TXTD", "TXT2": "TXTD",
     "SPRP": "SPRT",
     "SPRD": "SPRT",
     "TAND": "ANMP", "TANP": "ANMP",
@@ -535,7 +635,7 @@ def _main(argv):
     agreed = disagreed = unnamed = missed = 0
     for start, end, kind, name in entries:
         matches = identify(dat[start:end])
-        got = matches[0].kind if matches else "----"
+        got = _MAP_ALIASES.get(matches[0].kind, matches[0].kind) if matches else "----"
         want = _MAP_ALIASES.get(kind, kind)
         if want == "____":
             unnamed += 1

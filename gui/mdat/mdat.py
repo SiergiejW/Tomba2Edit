@@ -29,8 +29,8 @@ def area_mdat_entries(idx_path, dat_path, chunk_index):
 
     find_area_mdat_location() above stops at the first id 8, which is
     all a level room needs. This one finds them all, and uses the same
-    test gui.main_window.id_convert does - id 8 or 18-and-up, with
-    0xFFFF at +4, which is the first word of the entry's drawmap - so
+    test functions.format_detect uses - 0xFFFF at +4, which is the
+    first word of the entry's drawmap - so
     an area's second MDAT is found too (AREA_1B keeps one at id 0x20,
     and it is the one that area's DRWB belongs to)."""
     chunk_size = 0x800

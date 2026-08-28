@@ -1,11 +1,10 @@
 """Names for the files on the disc.
 
-Nothing in TOMBA2.DAT carries a filename. The IDX gives every SDAT
-entry a type id, format_detect works the type out of the bytes for the
-trail, and between them the tree can say what a file IS - but "the
-MDAT at 0x1B724" is as close as either gets to saying WHICH one it is.
-The names are knowledge that only exists outside the disc, worked out
-by hand by people opening files and looking at them.
+Nothing in TOMBA2.DAT carries a filename. format_detect reads what a
+file IS out of its own bytes, on any build - but "the MDAT at
+0x1B724" is as close as that gets to saying WHICH one it is. The names
+are knowledge that only exists outside the disc, worked out by hand by
+people opening files and looking at them.
 
 A LABELS FILE is where that knowledge lives: a list of addresses in one
 build of TOMBA2.DAT, each with the name someone gave it. They live in
@@ -76,13 +75,22 @@ class Label:
 class LabelSet:
     name: str = ""
     build: str = ""
+    serial: str = ""                             # disc serial, e.g. SCUS-94454
     source: str = ""
     dat_size: int = 0
-    path: str = ""                              # where it was loaded from
+    path: str = ""                               # where it was loaded from
     entries: dict = field(default_factory=dict)  # start address -> Label
+    areas: dict = field(default_factory=dict)    # chunk index -> area name
+    bins: dict = field(default_factory=dict)     # BIN filename -> what it is
 
     def __len__(self):
         return len(self.entries)
+
+    def area_name(self, chunk_index):
+        return self.areas.get(chunk_index, "")
+
+    def bin_name(self, filename):
+        return self.bins.get(filename.upper(), "")
 
     @property
     def named(self):
@@ -143,11 +151,25 @@ def load(path):
     return LabelSet(
         name=str(raw.get("name", "") or os.path.basename(path)),
         build=str(raw.get("build", "") or ""),
+        serial=str(raw.get("serial", "") or ""),
         source=str(raw.get("source", "") or ""),
         dat_size=int(raw.get("dat_size", 0) or 0),
         path=path,
         entries=entries,
+        areas=_expand_areas(raw.get("areas") or {}, path),
+        bins={str(k).upper(): str(v) for k, v in (raw.get("bins") or {}).items()},
     )
+
+
+def _expand_areas(raw, path):
+    """The "areas" table - hex chunk numbers to names."""
+    areas = {}
+    for key, value in raw.items():
+        try:
+            areas[int(str(key), 16)] = str(value)
+        except ValueError:
+            print(f"Ignoring area key {key!r} in {os.path.basename(path)}")
+    return areas
 
 
 def builtin():
@@ -236,13 +258,27 @@ def from_tombamap(txt_path, name="", build="", dat_size=0):
                     entries=entries)
 
 
-def save(label_set, path):
-    """Write a LabelSet out as a labels file, addresses in order."""
-    document = {
-        "name": label_set.name,
-        "build": label_set.build,
-        "source": label_set.source,
-        "dat_size": label_set.dat_size,
+def save(label_set, path, keep_existing=True):
+    """Write a LabelSet out as a labels file, addresses in order.
+
+    `keep_existing` merges into whatever is already at `path`, replacing
+    only the entry list - the ids, areas and bins sections are written
+    by hand and there is nothing in a TOMBAMAP txt to regenerate them
+    from, so converting a map again must not wipe them."""
+    document = {}
+    if keep_existing and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                document = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Couldn't merge into {path}, writing it fresh: {e}")
+            document = {}
+
+    document.update({
+        "name": label_set.name or document.get("name", ""),
+        "build": label_set.build or document.get("build", ""),
+        "source": label_set.source or document.get("source", ""),
+        "dat_size": label_set.dat_size or document.get("dat_size", 0),
         "entries": [
             {
                 "start": f"{label.start:06X}",
@@ -252,7 +288,11 @@ def save(label_set, path):
             }
             for label in sorted(label_set.entries.values(), key=lambda l: l.start)
         ],
-    }
+    })
+    # "entries" is long; keep it last so the sections a person edits are
+    # at the top of the file.
+    document = {k: document[k] for k in
+                sorted(document, key=lambda k: k == "entries")}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(document, f, indent=1, ensure_ascii=False)
         f.write("\n")

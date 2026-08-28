@@ -243,47 +243,6 @@ class MainWindow(QMainWindow):
         initial_treeview_width = 350
         self.splitter.setSizes([initial_treeview_width, self.width() - initial_treeview_width])
 
-    def id_convert(main_window, DAT, id, pointer_start):
-        if id == 0:
-            return "SPRT"
-        elif id == 2:
-            return "TXT1"
-        elif id == 3:
-            return "TXT2"
-        elif id == 13:
-            return "TXTD"
-        elif id == 4 or id == 6:
-            return "TANP"
-        elif id == 7:
-            return "SCLD"
-        elif id == 8:
-            DAT.seek(int(pointer_start, 16) + 4)
-            if struct.unpack("<h", DAT.read(2))[0] == -1:
-                return "MDAT"
-        elif id == 9:
-            return "DRWB"
-        elif id == 10:
-            return "SPRT"
-        elif id == 11:
-            return "BGMP"
-        elif id in [12, 16, 1, 5]:
-            return "SMST"
-        elif id == 14:
-            return "BETP"
-        elif id == 17:
-            return "ALFD"
-        elif id >= 18:
-            DAT.seek(int(pointer_start, 16) + 4)
-            if struct.unpack("<h", DAT.read(2))[0] == -1:
-                return "MDAT"
-            DAT.seek(int(pointer_start, 16))
-            if struct.unpack("<h", DAT.read(2))[0]:
-                return "ALFD"
-            else:
-                return "SMST"
-        else:
-            return "NULL"
-
     def load_labels_for_disc(self, idx_path):
         """Pick the names for the disc that has just been opened and put
         them on the tree. Called by idx_parser.parse_idx_file once the
@@ -308,6 +267,9 @@ class MainWindow(QMainWindow):
             score, source = 0.0, "built-in"
 
         named = apply_labels(self)
+        # Relabel, never reload - the BINs tab may be holding a SOP.BIN
+        # path from a disc that has since been closed and cleaned up.
+        self.bins_viewer.set_descriptions(self.labels.bins if self.labels else None)
         self.builtin_labels_action.setEnabled(self.labels_override is not None)
 
         if self.labels is None:
@@ -753,8 +715,14 @@ class MainWindow(QMainWindow):
         """Populate the BINs tab - overlays: [{"name", "size"}, ...] for
         every file in the disc's BIN/ folder, sop_path: extracted
         SOP.BIN path or None. Never refuses - an unrecognized SOP.BIN
-        build falls back to a read-only view instead (see BinsViewer)."""
-        self.bins_viewer.load_overlays(overlays, sop_path)
+        build falls back to a read-only view instead (see BinsViewer).
+
+        The overlay names are opaque - A0F.BIN is the Last Pig Boss -
+        so what each one is comes from the open labels file's "bins"
+        section, if it has one."""
+        self.bins_viewer.load_overlays(
+            overlays, sop_path,
+            self.labels.bins if self.labels else None)
 
     def open_iso_dialog(self):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp

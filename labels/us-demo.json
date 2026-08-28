@@ -3,6 +3,15 @@
  "build": "us-demo",
  "source": "TOMBAMAPdemo_us.txt",
  "dat_size": 860160,
+ "serial": "",
+ "bins": {
+  "A00.BIN": "Town of the Fishermen",
+  "DEMO.BIN": "Town of the Fishermen \"inactivity\" demo",
+  "GAME.BIN": "Data present in every save",
+  "OPN.BIN": "The skippable \"you scared the fish\" cutscene in Town of the Fishermen",
+  "SOP.BIN": "Start menu, options, load menu and the \"letter to Tomba\" intro scene",
+  "START.BIN": "Calls for the game data stored in the CD folder"
+ },
  "entries": [
   {
    "start": "000000",
