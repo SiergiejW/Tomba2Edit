@@ -252,8 +252,8 @@ class TXTDViewer(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
 
-        # Editing on the left, the same text as the game draws it on the
-        # right, each taking half the width whatever the window does.
+        # Raw text on top, the same text as the game draws it below,
+        # each taking half the height whatever the window does.
         edit_side = QWidget()
         edit_side_layout = QVBoxLayout(edit_side)
         edit_side_layout.setContentsMargins(0, 0, 0, 0)
@@ -267,7 +267,7 @@ class TXTDViewer(QWidget):
         self.preview = FontPreview(big=True)
         preview_side_layout.addWidget(self.preview)
 
-        edit_split = QSplitter(Qt.Orientation.Horizontal)
+        edit_split = QSplitter(Qt.Orientation.Vertical)
         edit_split.addWidget(edit_side)
         edit_split.addWidget(preview_side)
         edit_split.setStretchFactor(0, 1)

@@ -93,8 +93,8 @@ class SopViewer(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setMaximumWidth(600)
 
-        # SOP BIN is drawn in the big font - see gui/txtd/font_preview.py. Editing on the left,
-        # the same text as the game draws it on the right, each half.
+        # SOP BIN is drawn in the big font - see gui/txtd/font_preview.py.
+        # Raw text on top, the game's own rendering below, each half.
         edit_side = QWidget()
         edit_side_layout = QVBoxLayout(edit_side)
         edit_side_layout.setContentsMargins(0, 0, 0, 0)
@@ -108,7 +108,7 @@ class SopViewer(QWidget):
         self.preview = FontPreview(big=True)
         preview_side_layout.addWidget(self.preview)
 
-        edit_split = QSplitter(Qt.Orientation.Horizontal)
+        edit_split = QSplitter(Qt.Orientation.Vertical)
         edit_split.addWidget(edit_side)
         edit_split.addWidget(preview_side)
         edit_split.setStretchFactor(0, 1)
