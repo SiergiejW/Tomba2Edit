@@ -105,7 +105,8 @@ class SopViewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=True)
+        # No box: this text is drawn straight onto the scene.
+        self.preview = FontPreview(big=True, style=None)
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)

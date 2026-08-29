@@ -38,6 +38,16 @@ PAGE_Y = 256
 PAGE_W = 256
 PAGE_H = 256
 
+# The dialogue frame, and the palette it is drawn with. Three 18x16
+# pieces sit side by side in the page: a shallow top, a section with the
+# two side edges, and a deeper top. The box is built from these.
+FRAME_Y = 136
+FRAME_X = 176
+FRAME_PIECE_W = 18
+FRAME_PIECE_H = 16
+FRAME_PIECES = (11, 35, 59)      # x offsets from FRAME_X
+FRAME_CLUT = (255, 2)            # row, slot
+
 # The system font, and where the CLUTs sit. Rows are page rows.
 SYSTEM_TOP = 0
 SYSTEM_H = 8
@@ -155,13 +165,18 @@ def read_cluts(cd_folder):
 
 
 def _rgb555(word):
-    """One PSX colour word as (r, g, b, a), 0-255."""
+    """One PSX colour word as (r, g, b, a), 0-255.
+
+    The top bit marks the colour semi-transparent, which in the mode the
+    dialogue box uses means half the colour over half the background, so
+    it comes back at alpha 128. The frame's interior greys are the only
+    place in the page that sets it; the glyph palettes are all opaque."""
     if word == 0:
         return (0, 0, 0, 0)
     r = (word & 0x1F) * 255 // 31
     g = ((word >> 5) & 0x1F) * 255 // 31
     b = ((word >> 10) & 0x1F) * 255 // 31
-    return (r, g, b, 255)
+    return (r, g, b, 128 if word & 0x8000 else 255)
 
 
 def export_png(cd_folder, path, clut=None):
@@ -188,11 +203,7 @@ def export_png(cd_folder, path, clut=None):
 
 
 def import_png(cd_folder, path):
-    """Read an indexed PNG back into the page and rewrite the IMG.
-
-    Only the shards the page covers are re-compressed; every other shard
-    keeps its original bytes. A shard is refused if its new form needs
-    more room than it was given, which leaves the disc untouched."""
+    """Read an indexed PNG back into the page and rewrite the IMG."""
     image = Image.open(path)
     if image.size != (PAGE_W, PAGE_H):
         raise FontPageError(
@@ -202,11 +213,29 @@ def import_png(cd_folder, path):
         raise FontPageError(
             f"{os.path.basename(path)} is mode {image.mode}; the page has to "
             "stay indexed (mode P), since its pixels are CLUT indices.")
-    page = list(image.getdata())
+    return write_page(cd_folder, list(image.getdata()),
+                      what=os.path.basename(path))
+
+
+def write_page(cd_folder, page, what="the page"):
+    """Write a page back into the IMG. `page` is 256 rows of 4-bit
+    indices, or one flat sequence of PAGE_W * PAGE_H of them.
+
+    Only the shards the page covers are re-compressed; every other shard
+    keeps its original bytes. A shard is refused if its new form needs
+    more room than it was given, which leaves the disc untouched."""
+    if page and isinstance(page[0], (list, tuple)):
+        page = [v for row in page for v in row]
+    else:
+        page = list(page)
+    if len(page) != PAGE_W * PAGE_H:
+        raise FontPageError(
+            f"{what} has {len(page)} pixels; a page is "
+            f"{PAGE_W * PAGE_H}.")
     if max(page) > 15:
         raise FontPageError(
-            f"{os.path.basename(path)} uses index {max(page)}; the page is "
-            "4bpp, so only 0-15 exist.")
+            f"{what} uses index {max(page)}; the page is 4bpp, so only "
+            "0-15 exist.")
 
     img_start, img_end = _chunk_bounds(cd_folder)
     img_path = os.path.join(cd_folder, "TOMBA2.IMG")
@@ -244,7 +273,9 @@ def import_png(cd_folder, path):
         if len(packed_new) > packed:
             raise FontPageError(
                 f"Edited shard {i} needs {len(packed_new)} bytes and has "
-                f"{packed}. Nothing was written.")
+                f"{packed}. Nothing was written. Glyphs compress better "
+                "the more flat runs they have, so a simpler shape, or a "
+                "smaller edit, will fit.")
         rebuilt[i] = packed_new
 
     for i, packed_new in rebuilt.items():
@@ -288,6 +319,40 @@ def glyph_row(page, row, top=GLYPH_TOP):
     return tuple(tuple(page[y + i]) for i in range(GLYPH_H))
 
 
+def read_frame(cd_folder, clut=FRAME_CLUT):
+    """The frame's three pieces as lists of (r, g, b, a) rows.
+
+    In page order the pieces are the top, the sides and the bottom; the
+    game composes its boxes out of these rather than storing a finished
+    border. Which piece is which is told by where its corners are inset,
+    and confirmed by the interior gradient, which runs unbroken from the
+    top piece through the sides into the bottom one.
+
+    The art is the same for every box the game draws - only the palette
+    changes, so `clut` picks the context: (255, 2) is the grey dialogue
+    box, (255, 3) the pink one item notices use, (254, 3) the pale
+    yellow of the control hints."""
+    page = read_page(cd_folder)
+    palette = None
+    for row, slot, pal in read_cluts(cd_folder):
+        if (row, slot) == clut:
+            palette = pal
+            break
+    if palette is None:
+        return []
+    out = []
+    for x0 in FRAME_PIECES:
+        piece = []
+        for y in range(FRAME_PIECE_H):
+            line = []
+            for x in range(FRAME_PIECE_W):
+                index = page[FRAME_Y + y][FRAME_X + x0 + x]
+                line.append(palette[index])
+            piece.append(line)
+        out.append(piece)
+    return out
+
+
 def glyph_box(code, top=GLYPH_TOP):
     """(left, top, right, bottom) of one dialogue-font glyph in the page,
     or None for a code the grid doesn't reach."""
@@ -297,6 +362,34 @@ def glyph_box(code, top=GLYPH_TOP):
         return None
     left = col * GLYPH_W
     return (left, top, left + GLYPH_W, top + GLYPH_H)
+
+
+def get_glyph(page, code, top=GLYPH_TOP):
+    """One glyph's pixels as a list of GLYPH_H rows, or None if the code
+    is off the grid."""
+    box = glyph_box(code, top)
+    if box is None:
+        return None
+    left, gtop, right, bottom = box
+    return [list(page[y][left:right]) for y in range(gtop, bottom)]
+
+
+def set_glyph(page, code, cell, top=GLYPH_TOP):
+    """Put `cell` - GLYPH_H rows of GLYPH_W indices - at `code`.
+
+    Edits `page` in place and returns it, so several glyphs can be set
+    before one write_page() call sends them all to the disc together."""
+    box = glyph_box(code, top)
+    if box is None:
+        raise FontPageError(f"Code {code} is not on the grid.")
+    left, gtop, right, bottom = box
+    if len(cell) != GLYPH_H or any(len(r) != GLYPH_W for r in cell):
+        raise FontPageError(
+            f"A glyph is {GLYPH_W}x{GLYPH_H}; got "
+            f"{len(cell[0]) if cell else 0}x{len(cell)}.")
+    for y, row in enumerate(cell):
+        page[gtop + y][left:right] = list(row)
+    return page
 
 
 def glyphs(page, top=GLYPH_TOP):

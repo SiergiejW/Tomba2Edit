@@ -264,12 +264,14 @@ class TXTDViewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=True)
+        self.preview = FontPreview(big=True, marker=True)
         preview_side_layout.addWidget(self.preview)
 
+        # For dialogue the rendering leads and the raw text sits under
+        # it, so the eye lands on what the player will see.
         edit_split = QSplitter(Qt.Orientation.Vertical)
-        edit_split.addWidget(edit_side)
         edit_split.addWidget(preview_side)
+        edit_split.addWidget(edit_side)
         edit_split.setStretchFactor(0, 1)
         edit_split.setStretchFactor(1, 1)
         edit_split.setChildrenCollapsible(False)

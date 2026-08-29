@@ -127,7 +127,7 @@ class TXT2Viewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=False)
+        self.preview = FontPreview(big=False, style="notice")
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)

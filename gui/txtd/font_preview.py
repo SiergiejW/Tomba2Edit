@@ -20,11 +20,14 @@ encodes to. Most bytes are the cell number, but not all: a space encodes
 to 0xFB, which the game acts on rather than draws, and indexing the grid
 with it would land on a symbol several rows down.
 """
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
+import os
+
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from functions import fontpage
+from gui.txtd import translation
 
 # Which palette each colour control selects. The value is the VRAM row,
 # which is the control's own byte.
@@ -38,8 +41,75 @@ COLORS = {
 CLUT_SLOT = 3
 DEFAULT_COLOR = 0xF0
 
-# Controls that move the cursor rather than draw.
-BREAKS = ("\n", "{$END}\n\n")
+# The button icons, and the cells each is drawn from. They are 16 wide
+# against the grid's 8, so each takes two cells side by side.
+#
+# They need no palette of their own. Indices 7 to 15 hold the button
+# colours and are identical in all five text palettes - only 1 to 6
+# change with the colour control - so each icon keeps its own colour
+# whatever colour the text around it is:
+#
+#     circle    7, 8     red
+#     cross     9, 10    blue
+#     triangle  11, 12   green
+#     square    13       pink
+#
+# The control byte is not the cell: {$CIRCLE} encodes to 0xCD, the same
+# way a space encodes to 0xFB, and the game draws the icon from here.
+ICONS = {
+    "{$CIRCLE}": (160, 161),
+    "{$CROSS}": (162, 163),
+    "{$TRIANGLE}": (164, 165),
+    "{$SQUARE}": (166, 167),
+}
+
+# The prompt the game puts at the end of a line of dialogue, waiting for
+# the player.
+MARKER_CELLS = ICONS["{$CIRCLE}"]
+
+# Behind the preview, so text is judged against something like the scene
+# it will sit on rather than a flat panel.
+BACKGROUND = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "icons", "tomba",
+    "txtd_background.jpg")
+
+# The dialogue box is built from the page's own frame pieces (see
+# fontpage.read_frame), as a nine-slice. Each piece is 18 wide with a
+# 3-pixel border either side; which edge a piece is is told by where its
+# corners are inset:
+#
+#     piece 0   rows 3-7, inset on row 3    the top
+#     piece 1   rows 0-7, no inset          the middle
+#     piece 2   rows 0-4, inset on row 4    the bottom
+#
+# The two edges are separate art, not one flipped: the top carries the
+# interior below its border, the bottom above it.
+FRAME_MARGIN = 10
+FRAME_SCALE = 2
+FRAME_BORDER = 3          # left and right border, in source pixels
+FRAME_EDGE_H = 5          # rows in the top and the bottom edge
+FRAME_TOP_Y = 3           # where the top edge starts in piece 0
+FRAME_BOT_Y = 0           # where the bottom edge starts in piece 2
+FRAME_MID_H = 8           # rows of piece 1, stretched down the box
+FRAME_FILL = QColor(0, 0, 0, 224)
+TEXT_INSET = 14
+
+# The pieces are the same art in every box the game draws; the palette is
+# what changes with the context, so a style is a palette and how much of
+# the scene its interior lets through. The palette marks the interior
+# semi-transparent but not by how much, so the amount is set to match
+# the game: dialogue reads through to the scene, an item notice is dark
+# enough to read as solid.
+FRAME_STYLES = {
+    "dialogue": {"clut": (255, 2), "alpha": 192},
+    "notice": {"clut": (255, 3), "alpha": 224},
+}
+DEFAULT_STYLE = "dialogue"
+
+# The box is drawn only as big as the text in it, so it grows and
+# shrinks with what is being edited.
+MIN_BOX_W = 8 * FRAME_SCALE
+MIN_BOX_H = 12 * FRAME_SCALE
 
 BIG_H = fontpage.GLYPH_H
 SMALL_H = fontpage.SYSTEM_H
@@ -49,7 +119,7 @@ CELL_W = fontpage.GLYPH_W
 class FontSheet:
     """One disc's glyphs, both sizes, cut once and kept."""
 
-    def __init__(self, cd_folder, glyph_top=None):
+    def __init__(self, cd_folder, glyph_top=None, style=DEFAULT_STYLE):
         self.page = fontpage.read_page(cd_folder)
         if glyph_top is None:
             glyph_top = fontpage.GLYPH_TOP
@@ -58,6 +128,12 @@ class FontSheet:
         for row, slot, pal in fontpage.read_cluts(cd_folder):
             if slot == CLUT_SLOT:
                 self.palettes[row] = pal
+        chosen = FRAME_STYLES.get(style)
+        if chosen is None:
+            self.frame, self.frame_alpha = [], 255
+        else:
+            self.frame = fontpage.read_frame(cd_folder, chosen["clut"])
+            self.frame_alpha = chosen["alpha"]
 
     def palette(self, row):
         """The palette a colour control selects, falling back to a plain
@@ -78,13 +154,21 @@ class FontSheet:
             return None
         return [self.page[y + i][x:x + CELL_W] for i in range(height)]
 
-    def render(self, runs, big=True, scale=2):
+    def render(self, runs, big=True, scale=2, marker=False):
         """`runs` as [(codes, (r, g, b))] -> a QImage of the text.
 
         Codes that break the line start a new one; codes with no glyph
         leave a gap, so a line's spacing still reads correctly. Drawn at
         one pixel per texel and scaled up whole, which keeps the pixels
-        square and hard-edged."""
+        square and hard-edged.
+
+        Lines with nothing drawn on them at the end are dropped. An
+        entry ends in the terminator on its own line, and the breaks
+        that separate it from the text are not part of the message, so
+        counting them would make the box taller than the game's.
+
+        With `marker`, the prompt icon is placed at the bottom right,
+        padded out from the last line so it sits in the corner."""
         height = BIG_H if big else SMALL_H
         lines = [[]]
         for codes, color in runs:
@@ -93,6 +177,17 @@ class FontSheet:
                     lines.append([])
                 else:
                     lines[-1].append((code, color))
+        while len(lines) > 1 and all(code is None for code, _c in lines[-1]):
+            lines.pop()
+
+        if marker and big:
+            color = lines[-1][-1][1] if lines[-1] else DEFAULT_COLOR
+            widest = max(len(line) for line in lines)
+            end = max(widest, len(lines[-1]) + len(MARKER_CELLS))
+            lines[-1] += [(None, color)] * (end - len(MARKER_CELLS)
+                                            - len(lines[-1]))
+            lines[-1] += [(code, color) for code in MARKER_CELLS]
+
         cols = max((len(line) for line in lines), default=0)
         width = max(cols * CELL_W, 1)
         rows = max(len(lines) * height, 1)
@@ -133,25 +228,33 @@ def cell_for(char):
     """The grid cell a character is drawn from, or None if it isn't
     drawn - a space, or anything with no glyph.
 
-    Codes run from '!', so printable ASCII is `ord - 32`. The accented
-    letters sit in their own two rows (see gui/txtd/dicts.py)."""
-    point = ord(char)
+    The table in force decides, so a translation's own letters draw from
+    whichever cells it claimed. Codes the game acts on rather than draws
+    are refused, since there is no glyph behind them.
+
+    Falling back to `ord - 32` covers a character the table has no entry
+    for: the disc's own alphabet sits at exactly those cells, so an
+    untranslated build behaves as before."""
     if char == " ":
         return None
+    code = translation.active().cells().get(char)
+    if code is not None:
+        return code
+    point = ord(char)
     if 0x21 <= point <= 0x7E:
         return point - 32
-    if 0xC0 <= point <= 0xDF:
-        return 160 + point - 0xC0
-    if 0xE0 <= point <= 0xFF:
-        return 192 + point - 0xE0
     return None
 
 
-def split_runs(text):
+def split_runs(text, icons=True):
     """Editor text as [(cells, colour)], with line breaks as None.
 
-    Colour controls switch the tint; other {$...} tokens are skipped,
-    since they tell the game to do something rather than to draw."""
+    Colour controls switch the tint and the button controls draw their
+    icon; other {$...} tokens are skipped, since they tell the game to
+    do something rather than to draw.
+
+    `icons` is off for the small font, whose grid has nothing at those
+    cells - the icons are drawn at the dialogue font's size only."""
     runs = []
     color = DEFAULT_COLOR
     cells = []
@@ -176,7 +279,11 @@ def split_runs(text):
                 runs.append(([None], color))
                 i += 1
             elif text.startswith("{$", i) and "}" in text[i:i + 12]:
-                i = text.index("}", i) + 1        # a control, not a glyph
+                end = text.index("}", i) + 1
+                icon = ICONS.get(text[i:end]) if icons else None
+                if icon:
+                    cells.extend(icon)
+                i = end                          # a control, not a glyph
             else:
                 cells.append(cell_for(text[i]))
                 i += 1
@@ -184,21 +291,187 @@ def split_runs(text):
     return runs
 
 
-class FontPreview(QWidget):
-    """Shows the selected entry drawn in the disc's own font."""
+def _nine_slice(pieces, width, height, inner_alpha=128):
+    """The dialogue box at any size, from the disc's own pieces.
 
-    def __init__(self, big=True, parent=None):
+    The corners are taken as they are and the top and bottom edges repeat
+    their middle columns, so the border keeps its own pixels at any size.
+    The middle piece is stretched down the box rather than tiled: its
+    side columns are the same on every row, but its interior runs a
+    gradient (16 to 49) meant to cross the whole box, and tiling it
+    leaves bands."""
+    if not pieces or len(pieces) < 3 or width < 8 or height < 12:
+        return None
+    top, mid, bottom = pieces[0], pieces[1], pieces[2]
+    b = FRAME_BORDER
+    src_w = len(top[0])
+    inner_w = src_w - 2 * b
+
+    def column(x):
+        """Source column for a destination column, repeating the middle."""
+        if x < b:
+            return x
+        if x >= width - b:
+            return src_w - (width - x)
+        return b + ((x - b) % inner_w)
+
+    inner_h = max(height - 2 * FRAME_EDGE_H, 1)
+
+    def row_of(y):
+        """(piece, source row) for a destination row."""
+        if y < FRAME_EDGE_H:
+            return top, FRAME_TOP_Y + y
+        if y >= height - FRAME_EDGE_H:
+            return bottom, FRAME_BOT_Y + (y - (height - FRAME_EDGE_H))
+        sy = (y - FRAME_EDGE_H) * FRAME_MID_H // inner_h
+        return mid, min(sy, FRAME_MID_H - 1)
+
+    buffer = bytearray(width * height * 4)
+    for y in range(height):
+        piece, sy = row_of(y)
+        line = piece[sy]
+        for x in range(width):
+            r, g, bl, a = line[column(x)]
+            if a not in (0, 255):
+                a = inner_alpha        # the interior, however solid it reads
+            at = (y * width + x) * 4
+            buffer[at] = bl
+            buffer[at + 1] = g
+            buffer[at + 2] = r
+            buffer[at + 3] = a
+    return QImage(bytes(buffer), width, height, width * 4,
+                  QImage.Format.Format_ARGB32).copy()
+
+
+class _Canvas(QWidget):
+    """Paints the scene behind, the dialogue frame, and the text in it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pixmap = None
+        self._message = "No disc open - preview unavailable."
+        self._background = QPixmap(BACKGROUND) if os.path.exists(BACKGROUND)             else QPixmap()
+        self._pieces = None
+        self._alpha = 128
+        self._boxed = True
+
+    def set_frame(self, pieces, alpha=128):
+        """Take the frame from the disc, or None to draw a plain box."""
+        self._pieces = pieces if pieces and len(pieces) >= 3 else None
+        self._alpha = alpha
+        self.update()
+
+    def set_boxed(self, boxed):
+        """Whether to draw a box at all. Text the game puts straight on
+        the scene, with no border around it, is drawn the same way."""
+        self._boxed = boxed
+        self.update()
+
+    def set_pixmap(self, pixmap):
+        self._pixmap = pixmap
+        self._message = ""
+        self._resize_to_fit()
+        self.update()
+
+    def set_message(self, text):
+        self._pixmap = None
+        self._message = text
+        self.update()
+
+    def _inset(self):
+        """The gap between the border and the text. Without a border
+        there is nothing to clear, so the text sits on the scene."""
+        return TEXT_INSET if self._boxed else 0
+
+    def _resize_to_fit(self):
+        """Ask for room for the whole box, so text longer than the pane
+        scrolls rather than being cropped."""
+        if self._pixmap is None:
+            self.setMinimumSize(0, 0)
+            return
+        edge = 2 * (FRAME_MARGIN + self._inset())
+        self.setMinimumSize(self._pixmap.width() + edge,
+                            self._pixmap.height() + edge)
+
+    def _box(self):
+        """The dialogue box, only as big as the text it holds.
+
+        It grows with the text and sits centred along the bottom of the
+        scene, where the game puts it. The lines inside stay left
+        aligned; it is the box that is centred, not the text in it."""
+        room = self.rect().adjusted(FRAME_MARGIN, FRAME_MARGIN,
+                                    -FRAME_MARGIN, -FRAME_MARGIN)
+        if self._pixmap is None:
+            return room
+        inset = self._inset()
+        width = max(min(self._pixmap.width() + 2 * inset, room.width()),
+                    MIN_BOX_W)
+        height = max(min(self._pixmap.height() + 2 * inset, room.height()),
+                     MIN_BOX_H)
+        return QRect(room.left() + (room.width() - width) // 2,
+                     room.bottom() - height + 1, width, height)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if not self._background.isNull():
+            scaled = self._background.scaled(
+                self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation)
+            painter.drawPixmap(0, 0, scaled)
+        else:
+            painter.fillRect(self.rect(), QColor(16, 16, 16))
+
+        box = self._box()
+        if box.width() <= 0 or box.height() <= 0:
+            painter.end()
+            return
+
+        # Composed at its own scale and blown up whole, so the border
+        # stays hard-edged however big the pane is.
+        frame = None
+        if self._boxed:
+            frame = _nine_slice(self._pieces,
+                                max(box.width() // FRAME_SCALE, 8),
+                                max(box.height() // FRAME_SCALE, 12),
+                                self._alpha)
+            if frame is None:
+                painter.fillRect(box, FRAME_FILL)
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.drawRect(box.adjusted(0, 0, -1, -1))
+        if frame is not None:
+            painter.drawImage(
+                QRect(box.left(), box.top(),
+                      frame.width() * FRAME_SCALE,
+                      frame.height() * FRAME_SCALE), frame)
+
+        inset = self._inset()
+        if self._pixmap is not None:
+            painter.drawPixmap(box.left() + inset,
+                               box.top() + inset, self._pixmap)
+        elif self._message:
+            painter.setPen(QPen(QColor(190, 190, 190)))
+            painter.drawText(box.adjusted(inset or TEXT_INSET,
+                                          inset or TEXT_INSET, 0, 0),
+                             Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignTop, self._message)
+        painter.end()
+
+
+class FontPreview(QWidget):
+    """Shows the selected entry drawn in the disc's own font, in a frame
+    like the one the game puts around dialogue."""
+
+    def __init__(self, big=True, style=DEFAULT_STYLE, marker=False,
+                 parent=None):
         super().__init__(parent)
         self.big = big
+        self.style = style
+        self.marker = marker
         self.sheet = None
-        self._label = QLabel("No disc open - preview unavailable.")
-        self._label.setAlignment(Qt.AlignmentFlag.AlignLeft
-                                 | Qt.AlignmentFlag.AlignTop)
-        self._label.setStyleSheet("background: #101010; padding: 6px;")
-        # Rendered text is as wide as the line, which can run past the
-        # pane, so it scrolls rather than being squeezed.
+        self._canvas = _Canvas()
+        self._canvas.set_boxed(style in FRAME_STYLES)
         self._scroll = QScrollArea()
-        self._scroll.setWidget(self._label)
+        self._scroll.setWidget(self._canvas)
         self._scroll.setWidgetResizable(True)
         self._scroll.setStyleSheet("background: #101010; border: none;")
         layout = QVBoxLayout(self)
@@ -209,20 +482,22 @@ class FontPreview(QWidget):
         """Point the preview at a disc, or None to blank it."""
         if not cd_folder:
             self.sheet = None
-            self._label.setText("No disc open - preview unavailable.")
+            self._canvas.set_message("No disc open - preview unavailable.")
             return
         try:
-            self.sheet = FontSheet(cd_folder, glyph_top)
+            self.sheet = FontSheet(cd_folder, glyph_top, self.style)
+            self._canvas.set_frame(self.sheet.frame, self.sheet.frame_alpha)
+            self._canvas.set_message("")
         except Exception as exc:
             self.sheet = None
-            self._label.setText(f"Font page unreadable: {exc}")
+            self._canvas.set_message(f"Font page unreadable: {exc}")
 
     def set_text(self, text):
         if self.sheet is None:
             return
         if not text:
-            self._label.setPixmap(QPixmap())
-            self._label.setText("")
+            self._canvas.set_message("")
             return
-        image = self.sheet.render(split_runs(text), self.big)
-        self._label.setPixmap(QPixmap.fromImage(image))
+        image = self.sheet.render(split_runs(text, self.big), self.big,
+                                  marker=self.marker)
+        self._canvas.set_pixmap(QPixmap.fromImage(image))

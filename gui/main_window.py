@@ -31,6 +31,8 @@ from gui import theme
 from gui import panel_title
 from functions import labels as labels_module
 from functions import fontpage
+from functions import codeuse
+from gui.txtd.font_editor import FontEditor
 from functions.idx_parser import (
     parse_idx_file, apply_labels, row_label_data, area_index_of,
     LabelNameDelegate)
@@ -243,6 +245,12 @@ class MainWindow(QMainWindow):
             "Read an edited page back in, re-compressing it in place")
         import_font_action.triggered.connect(self.import_font_page)
         font_menu.addAction(import_font_action)
+        font_menu.addSeparator()
+        translate_action = QAction("Font && Translation...", self)
+        translate_action.setToolTip(
+            "Draw glyphs and say what each code means, for a translation")
+        translate_action.triggered.connect(self.open_font_editor)
+        font_menu.addAction(translate_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
         theme_menu = settings_menu.addMenu("Theme")
@@ -594,6 +602,22 @@ class MainWindow(QMainWindow):
                                     "Open an ISO or a CD folder first.")
             return None
         return os.path.dirname(self.dat_file)
+
+    def open_font_editor(self):
+        """Open the window where glyphs are drawn and codes are named.
+
+        The codes the disc's own text uses are measured from the text
+        files themselves rather than assumed, so the window can say which
+        cells a translation is free to take. The window does that
+        measuring itself, in the background, since it takes a while."""
+        cd_folder = self._font_page_folder()
+        if cd_folder is None:
+            return
+        if getattr(self, "font_editor", None) is None:
+            self.font_editor = FontEditor()
+        self.font_editor.set_source(cd_folder, self.dat_file)
+        self.font_editor.show()
+        self.font_editor.raise_()
 
     def export_font_page(self):
         """Write the font/menu page out as an indexed PNG.

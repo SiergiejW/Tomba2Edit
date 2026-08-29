@@ -15,13 +15,17 @@ The accented block is read off the German and Spanish pages, which draw
 all 64 of them. Nine of those codes are also named in the US table from
 in-game text, and agree with the block exactly.
 
-Five more codes in that range - 194, and 205 to 208 - the US table names
-as controls, {$SQUARE} and the other button icons. The US page draws
-nothing at them, so on that build they are not glyphs at all: the
-renderer sees the code and puts an icon up. The European pages do draw
-letters there. Which behaviour a European disc actually takes is the one
-thing here that needs testing in-game rather than reading off the disc;
-CONFLICTS lists them.
+The grid's row 5 - cells 160 to 191 - is where the builds part company.
+Germany and Spain draw accented capitals there in the ordinary glyph
+indices. The US page instead draws the button icons: cells 160 to 167
+are the circle, cross, triangle and square, two cells to an icon since
+they are 16 wide against the grid's 8, and they use palette indices 7
+and up, which the text palettes all share.
+
+Nothing has to choose between the two, because a build only reads the
+codes its own text uses. US text reaches its icons through controls -
+{$CIRCLE} encodes to 0xCD - and the byte a control encodes to is not a
+cell number, so no US string asks for cell 160 as a letter.
 
 Japanese is not covered. Its page shares no glyph shapes with the Latin
 builds, so nothing here can be derived for it by matching.
@@ -52,11 +56,11 @@ GLYPH_TOP = {
     "sp-retail": 66,
 }
 
-# Codes the US table names as controls that the European pages draw a
-# letter at. The tables below take the letter, since that is what the
-# page holds, but a European disc may still intercept the code for its
-# icon - untested either way.
-CONFLICTS = (194, 205, 206, 207, 208)
+# Cells the US page fills with button icons and the European pages with
+# accented capitals. Only the European builds take the accent block, so
+# the tables do not disagree; this is where a build's page has to be
+# read rather than assumed.
+ICON_CELLS = tuple(range(160, 168))
 
 DEFAULT_BUILD = "us-retail"
 

@@ -64,15 +64,36 @@ class TxtdPackError(Exception):
 # to an empty string and can't be represented in decoded text at all,
 # so it's excluded (it will simply never be re-emitted by this packer).
 _REVERSE_LETTERS = {}
-for _byte, _s in LETTERS.items():
-    if _s == "":
-        continue
-    if _s not in _REVERSE_LETTERS:
-        _REVERSE_LETTERS[_s] = _byte
 
 # Longest tokens first, so the tokenizer below is a correct greedy/
 # maximal-munch matcher (e.g. "{$END}\n\n" must win over a bare "\n").
-_TOKENS = sorted(_REVERSE_LETTERS.keys(), key=len, reverse=True)
+_TOKENS = []
+
+
+def refresh_tables(prefer=None):
+    """Rebuild the reverse lookup from the table currently in force.
+
+    `prefer` is a translation's own {code: character}. Where a character
+    can be written more than one way, those codes win: a translation that
+    claims a code for a character the disc already had somewhere means
+    the claim, not the one it inherited.
+
+    Both containers are emptied and refilled rather than replaced:
+    txt2_packer imported them by name, and a translation applied after
+    that import has to reach it too (see gui/txtd/translation.py)."""
+    _REVERSE_LETTERS.clear()
+    for byte, s in LETTERS.items():
+        if s == "":
+            continue
+        if s not in _REVERSE_LETTERS:
+            _REVERSE_LETTERS[s] = byte
+    for byte, s in (prefer or {}).items():
+        if s:
+            _REVERSE_LETTERS[s] = byte
+    _TOKENS[:] = sorted(_REVERSE_LETTERS.keys(), key=len, reverse=True)
+
+
+refresh_tables()
 
 
 def _align_up(n, align=ALIGN):
