@@ -8,9 +8,12 @@ size differs.
     dialogue (TXTD), TXT1, BIN   big
     TXT2, MAIN.EXE               small
 
-Glyph pixels are 4-bit CLUT indices, and the page's own greyscale ramp
-is used as the shading. A colour control in the text tints that shading
-rather than swapping palettes, which keeps each glyph's outline.
+Glyph pixels are 4-bit CLUT indices and the page carries the palettes,
+so the colours here are the disc's own rather than an approximation. A
+colour control selects one: the control byte is the VRAM row its palette
+sits on, {$WHITE} being 0xF0 at row 240 and the rest following to
+{$GREEN} at 244, all in the row's fourth slot. Glyphs are drawn almost
+entirely in index 1, the fill, and index 6, the outline.
 
 A character's cell is found from the character, not from the byte it
 encodes to. Most bytes are the cell number, but not all: a space encodes
@@ -19,21 +22,21 @@ with it would land on a symbol several rows down.
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from functions import fontpage
 
-# What each colour control switches to. Taken from how the game looks
-# rather than from a palette in the file, since the controls select a
-# CLUT the drawing code owns rather than one stored beside the glyphs.
+# Which palette each colour control selects. The value is the VRAM row,
+# which is the control's own byte.
 COLORS = {
-    "{$WHITE}": (255, 255, 255),
-    "{$ORANGE}": (255, 154, 41),
-    "{$BLUE}": (115, 190, 255),
-    "{$PINK}": (255, 138, 200),
-    "{$GREEN}": (130, 240, 130),
+    "{$WHITE}": 0xF0,
+    "{$ORANGE}": 0xF1,
+    "{$BLUE}": 0xF2,
+    "{$PINK}": 0xF3,
+    "{$GREEN}": 0xF4,
 }
-DEFAULT_COLOR = (235, 235, 235)
+CLUT_SLOT = 3
+DEFAULT_COLOR = 0xF0
 
 # Controls that move the cursor rather than draw.
 BREAKS = ("\n", "{$END}\n\n")
@@ -51,6 +54,18 @@ class FontSheet:
         if glyph_top is None:
             glyph_top = fontpage.GLYPH_TOP
         self.glyph_top = glyph_top
+        self.palettes = {}
+        for row, slot, pal in fontpage.read_cluts(cd_folder):
+            if slot == CLUT_SLOT:
+                self.palettes[row] = pal
+
+    def palette(self, row):
+        """The palette a colour control selects, falling back to a plain
+        white one where the disc has none at that row."""
+        pal = self.palettes.get(row)
+        if pal:
+            return pal
+        return [(0, 0, 0, 0)] + [(255, 255, 255, 255)] * 15
 
     def cell(self, code, big):
         """One glyph as rows of 4-bit indices, or None if off the grid."""
@@ -88,7 +103,7 @@ class FontSheet:
                 cell = None if code is None else self.cell(code, big)
                 if cell is None:
                     continue        # a space still takes its column
-                red, green, blue = color
+                palette = self.palette(color)
                 for yy in range(height):
                     row = cell[yy]
                     base = ((ly * height + yy) * width + lx * CELL_W) * 4
@@ -96,11 +111,14 @@ class FontSheet:
                         index = row[xx]
                         if not index:
                             continue
+                        red, green, blue, alpha = palette[index]
+                        if not alpha:
+                            continue
                         at = base + xx * 4
                         # QImage's ARGB32 is BGRA in memory on little-endian.
-                        buffer[at] = blue * index // 15
-                        buffer[at + 1] = green * index // 15
-                        buffer[at + 2] = red * index // 15
+                        buffer[at] = blue
+                        buffer[at + 1] = green
+                        buffer[at + 2] = red
                         buffer[at + 3] = 255
         image = QImage(bytes(buffer), width, rows, width * 4,
                        QImage.Format.Format_ARGB32).copy()
@@ -146,10 +164,10 @@ def split_runs(text):
 
     i = 0
     while i < len(text):
-        for token, rgb in COLORS.items():
+        for token, row in COLORS.items():
             if text.startswith(token, i):
                 flush()
-                color = rgb
+                color = row
                 i += len(token)
                 break
         else:
@@ -177,9 +195,15 @@ class FontPreview(QWidget):
         self._label.setAlignment(Qt.AlignmentFlag.AlignLeft
                                  | Qt.AlignmentFlag.AlignTop)
         self._label.setStyleSheet("background: #101010; padding: 6px;")
+        # Rendered text is as wide as the line, which can run past the
+        # pane, so it scrolls rather than being squeezed.
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(self._label)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet("background: #101010; border: none;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._label)
+        layout.addWidget(self._scroll)
 
     def set_source(self, cd_folder, glyph_top=None):
         """Point the preview at a disc, or None to blank it."""

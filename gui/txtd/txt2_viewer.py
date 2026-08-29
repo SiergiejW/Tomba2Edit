@@ -115,13 +115,32 @@ class TXT2Viewer(QWidget):
         self.status_label.setWordWrap(True)  # keep long warnings from stretching the window
         self.status_label.setMaximumWidth(600)
 
-        right_layout.addWidget(self.text_edit)
-        right_layout.addWidget(self.status_label)
-        # TXT2 is drawn in the small font - see gui/txtd/font_preview.py.
-        right_layout.addWidget(panel_title.make_panel_title("In-game preview"))
+        # Editing on the left, the same text as the game draws it on the
+        # right, each taking half the width whatever the window does.
+        edit_side = QWidget()
+        edit_side_layout = QVBoxLayout(edit_side)
+        edit_side_layout.setContentsMargins(0, 0, 0, 0)
+        edit_side_layout.addWidget(self.text_edit)
+
+        preview_side = QWidget()
+        preview_side_layout = QVBoxLayout(preview_side)
+        preview_side_layout.setContentsMargins(0, 0, 0, 0)
+        preview_side_layout.addWidget(
+            panel_title.make_panel_title("In-game preview"))
         self.preview = FontPreview(big=False)
-        self.preview.setMinimumHeight(60)
-        right_layout.addWidget(self.preview)
+        preview_side_layout.addWidget(self.preview)
+
+        edit_split = QSplitter(Qt.Orientation.Horizontal)
+        edit_split.addWidget(edit_side)
+        edit_split.addWidget(preview_side)
+        edit_split.setStretchFactor(0, 1)
+        edit_split.setStretchFactor(1, 1)
+        edit_split.setChildrenCollapsible(False)
+        edit_split.setSizes([10000, 10000])
+        right_layout.addWidget(edit_split)
+        # The budget line stays under both halves, where it reads as
+        # belonging to the entry rather than to the edit box.
+        right_layout.addWidget(self.status_label)
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter

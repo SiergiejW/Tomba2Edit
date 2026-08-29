@@ -176,6 +176,10 @@ class TXTDViewer(QWidget):
         self._current_entry_item = None
         self._loading = False  # guards against textChanged firing during programmatic updates
 
+        # master_index -> its QStandardItem, so a header can take the
+        # colour of the entries under it (see _refresh_master_color).
+        self._master_items = {}
+
         # (master_index, entry_index) -> QStandardItem, for quick lookup by
         # mark_exported() below. Reset in load_txtd_data().
         self._entry_items = {}
@@ -248,13 +252,32 @@ class TXTDViewer(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
 
-        right_layout.addWidget(self.text_edit)
-        right_layout.addWidget(self.status_label)
-        # Dialogue is drawn in the big font - see gui/txtd/font_preview.py.
-        right_layout.addWidget(panel_title.make_panel_title("In-game preview"))
+        # Editing on the left, the same text as the game draws it on the
+        # right, each taking half the width whatever the window does.
+        edit_side = QWidget()
+        edit_side_layout = QVBoxLayout(edit_side)
+        edit_side_layout.setContentsMargins(0, 0, 0, 0)
+        edit_side_layout.addWidget(self.text_edit)
+
+        preview_side = QWidget()
+        preview_side_layout = QVBoxLayout(preview_side)
+        preview_side_layout.setContentsMargins(0, 0, 0, 0)
+        preview_side_layout.addWidget(
+            panel_title.make_panel_title("In-game preview"))
         self.preview = FontPreview(big=True)
-        self.preview.setMinimumHeight(90)
-        right_layout.addWidget(self.preview)
+        preview_side_layout.addWidget(self.preview)
+
+        edit_split = QSplitter(Qt.Orientation.Horizontal)
+        edit_split.addWidget(edit_side)
+        edit_split.addWidget(preview_side)
+        edit_split.setStretchFactor(0, 1)
+        edit_split.setStretchFactor(1, 1)
+        edit_split.setChildrenCollapsible(False)
+        edit_split.setSizes([10000, 10000])
+        right_layout.addWidget(edit_split)
+        # The budget line stays under both halves, where it reads as
+        # belonging to the entry rather than to the edit box.
+        right_layout.addWidget(self.status_label)
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter
@@ -320,6 +343,26 @@ class TXTDViewer(QWidget):
             item.setForeground(QBrush(QColor(color)))
         else:
             item.setData(None, Qt.ItemDataRole.ForegroundRole)
+        self._refresh_master_color(location[0])
+
+    def _refresh_master_color(self, master_index):
+        """Colour a master header from the entries under it: orange if any
+        still has an unexported edit, green if some were edited and all of
+        those have been exported, normal if none was ever touched.
+
+        An edit is easy to lose track of with the group collapsed, so the
+        header carries the state of its children."""
+        item = self._master_items.get(master_index)
+        if item is None:
+            return
+        edited = any(loc[0] == master_index for loc in self._edited_locations)
+        exported = any(loc[0] == master_index for loc in self._exported_locations)
+        color = (EDITED_ENTRY_COLOR if edited
+                 else EXPORTED_ENTRY_COLOR if exported else None)
+        if color:
+            item.setForeground(QBrush(QColor(color)))
+        else:
+            item.setData(None, Qt.ItemDataRole.ForegroundRole)
 
     def load_txtd_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
         """
@@ -368,6 +411,7 @@ class TXTDViewer(QWidget):
             self.offset = offset
             self._current_entry_item = None
             self._entry_items = {}
+            self._master_items = {}
 
             self.tree_model.clear()
             self.text_edit.clear()
@@ -384,6 +428,7 @@ class TXTDViewer(QWidget):
             for m_idx, master_header in enumerate(master_headers):
                 master_item = QStandardItem(QIcon(icon_TXTD_master), f"Master Header {master_header['adr']:04X}")
                 master_item.setFlags(master_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._master_items[m_idx] = master_item
                 self.tree_model.appendRow(master_item)
 
                 entry_group = entry_groups[m_idx] if m_idx < len(entry_groups) else None
@@ -399,6 +444,7 @@ class TXTDViewer(QWidget):
                         entry_item.setFlags(entry_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         entry_item.setData(location, ENTRY_LOCATION_ROLE)
                         master_item.appendRow(entry_item)
+                self._refresh_master_color(m_idx)
 
             self.tree.expandAll()
             print("Tree view populated successfully")
@@ -568,6 +614,7 @@ class TXTDViewer(QWidget):
         self.offset = None
         self._current_entry_item = None
         self._entry_items = {}
+        self._master_items = {}
         self._edited_locations = set()
         self._exported_locations = set()
         self._original_entry_texts = {}

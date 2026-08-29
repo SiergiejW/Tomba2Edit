@@ -884,6 +884,8 @@ class MainWindow(QMainWindow):
             self.mainexe_viewer.clear_cache()
             return
         try:
+            self.mainexe_viewer.preview.set_source(
+                os.path.dirname(self.dat_file) if self.dat_file else None)
             self.mainexe_viewer.load_exe(exe_path)
         except MainBinEditError as e:
             self.mainexe_viewer.clear_cache()
@@ -901,6 +903,8 @@ class MainWindow(QMainWindow):
         The overlay names are opaque - A0F.BIN is the Last Pig Boss -
         so what each one is comes from the open labels file's "bins"
         section, if it has one."""
+        self.bins_viewer.set_font_source(
+            os.path.dirname(self.dat_file) if self.dat_file else None)
         self.bins_viewer.load_overlays(
             overlays, sop_path,
             self.labels.bins if self.labels else None)

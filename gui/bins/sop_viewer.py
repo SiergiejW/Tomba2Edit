@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, 
 from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui.margin_text_edit import MarginTextEdit
 from gui import panel_title
+from gui.txtd.font_preview import FontPreview
 from gui.bins.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
 from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
 
@@ -92,7 +93,31 @@ class SopViewer(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setMaximumWidth(600)
 
-        right_layout.addWidget(self.text_edit)
+        # SOP BIN is drawn in the big font - see gui/txtd/font_preview.py. Editing on the left,
+        # the same text as the game draws it on the right, each half.
+        edit_side = QWidget()
+        edit_side_layout = QVBoxLayout(edit_side)
+        edit_side_layout.setContentsMargins(0, 0, 0, 0)
+        edit_side_layout.addWidget(self.text_edit)
+
+        preview_side = QWidget()
+        preview_side_layout = QVBoxLayout(preview_side)
+        preview_side_layout.setContentsMargins(0, 0, 0, 0)
+        preview_side_layout.addWidget(
+            panel_title.make_panel_title("In-game preview"))
+        self.preview = FontPreview(big=True)
+        preview_side_layout.addWidget(self.preview)
+
+        edit_split = QSplitter(Qt.Orientation.Horizontal)
+        edit_split.addWidget(edit_side)
+        edit_split.addWidget(preview_side)
+        edit_split.setStretchFactor(0, 1)
+        edit_split.setStretchFactor(1, 1)
+        edit_split.setChildrenCollapsible(False)
+        edit_split.setSizes([10000, 10000])
+        right_layout.addWidget(edit_split)
+        # The budget line stays under both halves, where it reads as
+        # belonging to the entry rather than to the edit box.
         right_layout.addWidget(self.pool_toggle)
         right_layout.addWidget(self.pool_label)
         right_layout.addWidget(self.status_label)
@@ -168,6 +193,7 @@ class SopViewer(QWidget):
 
         self._loading = True
         self.text_edit.setPlainText(current_text)
+        self.preview.set_text(current_text)
         self.text_edit.setReadOnly(not editable)
         self._loading = False
 
@@ -181,6 +207,7 @@ class SopViewer(QWidget):
             return
 
         new_text = self.text_edit.toPlainText()
+        self.preview.set_text(new_text)
         self._entries_by_offset[offset]["text"] = new_text
 
         if new_text == self._original_texts[offset]:
