@@ -30,6 +30,7 @@ from gui.bins.bins_viewer import BinsViewer
 from gui import theme
 from gui import panel_title
 from functions import labels as labels_module
+from functions import fontpage
 from functions.idx_parser import (
     parse_idx_file, apply_labels, row_label_data, area_index_of,
     LabelNameDelegate)
@@ -230,6 +231,18 @@ class MainWindow(QMainWindow):
         file_menu.addAction(export_action)
         file_menu.addAction(export_files_action)
         file_menu.addAction(export_iso_action)
+
+        font_menu = self.menuBar().addMenu("F&ont Page")
+        export_font_action = QAction("Export Font Page...", self)
+        export_font_action.setToolTip(
+            "Write chunk 0 - the font and menu page - out as an indexed PNG")
+        export_font_action.triggered.connect(self.export_font_page)
+        font_menu.addAction(export_font_action)
+        import_font_action = QAction("Import Font Page...", self)
+        import_font_action.setToolTip(
+            "Read an edited page back in, re-compressing it in place")
+        import_font_action.triggered.connect(self.import_font_page)
+        font_menu.addAction(import_font_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
         theme_menu = settings_menu.addMenu("Theme")
@@ -573,6 +586,61 @@ class MainWindow(QMainWindow):
                 f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button "
                 f"when ready.{renamed}"
             )
+
+    def _font_page_folder(self):
+        """The CD folder of the disc that is open, or None with a note."""
+        if not self.dat_file:
+            QMessageBox.information(self, "No disc open",
+                                    "Open an ISO or a CD folder first.")
+            return None
+        return os.path.dirname(self.dat_file)
+
+    def export_font_page(self):
+        """Write the font/menu page out as an indexed PNG.
+
+        The palette put on the file is one of the page's own CLUTs, so
+        it opens looking the way the game draws dialogue rather than as
+        a black square. The pixels are the 4-bit indices either way."""
+        cd_folder = self._font_page_folder()
+        if cd_folder is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export font page", "fontpage.png", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            cluts = fontpage.read_cluts(cd_folder)
+            # The greyscale ramp the dialogue font uses, where there is one.
+            clut = next((pal for _row, _slot, pal in cluts
+                         if pal[2][:3] == (255, 255, 255)), None)
+            fontpage.export_png(cd_folder, path, clut)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Font page written to {path}", 8000)
+
+    def import_font_page(self):
+        """Read an edited page back into TOMBA2.IMG.
+
+        Refused, with nothing written, if the edit no longer fits the
+        room the shard was given."""
+        cd_folder = self._font_page_folder()
+        if cd_folder is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import font page", "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            count = fontpage.import_png(cd_folder, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Font page imported",
+            f"Rewrote {count} shard(s) in TOMBA2.IMG.\n\n"
+            "Reopen the disc to see it in the VRAM view.")
+        self.statusBar().showMessage(f"Font page imported from {path}", 8000)
 
     def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
         """Colors a TXTD file's row in the main tree (under its NN_DATA
@@ -1374,6 +1442,8 @@ class MainWindow(QMainWindow):
                                         txtd_chunk_index, txtd_file_index = txtd_chunk_info
                                     else:
                                         txtd_chunk_index, txtd_file_index = (0, 0)
+                                    self.txtd_viewer.preview.set_source(
+                                        os.path.dirname(self.dat_file))
                                     self.txtd_viewer.load_txtd_data(
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
@@ -1396,6 +1466,8 @@ class MainWindow(QMainWindow):
                                         txt2_chunk_index, txt2_file_index = txt2_chunk_info
                                     else:
                                         txt2_chunk_index, txt2_file_index = (0, 0)
+                                    self.txt2_viewer.preview.set_source(
+                                        os.path.dirname(self.dat_file))
                                     self.txt2_viewer.load_txt2_data(
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txt2_chunk_index, file_index=txt2_file_index, id_val=id,

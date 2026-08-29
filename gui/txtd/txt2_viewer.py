@@ -10,6 +10,7 @@ from gui.txtd.txtd_viewer import (
 )
 from gui.txtd.txt2_packer import encode_text, TxtdPackError
 from gui import panel_title
+from gui.txtd.font_preview import FontPreview
 
 from icons.icons import icon_TXT2_entry
 
@@ -116,6 +117,11 @@ class TXT2Viewer(QWidget):
 
         right_layout.addWidget(self.text_edit)
         right_layout.addWidget(self.status_label)
+        # TXT2 is drawn in the small font - see gui/txtd/font_preview.py.
+        right_layout.addWidget(panel_title.make_panel_title("In-game preview"))
+        self.preview = FontPreview(big=False)
+        self.preview.setMinimumHeight(60)
+        right_layout.addWidget(self.preview)
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter
@@ -361,6 +367,7 @@ class TXT2Viewer(QWidget):
 
             self._current_entry_item = selected_item
             self.text_edit.setPlainText(entry["text"])
+            self.preview.set_text(entry["text"])
             self.text_edit.setReadOnly(is_sentinel)
             self.status_label.setStyleSheet("color: gray;")  # clear any warning color from the last entry
             self.status_label.setText(
@@ -384,6 +391,7 @@ class TXT2Viewer(QWidget):
         e_idx = location
         entry = self.current_data["entries"][e_idx]
         entry["text"] = self.text_edit.toPlainText()
+        self.preview.set_text(entry["text"])
 
         if entry["text"] == self._original_entry_texts.get(location):
             # back to the original text - no longer dirty

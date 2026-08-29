@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 )
 import gui.txtd.txtd as txtd
 from gui.margin_text_edit import MarginTextEdit
+from gui.txtd.font_preview import FontPreview
 from gui import panel_title
 
 
@@ -249,6 +250,11 @@ class TXTDViewer(QWidget):
 
         right_layout.addWidget(self.text_edit)
         right_layout.addWidget(self.status_label)
+        # Dialogue is drawn in the big font - see gui/txtd/font_preview.py.
+        right_layout.addWidget(panel_title.make_panel_title("In-game preview"))
+        self.preview = FontPreview(big=True)
+        self.preview.setMinimumHeight(90)
+        right_layout.addWidget(self.preview)
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter
@@ -428,6 +434,7 @@ class TXTDViewer(QWidget):
 
             self._current_entry_item = selected_item
             self.text_edit.setPlainText(entry["text"])
+            self.preview.set_text(entry["text"])
             self.text_edit.setReadOnly(is_sentinel)
             if is_sentinel:
                 self.status_label.setStyleSheet("color: gray;")
@@ -470,6 +477,7 @@ class TXTDViewer(QWidget):
                 self.dat_start, self.offset, self.current_data
             )
         self._update_screen_width_status(entry["text"], edited=True)
+        self.preview.set_text(entry["text"])
 
     def _update_screen_width_status(self, text, edited=False):
         """Warns when any ONE displayed line of text (tags stripped -

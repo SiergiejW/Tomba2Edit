@@ -1,0 +1,312 @@
+"""The font and menu page in TOMBA2.IMG, out to a PNG and back.
+
+Chunk 0 of the IMG is one 256x256 4bpp page holding every glyph the game
+draws as text, plus the menu words that are artwork rather than text. It
+sits at the same place in VRAM on every build - x 3840, y 256 in texels -
+and the builds differ only in how tall the shard covering it is, and in
+what the artwork says.
+
+    rows   0.. 39   system font, 8x8 - two of its rows fit in one row of
+                    the dialogue grid
+    rows  40..167   dialogue font, 8x16, 32 glyphs a row, `code = row *
+                    32 + column` (see tombadict). Where it starts moves
+                    between builds; find_glyph_top() locates it.
+    rows 168..223   menu artwork - Items, Event, Full!! and the rest are
+                    sprites of their own widths, not grid cells, so a
+                    word can span several 8-pixel columns
+    rows 224..255   CLUTs, 16 RGB555 entries each, four to a VRAM row
+
+Only the dialogue font is a grid. The system font is the same grid at
+half the height, and the artwork is not on a grid at all.
+
+A page is exported as an indexed PNG, one pixel per texel, its value
+being the 4-bit index the game looks up in whatever CLUT the drawing
+code has selected. Editing keeps those indices: the palette in the PNG
+is only there to make the file legible in an image editor.
+"""
+import os
+import struct
+
+from PIL import Image
+
+from functions.img_codec import compress, decompress, read_chunk_header
+
+# Where the page lives, and how big it is.
+FONT_CHUNK = 0
+PAGE_X = 3840          # in 4bpp texels
+PAGE_Y = 256
+PAGE_W = 256
+PAGE_H = 256
+
+# The system font, and where the CLUTs sit. Rows are page rows.
+SYSTEM_TOP = 0
+SYSTEM_H = 8
+CLUT_TOP = 224
+CLUT_ENTRIES = 16
+
+# The dialogue font's grid - see the module docstring. Where its first
+# row starts moves between builds, because the European ones carry two
+# extra rows of accented capitals and lowercase.
+GLYPH_TOP = 40
+GLYPH_W = 8
+GLYPH_H = 16
+GLYPH_COLS = 32
+
+# Row 1 of the grid is "@ABC..." on every Latin build, so a page is
+# placed by finding it rather than by trusting a table of offsets.
+_ANCHOR_CODE = 0x20
+_ANCHOR_ROW = 1
+
+# A 16-step ramp, so an exported page reads as an image rather than a
+# black square. Index 0 is the transparent one every glyph sits on.
+_PALETTE = []
+for _i in range(16):
+    _v = 0 if _i == 0 else 40 + _i * 14
+    _PALETTE += [_v, _v, _v]
+_PALETTE += [0] * (768 - len(_PALETTE))
+
+
+class FontPageError(ValueError):
+    """Raised when a page can't be read or written."""
+
+
+def _chunk_bounds(cd_folder, chunk=FONT_CHUNK):
+    idx_path = os.path.join(cd_folder, "TOMBA2.IDX")
+    with open(idx_path, "rb") as idx:
+        idx.seek(chunk * 0x800)
+        img_start, img_end = struct.unpack("<2I", idx.read(8))
+    return img_start, img_end
+
+
+def _shards_covering_page(shards):
+    """Which shards of the chunk fall inside the font page, with where
+    each one lands in it.
+
+    Shard x and width are in 16-bit words; at 4bpp a word is four
+    texels."""
+    out = []
+    for i, (x, y, w, h, packed) in enumerate(shards):
+        tx = x * 4
+        tw = w * 4
+        if tx + tw <= PAGE_X or tx >= PAGE_X + PAGE_W:
+            continue
+        if y + h <= PAGE_Y or y >= PAGE_Y + PAGE_H:
+            continue
+        out.append((i, (x, y, w, h, packed), tx - PAGE_X, y - PAGE_Y, tw, h))
+    return out
+
+
+def read_page(cd_folder):
+    """The font page as a 256x256 list of rows of 4-bit indices."""
+    img_start, img_end = _chunk_bounds(cd_folder)
+    with open(os.path.join(cd_folder, "TOMBA2.IMG"), "rb") as img:
+        img.seek(img_start)
+        data = img.read(img_end - img_start)
+    shards, pos = read_chunk_header(data)
+
+    page = [[0] * PAGE_W for _ in range(PAGE_H)]
+    offsets = {}
+    at = pos
+    for i, (x, y, w, h, packed) in enumerate(shards):
+        offsets[i] = at
+        at += packed
+
+    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(shards):
+        pixels = decompress(data, offsets[i], packed, w)
+        stride = w * 2
+        for row in range(th):
+            if not 0 <= py + row < PAGE_H:
+                continue
+            base = row * stride
+            for byte in range(stride):
+                if base + byte >= len(pixels):
+                    break
+                value = pixels[base + byte]
+                for half in range(2):
+                    col = px + byte * 2 + half
+                    if 0 <= col < PAGE_W:
+                        page[py + row][col] = (value >> (4 * half)) & 0x0F
+    return page
+
+
+def read_cluts(cd_folder):
+    """The palettes stored in the page, as lists of 16 (r, g, b, a).
+
+    They are 16-bit words rather than 4-bit texels, so they are read
+    from VRAM directly. PSX colour is RGB555 with the top bit marking
+    semi-transparency; 0 is transparent."""
+    page = read_page(cd_folder)
+    out = []
+    for row in range(CLUT_TOP, PAGE_H):
+        words = []
+        line = page[row]
+        # Four texels make one 16-bit word, low nibble first.
+        for w in range(PAGE_W // 4):
+            i = w * 4
+            words.append(line[i] | (line[i + 1] << 4)
+                         | (line[i + 2] << 8) | (line[i + 3] << 12))
+        for c in range(0, len(words), CLUT_ENTRIES):
+            block = words[c:c + CLUT_ENTRIES]
+            if len(block) < CLUT_ENTRIES or not any(block):
+                continue
+            out.append((row, c // CLUT_ENTRIES,
+                        [_rgb555(v) for v in block]))
+    return out
+
+
+def _rgb555(word):
+    """One PSX colour word as (r, g, b, a), 0-255."""
+    if word == 0:
+        return (0, 0, 0, 0)
+    r = (word & 0x1F) * 255 // 31
+    g = ((word >> 5) & 0x1F) * 255 // 31
+    b = ((word >> 10) & 0x1F) * 255 // 31
+    return (r, g, b, 255)
+
+
+def export_png(cd_folder, path, clut=None):
+    """Write the page to `path` as an indexed PNG.
+
+    With `clut` - a list of 16 (r, g, b, a) from read_cluts() - the PNG
+    carries that palette, so the page looks the way the game draws it.
+    Without one it gets a grey ramp. Either way the pixels are the same
+    4-bit indices, so a file exported with a palette imports back
+    unchanged."""
+    page = read_page(cd_folder)
+    image = Image.new("P", (PAGE_W, PAGE_H))
+    if clut:
+        flat = []
+        for r, g, b, _a in clut:
+            flat += [r, g, b]
+        flat += [0] * (768 - len(flat))
+        image.putpalette(flat)
+    else:
+        image.putpalette(_PALETTE)
+    image.putdata([v for row in page for v in row])
+    image.save(path)
+    return path
+
+
+def import_png(cd_folder, path):
+    """Read an indexed PNG back into the page and rewrite the IMG.
+
+    Only the shards the page covers are re-compressed; every other shard
+    keeps its original bytes. A shard is refused if its new form needs
+    more room than it was given, which leaves the disc untouched."""
+    image = Image.open(path)
+    if image.size != (PAGE_W, PAGE_H):
+        raise FontPageError(
+            f"{os.path.basename(path)} is {image.size[0]}x{image.size[1]}, "
+            f"and a font page is {PAGE_W}x{PAGE_H}.")
+    if image.mode != "P":
+        raise FontPageError(
+            f"{os.path.basename(path)} is mode {image.mode}; the page has to "
+            "stay indexed (mode P), since its pixels are CLUT indices.")
+    page = list(image.getdata())
+    if max(page) > 15:
+        raise FontPageError(
+            f"{os.path.basename(path)} uses index {max(page)}; the page is "
+            "4bpp, so only 0-15 exist.")
+
+    img_start, img_end = _chunk_bounds(cd_folder)
+    img_path = os.path.join(cd_folder, "TOMBA2.IMG")
+    with open(img_path, "rb") as img:
+        img.seek(img_start)
+        data = bytearray(img.read(img_end - img_start))
+    shards, pos = read_chunk_header(data)
+
+    offsets = {}
+    at = pos
+    for i, (x, y, w, h, packed) in enumerate(shards):
+        offsets[i] = at
+        at += packed
+
+    rebuilt = {}
+    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(shards):
+        pixels = bytearray(decompress(data, offsets[i], packed, w))
+        stride = w * 2
+        for row in range(th):
+            if not 0 <= py + row < PAGE_H:
+                continue
+            base = row * stride
+            for byte in range(stride):
+                if base + byte >= len(pixels):
+                    break
+                lo_col = px + byte * 2
+                hi_col = lo_col + 1
+                value = pixels[base + byte]
+                if 0 <= lo_col < PAGE_W:
+                    value = (value & 0xF0) | page[(py + row) * PAGE_W + lo_col]
+                if 0 <= hi_col < PAGE_W:
+                    value = (value & 0x0F) | (page[(py + row) * PAGE_W + hi_col] << 4)
+                pixels[base + byte] = value
+        packed_new = compress(bytes(pixels), w)
+        if len(packed_new) > packed:
+            raise FontPageError(
+                f"Edited shard {i} needs {len(packed_new)} bytes and has "
+                f"{packed}. Nothing was written.")
+        rebuilt[i] = packed_new
+
+    for i, packed_new in rebuilt.items():
+        _x, _y, _w, _h, packed = shards[i]
+        start = offsets[i]
+        data[start:start + packed] = packed_new + bytes(packed - len(packed_new))
+
+    with open(img_path, "r+b") as img:
+        img.seek(img_start)
+        img.write(bytes(data))
+    return len(rebuilt)
+
+
+def find_glyph_top(page, reference=None):
+    """Where this page's dialogue grid starts.
+
+    Slides the reference build's "@ABC..." row over the page and takes
+    the best fit, so a build that carries extra rows above the grid is
+    placed by what it draws rather than by a hard-coded offset. Returns
+    (top, how well it matched, 0.0-1.0).
+
+    `reference` is the row to look for, as returned by glyph_row(); with
+    none given the caller gets GLYPH_TOP back unexamined."""
+    if reference is None:
+        return GLYPH_TOP, 0.0
+    best_top, best_score = GLYPH_TOP, -1.0
+    for top in range(PAGE_H - GLYPH_H):
+        same = 0
+        for y in range(GLYPH_H):
+            row = page[top + y]
+            same += sum(1 for x in range(PAGE_W) if row[x] == reference[y][x])
+        score = same / (GLYPH_H * PAGE_W)
+        if score > best_score:
+            best_score, best_top = score, top
+    return best_top - _ANCHOR_ROW * GLYPH_H, best_score
+
+
+def glyph_row(page, row, top=GLYPH_TOP):
+    """One whole row of the grid, for use as a reference."""
+    y = top + row * GLYPH_H
+    return tuple(tuple(page[y + i]) for i in range(GLYPH_H))
+
+
+def glyph_box(code, top=GLYPH_TOP):
+    """(left, top, right, bottom) of one dialogue-font glyph in the page,
+    or None for a code the grid doesn't reach."""
+    row, col = divmod(code, GLYPH_COLS)
+    top = top + row * GLYPH_H
+    if top + GLYPH_H > PAGE_H:
+        return None
+    left = col * GLYPH_W
+    return (left, top, left + GLYPH_W, top + GLYPH_H)
+
+
+def glyphs(page, top=GLYPH_TOP):
+    """{code: tuple of rows} for every glyph the dialogue grid covers."""
+    out = {}
+    code = 0
+    while True:
+        box = glyph_box(code, top)
+        if box is None:
+            return out
+        left, top, right, bottom = box
+        out[code] = tuple(tuple(page[y][left:right]) for y in range(top, bottom))
+        code += 1
