@@ -95,14 +95,12 @@ FRAME_FILL = QColor(0, 0, 0, 224)
 TEXT_INSET = 14
 
 # The pieces are the same art in every box the game draws; the palette is
-# what changes with the context, so a style is a palette and how much of
-# the scene its interior lets through. The palette marks the interior
-# semi-transparent but not by how much, so the amount is set to match
-# the game: dialogue reads through to the scene, an item notice is dark
-# enough to read as solid.
+# what changes with the context, so a style is just which palette to
+# take. How much of the scene shows through is not a setting: the
+# interior multiplies (see _nine_slice_split), so its own greys decide.
 FRAME_STYLES = {
-    "dialogue": {"clut": (255, 2), "alpha": 192},
-    "notice": {"clut": (255, 3), "alpha": 224},
+    "dialogue": {"clut": (255, 2)},
+    "notice": {"clut": (255, 3)},
 }
 DEFAULT_STYLE = "dialogue"
 
@@ -130,10 +128,9 @@ class FontSheet:
                 self.palettes[row] = pal
         chosen = FRAME_STYLES.get(style)
         if chosen is None:
-            self.frame, self.frame_alpha = [], 255
+            self.frame = []
         else:
             self.frame = fontpage.read_frame(cd_folder, chosen["clut"])
-            self.frame_alpha = chosen["alpha"]
 
     def palette(self, row):
         """The palette a colour control selects, falling back to a plain
@@ -291,7 +288,35 @@ def split_runs(text, icons=True):
     return runs
 
 
-def _nine_slice(pieces, width, height, inner_alpha=128):
+def _nine_slice_split(pieces, width, height):
+    """The box as two layers: its opaque border, and its interior.
+
+    They are drawn differently. The border is ordinary opaque pixels.
+    The interior is marked semi-transparent in the palette and darkens
+    what is behind it rather than averaging with it - a dark grey over
+    the scene goes almost black while the scene's texture still shows
+    through, which is what the game does and what plain alpha blending
+    cannot reproduce. Multiplying by the interior's own greys gives
+    that, and keeps its top-to-bottom gradient."""
+    both = _nine_slice(pieces, width, height, keep_alpha=True)
+    if both is None:
+        return None, None
+    border = QImage(both.size(), QImage.Format.Format_ARGB32)
+    border.fill(0)
+    interior = QImage(both.size(), QImage.Format.Format_ARGB32)
+    interior.fill(QColor(255, 255, 255).rgb())      # white leaves multiply alone
+    for y in range(both.height()):
+        for x in range(both.width()):
+            colour = both.pixelColor(x, y)
+            if colour.alpha() == 255:
+                border.setPixelColor(x, y, colour)
+            elif colour.alpha():
+                interior.setPixelColor(
+                    x, y, QColor(colour.red(), colour.green(), colour.blue()))
+    return border, interior
+
+
+def _nine_slice(pieces, width, height, inner_alpha=128, keep_alpha=False):
     """The dialogue box at any size, from the disc's own pieces.
 
     The corners are taken as they are and the top and bottom edges repeat
@@ -332,7 +357,7 @@ def _nine_slice(pieces, width, height, inner_alpha=128):
         line = piece[sy]
         for x in range(width):
             r, g, bl, a = line[column(x)]
-            if a not in (0, 255):
+            if a not in (0, 255) and not keep_alpha:
                 a = inner_alpha        # the interior, however solid it reads
             at = (y * width + x) * 4
             buffer[at] = bl
@@ -352,13 +377,11 @@ class _Canvas(QWidget):
         self._message = "No disc open - preview unavailable."
         self._background = QPixmap(BACKGROUND) if os.path.exists(BACKGROUND)             else QPixmap()
         self._pieces = None
-        self._alpha = 128
         self._boxed = True
 
-    def set_frame(self, pieces, alpha=128):
+    def set_frame(self, pieces):
         """Take the frame from the disc, or None to draw a plain box."""
         self._pieces = pieces if pieces and len(pieces) >= 3 else None
-        self._alpha = alpha
         self.update()
 
     def set_boxed(self, boxed):
@@ -428,21 +451,25 @@ class _Canvas(QWidget):
 
         # Composed at its own scale and blown up whole, so the border
         # stays hard-edged however big the pane is.
-        frame = None
         if self._boxed:
-            frame = _nine_slice(self._pieces,
-                                max(box.width() // FRAME_SCALE, 8),
-                                max(box.height() // FRAME_SCALE, 12),
-                                self._alpha)
-            if frame is None:
+            border, interior = _nine_slice_split(
+                self._pieces,
+                max(box.width() // FRAME_SCALE, 8),
+                max(box.height() // FRAME_SCALE, 12))
+            if border is None:
                 painter.fillRect(box, FRAME_FILL)
                 painter.setPen(QPen(QColor(255, 255, 255), 2))
                 painter.drawRect(box.adjusted(0, 0, -1, -1))
-        if frame is not None:
-            painter.drawImage(
-                QRect(box.left(), box.top(),
-                      frame.width() * FRAME_SCALE,
-                      frame.height() * FRAME_SCALE), frame)
+            else:
+                target = QRect(box.left(), box.top(),
+                               border.width() * FRAME_SCALE,
+                               border.height() * FRAME_SCALE)
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_Multiply)
+                painter.drawImage(target, interior)
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_SourceOver)
+                painter.drawImage(target, border)
 
         inset = self._inset()
         if self._pixmap is not None:
@@ -486,7 +513,7 @@ class FontPreview(QWidget):
             return
         try:
             self.sheet = FontSheet(cd_folder, glyph_top, self.style)
-            self._canvas.set_frame(self.sheet.frame, self.sheet.frame_alpha)
+            self._canvas.set_frame(self.sheet.frame)
             self._canvas.set_message("")
         except Exception as exc:
             self.sheet = None

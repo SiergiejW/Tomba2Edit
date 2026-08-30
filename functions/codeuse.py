@@ -97,35 +97,49 @@ def _entries(dat_path, kind, start, end):
         else:
             blob = txtd_mod.preview(dat_path, start)
 
+    # Walked with an explicit stack rather than by recursion. A reader
+    # can return tens of thousands of nested entries, and this runs on a
+    # worker thread, whose stack is far smaller than the main one's -
+    # deep recursion there overruns the real stack and kills the process
+    # instead of raising RecursionError.
     found = []
-
-    def walk(node):
+    stack = [blob]
+    while stack:
+        node = stack.pop()
         if isinstance(node, dict):
             for key, value in node.items():
                 if key == "text" and isinstance(value, str):
                     found.append(value)
                 else:
-                    walk(value)
+                    stack.append(value)
         elif isinstance(node, (list, tuple)):
-            for value in node:
-                walk(value)
-
-    walk(blob)
+            stack.extend(node)
     return found
 
 
-def measure(dat_path):
-    """{code: how many times the disc's text uses it}."""
+def measure(dat_path, should_stop=None):
+    """{code: how many times the disc's text uses it}, or None if asked
+    to stop before finishing.
+
+    `should_stop` is called regularly and ends the scan when it returns
+    true. The scan takes over a minute, so whatever is waiting on it has
+    to be able to give up - a caller that cannot would have to block
+    until the end, and closing a window mid-scan would take the process
+    down with it."""
     from gui.txtd.txtd_packer import _REVERSE_LETTERS, _TOKENS
 
     counts = {}
     seen = set()
     for kind, start, end in text_files(dat_path):
+        if should_stop and should_stop():
+            return None
         try:
             entries = _entries(dat_path, kind, start, end)
         except Exception:
             continue
-        for text in entries:
+        for n, text in enumerate(entries):
+            if should_stop and not n % 2048 and should_stop():
+                return None
             if text in seen:
                 continue
             seen.add(text)
@@ -161,14 +175,19 @@ def cached(dat_path):
         return None
 
 
-def used_codes(dat_path, refresh=False):
-    """The codes the disc's text uses, cached beside the disc."""
+def used_codes(dat_path, refresh=False, should_stop=None):
+    """The codes the disc's text uses, cached beside the disc. None if
+    the scan was stopped, in which case nothing is cached - a partial
+    count would understate what the disc uses, and a translation would
+    then be told a code is free when it is not."""
     path = os.path.join(os.path.dirname(dat_path), CACHE)
     if not refresh:
         hit = cached(dat_path)
         if hit is not None:
             return hit
-    counts = measure(dat_path)
+    counts = measure(dat_path, should_stop)
+    if counts is None:
+        return None
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"counts": {f"0x{c:02X}": n

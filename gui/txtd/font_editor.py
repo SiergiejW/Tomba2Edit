@@ -25,10 +25,10 @@ from PyQt6.QtCore import QRect, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
                              QLineEdit, QMessageBox, QPushButton, QScrollArea,
-                             QSplitter, QVBoxLayout, QWidget)
+                             QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from functions import fontpage
-from gui.txtd import translation
+from gui.txtd import dicts, translation
 
 # How the three states are marked in the grid.
 STATE_COLORS = {
@@ -52,6 +52,22 @@ EDIT_ZOOM = 22            # a pixel's size in the editor
 PEN_INDICES = (0, 1, 2, 3, 4, 5, 6)
 
 
+def _default_top(cd_folder):
+    """Where to start the grid on a disc with no translation saved yet.
+
+    Taken from the build's known offset where the folder names one, since
+    reading it off the page is not reliable: a shifted grid still scores
+    well on every structural test tried, because glyphs sit inside their
+    cell with room above and below. Wrong here only means the grid opens
+    misaligned and the offset needs a nudge, which the spin box does."""
+    name = os.path.basename(os.path.dirname(cd_folder.rstrip("\\/"))).lower()
+    for build, top in dicts.GLYPH_TOP.items():
+        language, _, kind = build.partition("-")
+        if language in name and kind in name:
+            return top
+    return fontpage.GLYPH_TOP
+
+
 class _Measure(QThread):
     """Measuring which codes the disc's text uses, off the GUI thread.
 
@@ -67,7 +83,8 @@ class _Measure(QThread):
     def run(self):
         from functions import codeuse
         try:
-            self.done.emit(codeuse.used_codes(self.dat_path))
+            self.done.emit(codeuse.used_codes(
+                self.dat_path, should_stop=self.isInterruptionRequested))
         except Exception:
             self.done.emit(None)
 
@@ -250,6 +267,14 @@ class FontEditor(QWidget):
         self.char_edit.setPlaceholderText("character this code means, e.g. ą")
         self.char_edit.setMaxLength(12)
 
+        # Where the grid starts differs by build - the European pages
+        # carry extra rows above theirs - and getting it wrong slices
+        # every glyph across two cells, so it is adjustable and shown.
+        self.top_box = QSpinBox()
+        self.top_box.setRange(0, fontpage.PAGE_H - fontpage.GLYPH_H)
+        self.top_box.setValue(fontpage.GLYPH_TOP)
+        self.top_box.valueChanged.connect(self._set_top)
+
         self.state_label = QLabel("")
         self.state_label.setWordWrap(True)
 
@@ -272,6 +297,10 @@ class FontEditor(QWidget):
         pen_row.addWidget(QLabel("Pen"))
         pen_row.addWidget(self.pen_box)
         side_layout.addLayout(pen_row)
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("Grid top"))
+        top_row.addWidget(self.top_box)
+        side_layout.addLayout(top_row)
         side_layout.addWidget(self.state_label)
         side_layout.addWidget(QLabel("Means"))
         side_layout.addWidget(self.char_edit)
@@ -316,7 +345,10 @@ class FontEditor(QWidget):
             self.status.setText(f"Font page unreadable: {exc}")
             return
         table = translation.load(cd_folder)
-        self.top = top or table.glyph_top or fontpage.GLYPH_TOP
+        self.top = (top or table.glyph_top or _default_top(cd_folder))
+        self.top_box.blockSignals(True)
+        self.top_box.setValue(self.top)
+        self.top_box.blockSignals(False)
 
         measured = codeuse.cached(dat_path) if dat_path else None
         self.used_codes = set(measured or ())
@@ -340,13 +372,34 @@ class FontEditor(QWidget):
             f"({art} of them holding art nothing prints).")
 
     def _start_measure(self, dat_path):
-        if self._measure is not None and self._measure.isRunning():
-            return
-        self._measure = _Measure(dat_path, self)
+        # A scan of the disc just closed would answer for the wrong one.
+        self._stop_measure()
+        # Deliberately unparented. A QThread owned by a widget is
+        # destroyed with it, and destroying one that is still running
+        # aborts the process; this one is kept alive by the reference
+        # below and stopped explicitly.
+        self._measure = _Measure(dat_path)
         self._measure.done.connect(self._measured)
         self._measure.start()
 
+    def _stop_measure(self):
+        """End a running scan and wait for it. A QThread still running
+        when it is destroyed takes the process with it, so this has to
+        happen before the window goes away."""
+        thread = self._measure
+        if thread is None or not thread.isRunning():
+            return
+        thread.requestInterruption()
+        thread.wait(5000)
+
+    def closeEvent(self, event):
+        self._stop_measure()
+        super().closeEvent(event)
+
     def _measured(self, used):
+        if used is None and self._measure is not None \
+                and self._measure.isInterruptionRequested():
+            return                      # the window is closing
         if not used or self.page is None:
             self.status.setText("Could not measure the disc's text; every "
                                 "named code is marked taken.")
@@ -366,6 +419,16 @@ class FontEditor(QWidget):
         self.grid.set_page(self.page, self.top, states)
 
     # --- editing -------------------------------------------------------
+
+    def _set_top(self, value):
+        """Move the grid. Redraws it, and reopens the selected cell so
+        the pixel editor shows the same code at the new offset."""
+        self.top = value
+        if self.page is None:
+            return
+        self._refresh_grid()
+        if self.code is not None:
+            self._select(self.code)
 
     def _select(self, code):
         self.code = code

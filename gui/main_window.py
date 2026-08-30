@@ -33,6 +33,7 @@ from functions import labels as labels_module
 from functions import fontpage
 from functions import codeuse
 from gui.txtd.font_editor import FontEditor
+from gui.txtd.voice_panel import VoicePanel
 from functions.idx_parser import (
     parse_idx_file, apply_labels, row_label_data, area_index_of,
     LabelNameDelegate)
@@ -104,6 +105,11 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.splitter, "DAT Assets")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
+        # Its own tab rather than beside the text: the voice track has to
+        # be opened from a raw BIN, which is a different file from the
+        # disc the rest of the tool is working on.
+        self.voice_panel = VoicePanel()
+        self.main_tabs.addTab(self.voice_panel, "Voice")
         self.setCentralWidget(self.main_tabs)
 
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
