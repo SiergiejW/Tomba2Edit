@@ -171,8 +171,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar(self))
 
         toolbar = QToolBar("Main Toolbar")
-        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open ISO/BIN", self)
-        open_action.setToolTip("Open a Tomba! 2 disc image (.iso/.bin/.img) and browse its contents")
+        # The BIN data track is the one that carries everything - an ISO
+        # cannot hold the Form 2 voice sectors and a CD folder's copy of
+        # them is already truncated - so it is the only opener on the
+        # toolbar. The other two stay in the File menu for when they are
+        # genuinely wanted.
+        open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open BIN", self)
+        open_action.setToolTip(
+            "Open the disc's data track (Track 1 of a bin/cue). This is the "
+            "only source that carries the voice track intact")
 
         open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Folder", self)
         open_folder_action.setToolTip(
@@ -188,22 +195,28 @@ class MainWindow(QMainWindow):
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
-        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO/BIN", self)
+        export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO", self)
         export_iso_action.setToolTip(
-            "Rebuild the opened disc as a new .iso, with any pending TXTD/TXT2 edits applied "
-            "(everything else on the disc is carried over unchanged)"
+            "Rebuild the opened disc as a new .iso, with any pending TXTD/TXT2 edits applied. "
+            "Note this writes 2048-byte sectors, so the XA music and voice do not survive it - "
+            "for a playable disc keep using the bin/cue"
         )
         export_iso_action.triggered.connect(self.export_iso)
         self.export_iso_action = export_iso_action
-        open_action.triggered.connect(self.open_iso_dialog)
+        open_action.triggered.connect(lambda: self.open_iso_dialog())
+
+        open_iso_action = QAction("Open ISO...", self)
+        open_iso_action.setToolTip(
+            "Open a 2048-byte ISO. Everything except the streamed audio "
+            "works; the XA music and voice are not in an ISO to begin with")
+        open_iso_action.triggered.connect(
+            lambda: self.open_iso_dialog(iso_only=True))
 
         # Same QAction instances go in both the toolbar and the File menu -
         # Qt keeps them in sync automatically, no separate menu-only copies.
         toolbar.addAction(open_action)
-        toolbar.addAction(open_folder_action)
-        toolbar.addAction(export_action)
         toolbar.addAction(export_files_action)
-        toolbar.addAction(export_iso_action)
+        toolbar.addAction(export_action)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
@@ -235,6 +248,7 @@ class MainWindow(QMainWindow):
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(open_action)
+        file_menu.addAction(open_iso_action)
         file_menu.addAction(open_folder_action)
         file_menu.addSeparator()
         file_menu.addAction(import_labels_action)
@@ -992,14 +1006,22 @@ class MainWindow(QMainWindow):
             overlays, sop_path,
             self.labels.bins if self.labels else None)
 
-    def open_iso_dialog(self):
+    def open_iso_dialog(self, _checked=False, iso_only=False):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp
         folder and populate the tree view. See open_folder_dialog() for
-        opening an already-extracted folder instead."""
-        iso_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Tomba! 2 ISO", "",
-            "Disc Images (*.iso *.bin *.img);;All Files (*)"
-        )
+        opening an already-extracted folder instead.
+
+        `iso_only` is the File > Open ISO route. The toolbar's opener
+        asks for a BIN first, because that is the one that carries the
+        voice track; an ISO cannot."""
+        if iso_only:
+            title = "Select a Tomba! 2 ISO"
+            filters = "Disc image (*.iso *.img);;All files (*)"
+        else:
+            title = "Select the disc's data track (Track 1)"
+            filters = ("Disc data track (*.bin);;Disc image "
+                       "(*.iso *.img);;All files (*)")
+        iso_path, _ = QFileDialog.getOpenFileName(self, title, "", filters)
         if not iso_path:
             return
 
