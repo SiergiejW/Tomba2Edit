@@ -32,9 +32,9 @@ Project uses PyQt6, struct, numpy, OpenGL, Pillow Python libraries.
 2. Open Track 1.BIN <br>
 3. Make edits, overwrite Track 1.BIN.<br>
 4. ISO supported, but not preffered. Also extracting all contents and opening folder works. Can also save DAT/IDX to swap if you have means to open BIN/ISO.
-MDAT - Level data
-TXTD - Text data
-SMST - 3D Assets
+- MDAT - Level data
+- TXTD - Text data
+- SMST - 3D Assets
 
 ## Controls 
 **Camera movement:**<br>
