@@ -17,10 +17,18 @@ The segment rule is what makes an entry with several boxes play all of
 them instead of just the first, and it is also why the indices in a
 master skip: the gaps are the extra segments.
 """
+import json
+import os
+
 from functions import voice, xa
 
 NO_VOICE = 0xFFFF
 GAP = 0.25          # seconds of silence inserted between an entry's boxes
+
+# Working out an overlay's channels means decoding all 32 of them across
+# the whole span its tables cover - the better part of a minute. It only
+# depends on the overlay and the disc, so it is done once and kept.
+CACHE_NAME = "voicechannels.json"
 
 
 def segments(text):
@@ -50,6 +58,7 @@ class VoiceLink:
         self.lba = 0
         self.sectors = 0
         self.tables = []
+        self.overlay = None
         self._channels = {}
 
     def ready(self):
@@ -73,7 +82,10 @@ class VoiceLink:
             self.tables = voice.find_tables(path) if path else []
         except Exception:
             self.tables = []
+        self.overlay = path
         self._channels.clear()
+        if self.image:
+            self.load_cached_channels()
         return len(self.tables)
 
     def table_for(self, master):
@@ -93,13 +105,52 @@ class VoiceLink:
         roomy = sorted((s, i) for s, i in sizes if s >= need)
         return roomy[0][1] if roomy else None
 
+    # --- channels -----------------------------------------------------
+
+    def _cache_key(self):
+        return f"{os.path.basename(self.overlay or '')}:{len(self.tables)}"
+
+    def _cache_path(self):
+        return os.path.join(os.path.dirname(self.image or ""), CACHE_NAME)
+
+    def load_cached_channels(self):
+        """Take a previous run's answer if there is one for this overlay."""
+        try:
+            with open(self._cache_path(), "r", encoding="utf-8") as f:
+                found = json.load(f).get(self._cache_key())
+        except Exception:
+            return False
+        if not found or len(found) != len(self.tables):
+            return False
+        self._channels = {i: c for i, c in enumerate(found)}
+        return True
+
+    def resolve_channels(self, progress=None):
+        """Work out every table's channel. Slow - run it off the GUI
+        thread - and cached afterwards, so it happens once per disc."""
+        if not self.ready():
+            return False
+        found = voice.resolve_channels(self.image, self.lba, self.tables,
+                                       progress)
+        self._channels = {i: c for i, c in enumerate(found)}
+        try:
+            path = self._cache_path()
+            store = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    store = json.load(f)
+            store[self._cache_key()] = found
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(store, f, indent=2)
+        except OSError:
+            pass
+        return True
+
+    def channels_known(self):
+        return len(self._channels) == len(self.tables) and bool(self.tables)
+
     def channel(self, table_index):
-        """Which VOICE.XA channel a table describes, resolved once."""
-        if table_index not in self._channels:
-            _off, entries = self.tables[table_index]
-            found, _score = voice.best_channel(self.image, self.lba, entries)
-            self._channels[table_index] = found
-        return self._channels[table_index]
+        return self._channels.get(table_index)
 
     def clip_for(self, entry, master):
         """(samples, rate, note) for one TXTD entry, all its boxes.
@@ -118,7 +169,8 @@ class VoiceLink:
         _off, entries = self.tables[table_index]
         channel = self.channel(table_index)
         if channel is None:
-            return None, 0, "Could not tell which channel this table uses."
+            return None, 0, ("Still working out which channel each table "
+                             "uses - this happens once per disc.")
 
         first = extra & 0xFF
         count = segments(entry.get("text"))

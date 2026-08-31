@@ -246,31 +246,57 @@ def clip_sectors(entry, channel):
     return [(start + b) * BLOCK + channel for b in range(length)]
 
 
-def best_channel(image, lba, entries, probe_blocks=200):
-    """Which channel a table describes, judged by its own boundaries.
+BOUNDARY_QUIET = 1500      # amplitude below which a block counts as a gap
 
-    Each entry begins where the one before ended, so on the right channel
-    those block boundaries land in the gaps between spoken lines. Scoring
-    channels by how often the block before a boundary is quiet picks it
-    out; the wrong channel has its own clips, cut at other places."""
-    bounds = [s for s, _l in entries[1:] if s < probe_blocks]
-    if not bounds:
-        return None, 0.0
-    best, best_score = None, -1.0
+
+def resolve_channels(image, lba, tables, progress=None):
+    """Which channel each of an overlay's tables describes.
+
+    Every entry begins where the one before ended, so on the right
+    channel those block boundaries fall in the gaps between spoken
+    lines; on any other they cut through its own speech. Scoring
+    channels by how often the block before a boundary is quiet picks
+    each table's out, usually by a wide margin.
+
+    All 32 channels are decoded once, contiguously, and every table is
+    scored against that. Contiguously matters: the ADPCM predictor
+    carries state from sector to sector, so a block decoded on its own
+    starts from silence and its loudness means nothing.
+
+    Returns [channel or None] parallel to `tables`. Costs a decode of
+    the whole span - tens of seconds - so callers should cache it and
+    keep it off the GUI thread."""
+    if not tables:
+        return []
+    span = max(max(s for s, _l in entries) for _off, entries in tables) + 2
+    peaks = {}
     with open(image, "rb") as f:
         for channel in range(BLOCK):
+            if progress:
+                progress(channel, BLOCK)
             samples, _rate = xa.decode_channel(
-                f, lba, [b * BLOCK + channel for b in range(probe_blocks)])
+                f, lba, [b * BLOCK + channel for b in range(span)])
             per = xa.SAMPLES_PER_SECTOR
-            quiet = 0
-            for b in bounds:
-                seg = samples[(b - 1) * per:b * per]
-                if seg and max(abs(v) for v in seg) < QUIET_LEVEL * 4:
-                    quiet += 1
+            peaks[channel] = [
+                max((abs(v) for v in samples[b * per:(b + 1) * per]),
+                    default=0)
+                for b in range(span)]
+
+    out = []
+    for _off, entries in tables:
+        bounds = [s for s, _l in entries[1:]]
+        if not bounds:
+            out.append(None)
+            continue
+        best, best_score = None, -1.0
+        for channel, peak in peaks.items():
+            quiet = sum(1 for b in bounds
+                        if b < len(peak) and peak[b - 1] < BOUNDARY_QUIET)
             score = quiet / len(bounds)
             if score > best_score:
                 best, best_score = channel, score
-    return best, best_score
+        out.append(best)
+    return out
 
 
 def channels(image, lba, sectors):

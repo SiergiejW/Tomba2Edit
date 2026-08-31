@@ -586,14 +586,64 @@ class TXTDViewer(QWidget):
             self.voice_note.setText("No clip tables in this area's overlay.")
         else:
             self.voice_note.setText(f"{count} clip tables available.")
+            self._start_channel_resolve()
         self._refresh_voice_button()
+
+    def _start_channel_resolve(self):
+        """Work out each table's channel once, off the GUI thread.
+
+        It decodes all 32 channels across the tables' whole span, which
+        is the better part of a minute - doing it where the user waits
+        for it was what made selecting a master hang. The answer is
+        cached beside the disc, so it happens once."""
+        from PyQt6.QtCore import QThread, pyqtSignal
+
+        voice = getattr(self, "_voice", None)
+        if not (voice and voice.ready()) or voice.channels_known():
+            return
+        existing = getattr(self, "_resolver", None)
+        if existing is not None and existing.isRunning():
+            return
+
+        class _Resolve(QThread):
+            finished_ok = pyqtSignal(bool)
+
+            def __init__(self, link):
+                super().__init__()          # unparented: see voice_panel
+                self.link = link
+
+            def run(self):
+                try:
+                    self.finished_ok.emit(self.link.resolve_channels())
+                except Exception:
+                    self.finished_ok.emit(False)
+
+        self.voice_note.setText(
+            "Working out which channel each clip table uses - once per "
+            "disc, then it is remembered.")
+        self._resolver = _Resolve(voice)
+        self._resolver.finished_ok.connect(self._channels_resolved)
+        self._resolver.start()
+
+    def _channels_resolved(self, ok):
+        self.voice_note.setText("Voice ready." if ok
+                                else "Could not work out the voice channels.")
+        self._refresh_voice_button()
+
+    def _stop_resolver(self):
+        resolver = getattr(self, "_resolver", None)
+        if resolver is not None and resolver.isRunning():
+            resolver.requestInterruption()
+            resolver.wait(60000)
+        self._resolver = None
 
     def _refresh_voice_button(self):
         voice = getattr(self, "_voice", None)
         entry = self._selected_entry()
         extra = entry.get("extra") if entry else None
         self.play_voice_button.setEnabled(
-            bool(voice and voice.ready() and extra not in (None, 0xFFFF)))
+            bool(voice and voice.ready() and voice.channels_known()
+                 and extra not in (None, 0xFFFF)))
 
     def _selected_entry(self):
         item = getattr(self, "_current_entry_item", None)
@@ -633,6 +683,7 @@ class TXTDViewer(QWidget):
 
     def closeEvent(self, event):
         self._stop_voice()
+        self._stop_resolver()
         super().closeEvent(event)
 
     def _on_text_changed(self):

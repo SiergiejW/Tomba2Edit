@@ -75,21 +75,26 @@ BACKGROUND = os.path.join(os.path.dirname(os.path.dirname(
 
 # The dialogue box is built from the page's own frame pieces (see
 # fontpage.read_frame), as a nine-slice. Each piece is 18 wide with a
-# 3-pixel border either side; which edge a piece is is told by where its
-# corners are inset:
+# 3-pixel border either side.
 #
-#     piece 0   rows 3-7, inset on row 3    the top
-#     piece 1   rows 0-7, no inset          the middle
-#     piece 2   rows 0-4, inset on row 4    the bottom
+# The art is stored upside down, so every piece is read bottom-up and
+# piece 2 is the top edge, piece 0 the bottom:
 #
-# The two edges are separate art, not one flipped: the top carries the
-# interior below its border, the bottom above it.
+#     piece 2   rows 4..0    the top
+#     piece 1   rows 7..0    the middle, stretched down the box
+#     piece 0   rows 7..3    the bottom
+#
+# Two things agree on that and neither does on any other arrangement.
+# The corners are inset on the outermost row at both ends, and the
+# interior greys come out monotonic - 57 at the top falling to 16 at the
+# bottom - with no step at either seam. Read the other way up the box is
+# darkest at the top and the seams jump.
 FRAME_MARGIN = 10
 FRAME_SCALE = 2
 FRAME_BORDER = 3          # left and right border, in source pixels
 FRAME_EDGE_H = 5          # rows in the top and the bottom edge
-FRAME_TOP_Y = 3           # where the top edge starts in piece 0
-FRAME_BOT_Y = 0           # where the bottom edge starts in piece 2
+FRAME_TOP_Y = 4           # topmost row of the top edge, inside piece 2
+FRAME_BOT_Y = 7           # topmost row of the bottom edge, inside piece 0
 FRAME_MID_H = 8           # rows of piece 1, stretched down the box
 FRAME_FILL = QColor(0, 0, 0, 224)
 TEXT_INSET = 14
@@ -327,7 +332,7 @@ def _nine_slice(pieces, width, height, inner_alpha=128, keep_alpha=False):
     leaves bands."""
     if not pieces or len(pieces) < 3 or width < 8 or height < 12:
         return None
-    top, mid, bottom = pieces[0], pieces[1], pieces[2]
+    top, mid, bottom = pieces[2], pieces[1], pieces[0]
     b = FRAME_BORDER
     src_w = len(top[0])
     inner_w = src_w - 2 * b
@@ -343,13 +348,14 @@ def _nine_slice(pieces, width, height, inner_alpha=128, keep_alpha=False):
     inner_h = max(height - 2 * FRAME_EDGE_H, 1)
 
     def row_of(y):
-        """(piece, source row) for a destination row."""
+        """(piece, source row) for a destination row. Every piece is
+        read bottom-up, since the art is stored upside down."""
         if y < FRAME_EDGE_H:
-            return top, FRAME_TOP_Y + y
+            return top, FRAME_TOP_Y - y
         if y >= height - FRAME_EDGE_H:
-            return bottom, FRAME_BOT_Y + (y - (height - FRAME_EDGE_H))
+            return bottom, FRAME_BOT_Y - (y - (height - FRAME_EDGE_H))
         sy = (y - FRAME_EDGE_H) * FRAME_MID_H // inner_h
-        return mid, min(sy, FRAME_MID_H - 1)
+        return mid, FRAME_MID_H - 1 - min(sy, FRAME_MID_H - 1)
 
     buffer = bytearray(width * height * 4)
     for y in range(height):
