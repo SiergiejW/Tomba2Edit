@@ -14,11 +14,14 @@ lands close but should not be mistaken for the real boundaries, since a
 line with a pause in it splits and two lines run together when the gap
 between them is short.
 
-The file has to be read from a raw 2352-byte track. A CD folder's
-VOICE.XA, or one out of a 2048-byte ISO, has had 276 bytes cut out of
-every sector and cannot be decoded at all.
+Two sources work: a raw 2352-byte disc track, and a VOICE.XA extracted
+properly - 2324 bytes a sector, which extract_voice() writes. What does
+not work is a VOICE.XA copied as if it were an ordinary file, as a CD
+folder or a 2048-byte ISO carries: that discards 276 bytes of every
+sector, 12% of the audio, and nothing can put it back.
 """
 import mmap
+import struct
 import os
 
 from functions import xa
@@ -46,11 +49,23 @@ def find_track(path):
     had 276 bytes cut out of every sector and is not decodable."""
     name = os.path.basename(path)
     if name.upper().endswith(".XA"):
+        # A clean Form 2 extraction is usable on its own: 2324 bytes a
+        # sector, channels still in their fixed interleave. One that
+        # divides by 2048 was copied as an ordinary file, which threw
+        # away 276 bytes of every sector - 12% of the audio - and that
+        # cannot be put back.
+        frame = xa.framing(path)
+        size = os.path.getsize(path)
+        if frame == xa.FLAT:
+            return 0, size // xa.FORM2_LEN
+        if frame == xa.RAW:
+            return 0, size // xa.SECTOR
         raise VoiceError(
-            f"{name} is an extracted copy, and extracting is what breaks it: "
-            "the voice track is Mode 2 Form 2, carrying 2324 bytes a sector "
-            "where a file copy takes 2048. Open the data track of the "
-            "bin/cue instead (Track 1).")
+            f"{name} is {size:,} bytes, which divides by 2048 - it was "
+            "copied as an ordinary file, and that discards 276 bytes of "
+            "every sector (12% of the audio, unrecoverably). Open the "
+            "bin/cue data track, or use Voice > Extract VOICE.XA to write "
+            "a good copy into the folder.")
     # Mapped rather than read. A data track is hundreds of megabytes and
     # this runs on every disc open; pulling it into memory twice over is
     # enough to take the process down. Reading only the head instead is
@@ -136,6 +151,23 @@ def extract_file(image_path, wanted):
                 data.close()
 
 
+def extract_voice(image_path, out_path):
+    """Write a usable VOICE.XA out of a raw disc track.
+
+    Copies the 2324-byte Form 2 payloads back to back, which is what an
+    ordinary file copy gets wrong. The result opens on its own, so a CD
+    folder can carry working audio."""
+    lba, sectors = find_track(image_path)
+    with open(image_path, "rb") as src, open(out_path, "wb") as dst:
+        for i in range(sectors):
+            src.seek((lba + i) * xa.SECTOR)
+            raw = src.read(xa.SECTOR)
+            if len(raw) < xa.SECTOR:
+                break
+            dst.write(raw[xa.PAYLOAD:xa.PAYLOAD + xa.FORM2_LEN])
+    return out_path
+
+
 def clips(samples, rate):
     """Where a decoded channel falls quiet -> [(start, end)] in samples.
 
@@ -177,12 +209,13 @@ def clips(samples, rate):
 
 def channel_clips(image, lba, sectors, channel, limit=None):
     """Decode one channel and cut it up: (samples, rate, [(start, end)])."""
+    frame = xa.framing(image) or xa.RAW
     with open(image, "rb") as f:
-        chans = xa.channel_map(f, lba, sectors)
+        chans = xa.channel_map(f, lba, sectors, frame)
         key = next((k for k in chans if k[1] == channel), None)
         if key is None:
             return [], 37800, []
-        samples, rate = xa.decode_channel(f, lba, chans[key], limit)
+        samples, rate = xa.decode_channel(f, lba, chans[key], limit, frame)
     return samples, rate, clips(samples, rate)
 
 
@@ -208,6 +241,103 @@ def channel_clips(image, lba, sectors, channel, limit=None):
 
 MIN_TABLE = 8              # entries before a chain is believable
 BLOCK = 32                 # sectors per interleave block
+
+# Where an overlay is loaded. Found by locating A00.BIN inside a
+# DuckStation savestate's RAM, which matched the file for 284,652 of its
+# 285,096 bytes; the overlays share the slot, so one address serves all.
+OVERLAY_BASE = 0x80108F9C
+
+
+def _sx(imm):
+    """A 16-bit immediate as MIPS sign-extends it."""
+    return imm - 0x10000 if imm > 0x7FFF else imm
+
+
+def read_dispatch(overlay_path, base=OVERLAY_BASE):
+    """{master: (clip table offset, channel, block offset)} from the code.
+
+    The overlay picks a master's voice in a short run of instructions
+    that sets three registers and jumps to a common tail:
+
+        lui   v0, hi
+        addiu v0, v0, lo        <- the clip table
+        addiu a3, zero, n       <- the VOICE.XA channel
+        addiu a2, zero, b       <- a block offset added to every start
+                                   (a2 is left zero where there is none)
+
+    The big overlays reach these through a jump table, the small ones
+    through a chain of compares, so the cases themselves are what gets
+    matched here rather than the dispatch above them. They appear in
+    master order either way.
+
+    This is the game's own mapping rather than a guess at it, so it
+    needs no audio, no probing and no cache."""
+    data = open(overlay_path, "rb").read()
+    top = len(data) - 4
+
+    def word(at):
+        return struct.unpack_from("<I", data, at)[0] if 0 <= at < top else 0
+
+    cases = []
+    for at in range(0, top, 4):
+        w = word(at)
+        # addiu a3, zero, n  - a channel, so n must be a real one
+        if w >> 26 != 0x09 or (w >> 16) & 31 != 7 or (w >> 21) & 31 != 0:
+            continue
+        channel = w & 0xFFFF
+        if channel >= BLOCK:
+            continue
+        # the clip table is built just above; the block offset sits
+        # within a couple of instructions either side
+        clip_table = offset = None
+        for k in range(-4, 4):
+            v = word(at + k * 4)
+            op, rt, rs, imm = v >> 26, (v >> 16) & 31, (v >> 21) & 31, v & 0xFFFF
+            if op == 0x09 and rt == 2 and clip_table is None:
+                hi = None
+                for j in range(1, 4):
+                    u = word(at + (k - j) * 4)
+                    if u >> 26 == 0x0F and (u >> 16) & 31 == 2:
+                        hi = u & 0xFFFF
+                        break
+                if hi is not None:
+                    clip_table = (hi << 16) + _sx(imm) - base
+            elif op == 0x09 and rt == 6 and rs == 0 and offset is None:
+                offset = imm
+            elif v == 0x00003021 and offset is None:      # addu a2, zero, zero
+                offset = 0
+        if clip_table is None or not (0 <= clip_table < top):
+            continue
+        if not read_clip_table(overlay_path, clip_table):
+            continue
+        cases.append((at, clip_table, channel, offset or 0))
+
+    # One case per master, in the order they appear.
+    seen = set()
+    out = {}
+    for _at, clip_table, channel, offset in cases:
+        key = (clip_table, channel, offset)
+        if key in seen:
+            continue
+        seen.add(key)
+        out[len(out)] = (clip_table, channel, offset)
+    return out
+
+
+def read_clip_table(overlay_path, offset, limit=400):
+    """The (start, length) rows of one clip table, until the chain ends."""
+    data = open(overlay_path, "rb").read()
+    out = []
+    at = offset
+    expect = 0
+    while at + 4 <= len(data) and len(out) < limit:
+        start, length = struct.unpack_from("<HH", data, at)
+        if start != expect or not (0 < length < 400):
+            break
+        out.append((start, length))
+        expect = start + length
+        at += 4
+    return out
 
 
 def find_tables(overlay_path, min_entries=MIN_TABLE):
@@ -240,16 +370,20 @@ def find_tables(overlay_path, min_entries=MIN_TABLE):
     return out
 
 
-def clip_sectors(entry, channel):
-    """The VOICE.XA sector numbers one clip occupies."""
+def clip_sectors(entry, channel, sectors=None):
+    """The VOICE.XA sector numbers one clip occupies, never past the
+    end of the track."""
     start, length = entry
-    return [(start + b) * BLOCK + channel for b in range(length)]
+    out = [(start + b) * BLOCK + channel for b in range(length)]
+    if sectors:
+        out = [s for s in out if s < sectors]
+    return out
 
 
 BOUNDARY_QUIET = 1500      # amplitude below which a block counts as a gap
 
 
-def resolve_channels(image, lba, tables, progress=None):
+def resolve_channels(image, lba, tables, progress=None, sectors=None):
     """Which channel each of an overlay's tables describes.
 
     Every entry begins where the one before ended, so on the right
@@ -269,13 +403,20 @@ def resolve_channels(image, lba, tables, progress=None):
     if not tables:
         return []
     span = max(max(s for s, _l in entries) for _off, entries in tables) + 2
+    if sectors:
+        # Never probe past the track. A table can reach the very last
+        # block, and reading beyond it lands in whatever file follows -
+        # not XA audio, and it decodes to nonsense.
+        span = min(span, sectors // BLOCK)
+    frame = xa.framing(image) or xa.RAW
     peaks = {}
     with open(image, "rb") as f:
         for channel in range(BLOCK):
             if progress:
                 progress(channel, BLOCK)
             samples, _rate = xa.decode_channel(
-                f, lba, [b * BLOCK + channel for b in range(span)])
+                f, lba, [b * BLOCK + channel for b in range(span)],
+                frame=frame)
             per = xa.SAMPLES_PER_SECTOR
             peaks[channel] = [
                 max((abs(v) for v in samples[b * per:(b + 1) * per]),
@@ -301,6 +442,7 @@ def resolve_channels(image, lba, tables, progress=None):
 
 def channels(image, lba, sectors):
     """Which channels the track carries, and how many sectors each has."""
+    frame = xa.framing(image) or xa.RAW
     with open(image, "rb") as f:
-        chans = xa.channel_map(f, lba, sectors)
+        chans = xa.channel_map(f, lba, sectors, frame)
     return sorted((k[1], len(v)) for k, v in chans.items())

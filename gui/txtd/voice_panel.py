@@ -3,13 +3,15 @@
 VOICE.XA is 32 interleaved channels of spoken dialogue. Pick a channel,
 it is decoded and cut where it falls quiet, and each piece can be played.
 
-The cuts are an approximation - the real boundaries live in a timing
-table in the area's overlay that nobody has located yet (see
-functions/voice.py), so this is for listening through a channel rather
-than for saying which line is which.
+The cuts here are an approximation, for browsing a channel end to end.
+The exact boundaries come from the area's overlay, which the TXTD
+viewer's Play button uses to speak a chosen line (see voice_link.py).
 
-The track has to come from a raw BIN, not a CD folder or an ISO: those
-have had 276 bytes cut out of every sector of it.
+Two sources work: a raw disc track, and a VOICE.XA extracted properly -
+which "Extract VOICE.XA..." writes, so a CD folder can carry working
+audio. A VOICE.XA copied as an ordinary file cannot be used: that takes
+2048 bytes of each sector where the format holds 2324, losing 12% of
+the audio for good.
 """
 import os
 
@@ -64,6 +66,13 @@ class VoicePanel(QWidget):
 
         self.pick = QPushButton("Open BIN...")
         self.pick.clicked.connect(self._browse)
+        self.extract = QPushButton("Extract VOICE.XA...")
+        self.extract.setToolTip(
+            "Write a VOICE.XA that actually works into a CD folder - the "
+            "Form 2 payloads, 2324 bytes a sector, which an ordinary file "
+            "copy truncates to 2048")
+        self.extract.clicked.connect(self._extract)
+        self.extract.setEnabled(False)
         self.channel_box = QComboBox()
         self.channel_box.currentIndexChanged.connect(self._load_channel)
         self.list = QListWidget()
@@ -78,6 +87,7 @@ class VoicePanel(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(self.pick)
+        top.addWidget(self.extract)
         top.addWidget(QLabel("Channel"))
         top.addWidget(self.channel_box, 1)
         row = QHBoxLayout()
@@ -119,9 +129,29 @@ class VoicePanel(QWidget):
         self.status.setText(
             f"{os.path.basename(path)}: VOICE.XA at sector {self.lba:,}, "
             f"{self.sectors:,} sectors, {len(found)} channels.")
+        self.extract.setEnabled(True)
         self.image_opened.emit(path)
         if found:
             self._load_channel(0)
+
+    def _extract(self):
+        """Write a usable VOICE.XA next to a CD folder's other files."""
+        if not self.image:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Write VOICE.XA", "VOICE.XA", "XA audio (*.XA)")
+        if not path:
+            return
+        self.status.setText("Extracting...")
+        try:
+            voice.extract_voice(self.image, path)
+        except Exception as exc:
+            self.status.setText(f"Could not extract: {exc}")
+            return
+        self.status.setText(
+            f"Wrote {os.path.basename(path)} - {os.path.getsize(path):,} "
+            "bytes. That copy opens on its own, so a CD folder can carry "
+            "working audio.")
 
     # --- decoding -----------------------------------------------------
 

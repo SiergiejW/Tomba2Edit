@@ -85,6 +85,7 @@ class VoiceLink:
         self.tables = []
         self.overlay = None
         self._channels = {}
+        self._by_master = {}
 
     def ready(self):
         return bool(self.image and self.tables)
@@ -102,18 +103,34 @@ class VoiceLink:
         return None
 
     def set_overlay(self, path):
-        """Point at the area's Axx.BIN and find its clip tables."""
-        try:
-            self.tables = voice.find_tables(path) if path else []
-        except Exception:
-            self.tables = []
+        """Point at the area's Axx.BIN and read its voice dispatch.
+
+        The overlay chooses a master's clip table and channel with a jump
+        table in its own code, so both come straight out of it - no
+        probing, no cache, and it covers masters whose table size matches
+        nothing."""
         self.overlay = path
-        self._channels.clear()
-        if self.image:
-            self.load_cached_channels()
+        self.dispatch = {}
+        try:
+            if path:
+                self.dispatch = voice.read_dispatch(path)
+        except Exception:
+            self.dispatch = {}
+        self.tables = {}
+        for master, (table_at, channel, block_offset) in self.dispatch.items():
+            rows = voice.read_clip_table(path, table_at)
+            if rows:
+                # Every start in the table is relative to the master's
+                # own base block; A00 happens to use 0 throughout, which
+                # is why it worked before this was read.
+                rows = [(start + block_offset, length) for start, length in rows]
+                self.tables[master] = (rows, channel)
         return len(self.tables)
 
-    def set_masters(self, masters):
+    def set_masters(self, masters):   # kept for callers; nothing to do
+        return len(self.tables)
+
+    def _unused_set_masters(self, masters):
         """Work out which table each master speaks through.
 
         The overlay's tables are in the same order as the masters that
@@ -137,7 +154,7 @@ class VoiceLink:
         return len(self._by_master)
 
     def table_for_index(self, master_index):
-        return self._by_master.get(master_index)
+        return master_index if master_index in self.tables else None
 
     # --- channels -----------------------------------------------------
 
@@ -165,7 +182,7 @@ class VoiceLink:
         if not self.ready():
             return False
         found = voice.resolve_channels(self.image, self.lba, self.tables,
-                                       progress)
+                                       progress, self.sectors)
         self._channels = {i: c for i, c in enumerate(found)}
         try:
             path = self._cache_path()
@@ -181,12 +198,12 @@ class VoiceLink:
         return True
 
     def channels_known(self):
-        return len(self._channels) == len(self.tables) and bool(self.tables)
+        return bool(self.tables)
 
     def channel(self, table_index):
         return self._channels.get(table_index)
 
-    def clip_for(self, entry, master):
+    def clip_for(self, entry, master_index):
         """(samples, rate, note) for one TXTD entry, all its boxes.
 
         Every {$END} segment gets its own clip; they are joined with a
@@ -197,38 +214,37 @@ class VoiceLink:
         if not self.ready():
             return None, 0, ("No disc yet - open the data track (Track 1), "
                              "the only place the voice survives.")
-        table_index = self.table_for(master)
-        if table_index is None:
-            return None, 0, "No clip table in this overlay fits this master."
-        _off, entries = self.tables[table_index]
-        channel = self.channel(table_index)
-        if channel is None:
-            return None, 0, ("Still working out which channel each table "
-                             "uses - this happens once per disc.")
-
+        found = self.tables.get(master_index)
+        if found is None:
+            return None, 0, ("This overlay's dispatch has no voice for this "
+                             "master.")
+        entries, channel = found
         first = extra & 0xFF
         count = segments(entry.get("text"))
         rate = 18900
         samples = []
         played = []
+        frame = xa.framing(self.image) or xa.RAW
         with open(self.image, "rb") as f:
             for n in range(count):
                 index = first + n
                 if index >= len(entries):
                     break
                 block = xa.decode_channel(
-                    f, self.lba, voice.clip_sectors(entries[index], channel))
+                    f, self.lba,
+                    voice.clip_sectors(entries[index], channel, self.sectors),
+                    frame=frame)
                 if samples:
                     samples.extend([0] * int(GAP * block[1]))
                 samples.extend(block[0])
                 rate = block[1]
                 played.append(index)
         if not played:
-            return None, 0, (f"Clip {first} is past the end of table "
-                             f"{table_index} ({len(entries)} entries).")
+            return None, 0, (f"Clip {first} is past the end of this master's "
+                             f"table ({len(entries)} entries).")
         which = (f"clip {played[0]}" if len(played) == 1
                  else f"clips {played[0]}-{played[-1]}")
         return samples, rate, (
-            f"table {table_index}, channel {channel}, {which} "
+            f"master {master_index}, channel {channel}, {which} "
             f"({count} box{'es' if count > 1 else ''}) - "
             f"{len(samples) / rate:.2f}s")

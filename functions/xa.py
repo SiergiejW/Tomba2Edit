@@ -49,6 +49,33 @@ def coding(byte):
             8 if (byte >> 4) & 3 else 4)
 
 
+# How a source frames its sectors: (stride, payload offset, has subheader).
+# A disc track carries whole 2352-byte sectors, each naming its own file
+# and channel. A VOICE.XA extracted properly is just the payloads back to
+# back, with nothing to say which channel a sector belongs to - but the
+# interleave is fixed, so the sector's position gives it away.
+RAW = (SECTOR, PAYLOAD, True)
+FLAT = (FORM2_LEN, 0, False)
+CHANNELS = 32
+
+
+def framing(path):
+    """How to read this file, from its size.
+
+    A flat file whose length divides by 2324 is a clean Form 2
+    extraction. One that divides by 2048 instead was extracted as if it
+    were an ordinary file, which discarded 276 bytes of every sector -
+    that one is not decodable and is refused by the caller."""
+    import os
+
+    size = os.path.getsize(path)
+    if size % SECTOR == 0:
+        return RAW
+    if size % FORM2_LEN == 0:
+        return FLAT
+    return None
+
+
 def sectors(image, lba, count):
     """Yield (index, subheader, payload) for a run of raw sectors.
 
@@ -61,11 +88,18 @@ def sectors(image, lba, count):
         yield i, raw[SUBHEADER:SUBHEADER + 8], raw[PAYLOAD:PAYLOAD + FORM2_LEN]
 
 
-def channel_map(image, lba, count):
+def channel_map(image, lba, count, frame=RAW):
     """{(file, channel): [sector index, ...]} for one XA file.
 
     Only Form 2 audio sectors are listed; the rest of a file - padding,
-    or the video sectors of an STR - is left out."""
+    or the video sectors of an STR - is left out. A flat extraction has
+    no subheaders to ask, so the interleave position is used instead."""
+    stride, _off, has_sub = frame
+    if not has_sub:
+        out = {}
+        for i in range(count):
+            out.setdefault((1, i % CHANNELS), []).append(i)
+        return out
     out = {}
     for i, sub, _payload in sectors(image, lba, count):
         fileno, chan, submode = sub[0], sub[1], sub[2]
@@ -94,6 +128,12 @@ def decode_sector(payload, state=None):
             filt = param >> 4
             if filt >= len(FILTERS):
                 filt = 0                  # a stream can carry a spare index
+            if shift > 12:
+                # Only ever seen when reading something that is not XA
+                # audio - past the end of the file, or a video sector.
+                # Clamped rather than left to shift by a negative amount,
+                # which raises and takes the caller down with it.
+                shift = 12
             k0, k1 = FILTERS[filt]
             for s in range(UNIT_SAMPLES):
                 byte = data[s * 4 + (unit >> 1)]
@@ -109,25 +149,28 @@ def decode_sector(payload, state=None):
     return out, (old, older)
 
 
-def decode_channel(image, lba, indices, limit=None):
+def decode_channel(image, lba, indices, limit=None, frame=RAW):
     """Decode one channel's sectors into (samples, rate).
 
     `indices` are sector numbers within the file, as channel_map gives
     them, so the interleave is already gone."""
+    stride, payload_at, has_sub = frame
     samples = []
     state = None
-    rate = 37800
+    rate = 18900 if not has_sub else 37800
     for n, index in enumerate(indices):
         if limit is not None and n >= limit:
             break
-        image.seek((lba + index) * SECTOR)
-        raw = image.read(SECTOR)
-        if len(raw) < SECTOR:
+        image.seek((lba + index) * stride)
+        raw = image.read(stride)
+        if len(raw) < stride:
             break
-        _ch, rate, bits = coding(raw[SUBHEADER + 3])
-        if bits != 4:
-            continue                      # 8-bit XA is not used on this disc
-        block, state = decode_sector(raw[PAYLOAD:PAYLOAD + FORM2_LEN], state)
+        if has_sub:
+            _ch, rate, bits = coding(raw[SUBHEADER + 3])
+            if bits != 4:
+                continue                  # 8-bit XA is not used on this disc
+        block, state = decode_sector(
+            raw[payload_at:payload_at + FORM2_LEN], state)
         samples.extend(block)
     return samples, rate
 
