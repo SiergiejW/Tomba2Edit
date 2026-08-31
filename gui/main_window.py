@@ -181,7 +181,7 @@ class MainWindow(QMainWindow):
             "Open the disc's data track (Track 1 of a bin/cue). This is the "
             "only source that carries the voice track intact")
 
-        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Folder", self)
+        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open extracted disc folder", self)
         open_folder_action.setToolTip(
             "Open an already-extracted CD folder directly, skipping ISO extraction. "
             "'Save ISO' won't be available - use 'Save IDX/DAT' instead."
@@ -194,6 +194,14 @@ class MainWindow(QMainWindow):
         export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD/TXT2 edits applied")
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
+
+        export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Save BIN", self)
+        export_bin_action.setToolTip(
+            "Write the edits into a copy of the disc's data track. Only the "
+            "edited files' sectors change, so the XA music and voice survive "
+            "- this is the one that stays playable")
+        export_bin_action.triggered.connect(self.export_bin)
+        self.export_bin_action = export_bin_action
 
         export_iso_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Save ISO", self)
         export_iso_action.setToolTip(
@@ -215,6 +223,7 @@ class MainWindow(QMainWindow):
         # Same QAction instances go in both the toolbar and the File menu -
         # Qt keeps them in sync automatically, no separate menu-only copies.
         toolbar.addAction(open_action)
+        toolbar.addAction(export_bin_action)
         toolbar.addAction(export_files_action)
         toolbar.addAction(export_action)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -256,6 +265,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(builtin_labels_action)
         file_menu.addSeparator()
         file_menu.addAction(export_action)
+        file_menu.addAction(export_bin_action)
         file_menu.addAction(export_files_action)
         file_menu.addAction(export_iso_action)
 
@@ -807,6 +817,128 @@ class MainWindow(QMainWindow):
                 saw_exported = True
 
         return "exported" if saw_exported else None
+
+    def export_bin(self):
+        """Write the edits into a copy of the disc's data track.
+
+        Unlike Save ISO this keeps the disc playable: the track is
+        copied byte for byte and only the sectors of the edited files
+        are rewritten, so the Form 2 sectors carrying the XA music and
+        voice are never touched. The audio track beside it and the cue
+        sheet are copied and written to match."""
+        import tempfile
+
+        from functions import bin_writer
+
+        source = getattr(self, "current_iso_path", None)
+        if not source or not os.path.exists(source):
+            QMessageBox.critical(
+                self, "No track open",
+                "Save BIN patches the disc's data track, so the disc has to "
+                "have been opened as one (File > Open BIN).")
+            return
+        mainexe_edits = self.mainexe_viewer.all_edits()
+        sop_edits = self.bins_viewer.all_edits()
+        if not self.pending_txtd_edits and not mainexe_edits and not sop_edits:
+            QMessageBox.information(self, "Nothing to save",
+                                    "No edits are pending.")
+            return
+        default = os.path.splitext(os.path.basename(source))[0] + " (edited).bin"
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Save patched data track", default, "Disc track (*.bin)")
+        if not target:
+            return
+
+        edits = self._pack_pending_txtd_edits()
+        if edits is None:
+            return
+        replacements = {}
+        with tempfile.TemporaryDirectory(prefix="tomba2bin_") as work:
+            try:
+                from functions.repacker import repack_files
+                dat = os.path.join(work, "TOMBA2.DAT")
+                idx = os.path.join(work, "TOMBA2.IDX")
+                repack_files(self.dat_file,
+                             os.path.join(os.path.dirname(self.dat_file),
+                                          "TOMBA2.IDX"),
+                             edits, dat, idx)
+                replacements["TOMBA2.DAT"] = open(dat, "rb").read()
+                replacements["TOMBA2.IDX"] = open(idx, "rb").read()
+                if mainexe_edits:
+                    exe = os.path.join(work, "MAIN.EXE")
+                    mainbin_repack_pool(self.mainexe_viewer.exe_path,
+                                        self.mainexe_viewer.entries,
+                                        mainexe_edits, exe)
+                    replacements["MAIN.EXE"] = open(exe, "rb").read()
+                if sop_edits:
+                    sop = os.path.join(work, "SOP.BIN")
+                    sop_repack_pool(self.bins_viewer.sop_viewer.sop_path,
+                                    self.bins_viewer.sop_viewer.entries,
+                                    sop_edits, sop)
+                    replacements["SOP.BIN"] = open(sop, "rb").read()
+            except Exception as exc:
+                QMessageBox.critical(self, "Save failed",
+                                     f"Could not rebuild the files: {exc}")
+                return
+
+            self.statusBar().showMessage("Copying the track...", 0)
+            QApplication.processEvents()
+            try:
+                notes = bin_writer.patch_track(source, target, replacements)
+            except Exception as exc:
+                QMessageBox.critical(self, "Save failed", str(exc))
+                self.statusBar().clearMessage()
+                return
+
+        extra = self._copy_audio_track(source, target)
+        self.statusBar().clearMessage()
+        QMessageBox.information(
+            self, "Saved",
+            "Wrote:\n" + target + "\n\n" + "\n".join(notes) +
+            ("\n\n" + extra if extra else "") +
+            "\n\nEvery other sector is byte for byte as it was, so the "
+            "music and voice are untouched.")
+        for (chunk_index, file_index), info in self.pending_txtd_edits.items():
+            self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
+            if info.get("kind") == "txt2":
+                self.txt2_viewer.mark_exported(chunk_index, file_index)
+            else:
+                self.txtd_viewer.mark_exported(chunk_index, file_index)
+        self.pending_txtd_edits.clear()
+        if mainexe_edits:
+            self.mainexe_viewer.mark_exported()
+        if sop_edits:
+            self.bins_viewer.mark_exported()
+        self._refresh_edit_status()
+
+    def _copy_audio_track(self, source, target):
+        """Bring the disc's audio track and a cue sheet along.
+
+        A bin/cue names its tracks in separate files, so the second one
+        needs copying beside the patched first and a cue written over
+        both - otherwise the music track is simply missing."""
+        from functions import bin_writer
+
+        folder = os.path.dirname(source)
+        stem = os.path.basename(source)
+        audio = None
+        if "Track 1" in stem:
+            candidate = os.path.join(folder, stem.replace("Track 1", "Track 2"))
+            if os.path.exists(candidate):
+                audio = candidate
+        out_dir = os.path.dirname(target)
+        out_stem = os.path.splitext(os.path.basename(target))[0]
+        tracks = [(os.path.basename(target), "MODE2/2352")]
+        note = ""
+        if audio:
+            copied = os.path.join(out_dir, out_stem + " (Track 2).bin")
+            if os.path.abspath(copied) != os.path.abspath(audio):
+                shutil.copyfile(audio, copied)
+            tracks.append((os.path.basename(copied), "AUDIO"))
+            note = "The audio track was copied beside it."
+        cue = bin_writer.write_cue(os.path.join(out_dir, out_stem + ".cue"),
+                                   tracks)
+        return (note + f" Cue sheet: {os.path.basename(cue)}").strip()
 
     def export_all_files(self):
         # all_edits(), not pending_edits() - every export runs against
