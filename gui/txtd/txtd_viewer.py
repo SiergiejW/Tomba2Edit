@@ -318,6 +318,7 @@ class TXTDViewer(QWidget):
         self.play_voice_button.clicked.connect(self._play_voice)
         self.play_voice_button.setEnabled(False)
         self.autoplay_voice = QCheckBox("Autoplay")
+        self.autoplay_voice.setChecked(True)
         self.autoplay_voice.setToolTip(
             "Play the line's voice as soon as it is selected")
         self.voice_note = QLabel("")

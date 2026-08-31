@@ -117,6 +117,7 @@ class VoiceLink:
         except Exception:
             self.dispatch = {}
         self.tables = {}
+        self.default_table = None
         for master, (table_at, channel, block_offset) in self.dispatch.items():
             rows = voice.read_clip_table(path, table_at)
             if rows:
@@ -124,7 +125,11 @@ class VoiceLink:
                 # own base block; A00 happens to use 0 throughout, which
                 # is why it worked before this was read.
                 rows = [(start + block_offset, length) for start, length in rows]
-                self.tables[master] = (rows, channel)
+                if master == -1:
+                    # the case every master without one of its own uses
+                    self.default_table = (rows, channel)
+                else:
+                    self.tables[master] = (rows, channel)
         return len(self.tables)
 
     def set_masters(self, masters):   # kept for callers; nothing to do
@@ -154,7 +159,9 @@ class VoiceLink:
         return len(self._by_master)
 
     def table_for_index(self, master_index):
-        return master_index if master_index in self.tables else None
+        if master_index in self.tables or self.default_table:
+            return master_index
+        return None
 
     # --- channels -----------------------------------------------------
 
@@ -214,7 +221,7 @@ class VoiceLink:
         if not self.ready():
             return None, 0, ("No disc yet - open the data track (Track 1), "
                              "the only place the voice survives.")
-        found = self.tables.get(master_index)
+        found = self.tables.get(master_index) or self.default_table
         if found is None:
             return None, 0, ("This overlay's dispatch has no voice for this "
                              "master.")

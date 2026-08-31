@@ -253,54 +253,62 @@ def _sx(imm):
     return imm - 0x10000 if imm > 0x7FFF else imm
 
 
-def _parse_case(word, top, at, base, overlay_path):
-    """One dispatch case -> (clip table, channel, block offset), or None.
+def _parse_case(word, top, a3_at, base, overlay_path):
+    """One dispatch case, anchored on its channel instruction.
 
-    A case sets three registers and jumps to a shared tail:
+    A case sets three things and jumps to a shared tail:
 
-        lui   v0, hi
-        addiu v0, v0, lo        <- the clip table
-        addiu a3, zero, n       <- the VOICE.XA channel
-        addiu a2, zero, b       <- block offset added to every start
-                                   (left zero where there is none)
+        lui   v0, hi            (often in a branch delay slot above,
+        addiu v0, v0, lo         and shared with the case beside it)
+        addiu a3, zero, n       <- the channel: the anchor
+        addiu a2, zero, b       <- block offset, right after, sometimes
+                                   past the jump in its delay slot
 
-    Reading stops after the jump's delay slot, so one case never bleeds
-    into the next."""
-    hi = clip_table = channel = offset = None
-    seen_jump = False
-    for k in range(8):
-        w = word(at + k * 4)
-        op, rt, rs, imm = w >> 26, (w >> 16) & 31, (w >> 21) & 31, w & 0xFFFF
-        if op == 0x0F and rt == 2:
-            hi = imm
-        elif op == 0x09 and rt == 2 and clip_table is None:
-            if hi is None:
-                # A case may reuse a lui set up a few instructions
-                # earlier rather than loading the half itself.
-                for back in range(1, 8):
-                    u = word(at + (k - back) * 4)
-                    if u >> 26 == 0x0F and (u >> 16) & 31 == 2:
-                        hi = u & 0xFFFF
-                        break
-            if hi is not None:
-                clip_table = (hi << 16) + _sx(imm) - base
-        elif op == 0x09 and rt == 7 and rs == 0 and channel is None:
-            channel = imm
-        elif op == 0x09 and rt == 6 and rs == 0 and offset is None:
-            offset = imm
-        elif w == 0x00003021 and offset is None:      # addu a2, zero, zero
-            offset = 0
-        if seen_jump:
-            break
-        if op == 0x02:                                 # j tail
-            seen_jump = True
-    if clip_table is None or channel is None or channel >= BLOCK:
+    The search has to be asymmetric. The clip table is always behind the
+    channel and the offset always ahead of it; looking backwards for the
+    offset picks up the previous case's, which is how A0J's second
+    master came out with offset 0 instead of 796."""
+    w = word(a3_at)
+    channel = w & 0xFFFF
+    if (w >> 26 != 0x09 or (w >> 16) & 31 != 7 or (w >> 21) & 31 != 0
+            or channel >= BLOCK):
         return None
-    if not (0 <= clip_table < top):
+
+    clip_table = None
+    for back in range(1, 4):
+        u = word(a3_at - back * 4)
+        if u >> 26 == 0x09 and (u >> 16) & 31 == 2:      # addiu v0, v0, lo
+            lo = u & 0xFFFF
+            for further in range(back + 1, back + 14):
+                v = word(a3_at - further * 4)
+                if v >> 26 == 0x0F and (v >> 16) & 31 == 2:   # lui v0, hi
+                    clip_table = ((v & 0xFFFF) << 16) + _sx(lo) - base
+                    break
+            break
+    if clip_table is None or not (0 <= clip_table < top):
         return None
     if not read_clip_table(overlay_path, clip_table):
         return None
-    return clip_table, channel, offset or 0
+
+    offset = 0
+    for ahead in range(1, 4):
+        v = word(a3_at + ahead * 4)
+        op, rt, rs = v >> 26, (v >> 16) & 31, (v >> 21) & 31
+        if op == 0x09 and rt == 6 and rs == 0:
+            offset = v & 0xFFFF
+            break
+        if v == 0x00003021:                              # addu a2, zero, zero
+            break
+    return clip_table, channel, offset
+
+
+def _case_near(word, top, at, base, overlay_path):
+    """The case reached at `at` - its channel is within a few words."""
+    for k in range(6):
+        found = _parse_case(word, top, at + k * 4, base, overlay_path)
+        if found:
+            return found
+    return None
 
 
 def read_dispatch(overlay_path, base=OVERLAY_BASE):
@@ -346,7 +354,7 @@ def read_dispatch(overlay_path, base=OVERLAY_BASE):
             case = word(table_at + i * 4) - base
             if not (0 <= case < top):
                 continue
-            parsed = _parse_case(word, top, case, base, overlay_path)
+            parsed = _case_near(word, top, case, base, overlay_path)
             if parsed:
                 found[i] = parsed
         if len(found) > len(best):
@@ -354,26 +362,63 @@ def read_dispatch(overlay_path, base=OVERLAY_BASE):
     if best:
         return best
 
-    # --- otherwise the cases themselves, in the order they appear ----
+    # --- otherwise a chain of compares against the master number ----
+    #
+    # The small overlays branch instead of indexing:
+    #
+    #     beq a0, zero, case      -> master 0
+    #     addiu v0, zero, 3
+    #     beq a0, v0,  case       -> master 3
+    #     j   case                -> everything else
+    #
+    # Reading the branches is what tells master from master; numbering
+    # the cases in code order gets it wrong wherever a default exists,
+    # which is most of them.
     out = {}
-    seen = set()
+    default = None
     for at in range(0, top, 4):
         w = word(at)
-        # anchor on "addiu a3, zero, n" - the channel. Anchoring on the
-        # lui misses cases that reuse one set up earlier.
-        if (w >> 26 != 0x09 or (w >> 16) & 31 != 7
-                or (w >> 21) & 31 != 0 or (w & 0xFFFF) >= BLOCK):
+        op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+        if op != 0x04 or rs != 4:                    # beq a0, ?, target
             continue
-        parsed = None
-        for start in range(at - 12, at + 4, 4):
-            parsed = _parse_case(word, top, start, base, overlay_path)
-            if parsed and parsed[1] == (w & 0xFFFF):
-                break
-            parsed = None
-        if parsed and parsed not in seen:
-            seen.add(parsed)
-            out[len(out)] = parsed
-    return out
+        imm = w & 0xFFFF
+        target = at + 4 + _sx(imm) * 4
+        if rt == 0:
+            master = 0
+        else:
+            master = None
+            for back in range(1, 5):                 # addiu rt, zero, n
+                u = word(at - back * 4)
+                if (u >> 26 == 0x09 and (u >> 16) & 31 == rt
+                        and (u >> 21) & 31 == 0):
+                    master = u & 0xFFFF
+                    break
+            if master is None or master > 64:
+                continue
+        found = _case_near(word, top, target, base, overlay_path)
+        if found and master not in out:
+            out[master] = found
+            # the jump right after a compare goes to the case every
+            # other master falls through to
+            for ahead in range(1, 4):
+                v = word(at + ahead * 4)
+                if v >> 26 == 0x02:
+                    # a MIPS j carries 26 bits; the top nibble comes
+                    # from the program counter, so it has to be put back
+                    # before the address means anything
+                    dest = 0x80000000 | ((v & 0x3FFFFFF) << 2)
+                    other = _case_near(word, top, dest - base,
+                                       base, overlay_path)
+                    if other and other != found:
+                        default = other
+                    break
+    if out:
+        if default is not None:
+            out[-1] = default        # -1 marks "every other master"
+        return out
+
+    # nothing recognisable
+    return {}
 
 
 def read_clip_table(overlay_path, offset, limit=400):
