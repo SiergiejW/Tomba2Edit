@@ -32,6 +32,7 @@ from gui import panel_title
 from functions import labels as labels_module
 from functions import fontpage
 from functions import codeuse
+from functions import voice
 from gui.txtd.font_editor import FontEditor
 from gui.txtd.voice_panel import VoicePanel
 from functions.idx_parser import (
@@ -623,6 +624,17 @@ class MainWindow(QMainWindow):
     for _i in range(22):
         OVERLAY_NAMES[10 + _i] = f"A0{'0123456789ABCDEFGHIJKL'[_i]}.BIN"
 
+    def voice_image_path(self):
+        """The disc to read voice from, without asking for it again.
+
+        If the disc was opened as an image it is already the right file,
+        so use it. Only a folder-opened disc has nothing to offer here,
+        because the voice track does not survive being extracted."""
+        opened = getattr(self, "current_iso_path", None)
+        if opened and os.path.exists(opened):
+            return opened
+        return getattr(self.voice_panel, "image", None)
+
     def overlay_for_area(self, chunk_index):
         """The Axx.BIN belonging to an area, or None if there isn't one
         or the disc was opened somewhere without a BIN folder."""
@@ -636,6 +648,18 @@ class MainWindow(QMainWindow):
             path = os.path.join(folder, name)
             if os.path.exists(path):
                 return path
+        # A disc opened as an image has no BIN folder on disk - the
+        # overlays stay inside it - so take this one out and keep it.
+        image = getattr(self, "current_iso_path", None)
+        if image and self.iso_handler and self.iso_handler.get_temp_dir():
+            cached = os.path.join(self.iso_handler.get_temp_dir(), name)
+            if os.path.exists(cached):
+                return cached
+            data = voice.extract_file(image, name)
+            if data:
+                with open(cached, "wb") as f:
+                    f.write(data)
+                return cached
         return None
 
     def open_font_editor(self):
@@ -1512,7 +1536,7 @@ class MainWindow(QMainWindow):
                                         chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
                                     )
                                     self.txtd_viewer.set_voice_source(
-                                        getattr(self.voice_panel, "image", None),
+                                        self.voice_image_path(),
                                         self.overlay_for_area(txtd_chunk_index))
                                 else:
                                     QMessageBox.critical(self, "Error", "DAT file not loaded.")

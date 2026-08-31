@@ -6,17 +6,19 @@ ends and the next begins: the game is told which channel to play, from
 which sector, and for how long, so a clip is only a clip because
 something outside the file said so.
 
-That leaves two ways to browse it. The right one is the timing table in
-the area's overlay, which nobody has located yet. The one here is to
-decode a channel and cut it where it falls quiet, which lands close
-enough to listen through but should not be mistaken for the real
-boundaries - a line with a pause in it splits, and two lines run
-together if the gap between them is short.
+There are two ways to cut it up. The exact one is the clip table in the
+area's overlay, which says where each clip starts and how long it runs -
+see find_tables() below. The other, used for browsing a channel when no
+overlay is in hand, is to decode it and cut where it falls quiet; that
+lands close but should not be mistaken for the real boundaries, since a
+line with a pause in it splits and two lines run together when the gap
+between them is short.
 
 The file has to be read from a raw 2352-byte track. A CD folder's
 VOICE.XA, or one out of a 2048-byte ISO, has had 276 bytes cut out of
 every sector and cannot be decoded at all.
 """
+import mmap
 import os
 
 from functions import xa
@@ -27,6 +29,7 @@ QUIET_LEVEL = 200          # amplitude, out of 32767
 QUIET_WINDOW = 1024        # samples judged at a time
 MIN_GAP = 0.30             # seconds of quiet before it separates two clips
 MIN_CLIP = 0.20            # seconds; anything shorter is not a line
+
 
 
 class VoiceError(Exception):
@@ -48,38 +51,89 @@ def find_track(path):
             "the voice track is Mode 2 Form 2, carrying 2324 bytes a sector "
             "where a file copy takes 2048. Open the data track of the "
             "bin/cue instead (Track 1).")
+    # Mapped rather than read. A data track is hundreds of megabytes and
+    # this runs on every disc open; pulling it into memory twice over is
+    # enough to take the process down. Reading only the head instead is
+    # not an option - the reader checks the image against the size its
+    # own directory declares, and a partial read fails that.
     with open(path, "rb") as f:
-        data = f.read()
-    try:
-        reader = ISO9660Reader(data)
-    except Exception:
-        raise VoiceError(
-            f"{name} has no filesystem in it. A bin/cue's Track 2 is plain "
-            "CD audio, not the data track - open Track 1.")
-    if reader.sector_size != xa.SECTOR:
-        raise VoiceError(
-            f"{name} has {reader.sector_size}-byte sectors. The voice track "
-            "is Mode 2 Form 2 and only survives in a raw 2352-byte image - "
-            "the data track of a bin/cue rip.")
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            data = f.read()
+        try:
+            try:
+                reader = ISO9660Reader(data)
+            except Exception:
+                raise VoiceError(
+                    f"{name} has no filesystem in it. A bin/cue's Track 2 is "
+                    "plain CD audio, not the data track - open Track 1.")
+            if reader.sector_size != xa.SECTOR:
+                raise VoiceError(
+                    f"{name} has {reader.sector_size}-byte sectors. The voice "
+                    "track is Mode 2 Form 2 and only survives in a raw "
+                    "2352-byte image - the data track of a bin/cue rip.")
 
-    found = []
+            found = []
 
-    def walk(lba, size, depth=0):
-        for entry in reader.list_directory(lba, size):
-            name = reader.clean_name(entry.name)
-            if not name:
-                continue
-            if entry.is_dir:
-                if depth < 2:
-                    walk(entry.lba, entry.size, depth + 1)
-            elif name.upper() == "VOICE.XA":
-                found.append((entry.lba, entry.size))
+            def walk(lba, size, depth=0):
+                for entry in reader.list_directory(lba, size):
+                    entry_name = reader.clean_name(entry.name)
+                    if not entry_name:
+                        continue
+                    if entry.is_dir:
+                        if depth < 2:
+                            walk(entry.lba, entry.size, depth + 1)
+                    elif entry_name.upper() == "VOICE.XA":
+                        found.append((entry.lba, entry.size))
 
-    walk(reader.root_lba, reader.root_size)
-    if not found:
-        raise VoiceError("No VOICE.XA in this image.")
-    lba, size = found[0]
-    return lba, size // 2048
+            walk(reader.root_lba, reader.root_size)
+            if not found:
+                raise VoiceError("No VOICE.XA in this image.")
+            lba, size = found[0]
+            return lba, size // 2048
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
+
+
+def extract_file(image_path, wanted):
+    """One file's bytes out of a disc image, by name, or None.
+
+    The overlays are not unpacked when a disc is opened as an image, so
+    the one an area needs is pulled straight out of the image instead of
+    making the user find a BIN folder that may not exist."""
+    wanted = wanted.upper()
+    with open(image_path, "rb") as f:
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            data = f.read()
+        try:
+            reader = ISO9660Reader(data)
+            found = []
+
+            def walk(lba, size, depth=0):
+                for entry in reader.list_directory(lba, size):
+                    name = reader.clean_name(entry.name)
+                    if not name:
+                        continue
+                    if entry.is_dir:
+                        if depth < 2:
+                            walk(entry.lba, entry.size, depth + 1)
+                    elif name.upper() == wanted:
+                        found.append((entry.lba, entry.size))
+
+            walk(reader.root_lba, reader.root_size)
+            if not found:
+                return None
+            lba, size = found[0]
+            return reader.read_file(lba, size)
+        except Exception:
+            return None
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
 
 
 def clips(samples, rate):
