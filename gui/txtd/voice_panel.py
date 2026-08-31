@@ -173,17 +173,22 @@ class VoicePanel(QWidget):
         self.play_samples(self.samples[start:end], self.rate)
 
     def play_samples(self, samples, rate):
-        """Play 16-bit mono PCM straight out of memory."""
+        """Play 16-bit mono PCM straight out of memory.
+
+        The bytes go in with setData: QBuffer(QByteArray(...)) keeps a
+        pointer to the array rather than taking ownership of it, so a
+        temporary handed to it is freed while the sink is still reading,
+        which plays noise and then crashes."""
         self._stop()
         if not samples:
             return
-        import struct
-        pcm = struct.pack(f"<{len(samples)}h", *samples)
+        import array
         fmt = QAudioFormat()
         fmt.setSampleRate(rate)
         fmt.setChannelCount(1)
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-        self._buffer = QBuffer(QByteArray(pcm))
+        self._buffer = QBuffer()
+        self._buffer.setData(array.array("h", samples).tobytes())
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
         self._sink = QAudioSink(fmt)
         self._sink.start(self._buffer)

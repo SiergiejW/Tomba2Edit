@@ -87,18 +87,26 @@ _ANY_BRACKET_TAG_RE = re.compile(r"\{[^{}]*\}")
 
 
 def _play_pcm(samples, rate):
-    """Play 16-bit mono PCM. The sink and its buffer are returned because
-    they have to outlive this call or playback stops with them."""
-    import struct
+    """Play 16-bit mono PCM, returning (sink, buffer).
 
-    from PyQt6.QtCore import QBuffer, QByteArray
+    Both have to be kept by the caller: the sink reads from the buffer
+    for as long as it plays, and letting either go collects it mid-play.
+
+    The bytes go in with setData rather than QBuffer(QByteArray(...)) -
+    that constructor keeps a pointer to the array instead of taking it,
+    so a temporary passed in is freed while the sink is still reading it,
+    which plays noise and then crashes."""
+    import array
+
+    from PyQt6.QtCore import QBuffer
     from PyQt6.QtMultimedia import QAudioFormat, QAudioSink
 
     fmt = QAudioFormat()
     fmt.setSampleRate(rate)
     fmt.setChannelCount(1)
     fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-    buffer = QBuffer(QByteArray(struct.pack(f"<{len(samples)}h", *samples)))
+    buffer = QBuffer()
+    buffer.setData(array.array("h", samples).tobytes())
     buffer.open(QBuffer.OpenModeFlag.ReadOnly)
     sink = QAudioSink(fmt)
     sink.start(buffer)
@@ -604,11 +612,26 @@ class TXTDViewer(QWidget):
         voice = getattr(self, "_voice", None)
         if entry is None or voice is None:
             return
+        # Whatever was playing has to be stopped first: starting a second
+        # sink leaves the first one running and reading its own buffer.
+        self._stop_voice()
         samples, rate, note = voice.clip_for(entry.get("extra"),
                                              self.voice_table_box.value())
         self.voice_note.setText(note)
         if samples:
             self._voice_sink = _play_pcm(samples, rate)
+
+    def _stop_voice(self):
+        playing = getattr(self, "_voice_sink", None)
+        if playing:
+            sink, buffer = playing
+            sink.stop()
+            buffer.close()
+        self._voice_sink = None
+
+    def closeEvent(self, event):
+        self._stop_voice()
+        super().closeEvent(event)
 
     def _on_text_changed(self):
         """Writes every keystroke straight back into current_data, and
