@@ -560,7 +560,8 @@ class TXTDViewer(QWidget):
         if path:
             self.set_voice_source(path, self._voice_overlay)
 
-    def set_voice_source(self, image_path, overlay_path):
+    def set_voice_source(self, image_path, overlay_path,
+                         replace_overlay=False):
         """Point the Play button at the disc's data track and this
         area's overlay. Either may be None, which just disables it.
 
@@ -573,7 +574,10 @@ class TXTDViewer(QWidget):
             self._voice = VoiceLink()
         if image_path:
             self._voice_image = image_path
-        if overlay_path:
+        if overlay_path or replace_overlay:
+            # replace_overlay means a different area was selected, so an
+            # absent overlay has to clear the old one - keeping it would
+            # speak the previous area's lines over this one's text.
             self._voice_overlay = overlay_path
         image_path = getattr(self, "_voice_image", None)
         overlay_path = getattr(self, "_voice_overlay", None)

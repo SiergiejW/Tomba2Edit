@@ -659,10 +659,20 @@ class MainWindow(QMainWindow):
             return opened
         return getattr(self.voice_panel, "image", None)
 
+    # An area's purified form is a chunk of its own, 22 further along,
+    # with its own dialogue but the same overlay: AREA_1F's 18 masters
+    # are A05's, AREA_20's 16 are A06's, and so on for 1B, 1E, 21 and 22.
+    PURIFIED_OFFSET = 22
+
     def overlay_for_area(self, chunk_index):
         """The Axx.BIN belonging to an area, or None if there isn't one
         or the disc was opened somewhere without a BIN folder."""
-        name = self.OVERLAY_NAMES.get((chunk_index or 0) + 6)
+        chunk = chunk_index or 0
+        name = self.OVERLAY_NAMES.get(chunk + 6)
+        if not name:
+            # A purified area has no overlay of its own; it runs on the
+            # one belonging to the area it is a copy of.
+            name = self.OVERLAY_NAMES.get(chunk - self.PURIFIED_OFFSET + 6)
         if not name or not self.dat_file:
             return None
         root = os.path.dirname(os.path.dirname(os.path.dirname(self.dat_file)))
@@ -1691,7 +1701,8 @@ class MainWindow(QMainWindow):
                                     )
                                     self.txtd_viewer.set_voice_source(
                                         self.voice_image_path(),
-                                        self.overlay_for_area(txtd_chunk_index))
+                                        self.overlay_for_area(txtd_chunk_index),
+                                        replace_overlay=True)
                                 else:
                                     QMessageBox.critical(self, "Error", "DAT file not loaded.")
                             except Exception as e:
