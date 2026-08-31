@@ -7,7 +7,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
-    QLabel, QTextEdit, QHBoxLayout, QPushButton, QSpinBox,
+    QLabel, QTextEdit, QHBoxLayout, QPushButton, QCheckBox,
 )
 import gui.txtd.txtd as txtd
 from gui.margin_text_edit import MarginTextEdit
@@ -317,13 +317,13 @@ class TXTDViewer(QWidget):
         self.play_voice_button = QPushButton("Play voice")
         self.play_voice_button.clicked.connect(self._play_voice)
         self.play_voice_button.setEnabled(False)
-        self.voice_table_box = QSpinBox()
-        self.voice_table_box.setPrefix("table ")
-        self.voice_table_box.setRange(0, 0)
+        self.autoplay_voice = QCheckBox("Autoplay")
+        self.autoplay_voice.setToolTip(
+            "Play the line's voice as soon as it is selected")
         self.voice_note = QLabel("")
         self.voice_note.setWordWrap(True)
         voice_row.addWidget(self.play_voice_button)
-        voice_row.addWidget(self.voice_table_box)
+        voice_row.addWidget(self.autoplay_voice)
         voice_row.addWidget(self.voice_note, 1)
         right_layout.addLayout(voice_row)
         # The budget line stays under both halves, where it reads as
@@ -539,6 +539,8 @@ class TXTDViewer(QWidget):
             else:
                 self._update_screen_width_status(entry["text"])
             self._refresh_voice_button()
+            if self.autoplay_voice.isChecked():
+                self._play_voice()
         except Exception as e:
             print(f"Error in on_tree_selection_changed: {e}")
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")
@@ -578,7 +580,6 @@ class TXTDViewer(QWidget):
         problem = (self._voice.set_image(image_path) if image_path
                    else "No disc yet - open the data track (Track 1).")
         count = self._voice.set_overlay(overlay_path) if overlay_path else 0
-        self.voice_table_box.setRange(0, max(count - 1, 0))
         if problem:
             self.voice_note.setText(problem)
         elif not count:
@@ -615,8 +616,9 @@ class TXTDViewer(QWidget):
         # Whatever was playing has to be stopped first: starting a second
         # sink leaves the first one running and reading its own buffer.
         self._stop_voice()
-        samples, rate, note = voice.clip_for(entry.get("extra"),
-                                             self.voice_table_box.value())
+        master = self.current_data["entries"][
+            self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]]
+        samples, rate, note = voice.clip_for(entry, master)
         self.voice_note.setText(note)
         if samples:
             self._voice_sink = _play_pcm(samples, rate)
