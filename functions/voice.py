@@ -112,6 +112,45 @@ def find_track(path):
                 data.close()
 
 
+def find_file(image_path, wanted):
+    """(lba, sectors) of a named file in a raw disc track, or None.
+
+    The same walk find_track does, for any file - the music tracks as
+    well as the voice one. Sectors, not bytes: a Form 2 file's directory
+    size counts 2048 a sector where it really holds 2324, so the byte
+    figure is not the length of anything."""
+    wanted = wanted.upper()
+    with open(image_path, "rb") as f:
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            data = f.read()
+        try:
+            reader = ISO9660Reader(data)
+            if reader.sector_size != xa.SECTOR:
+                return None
+            found = []
+
+            def walk(lba, size, depth=0):
+                for entry in reader.list_directory(lba, size):
+                    name = reader.clean_name(entry.name)
+                    if not name:
+                        continue
+                    if entry.is_dir:
+                        if depth < 2:
+                            walk(entry.lba, entry.size, depth + 1)
+                    elif name.upper() == wanted:
+                        found.append((entry.lba, entry.size // 2048))
+
+            walk(reader.root_lba, reader.root_size)
+            return found[0] if found else None
+        except Exception:
+            return None
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
+
+
 def extract_file(image_path, wanted):
     """One file's bytes out of a disc image, by name, or None.
 
@@ -215,7 +254,8 @@ def channel_clips(image, lba, sectors, channel, limit=None):
         key = next((k for k in chans if k[1] == channel), None)
         if key is None:
             return [], 37800, []
-        samples, rate = xa.decode_channel(f, lba, chans[key], limit, frame)
+        samples, rate, _ch = xa.decode_channel(f, lba, chans[key], limit,
+                                               frame)
     return samples, rate, clips(samples, rate)
 
 
@@ -511,7 +551,7 @@ def resolve_channels(image, lba, tables, progress=None, sectors=None):
         for channel in range(BLOCK):
             if progress:
                 progress(channel, BLOCK)
-            samples, _rate = xa.decode_channel(
+            samples, _rate, _ch = xa.decode_channel(
                 f, lba, [b * BLOCK + channel for b in range(span)],
                 frame=frame)
             per = xa.SAMPLES_PER_SECTOR

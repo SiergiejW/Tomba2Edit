@@ -1,193 +1,203 @@
-"""A player for the game's soundtrack.
+"""The disc's music, played off the disc.
 
-The music is not read out of the disc here - the streamed tracks live in
-BGM.XA and the redbook one is a whole second track of the bin/cue - this
-plays a folder of already-extracted files, which is what a soundtrack
-rip is. Qt decodes FLAC, WAV and MP3 natively, so nothing else is needed.
+Tomba 2 keeps its music in two quite different places, and both are here:
 
-For the audio that IS on the disc, see the Voice tab, which decodes
-VOICE.XA's channels straight out of a raw track.
+    BGM.XA, DEMO.XA   streamed CD-XA, 8 channels interleaved through each
+                      file, stereo ADPCM at 37800 Hz. One channel is one
+                      piece of music; the drive plays one and skips the
+                      rest (see functions/xa.py).
+    Track 2           an ordinary CD audio track - 44.1 kHz stereo PCM
+                      with nothing to decode, which is why it is a whole
+                      second file in the bin/cue rather than a file on
+                      the disc at all.
+
+The list and controls are gui/audio_transport, shared with the Dialogues
+tab; all this adds is where the audio comes from. Decoding a channel
+takes a few seconds, so it happens on a worker thread and is kept.
 """
 import os
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QListWidget,
-                             QListWidgetItem, QPushButton, QSlider,
+from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
                              QVBoxLayout, QWidget)
 
-PLAYABLE = (".flac", ".wav", ".mp3", ".ogg", ".m4a", ".aac", ".wma")
+from functions import voice, xa
+from gui.audio_transport import AudioTransport, clock
 
-# Where a soundtrack rip tends to sit in this project, so the panel has
-# something to show without being pointed at a folder first.
-GUESSES = (os.path.join("audio research", "TombaWASoundtrack"),
-           "audio research", "soundtrack")
+# The streamed music files, in the order they are listed.
+STREAMS = ("BGM.XA", "DEMO.XA")
+
+# Redbook audio: 44.1 kHz, 16-bit, stereo, and a 2-second pregap of
+# silence at the front that the cue sheet accounts for.
+CDDA_RATE = 44100
+CDDA_BYTES_PER_SECOND = CDDA_RATE * 2 * 2
+CDDA_PREGAP = 150 * 2352
 
 
-def _clock(ms):
-    if ms is None or ms < 0:
-        ms = 0
-    seconds = ms // 1000
-    return f"{seconds // 60}:{seconds % 60:02d}"
+class _Decode(QThread):
+    """Decoding one music channel, off the GUI thread."""
+
+    done = pyqtSignal(int, object, str)
+
+    def __init__(self, row, image, lba, sectors, channel):
+        super().__init__()
+        self.row = row
+        self.args = (image, lba, sectors, channel)
+
+    def run(self):
+        image, lba, sectors, channel = self.args
+        try:
+            with open(image, "rb") as f:
+                chans = xa.channel_map(f, lba, sectors)
+                key = next((k for k in chans if k[1] == channel), None)
+                if key is None:
+                    self.done.emit(self.row, None, "no such channel")
+                    return
+                samples, rate, speakers = xa.decode_channel(f, lba, chans[key])
+            self.done.emit(self.row, xa.wav_bytes(samples, rate, speakers),
+                           f"{rate} Hz "
+                           f"{'stereo' if speakers == 2 else 'mono'}")
+        except Exception as exc:
+            self.done.emit(self.row, None, str(exc))
 
 
 class MusicPanel(QWidget):
-    """Browse a folder of audio files and play them."""
+    """Play the music that is on the disc."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.folder = None
-        self._tracks = []
-        self._scrubbing = False
+        self.image = None
+        self._entries = []          # (kind, payload) per row
+        self._cache = {}
+        self._decode = None
 
-        self.player = QMediaPlayer(self)
-        self.output = QAudioOutput(self)
-        self.player.setAudioOutput(self.output)
-        self.output.setVolume(0.8)
-        self.player.positionChanged.connect(self._moved)
-        self.player.durationChanged.connect(self._sized)
-        self.player.playbackStateChanged.connect(self._state_changed)
-        self.player.mediaStatusChanged.connect(self._status_changed)
-
-        pick = QPushButton("Open folder...")
-        pick.clicked.connect(self._browse)
-        self.list = QListWidget()
-        self.list.itemDoubleClicked.connect(self._play_item)
-
-        self.play_button = QPushButton("Play")
-        self.play_button.clicked.connect(self._toggle)
-        stop = QPushButton("Stop")
-        stop.clicked.connect(self.player.stop)
-        previous = QPushButton("Prev")
-        previous.clicked.connect(lambda: self._step(-1))
-        following = QPushButton("Next")
-        following.clicked.connect(lambda: self._step(1))
-
-        self.position = QSlider(Qt.Orientation.Horizontal)
-        self.position.setRange(0, 0)
-        self.position.sliderPressed.connect(self._grab)
-        self.position.sliderReleased.connect(self._release)
-        self.time = QLabel("0:00 / 0:00")
-
-        self.volume = QSlider(Qt.Orientation.Horizontal)
-        self.volume.setRange(0, 100)
-        self.volume.setValue(80)
-        self.volume.setMaximumWidth(120)
-        self.volume.valueChanged.connect(
-            lambda v: self.output.setVolume(v / 100))
-
-        self.status = QLabel("No folder open.")
+        self.pick = QPushButton("Open BIN...")
+        self.pick.setToolTip(
+            "Only needed for a disc opened as a folder - opening a BIN "
+            "normally sets this up on its own")
+        self.pick.clicked.connect(self._browse)
+        self.transport = AudioTransport()
+        self.transport.wanted.connect(self._wanted)
+        self.status = QLabel(
+            "No disc open. The music is streamed CD-XA, which only survives "
+            "in a raw data track - not a CD folder or an ISO.")
         self.status.setWordWrap(True)
 
         top = QHBoxLayout()
-        top.addWidget(pick)
+        top.addWidget(self.pick)
         top.addStretch(1)
-        top.addWidget(QLabel("Volume"))
-        top.addWidget(self.volume)
-
-        seek = QHBoxLayout()
-        seek.addWidget(self.position, 1)
-        seek.addWidget(self.time)
-
-        row = QHBoxLayout()
-        for button in (previous, self.play_button, stop, following):
-            row.addWidget(button)
-        row.addStretch(1)
-
         layout = QVBoxLayout(self)
         layout.addLayout(top)
-        layout.addWidget(self.list, 1)
-        layout.addLayout(seek)
-        layout.addLayout(row)
+        layout.addWidget(self.transport, 1)
         layout.addWidget(self.status)
 
-        for guess in GUESSES:
-            if os.path.isdir(guess):
-                self.set_folder(guess)
-                break
-
-    # --- the list -----------------------------------------------------
+    # --- opening ------------------------------------------------------
 
     def _browse(self):
-        folder = QFileDialog.getExistingDirectory(self, "Choose a music folder")
-        if folder:
-            self.set_folder(folder)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open the disc's data track", "",
+            "Disc track (*.bin *.img);;All files (*)")
+        if path:
+            self.set_image(path)
 
-    def set_folder(self, folder):
-        """Show every playable file in a folder, in name order."""
+    def set_image(self, path):
+        """List every piece of music the disc carries."""
+        self.transport.stop()
+        self._cache.clear()
+        self._entries = []
+        labels = []
         try:
-            names = sorted(n for n in os.listdir(folder)
-                           if n.lower().endswith(PLAYABLE))
-        except OSError as exc:
-            self.status.setText(str(exc))
+            for name in STREAMS:
+                where = voice.find_file(path, name)
+                if not where:
+                    continue
+                lba, sectors = where
+                with open(path, "rb") as f:
+                    chans = xa.channel_map(f, lba, sectors)
+                    f.seek(lba * xa.SECTOR)
+                    first = f.read(xa.SECTOR)
+                speakers, rate, _bits = xa.coding(first[xa.SUBHEADER + 3])
+                frames = xa.SAMPLES_PER_SECTOR // max(speakers, 1)
+                for _file, channel in sorted(chans):
+                    count = len(chans[(_file, channel)])
+                    self._entries.append(("xa", (lba, sectors, channel)))
+                    labels.append(
+                        f"{name}  channel {channel}   "
+                        f"~{clock(count * frames * 1000 // rate)}")
+        except Exception as exc:
+            self.status.setText(f"Could not read the disc: {exc}")
             return
-        self.folder = folder
-        self._tracks = [os.path.join(folder, n) for n in names]
-        self.list.clear()
-        for name in names:
-            item = QListWidgetItem(os.path.splitext(name)[0])
-            self.list.addItem(item)
-        self.status.setText(
-            f"{os.path.basename(folder)}: {len(names)} track(s)."
-            if names else f"{folder} has nothing playable in it.")
-        if names:
-            self.list.setCurrentRow(0)
-
-    # --- transport ----------------------------------------------------
-
-    def _play_item(self, item):
-        self._play(self.list.row(item))
-
-    def _play(self, row):
-        if not (0 <= row < len(self._tracks)):
-            return
-        self.list.setCurrentRow(row)
-        self.player.setSource(QUrl.fromLocalFile(self._tracks[row]))
-        self.player.play()
-
-    def _toggle(self):
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.player.pause()
-        elif self.player.source().isEmpty():
-            self._play(max(self.list.currentRow(), 0))
-        else:
-            self.player.play()
-
-    def _step(self, by):
-        row = self.list.currentRow() + by
-        if 0 <= row < len(self._tracks):
-            self._play(row)
-
-    # --- signals ------------------------------------------------------
-
-    def _grab(self):
-        self._scrubbing = True
-
-    def _release(self):
-        self._scrubbing = False
-        self.player.setPosition(self.position.value())
-
-    def _moved(self, ms):
-        if not self._scrubbing:
-            self.position.setValue(ms)
-        self.time.setText(f"{_clock(ms)} / {_clock(self.player.duration())}")
-
-    def _sized(self, ms):
-        self.position.setRange(0, ms)
-        self.time.setText(f"{_clock(self.player.position())} / {_clock(ms)}")
-
-    def _state_changed(self, state):
-        playing = state == QMediaPlayer.PlaybackState.PlayingState
-        self.play_button.setText("Pause" if playing else "Play")
-
-    def _status_changed(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._step(1)                       # roll on to the next track
-        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+        if not self._entries:
             self.status.setText(
-                "Qt could not decode that file. FLAC, WAV and MP3 play; "
-                "anything else depends on the codecs this machine has.")
+                f"{os.path.basename(path)} has no streamed music in it - "
+                "an ISO or a CD folder cannot carry it.")
+            self.transport.set_entries([])
+            return
+        self.image = path
+        audio = self._audio_track(path)
+        if audio:
+            size = os.path.getsize(audio) - CDDA_PREGAP
+            self._entries.append(("cdda", audio))
+            labels.append(f"Track 2  CD audio   "
+                          f"~{clock(size * 1000 // CDDA_BYTES_PER_SECOND)}")
+        self.transport.set_entries(labels)
+        self.status.setText(
+            f"{os.path.basename(path)}: {len(labels)} piece(s) of music. "
+            "A streamed channel takes a few seconds to decode the first "
+            "time, then it is kept.")
+
+    @staticmethod
+    def _audio_track(path):
+        """The bin/cue's second track, if it is sitting beside the first."""
+        folder, stem = os.path.dirname(path), os.path.basename(path)
+        if "Track 1" not in stem:
+            return None
+        candidate = os.path.join(folder, stem.replace("Track 1", "Track 2"))
+        return candidate if os.path.exists(candidate) else None
+
+    # --- playing ------------------------------------------------------
+
+    def _wanted(self, row):
+        if not (0 <= row < len(self._entries)):
+            return
+        cached = self._cache.get(row)
+        if cached is not None:
+            self.transport.play_bytes(cached)
+            return
+        kind, payload = self._entries[row]
+        if kind == "cdda":
+            # Nothing to decode - it is already PCM. The pregap is
+            # dropped so it starts on the music rather than 2s of silence.
+            with open(payload, "rb") as f:
+                f.seek(CDDA_PREGAP)
+                wav = xa.wav_bytes_raw(f.read(), CDDA_RATE, 2)
+            self._cache[row] = wav
+            self.status.setText("Track 2: CD audio, 44100 Hz stereo.")
+            self.transport.play_bytes(wav)
+            return
+        lba, sectors, channel = payload
+        self._stop_decode()
+        self.status.setText(f"Decoding channel {channel}...")
+        self._decode = _Decode(row, self.image, lba, sectors, channel)
+        self._decode.done.connect(self._decoded)
+        self._decode.start()
+
+    def _decoded(self, row, wav, note):
+        if wav is None:
+            self.status.setText(f"Could not decode that channel: {note}")
+            return
+        self._cache[row] = wav
+        self.status.setText(f"{note} - decoded once and kept.")
+        if self.transport.current_row() == row:
+            self.transport.play_bytes(wav)
+
+    def _stop_decode(self):
+        if self._decode is not None and self._decode.isRunning():
+            self._decode.requestInterruption()
+            self._decode.wait(8000)
+        self._decode = None
 
     def closeEvent(self, event):
-        self.player.stop()
+        self.transport.stop()
+        self._stop_decode()
         super().closeEvent(event)

@@ -76,23 +76,44 @@ def _icon_files():
 
 
 # Matched against the name each binary is bundled under, lowercased.
+#
+# Qt6Network is NOT excluded, however little this tool wants a network
+# stack: Qt6Multimedia.dll links against it, so dropping it makes the
+# built exe die on startup with "DLL load failed while importing
+# QtMultimedia". The voice and music players need QtMultimedia.
 EXCLUDED_BINARIES = (
     "opengl32sw",
     "qt6pdf",
-    "qt6network",
     "qt6qml", "qt6quick", "qt6svg", "qt6dbus",
     "libcrypto", "libssl",
 )
 
 # Never imported by anything here; a hook or a stray reference can drag
-# them in regardless.
+# them in regardless. QtNetwork stays for the reason above.
 EXCLUDED_MODULES = [
     "tkinter", "unittest", "pydoc", "doctest", "pdb", "lib2to3",
     "sqlite3", "test", "distutils", "setuptools", "pip",
     "matplotlib", "scipy", "pandas",
-    "PyQt6.QtNetwork", "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtPdf",
+    "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtPdf",
     "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets",
 ]
+
+
+def _multimedia_plugins():
+    """Qt's audio backends, as (source, destination folder).
+
+    QMediaPlayer and QAudioSink do nothing without one of these: the
+    module imports, and then every file silently fails to play. They sit
+    in a plugins folder PyInstaller does not pick up on its own."""
+    import PyQt6
+    root = os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins",
+                        "multimedia")
+    if not os.path.isdir(root):
+        print("spec: no multimedia plugins found - audio will not play")
+        return []
+    return [(os.path.join(root, name), os.path.join("PyQt6", "Qt6",
+                                                    "plugins", "multimedia"))
+            for name in os.listdir(root)]
 
 
 def _keep(entry):
@@ -112,8 +133,11 @@ a = Analysis(
     binaries=[],
     # labels/ is read at runtime by functions/labels.py, which looks for
     # it beside the executable (sys._MEIPASS when frozen).
-    datas=_icon_files() + [('labels', 'labels')],
-    hiddenimports=['gui'],
+    datas=_icon_files() + [('labels', 'labels')] + _multimedia_plugins(),
+    # QtMultimedia is imported inside the functions that play audio, so
+    # the analysis does not always see it; naming it here is what gets
+    # its DLLs collected.
+    hiddenimports=['gui', 'PyQt6.QtMultimedia'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

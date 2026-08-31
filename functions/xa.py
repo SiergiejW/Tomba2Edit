@@ -26,6 +26,7 @@ confirmed here rather than assumed: on this disc header[0:4] equals
 header[4:8] and header[8:12] equals header[12:16] in every group
 checked, so the live copies are the second of each pair.
 """
+import array
 import struct
 
 SECTOR = 2352
@@ -109,12 +110,20 @@ def channel_map(image, lba, count, frame=RAW):
     return out
 
 
-def decode_sector(payload, state=None):
+def decode_sector(payload, state=None, stereo=False):
     """One sector's payload as 16-bit samples, and the filter state to
     carry into the next sector of the same channel.
 
     Passing the previous sector's state back in is what keeps a clip
-    continuous; starting fresh mid-stream clicks."""
+    continuous; starting fresh mid-stream clicks.
+
+    In stereo the sound units alternate between the speakers - even units
+    are left, odd are right - and each side predicts from its own history,
+    so the state is two pairs rather than one. The samples come out
+    interleaved, which is what a WAV wants. The voice track is mono; the
+    music, BGM.XA and DEMO.XA, is stereo."""
+    if stereo:
+        return _decode_stereo(payload, state)
     old, older = state or (0, 0)
     out = []
     for g in range(GROUPS):
@@ -149,6 +158,47 @@ def decode_sector(payload, state=None):
     return out, (old, older)
 
 
+def _decode_stereo(payload, state=None):
+    """A stereo sector: units alternate speakers, output interleaved."""
+    oldl, olderl, oldr, olderr = state or (0, 0, 0, 0)
+    out = []
+    for g in range(GROUPS):
+        base = g * GROUP_LEN
+        header = payload[base:base + 16]
+        data = payload[base + 16:base + GROUP_LEN]
+        for pair in range(UNITS // 2):
+            params = []
+            for unit in (pair * 2, pair * 2 + 1):
+                p = header[4 + unit] if unit < 4 else header[12 + unit - 4]
+                shift = p & 0x0F
+                filt = p >> 4
+                if filt >= len(FILTERS):
+                    filt = 0
+                if shift > 12:
+                    shift = 12
+                params.append((shift, FILTERS[filt]))
+            for s in range(UNIT_SAMPLES):
+                byte = data[s * 4 + pair]
+                for side in (0, 1):
+                    nibble = (byte >> (4 * side)) & 0x0F
+                    if nibble > 7:
+                        nibble -= 16
+                    shift, (k0, k1) = params[side]
+                    if side == 0:
+                        old, older = oldl, olderl
+                    else:
+                        old, older = oldr, olderr
+                    v = (nibble << (12 - shift)) + ((old * k0 + older * k1
+                                                     + 32) >> 6)
+                    v = -32768 if v < -32768 else (32767 if v > 32767 else v)
+                    if side == 0:
+                        olderl, oldl = oldl, v
+                    else:
+                        olderr, oldr = oldr, v
+                    out.append(v)
+    return out, (oldl, olderl, oldr, olderr)
+
+
 def decode_channel(image, lba, indices, limit=None, frame=RAW):
     """Decode one channel's sectors into (samples, rate).
 
@@ -158,6 +208,7 @@ def decode_channel(image, lba, indices, limit=None, frame=RAW):
     samples = []
     state = None
     rate = 18900 if not has_sub else 37800
+    speakers = 1
     for n, index in enumerate(indices):
         if limit is not None and n >= limit:
             break
@@ -166,22 +217,41 @@ def decode_channel(image, lba, indices, limit=None, frame=RAW):
         if len(raw) < stride:
             break
         if has_sub:
-            _ch, rate, bits = coding(raw[SUBHEADER + 3])
+            speakers, rate, bits = coding(raw[SUBHEADER + 3])
             if bits != 4:
                 continue                  # 8-bit XA is not used on this disc
         block, state = decode_sector(
-            raw[payload_at:payload_at + FORM2_LEN], state)
+            raw[payload_at:payload_at + FORM2_LEN], state, speakers == 2)
         samples.extend(block)
-    return samples, rate
+    return samples, rate, speakers
+
+
+def wav_bytes_raw(pcm, rate, channels=1):
+    """A WAV around PCM that is already bytes - a CD audio track, which
+    needs no decoding at all."""
+    byte_rate = rate * channels * 2
+    return (b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate,
+                                    byte_rate, channels * 2, 16)
+            + b"data" + struct.pack("<I", len(pcm)) + pcm)
+
+
+def wav_bytes(samples, rate, channels=1):
+    """16-bit PCM as a WAV file's bytes.
+
+    Handed to a player as a file in memory, which is what lets decoded
+    audio use the same transport - seeking, duration, position - as a
+    track read off disk."""
+    body = array.array("h", samples).tobytes()
+    byte_rate = rate * channels * 2
+    return (b"RIFF" + struct.pack("<I", 36 + len(body)) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate,
+                                    byte_rate, channels * 2, 16)
+            + b"data" + struct.pack("<I", len(body)) + body)
 
 
 def write_wav(path, samples, rate, channels=1):
     """Write mono 16-bit PCM out as a plain WAV."""
-    body = struct.pack(f"<{len(samples)}h", *samples)
-    byte_rate = rate * channels * 2
     with open(path, "wb") as f:
-        f.write(b"RIFF" + struct.pack("<I", 36 + len(body)) + b"WAVE")
-        f.write(b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate,
-                                      byte_rate, channels * 2, 16))
-        f.write(b"data" + struct.pack("<I", len(body)) + body)
+        f.write(wav_bytes(samples, rate, channels))
     return path

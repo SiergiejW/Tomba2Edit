@@ -35,6 +35,7 @@ from functions import codeuse
 from functions import voice
 from gui.txtd.font_editor import FontEditor
 from gui.txtd.voice_panel import VoicePanel
+from gui.music_panel import MusicPanel
 from functions.idx_parser import (
     parse_idx_file, apply_labels, row_label_data, area_index_of,
     LabelNameDelegate)
@@ -114,7 +115,9 @@ class MainWindow(QMainWindow):
         # whichever order the user does the two things in.
         self.voice_panel.image_opened.connect(
             lambda path: self.txtd_viewer.set_voice_source(path, None))
-        self.main_tabs.addTab(self.voice_panel, "Voice")
+        self.main_tabs.addTab(self.voice_panel, "Dialogues")
+        self.music_panel = MusicPanel()
+        self.main_tabs.addTab(self.music_panel, "Music")
         self.setCentralWidget(self.main_tabs)
 
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
@@ -188,7 +191,10 @@ class MainWindow(QMainWindow):
         )
         open_folder_action.triggered.connect(self.open_folder_dialog)
 
-        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export File", self)
+        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Export raw binary", self)
+        export_action.setToolTip(
+            "Write the selected row's bytes out as they sit in the DAT - "
+            "one file, unpacked and unchanged")
         export_action.triggered.connect(self.export_selected_bytes)
         export_files_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon), "Save IDX/DAT", self)
         export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD/TXT2 edits applied")
@@ -222,10 +228,12 @@ class MainWindow(QMainWindow):
 
         # Same QAction instances go in both the toolbar and the File menu -
         # Qt keeps them in sync automatically, no separate menu-only copies.
+        # Open, then the two things you do with what is open: pull one
+        # file out, or write the whole track back. Save IDX/DAT is the
+        # older route and lives in the File menu.
         toolbar.addAction(open_action)
-        toolbar.addAction(export_bin_action)
-        toolbar.addAction(export_files_action)
         toolbar.addAction(export_action)
+        toolbar.addAction(export_bin_action)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
@@ -1219,6 +1227,12 @@ class MainWindow(QMainWindow):
 
         self.current_iso_path = iso_path
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
+        # The Dialogues tab reads its audio out of the same track, so
+        # opening the disc is enough - it should not have to be opened a
+        # second time over there. A 2048-byte ISO simply has no voice in
+        # it, and the panel says so itself.
+        self.voice_panel.set_image(iso_path)
+        self.music_panel.set_image(iso_path)
 
     def open_folder_dialog(self):
         """Open an already-extracted CD folder directly, no ISO needed.

@@ -1,52 +1,67 @@
-"""Listening to the voice track beside the text.
+"""Listening to the voice track, a channel at a time.
 
-VOICE.XA is 32 interleaved channels of spoken dialogue. Pick a channel,
-it is decoded and cut where it falls quiet, and each piece can be played.
+VOICE.XA interleaves 32 channels of spoken dialogue (see functions/xa).
+Each is listed here and played whole, with a seek bar, so a channel can
+be scrubbed through to find a line.
 
-The cuts here are an approximation, for browsing a channel end to end.
-The exact boundaries come from the area's overlay, which the TXTD
-viewer's Play button uses to speak a chosen line (see voice_link.py).
+Nothing is cut up. Where a clip starts and ends is not something the
+audio itself says - it comes from the clip table in the area's overlay,
+which the TXTD viewer's Play button uses to speak one chosen line (see
+gui/txtd/voice_link.py). Guessing the boundaries from silence, as this
+panel used to, put them in roughly the right places and confidently
+wrong ones.
 
 Two sources work: a raw disc track, and a VOICE.XA extracted properly -
 which "Extract VOICE.XA..." writes, so a CD folder can carry working
 audio. A VOICE.XA copied as an ordinary file cannot be used: that takes
-2048 bytes of each sector where the format holds 2324, losing 12% of
-the audio for good.
+2048 bytes of each sector where the format holds 2324, losing 12% of the
+audio for good.
 """
 import os
 
-from PyQt6.QtCore import QBuffer, QByteArray, Qt, QThread, pyqtSignal
-from PyQt6.QtMultimedia import QAudioFormat, QAudioSink
-from PyQt6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
-                             QListWidget, QListWidgetItem, QPushButton,
+from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
                              QVBoxLayout, QWidget)
 
 from functions import voice, xa
+from gui.audio_transport import AudioTransport, clock
 
 
 class _Decode(QThread):
     """Decoding a channel, off the GUI thread.
 
-    A whole channel is about two seconds of work - short, but long enough
-    to freeze the window, and this is where a QThread owned by a widget
-    would take the process down with it, so it is left unparented and
-    stopped explicitly."""
+    A whole channel is a couple of seconds of work - short, but long
+    enough to freeze the window. Left unparented deliberately: a QThread
+    owned by a widget is destroyed with it, and destroying one that is
+    still running takes the process down."""
 
-    done = pyqtSignal(object)
+    done = pyqtSignal(int, object, int)
 
     def __init__(self, image, lba, sectors, channel):
         super().__init__()
         self.args = (image, lba, sectors, channel)
+        self.channel = channel
 
     def run(self):
+        image, lba, sectors, channel = self.args
         try:
-            self.done.emit(voice.channel_clips(*self.args))
+            frame = xa.framing(image) or xa.RAW
+            with open(image, "rb") as f:
+                chans = xa.channel_map(f, lba, sectors, frame)
+                key = next((k for k in chans if k[1] == channel), None)
+                if key is None:
+                    self.done.emit(channel, None, 0)
+                    return
+                samples, rate, speakers = xa.decode_channel(
+                    f, lba, chans[key], frame=frame)
+            self.done.emit(channel,
+                           xa.wav_bytes(samples, rate, speakers), rate)
         except Exception:
-            self.done.emit(None)
+            self.done.emit(channel, None, 0)
 
 
 class VoicePanel(QWidget):
-    """Browse and play the dialogue in VOICE.XA."""
+    """Browse and play VOICE.XA's channels."""
 
     # Emitted when a data track is opened, so anything else that wants
     # the voice track - the TXTD viewer's Play button - can pick it up
@@ -57,14 +72,14 @@ class VoicePanel(QWidget):
         super().__init__(parent)
         self.image = None
         self.lba = self.sectors = 0
-        self.samples = []
-        self.rate = 37800
-        self.spans = []
+        self._channels = []
         self._decode = None
-        self._sink = None
-        self._buffer = None
+        self._cache = {}
 
         self.pick = QPushButton("Open BIN...")
+        self.pick.setToolTip(
+            "Only needed for a disc opened as a folder - opening a BIN "
+            "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
         self.extract = QPushButton("Extract VOICE.XA...")
         self.extract.setToolTip(
@@ -73,32 +88,22 @@ class VoicePanel(QWidget):
             "copy truncates to 2048")
         self.extract.clicked.connect(self._extract)
         self.extract.setEnabled(False)
-        self.channel_box = QComboBox()
-        self.channel_box.currentIndexChanged.connect(self._load_channel)
-        self.list = QListWidget()
-        self.list.itemDoubleClicked.connect(lambda _i: self._play())
-        self.play_button = QPushButton("Play")
-        self.play_button.clicked.connect(self._play)
-        stop = QPushButton("Stop")
-        stop.clicked.connect(self._stop)
-        self.status = QLabel("No BIN opened - the voice track needs a raw "
-                             "2352-byte track, not a CD folder or ISO.")
+
+        self.transport = AudioTransport()
+        self.transport.wanted.connect(self._wanted)
+
+        self.status = QLabel("No disc open - the voice track needs a raw "
+                             "2352-byte data track, not a CD folder or ISO.")
         self.status.setWordWrap(True)
 
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addWidget(self.extract)
-        top.addWidget(QLabel("Channel"))
-        top.addWidget(self.channel_box, 1)
-        row = QHBoxLayout()
-        row.addWidget(self.play_button)
-        row.addWidget(stop)
-        row.addStretch(1)
+        top.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
-        layout.addWidget(self.list, 1)
-        layout.addLayout(row)
+        layout.addWidget(self.transport, 1)
         layout.addWidget(self.status)
 
     # --- opening ------------------------------------------------------
@@ -106,33 +111,31 @@ class VoicePanel(QWidget):
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open the disc's data track", "",
-            "Disc track (*.bin *.img);;All files (*)")
+            "Disc track (*.bin *.img);;Extracted voice (*.XA);;All files (*)")
         if path:
             self.set_image(path)
 
     def set_image(self, path):
-        """Point the panel at a raw disc track."""
+        """Point the panel at a disc track, or a good VOICE.XA."""
         try:
             self.lba, self.sectors = voice.find_track(path)
         except Exception as exc:
             self.status.setText(str(exc))
             return
         self.image = path
-        found = voice.channels(path, self.lba, self.sectors)
-        self.channel_box.blockSignals(True)
-        self.channel_box.clear()
-        for channel, count in found:
-            self.channel_box.addItem(
-                f"channel {channel}  ({count} sectors, "
-                f"{count * xa.SAMPLES_PER_SECTOR / 18900:.0f}s)", channel)
-        self.channel_box.blockSignals(False)
+        self._cache.clear()
+        self._channels = voice.channels(path, self.lba, self.sectors)
+        per_sector = xa.SAMPLES_PER_SECTOR
+        self.transport.set_entries([
+            f"Channel {channel:2d}   {count:,} sectors   "
+            f"~{clock(count * per_sector * 1000 // 18900)}"
+            for channel, count in self._channels])
         self.status.setText(
-            f"{os.path.basename(path)}: VOICE.XA at sector {self.lba:,}, "
-            f"{self.sectors:,} sectors, {len(found)} channels.")
+            f"{os.path.basename(path)}: {len(self._channels)} channels, "
+            f"{self.sectors:,} sectors. Pick one to decode and play it "
+            "whole - the seek bar scrubs through it.")
         self.extract.setEnabled(True)
         self.image_opened.emit(path)
-        if found:
-            self._load_channel(0)
 
     def _extract(self):
         """Write a usable VOICE.XA next to a CD folder's other files."""
@@ -153,85 +156,42 @@ class VoicePanel(QWidget):
             "bytes. That copy opens on its own, so a CD folder can carry "
             "working audio.")
 
-    # --- decoding -----------------------------------------------------
+    # --- playing ------------------------------------------------------
 
-    def _load_channel(self, _index):
-        if not self.image:
+    def _wanted(self, row):
+        """The transport asked for a row; decode it if it is not cached."""
+        if not (0 <= row < len(self._channels)) or not self.image:
             return
-        channel = self.channel_box.currentData()
-        if channel is None:
+        channel = self._channels[row][0]
+        cached = self._cache.get(channel)
+        if cached is not None:
+            self.transport.play_bytes(cached)
             return
         self._stop_decode()
-        self.list.clear()
         self.status.setText(f"Decoding channel {channel}...")
         self._decode = _Decode(self.image, self.lba, self.sectors, channel)
         self._decode.done.connect(self._decoded)
         self._decode.start()
 
-    def _decoded(self, result):
-        if result is None:
-            self.status.setText("Could not decode that channel.")
+    def _decoded(self, channel, wav, rate):
+        if wav is None:
+            self.status.setText(f"Could not decode channel {channel}.")
             return
-        self.samples, self.rate, self.spans = result
-        self.list.clear()
-        for i, (start, end) in enumerate(self.spans):
-            seconds = (end - start) / self.rate
-            item = QListWidgetItem(
-                f"{i + 1:3d}.  {start / self.rate:7.2f}s   {seconds:5.2f}s")
-            item.setData(Qt.ItemDataRole.UserRole, i)
-            self.list.addItem(item)
+        self._cache[channel] = wav
         self.status.setText(
-            f"{len(self.spans)} clips, {len(self.samples) / self.rate:.0f}s "
-            f"at {self.rate} Hz. Cut on silence, so the boundaries are "
-            "approximate.")
-        if self.spans:
-            self.list.setCurrentRow(0)
+            f"Channel {channel} at {rate} Hz - decoded once and kept, so "
+            "coming back to it is instant.")
+        if self.transport.current_row() < len(self._channels) and \
+                self._channels[self.transport.current_row()][0] == channel:
+            self.transport.play_bytes(wav)
 
     def _stop_decode(self):
         if self._decode is not None and self._decode.isRunning():
             self._decode.requestInterruption()
-            self._decode.wait(3000)
+            self._decode.wait(5000)
         self._decode = None
 
-    # --- playing ------------------------------------------------------
-
-    def _play(self):
-        row = self.list.currentRow()
-        if row < 0 or row >= len(self.spans):
-            return
-        start, end = self.spans[row]
-        self.play_samples(self.samples[start:end], self.rate)
-
-    def play_samples(self, samples, rate):
-        """Play 16-bit mono PCM straight out of memory.
-
-        The bytes go in with setData: QBuffer(QByteArray(...)) keeps a
-        pointer to the array rather than taking ownership of it, so a
-        temporary handed to it is freed while the sink is still reading,
-        which plays noise and then crashes."""
-        self._stop()
-        if not samples:
-            return
-        import array
-        fmt = QAudioFormat()
-        fmt.setSampleRate(rate)
-        fmt.setChannelCount(1)
-        fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-        self._buffer = QBuffer()
-        self._buffer.setData(array.array("h", samples).tobytes())
-        self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
-        self._sink = QAudioSink(fmt)
-        self._sink.start(self._buffer)
-
-    def _stop(self):
-        if self._sink is not None:
-            self._sink.stop()
-            self._sink = None
-        if self._buffer is not None:
-            self._buffer.close()
-            self._buffer = None
-
     def closeEvent(self, event):
-        self._stop()
+        self.transport.stop()
         self._stop_decode()
         super().closeEvent(event)
