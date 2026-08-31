@@ -28,8 +28,10 @@ Download Tomba2Edit.exe from the [download section](https://github.com/SiergiejW
 Project uses PyQt6, struct, numpy, OpenGL, Pillow Python libraries.
 
 ## How to use:<br>
-Extract Tomba 2 iso and select folder, that contains BIN, CD, MOVIE<br>
-The script will search for files named TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG and display their contents.
+Preferably, get Tomba US Retail in format of BIN/CUE (Track 1.bin, Track 2.bin, .cue)<br>
+Open Track 1.BIN <br>
+Make edits, overwrite Track 1.BIN.<br>
+ISO supported, but not preffered. Also extracting all contents and opening folder works. Can also save DAT/IDX to swap if you have means to open BIN/ISO.
 MDAT - Level data
 TXTD - Text data
 SMST - 3D Assets
