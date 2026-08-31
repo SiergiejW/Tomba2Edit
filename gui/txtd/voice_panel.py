@@ -46,6 +46,11 @@ class _Decode(QThread):
 class VoicePanel(QWidget):
     """Browse and play the dialogue in VOICE.XA."""
 
+    # Emitted when a data track is opened, so anything else that wants
+    # the voice track - the TXTD viewer's Play button - can pick it up
+    # whichever order the user does things in.
+    image_opened = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.image = None
@@ -114,6 +119,7 @@ class VoicePanel(QWidget):
         self.status.setText(
             f"{os.path.basename(path)}: VOICE.XA at sector {self.lba:,}, "
             f"{self.sectors:,} sectors, {len(found)} channels.")
+        self.image_opened.emit(path)
         if found:
             self._load_channel(0)
 

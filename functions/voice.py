@@ -36,16 +36,31 @@ class VoiceError(Exception):
 def find_track(path):
     """(lba, sectors) of VOICE.XA in a raw disc image.
 
-    Refuses an image that isn't raw, since a 2048-byte one cannot hold
-    the audio whatever its directory says."""
+    Only the data track will do. The other two things that look like they
+    ought to work are both refused here rather than left to fail later as
+    noise: a bin/cue's second track is CD audio with no filesystem at
+    all, and an extracted VOICE.XA - or one out of a 2048-byte ISO - has
+    had 276 bytes cut out of every sector and is not decodable."""
+    name = os.path.basename(path)
+    if name.upper().endswith(".XA"):
+        raise VoiceError(
+            f"{name} is an extracted copy, and extracting is what breaks it: "
+            "the voice track is Mode 2 Form 2, carrying 2324 bytes a sector "
+            "where a file copy takes 2048. Open the data track of the "
+            "bin/cue instead (Track 1).")
     with open(path, "rb") as f:
         data = f.read()
-    reader = ISO9660Reader(data)
+    try:
+        reader = ISO9660Reader(data)
+    except Exception:
+        raise VoiceError(
+            f"{name} has no filesystem in it. A bin/cue's Track 2 is plain "
+            "CD audio, not the data track - open Track 1.")
     if reader.sector_size != xa.SECTOR:
         raise VoiceError(
-            f"{os.path.basename(path)} has {reader.sector_size}-byte sectors. "
-            "The voice track is Mode 2 Form 2 and only survives in a raw "
-            "2352-byte image - a BIN track from a bin/cue rip.")
+            f"{name} has {reader.sector_size}-byte sectors. The voice track "
+            "is Mode 2 Form 2 and only survives in a raw 2352-byte image - "
+            "the data track of a bin/cue rip.")
 
     found = []
 
@@ -115,6 +130,93 @@ def channel_clips(image, lba, sectors, channel, limit=None):
             return [], 37800, []
         samples, rate = xa.decode_channel(f, lba, chans[key], limit)
     return samples, rate, clips(samples, rate)
+
+
+# --- linking a line of text to its clip ------------------------------
+#
+# A TXTD entry carries `extra`; 0xFFFF means the line has no voice, and
+# otherwise the low byte indexes a table in the area's overlay:
+#
+#     (u16 start_block, u16 length_blocks)[]
+#
+# VOICE.XA interleaves 32 channels, so a "block" is 32 sectors and one
+# channel contributes one sector to each. A clip is therefore
+#
+#     sector = (start_block + b) * 32 + channel,   b = 0 .. length-1
+#
+# The tables give themselves away by being a chain: each entry starts
+# where the previous one ended, so start[n+1] == start[n] + len[n] holds
+# from the first entry (which starts at 0) to the last. An overlay holds
+# several of them, one per channel it draws voice from.
+#
+# Verified against four savestates taken on known lines: DuckStation's
+# CDROM state had the head at exactly the block each table entry names.
+
+MIN_TABLE = 8              # entries before a chain is believable
+BLOCK = 32                 # sectors per interleave block
+
+
+def find_tables(overlay_path, min_entries=MIN_TABLE):
+    """[(offset, [(start, length), ...])] for every clip table found."""
+    import struct
+
+    data = open(overlay_path, "rb").read()
+    out = []
+    i = 0
+    while i < len(data) - 8:
+        start, length = struct.unpack_from("<HH", data, i)
+        if start != 0 or not (0 < length < 400):
+            i += 4
+            continue
+        entries = [(start, length)]
+        at = start + length
+        j = i + 4
+        while j + 4 <= len(data):
+            s2, l2 = struct.unpack_from("<HH", data, j)
+            if s2 != at or not (0 < l2 < 400):
+                break
+            entries.append((s2, l2))
+            at = s2 + l2
+            j += 4
+        if len(entries) >= min_entries:
+            out.append((i, entries))
+            i = j
+        else:
+            i += 4
+    return out
+
+
+def clip_sectors(entry, channel):
+    """The VOICE.XA sector numbers one clip occupies."""
+    start, length = entry
+    return [(start + b) * BLOCK + channel for b in range(length)]
+
+
+def best_channel(image, lba, entries, probe_blocks=200):
+    """Which channel a table describes, judged by its own boundaries.
+
+    Each entry begins where the one before ended, so on the right channel
+    those block boundaries land in the gaps between spoken lines. Scoring
+    channels by how often the block before a boundary is quiet picks it
+    out; the wrong channel has its own clips, cut at other places."""
+    bounds = [s for s, _l in entries[1:] if s < probe_blocks]
+    if not bounds:
+        return None, 0.0
+    best, best_score = None, -1.0
+    with open(image, "rb") as f:
+        for channel in range(BLOCK):
+            samples, _rate = xa.decode_channel(
+                f, lba, [b * BLOCK + channel for b in range(probe_blocks)])
+            per = xa.SAMPLES_PER_SECTOR
+            quiet = 0
+            for b in bounds:
+                seg = samples[(b - 1) * per:b * per]
+                if seg and max(abs(v) for v in seg) < QUIET_LEVEL * 4:
+                    quiet += 1
+            score = quiet / len(bounds)
+            if score > best_score:
+                best, best_score = channel, score
+    return best, best_score
 
 
 def channels(image, lba, sectors):

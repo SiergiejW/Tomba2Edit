@@ -109,6 +109,10 @@ class MainWindow(QMainWindow):
         # be opened from a raw BIN, which is a different file from the
         # disc the rest of the tool is working on.
         self.voice_panel = VoicePanel()
+        # Opening a disc there arms the TXTD viewer's Play button too,
+        # whichever order the user does the two things in.
+        self.voice_panel.image_opened.connect(
+            lambda path: self.txtd_viewer.set_voice_source(path, None))
         self.main_tabs.addTab(self.voice_panel, "Voice")
         self.setCentralWidget(self.main_tabs)
 
@@ -608,6 +612,31 @@ class MainWindow(QMainWindow):
                                     "Open an ISO or a CD folder first.")
             return None
         return os.path.dirname(self.dat_file)
+
+    # Overlay ids run six ahead of the IDX chunk they belong to: chunk 0
+    # is START.BIN's id 6, so chunk 4 is id 10, which is A00.BIN. Every
+    # one of the 22 chunks carrying a TXTD lines up with an Axx.BIN this
+    # way, and the four ids with no area (START, GAME, SOP, CRD) land on
+    # exactly the four chunks that have no DAT range.
+    OVERLAY_NAMES = {6: "START.BIN", 7: "DEMO.BIN", 8: "GAME.BIN",
+                     32: "SOP.BIN", 34: "OPN.BIN", 35: "CRD.BIN"}
+    for _i in range(22):
+        OVERLAY_NAMES[10 + _i] = f"A0{'0123456789ABCDEFGHIJKL'[_i]}.BIN"
+
+    def overlay_for_area(self, chunk_index):
+        """The Axx.BIN belonging to an area, or None if there isn't one
+        or the disc was opened somewhere without a BIN folder."""
+        name = self.OVERLAY_NAMES.get((chunk_index or 0) + 6)
+        if not name or not self.dat_file:
+            return None
+        root = os.path.dirname(os.path.dirname(os.path.dirname(self.dat_file)))
+        for folder in (os.path.join(root, "BIN"),
+                       os.path.join(os.path.dirname(
+                           os.path.dirname(self.dat_file)), "BIN")):
+            path = os.path.join(folder, name)
+            if os.path.exists(path):
+                return path
+        return None
 
     def open_font_editor(self):
         """Open the window where glyphs are drawn and codes are named.
@@ -1482,6 +1511,9 @@ class MainWindow(QMainWindow):
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
                                     )
+                                    self.txtd_viewer.set_voice_source(
+                                        getattr(self.voice_panel, "image", None),
+                                        self.overlay_for_area(txtd_chunk_index))
                                 else:
                                     QMessageBox.critical(self, "Error", "DAT file not loaded.")
                             except Exception as e:

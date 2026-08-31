@@ -7,7 +7,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
-    QLabel, QTextEdit,
+    QLabel, QTextEdit, QHBoxLayout, QPushButton, QSpinBox,
 )
 import gui.txtd.txtd as txtd
 from gui.margin_text_edit import MarginTextEdit
@@ -84,6 +84,25 @@ STATUS_WARNING_COLOR = "#c0392b"
 SCREEN_OVERFLOW_COLOR = "#e67e22"
 
 _ANY_BRACKET_TAG_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _play_pcm(samples, rate):
+    """Play 16-bit mono PCM. The sink and its buffer are returned because
+    they have to outlive this call or playback stops with them."""
+    import struct
+
+    from PyQt6.QtCore import QBuffer, QByteArray
+    from PyQt6.QtMultimedia import QAudioFormat, QAudioSink
+
+    fmt = QAudioFormat()
+    fmt.setSampleRate(rate)
+    fmt.setChannelCount(1)
+    fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+    buffer = QBuffer(QByteArray(struct.pack(f"<{len(samples)}h", *samples)))
+    buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+    sink = QAudioSink(fmt)
+    sink.start(buffer)
+    return sink, buffer
 
 
 def _visible_length(text):
@@ -277,6 +296,28 @@ class TXTDViewer(QWidget):
         edit_split.setChildrenCollapsible(False)
         edit_split.setSizes([10000, 10000])
         right_layout.addWidget(edit_split)
+        # Playing the line's voice. Which of the overlay's tables a
+        # master uses is not established, so it is a choice here rather
+        # than a guess - if a line plays the wrong clip, step the table.
+        voice_row = QHBoxLayout()
+        self.open_voice_button = QPushButton("Open BIN...")
+        self.open_voice_button.setToolTip(
+            "The disc's data track (Track 1) - the voice track only "
+            "survives there, not in a CD folder or an ISO")
+        self.open_voice_button.clicked.connect(self._browse_voice)
+        voice_row.addWidget(self.open_voice_button)
+        self.play_voice_button = QPushButton("Play voice")
+        self.play_voice_button.clicked.connect(self._play_voice)
+        self.play_voice_button.setEnabled(False)
+        self.voice_table_box = QSpinBox()
+        self.voice_table_box.setPrefix("table ")
+        self.voice_table_box.setRange(0, 0)
+        self.voice_note = QLabel("")
+        self.voice_note.setWordWrap(True)
+        voice_row.addWidget(self.play_voice_button)
+        voice_row.addWidget(self.voice_table_box)
+        voice_row.addWidget(self.voice_note, 1)
+        right_layout.addLayout(voice_row)
         # The budget line stays under both halves, where it reads as
         # belonging to the entry rather than to the edit box.
         right_layout.addWidget(self.status_label)
@@ -489,11 +530,85 @@ class TXTDViewer(QWidget):
                 self.status_label.setText("This is an END marker (no text) - not editable.")
             else:
                 self._update_screen_width_status(entry["text"])
+            self._refresh_voice_button()
         except Exception as e:
             print(f"Error in on_tree_selection_changed: {e}")
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")
         finally:
             self._loading = False
+
+    # --- voice ---------------------------------------------------------
+
+    def _browse_voice(self):
+        """Open the data track from here, so the Play button can be set
+        up without going to the Voice tab first."""
+        from PyQt6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open the disc's data track (Track 1)", "",
+            "Disc track (*.bin *.img);;All files (*)")
+        if path:
+            self.set_voice_source(path, self._voice_overlay)
+
+    def set_voice_source(self, image_path, overlay_path):
+        """Point the Play button at the disc's data track and this
+        area's overlay. Either may be None, which just disables it.
+
+        Both halves are remembered, so whichever arrives second - a disc
+        opened in the Voice tab, or a different area selected - keeps the
+        other rather than clearing it."""
+        from gui.txtd.voice_link import VoiceLink
+
+        if getattr(self, "_voice", None) is None:
+            self._voice = VoiceLink()
+        if image_path:
+            self._voice_image = image_path
+        if overlay_path:
+            self._voice_overlay = overlay_path
+        image_path = getattr(self, "_voice_image", None)
+        overlay_path = getattr(self, "_voice_overlay", None)
+        problem = (self._voice.set_image(image_path) if image_path
+                   else "No disc yet - open the data track (Track 1).")
+        count = self._voice.set_overlay(overlay_path) if overlay_path else 0
+        self.voice_table_box.setRange(0, max(count - 1, 0))
+        if problem:
+            self.voice_note.setText(problem)
+        elif not count:
+            self.voice_note.setText("No clip tables in this area's overlay.")
+        else:
+            self.voice_note.setText(f"{count} clip tables available.")
+        self._refresh_voice_button()
+
+    def _refresh_voice_button(self):
+        voice = getattr(self, "_voice", None)
+        entry = self._selected_entry()
+        extra = entry.get("extra") if entry else None
+        self.play_voice_button.setEnabled(
+            bool(voice and voice.ready() and extra not in (None, 0xFFFF)))
+
+    def _selected_entry(self):
+        item = getattr(self, "_current_entry_item", None)
+        if item is None or not self.current_data:
+            return None
+        location = item.data(ENTRY_LOCATION_ROLE)
+        if location is None:
+            return None
+        m_idx, e_idx = location
+        try:
+            return self.current_data["entries"][m_idx]["entries"][e_idx]
+        except (KeyError, IndexError):
+            return None
+
+    def _play_voice(self):
+        entry = self._selected_entry()
+        voice = getattr(self, "_voice", None)
+        if entry is None or voice is None:
+            return
+        samples, rate, note = voice.clip_for(entry.get("extra"),
+                                             self.voice_table_box.value())
+        self.voice_note.setText(note)
+        if samples:
+            self._voice_sink = _play_pcm(samples, rate)
 
     def _on_text_changed(self):
         """Writes every keystroke straight back into current_data, and
