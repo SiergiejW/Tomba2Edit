@@ -50,6 +50,31 @@ def clips_needed(master):
     return most
 
 
+def _align(needs, sizes):
+    """Longest order-preserving match of [(master, clips)] to table
+    sizes, matching only on equality. Either side may be skipped."""
+    n, m = len(needs), len(sizes)
+    if not n or not m:
+        return {}
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            take = 1 + best[i + 1][j + 1] if needs[i][1] == sizes[j] else 0
+            best[i][j] = max(best[i + 1][j], best[i][j + 1], take)
+    out = {}
+    i = j = 0
+    while i < n and j < m:
+        if needs[i][1] == sizes[j] and best[i][j] == 1 + best[i + 1][j + 1]:
+            out[needs[i][0]] = j
+            i += 1
+            j += 1
+        elif best[i + 1][j] >= best[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
 class VoiceLink:
     """Resolves a TXTD entry to its clips, and decodes them."""
 
@@ -88,22 +113,31 @@ class VoiceLink:
             self.load_cached_channels()
         return len(self.tables)
 
-    def table_for(self, master):
-        """Which table a master's lines run through, by clip count.
+    def set_masters(self, masters):
+        """Work out which table each master speaks through.
 
-        An exact match is the answer. Failing that the smallest table
-        with room is used, which covers the short masters that have too
-        few lines for their count to name a table on its own."""
-        need = clips_needed(master)
-        if not need or not self.tables:
-            return None
-        sizes = [(len(entries), i) for i, (_off, entries) in
-                 enumerate(self.tables)]
-        for size, i in sizes:
-            if size == need:
-                return i
-        roomy = sorted((s, i) for s, i in sizes if s >= need)
-        return roomy[0][1] if roomy else None
+        The overlay's tables are in the same order as the masters that
+        use them, and a table has exactly as many entries as its master
+        has clips. Matching the two sequences in order - allowing either
+        side to skip, since some masters have no voice and some tables
+        go unused - pins nearly all of them: 112 of the 120 tables
+        across the disc's areas, and it reproduces the assignment proved
+        against savestates for AREA_04.
+
+        A master that comes out unmatched is left with no voice rather
+        than given the nearest table, which would only play some other
+        conversation."""
+        self._by_master = {}
+        if not masters or not self.tables:
+            return 0
+        sizes = [len(entries) for _off, entries in self.tables]
+        needs = [(i, clips_needed(m)) for i, m in enumerate(masters)]
+        needs = [(i, n) for i, n in needs if n]
+        self._by_master = _align(needs, sizes)
+        return len(self._by_master)
+
+    def table_for_index(self, master_index):
+        return self._by_master.get(master_index)
 
     # --- channels -----------------------------------------------------
 
