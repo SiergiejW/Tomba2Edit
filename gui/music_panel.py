@@ -3,9 +3,11 @@
 Tomba 2 keeps its music in two quite different places, and both are here:
 
     BGM.XA, DEMO.XA   streamed CD-XA, 8 channels interleaved through each
-                      file, stereo ADPCM at 37800 Hz. One channel is one
-                      piece of music; the drive plays one and skips the
-                      rest (see functions/xa.py).
+                      file, stereo ADPCM at 37800 Hz. The drive plays one
+                      channel and skips the rest (see functions/xa.py).
+                      A channel holds several pieces of music end to end,
+                      cut apart here on the game's own table of track
+                      offsets rather than on silence (functions/bgm.py).
     Track 2           an ordinary CD audio track - 44.1 kHz stereo PCM
                       with nothing to decode, which is why it is a whole
                       second file in the bin/cue rather than a file on
@@ -21,7 +23,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
                              QVBoxLayout, QWidget)
 
-from functions import voice, xa
+from functions import bgm, voice, xa
 from gui.audio_transport import AudioTransport, clock
 
 # The streamed music files, in the order they are listed.
@@ -35,25 +37,24 @@ CDDA_PREGAP = 150 * 2352
 
 
 class _Decode(QThread):
-    """Decoding one music channel, off the GUI thread."""
+    """Decoding one track, off the GUI thread.
+
+    The sector numbers are worked out when the disc is opened, so all
+    this does is decode them - a track starts on a fresh predictor,
+    which is what a track boundary means."""
 
     done = pyqtSignal(int, object, str)
 
-    def __init__(self, row, image, lba, sectors, channel):
+    def __init__(self, row, image, lba, indices):
         super().__init__()
         self.row = row
-        self.args = (image, lba, sectors, channel)
+        self.args = (image, lba, indices)
 
     def run(self):
-        image, lba, sectors, channel = self.args
+        image, lba, indices = self.args
         try:
             with open(image, "rb") as f:
-                chans = xa.channel_map(f, lba, sectors)
-                key = next((k for k in chans if k[1] == channel), None)
-                if key is None:
-                    self.done.emit(self.row, None, "no such channel")
-                    return
-                samples, rate, speakers = xa.decode_channel(f, lba, chans[key])
+                samples, rate, speakers = xa.decode_channel(f, lba, indices)
             self.done.emit(self.row, xa.wav_bytes(samples, rate, speakers),
                            f"{rate} Hz "
                            f"{'stereo' if speakers == 2 else 'mono'}")
@@ -107,23 +108,30 @@ class MusicPanel(QWidget):
         self._entries = []
         labels = []
         try:
+            exe = voice.extract_file(path, "MAIN.EXE")
             for name in STREAMS:
                 where = voice.find_file(path, name)
                 if not where:
                     continue
                 lba, sectors = where
                 with open(path, "rb") as f:
-                    chans = xa.channel_map(f, lba, sectors)
+                    pieces = bgm.split(f, lba, sectors, exe)
                     f.seek(lba * xa.SECTOR)
                     first = f.read(xa.SECTOR)
                 speakers, rate, _bits = xa.coding(first[xa.SUBHEADER + 3])
                 frames = xa.SAMPLES_PER_SECTOR // max(speakers, 1)
-                for _file, channel in sorted(chans):
-                    count = len(chans[(_file, channel)])
-                    self._entries.append(("xa", (lba, sectors, channel)))
-                    labels.append(
-                        f"{name}  channel {channel}   "
-                        f"~{clock(count * frames * 1000 // rate)}")
+                stem = name.split(".")[0]
+                per_channel = {}
+                for channel, _ordinal, _indices in pieces:
+                    per_channel[channel] = per_channel.get(channel, 0) + 1
+                for channel, ordinal, indices in pieces:
+                    self._entries.append(("xa", (lba, indices)))
+                    length = clock(len(indices) * frames * 1000 // rate)
+                    where = f"channel {channel}"
+                    if per_channel[channel] > 1:
+                        where += f", track {ordinal + 1} of {per_channel[channel]}"
+                    labels.append(f"{stem}  {len(labels) + 1:2d}   "
+                                  f"{length:>5}      {where}")
         except Exception as exc:
             self.status.setText(f"Could not read the disc: {exc}")
             return
@@ -175,10 +183,10 @@ class MusicPanel(QWidget):
             self.status.setText("Track 2: CD audio, 44100 Hz stereo.")
             self.transport.play_bytes(wav)
             return
-        lba, sectors, channel = payload
+        lba, indices = payload
         self._stop_decode()
-        self.status.setText(f"Decoding channel {channel}...")
-        self._decode = _Decode(row, self.image, lba, sectors, channel)
+        self.status.setText("Decoding...")
+        self._decode = _Decode(row, self.image, lba, indices)
         self._decode.done.connect(self._decoded)
         self._decode.start()
 
