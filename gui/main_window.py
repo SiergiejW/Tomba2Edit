@@ -573,18 +573,26 @@ class MainWindow(QMainWindow):
     def on_txtd_content_changed(self, chunk_index, file_index, id_val, dat_start, offset, current_data):
         """Called by TXTDViewer every time an entry's text is edited.
         current_data is the SAME dict object the viewer keeps editing in
-        place, so this just needs to remember which (area, file) it
-        belongs to - no need to copy it defensively here since each
-        edited TXTD only ever has one viewer instance touching it at a
-        time in this UI."""
+        place, so this just needs to remember which file it belongs to -
+        no need to copy it defensively here since each edited TXTD only
+        ever has one viewer instance touching it at a time in this UI.
+
+        Keyed by DAT address, not (area, file index): the same bytes can
+        be reached from several areas' trees (see address_locations in
+        idx_parser.parse_idx_file), and editing it from one of them is
+        editing the one file underneath all of them. Keying by address
+        means a second area's row registers as the SAME pending edit
+        rather than a second one repack_files would apply twice."""
+        address = dat_start + offset
         state = self.txtd_viewer.pending_state()
         if state == "edited":
-            self.pending_txtd_edits[(chunk_index, file_index)] = {
+            self.pending_txtd_edits[address] = {
                 "kind": "txtd", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+                "locations": self.address_locations.get(address, [(chunk_index, file_index)]),
             }
         else:
-            self.pending_txtd_edits.pop((chunk_index, file_index), None)
-        self._set_txtd_tree_item_state(chunk_index, file_index, state)
+            self.pending_txtd_edits.pop(address, None)
+        self._set_txtd_tree_item_state(address, state)
         self._refresh_edit_status()
 
     def on_txt2_content_changed(self, chunk_index, file_index, id_val, dat_start, offset, current_data):
@@ -594,14 +602,16 @@ class MainWindow(QMainWindow):
         "kind" so _pack_pending_txtd_edits() knows which packer to use for
         each one; every other bookkeeping step (tree coloring, export
         counting) doesn't need to distinguish between them at all."""
+        address = dat_start + offset
         state = self.txt2_viewer.pending_state()
         if state == "edited":
-            self.pending_txtd_edits[(chunk_index, file_index)] = {
+            self.pending_txtd_edits[address] = {
                 "kind": "txt2", "id": id_val, "dat_start": dat_start, "offset": offset, "data": current_data,
+                "locations": self.address_locations.get(address, [(chunk_index, file_index)]),
             }
         else:
-            self.pending_txtd_edits.pop((chunk_index, file_index), None)
-        self._set_txtd_tree_item_state(chunk_index, file_index, state)
+            self.pending_txtd_edits.pop(address, None)
+        self._set_txtd_tree_item_state(address, state)
         self._refresh_edit_status()
 
     def on_mainexe_content_changed(self):
@@ -771,32 +781,39 @@ class MainWindow(QMainWindow):
             "Reopen the disc to see it in the VRAM view.")
         self.statusBar().showMessage(f"Font page imported from {path}", 8000)
 
-    def _set_txtd_tree_item_state(self, chunk_index, file_index, state):
-        """Colors a TXTD file's row in the main tree (under its NN_DATA
-        folder): "edited" (orange) while it has pending edits, "exported"
-        (green) once those edits have been exported, or None for the
-        tree's normal color (never touched) - so it's obvious at a glance
-        which TXTD files were changed and whether that change was saved,
-        without having to open each one. Also recomputes the enclosing
-        NN_DATA and AREA_NN folder colors from every TXTD file inside
-        them, so an edit anywhere shows up all the way up the tree."""
-        file_item = self.txtd_item_lookup.get((chunk_index, file_index))
-        if file_item is None:
-            return
+    def _set_txtd_tree_item_state(self, address, state):
+        """Colors every row that points at this DAT address: "edited"
+        (orange) while it has pending edits, "exported" (green) once
+        those edits have been exported, or None for the tree's normal
+        color (never touched) - so it's obvious at a glance which TXTD
+        files were changed and whether that change was saved, without
+        having to open each one.
 
-        if state:
-            self.txtd_file_states[(chunk_index, file_index)] = state
-        else:
-            self.txtd_file_states.pop((chunk_index, file_index), None)
+        One DAT address can be reached from several areas' rows (see
+        address_locations in idx_parser.parse_idx_file); every one of
+        them is the same file, so every one of them is recolored, not
+        just the row that happened to be open when the edit was made.
+        Also recomputes the enclosing NN_DATA and AREA_NN folder colors
+        for each, so an edit anywhere shows up all the way up the tree
+        in every area it touches."""
+        for location in self.address_locations.get(address, []):
+            file_item = self.txtd_item_lookup.get(location)
+            if file_item is None:
+                continue
 
-        self._apply_tree_item_state_color(file_item, state)
+            if state:
+                self.txtd_file_states[location] = state
+            else:
+                self.txtd_file_states.pop(location, None)
 
-        sdat_item = file_item.parent()
-        if sdat_item is not None:
-            self._refresh_folder_state_color(sdat_item)
-            area_item = sdat_item.parent()
-            if area_item is not None:
-                self._refresh_folder_state_color(area_item)
+            self._apply_tree_item_state_color(file_item, state)
+
+            sdat_item = file_item.parent()
+            if sdat_item is not None:
+                self._refresh_folder_state_color(sdat_item)
+                area_item = sdat_item.parent()
+                if area_item is not None:
+                    self._refresh_folder_state_color(area_item)
 
     @staticmethod
     def _apply_tree_item_state_color(item, state):
@@ -920,12 +937,15 @@ class MainWindow(QMainWindow):
             ("\n\n" + extra if extra else "") +
             "\n\nEvery other sector is byte for byte as it was, so the "
             "music and voice are untouched.")
-        for (chunk_index, file_index), info in self.pending_txtd_edits.items():
-            self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
-            if info.get("kind") == "txt2":
-                self.txt2_viewer.mark_exported(chunk_index, file_index)
-            else:
-                self.txtd_viewer.mark_exported(chunk_index, file_index)
+        for address, info in self.pending_txtd_edits.items():
+            self._set_txtd_tree_item_state(address, "exported")
+            # Every area's occurrence of this address, not just one -
+            # see the matching loop in export_iso() for why.
+            for chunk_index, file_index in info["locations"]:
+                if info.get("kind") == "txt2":
+                    self.txt2_viewer.mark_exported(chunk_index, file_index)
+                else:
+                    self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
@@ -1038,12 +1058,15 @@ class MainWindow(QMainWindow):
             "Back up your original CD files, then copy these over them "
             "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
         )
-        for (chunk_index, file_index), info in self.pending_txtd_edits.items():
-            self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
-            if info.get("kind") == "txt2":
-                self.txt2_viewer.mark_exported(chunk_index, file_index)
-            else:
-                self.txtd_viewer.mark_exported(chunk_index, file_index)
+        for address, info in self.pending_txtd_edits.items():
+            self._set_txtd_tree_item_state(address, "exported")
+            # Every area's occurrence of this address, not just one -
+            # see the matching loop in export_iso() for why.
+            for chunk_index, file_index in info["locations"]:
+                if info.get("kind") == "txt2":
+                    self.txt2_viewer.mark_exported(chunk_index, file_index)
+                else:
+                    self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
@@ -1351,7 +1374,7 @@ class MainWindow(QMainWindow):
         from gui.txtd import txt2_packer
         edits = []
         try:
-            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
+            for address, info in self.pending_txtd_edits.items():
                 if info.get("kind") == "txt2":
                     if info.get("id") == 3:
                         packed_bytes = txt2_packer.pack_txt2_simple(info["data"])
@@ -1359,6 +1382,11 @@ class MainWindow(QMainWindow):
                         packed_bytes = txt2_packer.pack_txt2(info["data"])
                 else:
                     packed_bytes = txtd_packer.pack_txtd(info["data"])
+                # One edit per DAT address, however many areas' rows
+                # reach it (see on_txtd_content_changed) - any one of
+                # them resolves the same absolute region, so the first
+                # is as good as any to hand the repacker.
+                chunk_index, file_index = info["locations"][0]
                 edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
         except txtd_packer.TxtdPackError as e:
             QMessageBox.critical(self, "Text encoding error",
@@ -1472,12 +1500,18 @@ class MainWindow(QMainWindow):
             "this ISO to check the edits landed correctly."
         )
         if edits:
-            for (chunk_index, file_index), info in self.pending_txtd_edits.items():
-                self._set_txtd_tree_item_state(chunk_index, file_index, "exported")
-                if info.get("kind") == "txt2":
-                    self.txt2_viewer.mark_exported(chunk_index, file_index)
-                else:
-                    self.txtd_viewer.mark_exported(chunk_index, file_index)
+            for address, info in self.pending_txtd_edits.items():
+                self._set_txtd_tree_item_state(address, "exported")
+                # Every area's occurrence of this address needs marking,
+                # not just one: whichever the viewer currently has open
+                # updates its visible rows, and every other one lands in
+                # its state cache for the next time it's opened (see
+                # TXTDViewer.mark_exported).
+                for chunk_index, file_index in info["locations"]:
+                    if info.get("kind") == "txt2":
+                        self.txt2_viewer.mark_exported(chunk_index, file_index)
+                    else:
+                        self.txtd_viewer.mark_exported(chunk_index, file_index)
             self.pending_txtd_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()

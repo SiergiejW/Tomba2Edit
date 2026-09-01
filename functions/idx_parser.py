@@ -257,6 +257,15 @@ def parse_idx_file(main_window, cd_folder):
     # sdat_pointers list either way. Reset on every (re)parse.
     main_window.txtd_item_lookup = {}
 
+    # DAT address -> [(chunk_index, file_index), ...] for every TXTD/TXT2
+    # location that reaches it. The DAT holds one copy of a shared asset;
+    # an area's tree entry is a pointer to it, not the file itself, so
+    # the same address can show up under several AREA_NN folders. This
+    # is what lets an edit under one area be recognised as editing the
+    # same file everywhere else it's used - see MainWindow.
+    # on_txtd_content_changed and _set_txtd_tree_item_state.
+    main_window.address_locations = {}
+
     # (address, size) -> (type, tooltip) for every file, so the trail's
     # repeated copies are only read once.
     entry_types = {}
@@ -336,6 +345,8 @@ def parse_idx_file(main_window, cd_folder):
                         file_path = f"{dat_start + offset:08X}.{filetype.lower()}"
                         file_item.setData(file_path, Qt.ItemDataRole.UserRole + 1)
                         main_window.txtd_item_lookup[(chunk_index, i)] = file_item
+                        main_window.address_locations.setdefault(
+                            dat_start + offset, []).append((chunk_index, i))
 
                 sdat_item.appendRow(file_item)
 

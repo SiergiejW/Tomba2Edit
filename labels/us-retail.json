@@ -104,13 +104,13 @@
    "start": "028A68",
    "end": "02B07B",
    "type": "SMST",
-   "name": "Charles from Intro"
+   "name": "Intro Charles Model"
   },
   {
    "start": "02B07C",
    "end": "03141F",
    "type": "MDAT",
-   "name": "Intro scene"
+   "name": "Intro Scene Level"
   },
   {
    "start": "031420",
@@ -128,13 +128,13 @@
    "start": "0364DC",
    "end": "0364EF",
    "type": "____",
-   "name": ""
+   "name": "Intro Scene Sprites"
   },
   {
    "start": "0364F0",
    "end": "037FFF",
    "type": "BGMP",
-   "name": "Intro scene"
+   "name": "Intro Scene Background"
   },
   {
    "start": "038000",
@@ -194,37 +194,37 @@
    "start": "07B2EC",
    "end": "07F4EF",
    "type": "SMST",
-   "name": "Pig enemy (Town of the Fishermen)"
+   "name": "Pig Enemy Town of the Fishermen Model"
   },
   {
    "start": "07F4F0",
    "end": "088447",
    "type": "ALFP",
-   "name": ""
+   "name": "Pig Enemy Town of the Fishermen Animation"
   },
   {
    "start": "088448",
    "end": "08AA4B",
    "type": "SMST",
-   "name": "Kainen"
+   "name": "Kainen Model"
   },
   {
    "start": "08AA4C",
    "end": "08C3AF",
    "type": "ALFP",
-   "name": ""
+   "name": "Kainen Animation"
   },
   {
    "start": "08C3B0",
    "end": "08E82F",
    "type": "SMST",
-   "name": "Nishiki bird (adult)"
+   "name": "Seagul Model"
   },
   {
    "start": "08E830",
    "end": "090417",
    "type": "____",
-   "name": ""
+   "name": "Seagul Anmiation"
   },
   {
    "start": "090418",
@@ -254,31 +254,31 @@
    "start": "09EF90",
    "end": "0A03E7",
    "type": "BGMP",
-   "name": "Town of Fishermen"
+   "name": "Town of Fishermen Background"
   },
   {
    "start": "0A03E8",
    "end": "0A1EEF",
    "type": "SMST",
-   "name": "Zippo"
+   "name": "Zippo Model"
   },
   {
    "start": "0A1EF0",
    "end": "0A464F",
    "type": "ALFP",
-   "name": ""
+   "name": "Zippo Animation"
   },
   {
    "start": "0A4650",
    "end": "0A541B",
    "type": "SMST",
-   "name": "Magic Flower"
+   "name": "Magic Flower Model"
   },
   {
    "start": "0A541C",
    "end": "0A566F",
    "type": "ALFP",
-   "name": ""
+   "name": "Magic Flower Animation"
   },
   {
    "start": "0A5670",
@@ -428,13 +428,13 @@
    "start": "101800",
    "end": "103307",
    "type": "SMST",
-   "name": "Zippo"
+   "name": "Zippo Model"
   },
   {
    "start": "103308",
    "end": "105A67",
    "type": "____",
-   "name": "minimap"
+   "name": "Zippo Animations"
   },
   {
    "start": "105A68",
@@ -1076,13 +1076,13 @@
    "start": "2DD648",
    "end": "2E0057",
    "type": "SMST",
-   "name": "Skeleton Ghost enemy"
+   "name": "Banshee Model"
   },
   {
    "start": "2E0058",
    "end": "2E3947",
    "type": "____",
-   "name": ""
+   "name": "Banshee Animation"
   },
   {
    "start": "2E3948",
@@ -1112,7 +1112,7 @@
    "start": "2EB650",
    "end": "2EC323",
    "type": "____",
-   "name": ""
+   "name": "Kainen Animation"
   },
   {
    "start": "2EC324",
