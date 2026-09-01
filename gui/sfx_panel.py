@@ -42,16 +42,18 @@ class SfxPanel(QWidget):
             "Only needed for a disc opened as a folder - opening a BIN "
             "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
+
+        self.transport = AudioTransport(
+            columns=["Index", "Bank", "Slot", "Length", "Loop"])
+        self.transport.wanted.connect(self._wanted)
+        self.transport.renamed.connect(self._renamed)
+        self.transport.save_requested.connect(self._save_one)
+
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every waveform into a folder, "
                                    "using the names given here")
         self.export_all.clicked.connect(self._save_all)
         self.export_all.setEnabled(False)
-
-        self.transport = AudioTransport()
-        self.transport.wanted.connect(self._wanted)
-        self.transport.renamed.connect(self._renamed)
-        self.transport.save_requested.connect(self._save_one)
 
         self.status = QLabel("No disc open - the sound effects live in "
                              "TOMBA2.SND on the disc.")
@@ -59,11 +61,17 @@ class SfxPanel(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(self.pick)
-        top.addWidget(self.export_all)
         top.addStretch(1)
+        # "Save all" comes after the transport's own selected-item saves
+        # rather than before them, up here - it is the bulk version of
+        # what those already do one at a time, not a separate action.
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(self.export_all)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.transport, 1)
+        layout.addLayout(bottom)
         layout.addWidget(self.status)
 
     # --- opening ------------------------------------------------------
@@ -96,11 +104,13 @@ class SfxPanel(QWidget):
 
         entries = []
         for number, (bank, index, offset, size) in enumerate(self._slots, 1):
-            held = " loop" if sfx.loops(data, offset, size) else ""
+            held = sfx.loops(data, offset, size)
             entries.append((
                 f"{bank}:{index}",
-                f"SFX {number:3d}   {seconds(sfx.length(size), sfx.RATE)}"
-                f"      bank {bank} #{index}{held}"))
+                f"SFX {number}",
+                (number, bank, index,
+                 seconds(sfx.length(size), sfx.RATE), "loop" if held else ""),
+            ))
         self.transport.set_entries(entries, self.names.names())
         self.export_all.setEnabled(True)
         named = len(self.names.names())

@@ -5,6 +5,7 @@ from PyQt6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
 
 from functions import format_detect
+from functions.labels import content_key
 
 
 # A slot the IDX names but gives no bytes to: its offset is the same as
@@ -22,7 +23,9 @@ EMPTY_ROW_COLOR = "#8a8a8a"
 
 
 def _entry_type(dat_file, address, size, cache):
-    """What the file at `address` is, read out of its own bytes.
+    """What the file at `address` is, read out of its own bytes, and its
+    content hash - see functions/labels.py's content_key(). Returns
+    (filetype, detail, content_hash).
 
     Every row in the tree is typed this way, whether the IDX gave it an
     id or not. The ids used to decide it, and they can't: they mean
@@ -31,15 +34,26 @@ def _entry_type(dat_file, address, size, cache):
     per build, and wrong for any build nobody has written one for. The
     bytes say the same thing on every build.
 
+    The hash comes from the exact same read as the type detection - no
+    second pass over the DAT to get it.
+
     Cached on (address, size): the trail lists the same handful of
     files under nearly every area, so this is asked ~660 times for 53
-    distinct blobs."""
+    distinct blobs. That caching is also the reason a genuinely
+    duplicated SDAT entry - the same character's model, baked into
+    several areas' own copies at different addresses - still gets
+    hashed once per address rather than once per area: this cache is
+    keyed on where the bytes are, not on what they are, and finding
+    what they are is exactly what the hash is for."""
     if size <= 0:
         return EMPTY_TYPE, (f"0x{address:X}, no bytes of its own\n"
-                            "the next entry starts at this same offset")
+                            "the next entry starts at this same offset"), ""
     key = (address, size)
     if key not in cache:
-        cache[key] = format_detect.entry_type(dat_file, address, size)
+        dat_file.seek(address)
+        data = dat_file.read(size)
+        filetype, detail = format_detect.entry_type(dat_file, address, size)
+        cache[key] = (filetype, detail, content_key(data))
     return cache[key]
 
 
@@ -93,8 +107,8 @@ def _relabel_file_item(main_window, child, label_set):
     data = child.data(_ROW_LABEL_DATA)
     if not data:
         return False
-    stem, filetype, address, detail = data
-    label = label_set.get(address) if label_set else None
+    stem, filetype, _address, detail, content = data
+    label = label_set.get(content) if label_set else None
     name = label.name if label else ""
     shown = filetype
     tooltip = detail
@@ -179,13 +193,16 @@ def apply_labels_flat(main_window):
 
 
 def build_dat_view(main_window):
-    """One row per DAT address, in address order - what TOMBA2.DAT
-    actually holds, as opposed to the Indexed View's one row per area
-    that points at it. Built from the Indexed View's own tree rather
-    than by re-reading the IDX: parse_idx_file() has already typed and
-    named every entry once, and main_window.address_item already keeps
-    the first row it reached for each address (see its own docstring),
-    so this is a sort, not a second parse.
+    """One row per distinct FILE in TOMBA2.DAT, in first-seen-address
+    order - what the disc actually holds, as opposed to the Indexed
+    View's one row per area that reaches one. "Distinct" is by content,
+    not address: an area's own SDAT can carry its own full copy of a
+    character it reuses, at its own address, so two (or twenty-two)
+    rows in the Indexed View can be the exact same file - see
+    functions/labels.py's module docstring. Built from the Indexed
+    View's own tree rather than by re-reading the IDX: parse_idx_file()
+    has already typed, hashed and named every entry once, so this is a
+    sort and a group-by, not a second parse.
 
     Returns the populated model; main_window.dat_view_model is also set,
     since apply_labels_flat() and the edit-highlighting in MainWindow
@@ -194,29 +211,55 @@ def build_dat_view(main_window):
     model.setHorizontalHeaderLabels(["Name"])
     root = model.invisibleRootItem()
 
-    main_window.dat_view_lookup = {}     # address -> this model's item
+    # Sort by each file's first-seen address, not by its content hash -
+    # a hash has no meaningful order, and address order is what the
+    # Indexed View itself reads in.
+    by_first_address = sorted(
+        main_window.content_item.items(),
+        key=lambda pair: pair[1].data(_ROW_LABEL_DATA)[2])
 
-    for address in sorted(main_window.address_item):
-        source = main_window.address_item[address]
+    # content hash -> this model's item for it, so an address can be
+    # resolved to its row via address_content below.
+    item_for_content = {}
+    for content, source in by_first_address:
         data = source.data(_ROW_LABEL_DATA)
         if not data:
             continue                      # an EMPTY slot - nothing to list
-        stem, filetype, _address, detail = data
+        stem, filetype, _address, detail, _content = data
         item = QStandardItem(source.icon(), f"{stem}.{filetype}")
         item.setData(data, _ROW_LABEL_DATA)
         item.setData(source.data(Qt.ItemDataRole.UserRole), Qt.ItemDataRole.UserRole)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setToolTip(detail)
         root.appendRow(item)
-        main_window.dat_view_lookup[address] = item
+        item_for_content[content] = item
+
+    # Every address that shares a file's content maps to that file's one
+    # row, not just the address that happened to be first - an edit made
+    # through any one of them still has to be able to find where to show
+    # it (see MainWindow._set_txtd_tree_item_state).
+    main_window.dat_view_lookup = {
+        address: item_for_content[content]
+        for address, content in main_window.address_content.items()
+        if content in item_for_content
+    }
 
     main_window.dat_view_model = model
     return model
 
 
+def content_hashes(main_window):
+    """Every distinct file's content hash on this disc, for scoring a
+    labels file against it - see functions/labels.py's LabelSet.score().
+    Built from the tree's own per-row hashes rather than a second pass
+    over the DAT."""
+    return set(main_window.content_item)
+
+
 def row_label_data(item):
-    """(stem, type, address, tooltip) for a file row, or None if this
-    item isn't one (a folder, a VRAM row)."""
+    """(stem, type, address, tooltip, content hash) for a file row, or
+    None if this item isn't one (a folder, a VRAM row). The content hash
+    is what a rename actually keys on - see functions/labels.py."""
     return item.data(_ROW_LABEL_DATA)
 
 
@@ -288,7 +331,7 @@ def _area_name_from_mdat(area_item, label_set):
             data = folder.child(k).data(_ROW_LABEL_DATA)
             if not data or data[1] != "MDAT":
                 continue
-            label = label_set.get(data[2])
+            label = label_set.get(data[4])
             if label and label.name:
                 return label.name
     return ""
@@ -347,6 +390,18 @@ def parse_idx_file(main_window, cd_folder):
     # only needs somewhere to land, not the complete list.
     main_window.address_item = {}
 
+    # DAT address -> its own content hash, and content hash -> the first
+    # item with it - what actually names a file now (see
+    # functions/labels.py's module docstring on why an address can't):
+    # a level's own SDAT gets its own full copy of a character it
+    # reuses, so the same asset sits at a different address in every
+    # area that has it, and only the hash says two rows are the same
+    # file. address_content is every address, even the ones that turn
+    # out to duplicate another; content_item is one representative row
+    # per distinct file - what the Data View is really listing.
+    main_window.address_content = {}
+    main_window.content_item = {}
+
     # (address, size) -> (type, tooltip) for every file, so the trail's
     # repeated copies are only read once.
     entry_types = {}
@@ -394,8 +449,8 @@ def parse_idx_file(main_window, cd_folder):
                     next_offset = dat_end - dat_start
 
                 size = next_offset - offset
-                filetype, detail = _entry_type(DAT, dat_start + offset, size,
-                                               entry_types)
+                filetype, detail, content = _entry_type(
+                    DAT, dat_start + offset, size, entry_types)
                 stem = f"{id}-{offset:04X}"
                 file_item = QStandardItem(file_icon, f"{stem}.{filetype}")
 
@@ -416,7 +471,8 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setToolTip(f"id {id}, {detail}")
                 else:
                     file_item.setData(
-                        (stem, filetype, dat_start + offset, f"id {id}, {detail}"),
+                        (stem, filetype, dat_start + offset,
+                         f"id {id}, {detail}", content),
                         _ROW_LABEL_DATA)
                     file_item.setFlags(file_item.flags() | Qt.ItemFlag.ItemIsEditable)
                     file_item.setIcon(_type_icon(main_window, filetype, file_icon))
@@ -424,6 +480,8 @@ def parse_idx_file(main_window, cd_folder):
                         dat_start + offset, set()).add(chunk_index)
                     main_window.address_item.setdefault(
                         dat_start + offset, file_item)
+                    main_window.address_content[dat_start + offset] = content
+                    main_window.content_item.setdefault(content, file_item)
                     if filetype in ("TXTD", "TXT1", "TXT2"):
                         # TXT1 and TXT2 are the same layout under different
                         # SDAT ids - separate labels, one viewer.
@@ -458,7 +516,7 @@ def parse_idx_file(main_window, cd_folder):
                 adr, end, sz = trail_list[i]
                 # The trailer carries no type id, so the type is read out
                 # of the blob itself (see _trail_type above).
-                filetype, tooltip = _entry_type(DAT, adr, sz, entry_types)
+                filetype, tooltip, content = _entry_type(DAT, adr, sz, entry_types)
                 stem = f"{adr:04X}-{end:04X}"
                 trail_file_item = QStandardItem(
                     _type_icon(main_window, filetype, file_icon),
@@ -466,10 +524,12 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item.setFlags(trail_file_item.flags() | Qt.ItemFlag.ItemIsEditable)
                 trail_file_item.setData(("trail", adr, end - adr, dat_start), Qt.ItemDataRole.UserRole)
                 trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
-                trail_file_item.setData((stem, filetype, adr, tooltip), _ROW_LABEL_DATA)
+                trail_file_item.setData((stem, filetype, adr, tooltip, content), _ROW_LABEL_DATA)
                 trail_file_item.setToolTip(tooltip)
                 main_window.area_membership.setdefault(adr, set()).add(chunk_index)
                 main_window.address_item.setdefault(adr, trail_file_item)
+                main_window.address_content[adr] = content
+                main_window.content_item.setdefault(content, trail_file_item)
                 trail_item.appendRow(trail_file_item)
 
         main_window.update_folder_name(area_item)

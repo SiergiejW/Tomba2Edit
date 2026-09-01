@@ -40,7 +40,7 @@ from gui.music_panel import MusicPanel
 from gui.sfx_panel import SfxPanel
 from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
-    row_label_data, area_index_of, LabelNameDelegate)
+    content_hashes, row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
@@ -369,12 +369,13 @@ class MainWindow(QMainWindow):
         doesn't fit says so instead of quietly landing on the wrong
         files."""
         try:
+            hashes = content_hashes(self)
             if self.labels_override is not None:
                 self.labels = self.labels_override
-                score = self.labels.score(labels_module.idx_addresses(idx_path))
+                score = self.labels.score(hashes)
                 source = "loaded"
             else:
-                self.labels, score = labels_module.choose(idx_path)
+                self.labels, score = labels_module.choose(hashes)
                 source = "built-in"
         except Exception as e:
             print(f"Could not load labels: {e}")
@@ -493,8 +494,11 @@ class MainWindow(QMainWindow):
     def _smst_candidates(self, limit=400):
         """Every SMST on the disc, as (label, address, size) - what the
         animation viewer offers as models to pose. Taken off the tree,
-        which has already typed and named everything, with the trail's
-        repeated copies listed once."""
+        which has already typed and named everything, deduped by
+        content rather than address: an area's own SDAT can carry its
+        own full copy of a character it reuses, so the same model can
+        otherwise show up dozens of times over, once per area that has
+        it, for no reason a person picking one from a list would want."""
         model = self.tree_view.model()
         if model is None:
             return []
@@ -510,8 +514,8 @@ class MainWindow(QMainWindow):
                 data = row_label_data(child)
                 if not data or data[1] != "SMST":
                     continue
-                address = data[2]
-                if address in seen:
+                address, content = data[2], data[4]
+                if content in seen:
                     continue
                 entry = child.data(Qt.ItemDataRole.UserRole) or ()
                 size = entry[3] if len(entry) > 3 else 0
@@ -519,7 +523,7 @@ class MainWindow(QMainWindow):
                     size = entry[2]
                 if not size:
                     continue
-                seen.add(address)
+                seen.add(content)
                 found.append((child.text(), address, size))
 
         walk(model.invisibleRootItem())
@@ -543,10 +547,10 @@ class MainWindow(QMainWindow):
 
         data = row_label_data(item)
         if data:
-            stem, filetype, address, _detail = data
+            stem, filetype, address, _detail, content = data
             size = (item.data(Qt.ItemDataRole.UserRole) or (None,) * 4)[3]
             end = address + size - 1 if isinstance(size, int) and size else 0
-            self.labels.rename(address, name, kind=filetype, end=end)
+            self.labels.rename(content, name, kind=filetype, end=end, start=address)
         else:
             index = area_index_of(item)
             if index is None:
@@ -609,7 +613,7 @@ class MainWindow(QMainWindow):
             return
         idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
         self.load_labels_for_disc(idx_path)
-        if self.labels.score(labels_module.idx_addresses(idx_path)) < labels_module.MATCH_THRESHOLD:
+        if self.labels.score(content_hashes(self)) < labels_module.MATCH_THRESHOLD:
             QMessageBox.warning(
                 self, "Labels don't fit this disc",
                 f"\"{label_set.name}\" names {len(label_set)} addresses and "
