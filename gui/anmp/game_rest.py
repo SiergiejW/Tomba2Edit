@@ -33,16 +33,25 @@ import numpy as np
 
 from functions import skeleton
 
-# The layout both measured characters share: an upper body at 0 with the
-# head and arms on it, a pelvis at 8 with the legs. Anything past the
-# legs is named by number - it differs per character, and is the hair on
-# Tomba but a pickaxe on the pipe-area miner.
+# The layout Tomba and the pipe-area miner share: an upper body at 0
+# with the head and arms on it, a pelvis at 8 with the legs. Anything
+# past the legs is named by number - it differs per character, and is
+# the hair on Tomba but a pickaxe on the miner.
 COMMON = ("chest", "head",
           "left_arm_upper", "left_arm_lower", "left_hand",
           "right_arm_upper", "right_arm_lower", "right_hand",
           "pelvis",
           "left_leg_upper", "left_leg_lower", "left_foot",
           "right_leg_upper", "right_leg_lower", "right_foot")
+
+# The parent list those names describe. Only a skeleton actually shaped
+# like this gets them: they are a reading of one particular layout, not
+# a general truth about what bone 2 is. The Town of the Fishermen pig
+# hangs ears off its head at 2 and 3, puts its arms at 4 and 7 and its
+# pelvis at 10, so borrowing COMMON for it would confidently label an
+# ear "left_arm_upper". A skeleton that doesn't match is numbered
+# instead, which says less but nothing untrue.
+HUMANOID = (-1, 0, 0, 2, 3, 0, 5, 6, -1, 8, 9, 10, 8, 12, 13)
 
 # What Tomba's two spare bones are, so his hierarchy keeps the names the
 # rest of the viewer already uses for them.
@@ -70,10 +79,9 @@ def candidates(sources, limbs):
     """Every skeleton with this many bones: [(label, offset, bones)]."""
     out = []
     for label, data in sources or ():
-        for offset, count in skeleton.find_tables(data):
-            if count == limbs:
-                out.append((label, offset,
-                            skeleton.read_table(data, offset, count)))
+        for offset in skeleton.tables_of_size(data, limbs):
+            out.append((label, offset,
+                        skeleton.read_table(data, offset, limbs)))
     return out
 
 
@@ -83,16 +91,22 @@ def pick(sources, limbs):
     return found[0][2] if found else None
 
 
+def humanoid(bones):
+    """Whether COMMON's names really describe this skeleton - see it."""
+    return tuple(b[0] for b in bones[:len(HUMANOID)]) == HUMANOID
+
+
 def hierarchy(bones):
     """((name, parent), ...) in the shape the viewer already expects."""
+    known = humanoid(bones)
     out = []
     for i, (parent, *_place) in enumerate(bones):
-        if i < len(COMMON):
+        if known and i < len(COMMON):
             name = COMMON[i]
-        elif len(bones) == 17 and i - len(COMMON) < len(TOMBA_EXTRA):
+        elif known and len(bones) == 17 and i - len(COMMON) < len(TOMBA_EXTRA):
             name = TOMBA_EXTRA[i - len(COMMON)]
         else:
-            name = f"part {i}"
+            name = f"bone {i}"
         out.append((name, None if parent < 0 else parent))
     return tuple(out)
 

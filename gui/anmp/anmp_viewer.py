@@ -36,6 +36,10 @@ DEFAULT_FPS = 30
 # stored.
 DEFAULT_STEPS = 2
 
+# How much of an animation's limbs a model has to have parts for before
+# a pairing made on packing order alone is believed - see _fill_models.
+GROUP_RATIO = 0.8
+
 
 class ANMPViewer(QWidget):
     def __init__(self, parent=None):
@@ -52,6 +56,7 @@ class ANMPViewer(QWidget):
         self._skeletons = []              # (label, bytes) to read trees from
         self._area_membership = {}        # address -> {chunk_index, ...}
         self._current_area = None
+        self._preferred = []              # (label, address, size), best first
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
@@ -188,17 +193,18 @@ class ANMPViewer(QWidget):
 
     def load_anmp_data(self, dat_file_path, address, size, candidates=None,
                        vram_bytes=None, vram_image=None,
-                       area_membership=None, current_area=None):
+                       area_membership=None, current_area=None,
+                       preferred=None):
         """Parse the animation at `address` and show it.
 
         `candidates` is [(label, address, size), ...] of the SMSTs on the
         disc, for the model chooser - see the module docstring on why
-        this has to be offered rather than looked up. `area_membership`
-        ({address: {chunk_index, ...}}) and `current_area` are what let
-        the auto-pick in _fill_models() prefer a model that is actually
-        used in the area this ANMP was opened from, instead of whichever
-        big-enough model the tree walk reaches first - see its
-        docstring."""
+        this has to be offered rather than looked up. `preferred` is the
+        same shape, best guess first, and is what the auto-pick actually
+        goes on; see MainWindow._preferred_models for where that order
+        comes from. `area_membership` ({address: {chunk_index, ...}})
+        and `current_area` only matter for the fallback used when
+        nothing is preferred or none of it loads."""
         self.play_button.setChecked(False)
         try:
             self.anmp = load_anmp(dat_file_path, address, size)
@@ -210,6 +216,7 @@ class ANMPViewer(QWidget):
         self._source = (dat_file_path, address, size)
         self._area_membership = area_membership or {}
         self._current_area = current_area
+        self._preferred = list(preferred or [])
         self.viewer.set_vram(vram_bytes, vram_image)
         self._candidates = list(candidates or [])
         self._fill_frames()
@@ -244,24 +251,56 @@ class ANMPViewer(QWidget):
         self.frames_table.blockSignals(False)
 
     def _fill_models(self):
-        """Offer every SMST, best fit first - the models with enough
-        groups for these frames' limbs, largest limb count first.
+        """Offer every SMST, and pick the one this animation belongs to.
 
         An ANMP does not say which model it animates, so the auto-pick
-        is a guess - but not a blind one. Candidates that this address
-        is actually used from the same area the ANMP was opened from go
-        first, smallest sufficient group count first within that group;
-        everything else follows in whatever order the tree walk found
-        it, which was the entire ranking before. That "same area" tier
-        is usually small - a handful of characters in one area - so
-        loading just it to sort by group count is cheap; the fallback
-        tier is answered lazily, one at a time, same as always."""
+        is inference - see MainWindow._preferred_models, which works it
+        out from the labels and from the order an area packs its files
+        in, and hands the answers down in `preferred`.
+
+        A pairing made on the names is taken as given. One made on the
+        packing order gets a sanity check first, because an area packs
+        plenty of things next to each other that are not a character
+        and its animation: the shared NPC animation in the pipe area
+        sits just below a five-group sea anemone, and without this
+        would be posed on it. The check is deliberately loose - a model
+        needs GROUP_RATIO of the limbs the frames usually rotate, not
+        all of them. Across the 92 pairs this disc's labels can be
+        checked against, the right model never has fewer than 0.89 of
+        them, and demanding all of them costs three correct answers,
+        while the anemone mispairing sits far below at 0.33.
+
+        The group-count ranking below is only the fallback for when
+        nothing was preferred, or none of it could be read."""
         self.model_box.blockSignals(True)
         self.model_box.clear()
         needed = max((f.limb_count for f in self.anmp.frames), default=0)
+        counts = self.anmp.limb_counts
+        usual = counts.most_common(1)[0][0] if counts else 0
         for label, address, size in self._candidates:
             self.model_box.addItem(label, (address, size))
         self.model_box.blockSignals(False)
+
+        print(f"[ANMP] {len(self.anmp)} frames, largest frame needs {needed} "
+              f"limbs. {len(self._candidates)} SMST candidate(s), "
+              f"{len(self._preferred)} preferred.")
+
+        for label, address, size, trusted in self._preferred:
+            try:
+                model = load_smst(self._source[0], address, size)
+            except Exception:
+                continue
+            parts = len(model["groups"])
+            if not trusted and parts < usual * GROUP_RATIO:
+                print(f"[ANMP] skipping {label} - packed beside this "
+                      f"animation but only {parts} groups for {usual} limbs")
+                continue
+            print(f"[ANMP] picked {label} (0x{address:X}, {parts} groups) - "
+                  + ("named to match this animation" if trusted
+                     else "packed with this animation"))
+            self._select_model(label, address, size)
+            self._use_model(model)
+            return
 
         same_area, rest = [], []
         for entry in self._candidates:
@@ -277,16 +316,12 @@ class ANMPViewer(QWidget):
             ranked.append((len(model["groups"]), label, address, size, model))
         ranked.sort(key=lambda r: r[0])
 
-        print(f"[ANMP] {len(self.anmp)} frames, largest frame needs {needed} "
-              f"limbs. {len(self._candidates)} SMST candidate(s), "
-              f"{len(same_area)} used in area {self._current_area}.")
-
         for _groups, label, address, size, model in ranked:
             if len(model["groups"]) >= needed:
                 print(f"[ANMP] picked {label} (0x{address:X}, "
-                      f"{len(model['groups'])} groups) - used in this area")
-                self.model_box.setCurrentIndex(
-                    self._candidates.index((label, address, size)))
+                      f"{len(model['groups'])} groups) - fallback: used in "
+                      "this area and big enough")
+                self._select_model(label, address, size)
                 self._use_model(model)
                 return
 
@@ -297,10 +332,9 @@ class ANMPViewer(QWidget):
                 continue
             if len(model["groups"]) >= needed:
                 print(f"[ANMP] picked {label} (0x{address:X}, "
-                      f"{len(model['groups'])} groups) - not used here, "
-                      "first elsewhere on disc that fits")
-                self.model_box.setCurrentIndex(
-                    self._candidates.index((label, address, size)))
+                      f"{len(model['groups'])} groups) - fallback: not used "
+                      "here, first elsewhere on disc that fits")
+                self._select_model(label, address, size)
                 self._use_model(model)
                 return
 
@@ -309,6 +343,28 @@ class ANMPViewer(QWidget):
                   "first candidate anyway")
             self.model_box.setCurrentIndex(0)
             self._on_model_changed(0)
+
+    def _select_model(self, label, address, size):
+        """Show `address` as the chosen entry in the model list.
+
+        The list is deduplicated by content, so it holds one row per
+        distinct model and that row's address is whichever area's copy
+        the tree walk reached first. A preferred model is a specific
+        area's copy, so its address often is not the one listed even
+        though the same bytes are - hence matching on the address and,
+        when that fails, adding the row rather than leaving the box
+        showing something other than what is on screen."""
+        for index in range(self.model_box.count()):
+            data = self.model_box.itemData(index)
+            if data and data[0] == address:
+                self.model_box.blockSignals(True)
+                self.model_box.setCurrentIndex(index)
+                self.model_box.blockSignals(False)
+                return
+        self.model_box.blockSignals(True)
+        self.model_box.insertItem(0, label, (address, size))
+        self.model_box.setCurrentIndex(0)
+        self.model_box.blockSignals(False)
 
     def _on_model_changed(self, index):
         data = self.model_box.itemData(index)

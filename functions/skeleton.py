@@ -50,7 +50,9 @@ that matrix - it is not Euler angles in any axis order, in the usual
 4096-units-to-a-turn convention. Animation therefore still has to read
 the matrices rather than the angles.
 """
+import array
 import struct
+import sys
 
 NODE = 0x44             # a runtime node
 RECORD = 8              # a bone in the MAIN.EXE table
@@ -105,88 +107,93 @@ def archive_offsets(data, at=0):
     return list(offsets)
 
 
-# A character's two roots: the upper body at 0 and the pelvis at 8. Both
-# characters measured so far - Tomba in MAIN.EXE and the pipe-area miner
-# in A01.BIN - put the second one there, which is what lets one table be
-# told from the next when they sit back to back.
-SECOND_ROOT = 8
 REACH = 512             # no bone sits further than this from its parent
 
 
-def walk_tables(data, start, least=1):
-    """Tables tile one after another; segment a run of them.
+def _shorts(data):
+    """The whole binary as signed 16-bit words - what the scan reads.
 
-    [(offset, bones), ...] from `start` onwards. A root - parent -1 -
-    ends the table it is in and begins the next, unless it is the
-    second root at index 8, which belongs to the table it is in."""
+    Records are four of these, so scanning by word covers both the
+    8-byte stride the tables really use and the odd 2-byte alignment a
+    block could in principle start on, without re-unpacking each record
+    from bytes every time."""
+    words = array.array("h")
+    usable = len(data) // 2 * 2
+    words.frombytes(bytes(data[:usable]))
+    if sys.byteorder == "big":
+        words.byteswap()
+    return words
+
+
+def tables_of_size(data, bones, words=None):
+    """Every offset where a skeleton of exactly `bones` bones starts.
+
+    Nothing in the data says how long a skeleton is. They sit together
+    in one block, one immediately after another - MAIN.EXE keeps the
+    player's, an area's overlay keeps that area's characters - and the
+    game knows each character's bone count from its own code rather than
+    from anything written down beside it. So the count has to come from
+    outside; the viewer takes it from how many limbs the animation
+    actually rotates.
+
+    Trying instead to split the block up by looking for where one table
+    ends does not work, and the way it fails is quiet. It needs a rule
+    for telling a skeleton's own second root - the pelvis, which hangs
+    off nothing - from the root that starts the next skeleton along, and
+    there is no such rule: Tomba and the pipe-area miner both put their
+    pelvis at index 8, but the Town of the Fishermen pig puts its at 10,
+    so any fixed answer chops some character's table in half and hands
+    back a plausible-looking piece of one.
+
+    What marks a run of records as a skeleton of this length:
+
+      - it opens on a root, parent -1
+      - every other bone hangs off an earlier one, never a later one
+      - no bone sits absurdly far from its parent
+      - most bones are actually offset from their parent, which is what
+        keeps a stretch of zero padding behind one stray -1 from
+        reading as a skeleton of bones all in the same place
+      - the record just past the end is not another bone of this same
+        skeleton. It is either the root of the next one or not a record
+        at all - which is what pins the length down, since a table that
+        really runs longer carries on with a bone pointing back into
+        itself and is rejected here instead of being truncated to fit.
+    """
+    if bones < 2:
+        return []
+    if words is None:
+        words = _shorts(data)
+    step = 4                              # one record, in words
+    span = bones * step
     out = []
-    offset = start
-    while offset + RECORD <= len(data):
-        if not _is_root(data, offset):
-            break
-        bones = 1
-        while offset + (bones + 1) * RECORD <= len(data):
-            parent, *place = struct.unpack_from("<4h", data, offset + bones * RECORD)
-            if any(abs(v) > REACH for v in place):
+    limit = len(words) - span
+    for start in range(0, limit + 1):
+        if words[start] != -1:            # cheap first filter: a root?
+            continue
+        moved = 0
+        for i in range(bones):
+            at = start + i * step
+            parent = words[at]
+            if i == 0:
+                if parent != -1:
+                    break
+            elif not -1 <= parent <= i - 1:
                 break
-            if parent == -1 and bones != SECOND_ROOT:
-                break                       # the next table starts here
-            if parent > bones - 1:
-                break                       # a bone cannot hang off a later one
-            bones += 1
-        if bones < least:
-            break
-        out.append((offset, bones))
-        offset += bones * RECORD
-    return out
-
-
-def _extend_back(data, start, most=64):
-    """The earliest table that tiles into `start`."""
-    while True:
-        for bones in range(most, 0, -1):
-            before = start - bones * RECORD
-            if before < 0 or not _is_root(data, before):
-                continue
-            found = walk_tables(data, before)
-            if found and found[0] == (before, bones):
-                start = before
+            x, y, z = words[at + 1], words[at + 2], words[at + 3]
+            if abs(x) > REACH or abs(y) > REACH or abs(z) > REACH:
                 break
+            moved += (x or y or z) != 0
         else:
-            return start
-
-
-def _is_root(data, offset):
-    if offset + RECORD > len(data):
-        return False
-    parent, *place = struct.unpack_from("<4h", data, offset)
-    return parent == -1 and all(abs(v) <= REACH for v in place)
-
-
-def find_tables(data, least=8, want=3):
-    """Every skeleton in a binary, found rather than hardcoded.
-
-    The tables sit together in one block - MAIN.EXE keeps the player's
-    there, an area's overlay keeps that area's characters - so the block
-    is found by looking for somewhere that several real skeletons tile
-    one after another, and then walked. `least` is how many bones make a
-    skeleton worth reporting, `want` how many in a row make a block."""
-    offset = 0
-    while offset + least * RECORD <= len(data):
-        if _is_root(data, offset):
-            tables = walk_tables(data, offset)
-            big = [t for t in tables if t[1] >= least]
-            if len(big) >= want:
-                # The scan can enter the block part-way, so walk back to
-                # its real start: a table before this one is one that
-                # ends exactly where this one begins.
-                start = _extend_back(data, offset)
-                return walk_tables(data, start)
-            if tables:
-                offset += sum(bones for _at, bones in tables) * RECORD
-                continue
-        offset += 2
-    return []
+            if moved * 2 < bones:
+                continue                  # all-but-motionless: padding
+            after = start + span
+            if after + step <= len(words):
+                parent = words[after]
+                if 0 <= parent <= bones - 1 and all(
+                        abs(words[after + k]) <= REACH for k in (1, 2, 3)):
+                    continue              # the table carries on past here
+            out.append(start * 2)
+    return out
 
 
 def read_nodes(ram, at, count):

@@ -1,4 +1,5 @@
 import os
+import re
 import struct
 import numpy as np
 from PyQt6.QtCore import Qt, QSettings, QItemSelectionModel
@@ -502,6 +503,99 @@ class MainWindow(QMainWindow):
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows)
         self.tree_view.scrollTo(target_index)
+
+    @staticmethod
+    def _row_subject(text):
+        """A row's name with the stem and the word Model/Animation taken
+        off - "23-474F0 Pig Enemy ... Animation.ALFP" and
+        "22-432EC Pig Enemy ... Model.SMST" both come back as the same
+        thing, which is what lets one be paired with the other."""
+        body = text.rsplit(".", 1)[0]
+        body = re.sub(r"^\S+\s*", "", body)
+        body = re.sub(r"\b(anmiation|animations?|models?)\b\??", "",
+                      body, flags=re.I)
+        return " ".join(body.lower().split())
+
+    def _preferred_models(self, item):
+        """The SMSTs to try first for the animation on `item`, best
+        guess first - [(label, address, size, trusted), ...], where
+        `trusted` marks a pairing that came from the names rather than
+        from the packing order, and so should be taken as given.
+
+        An animation does not name its model, so this is inference, but
+        not guesswork: two things about how the disc is built say which
+        model an animation belongs to far better than any property of
+        the files themselves does.
+
+        The order the area packs its own files in. A character's model
+        and its animation are written next to each other, model first -
+        the Town of the Fishermen pig is SDAT id 22 with its animation
+        at 23, Kainen 24 and 25, the seagull 26 and 27. Taking the SMST
+        nearest above the animation in its own area gets 87 of the 92
+        pairs this disc's labels can be checked against; ranking by
+        "the smallest model with enough groups", which is what this
+        used to do, gets 27.
+
+        The names, where a labels file has them. That is knowledge from
+        outside the disc, so it is only as good as the file - but when
+        it is there it is better than any structural guess, and it
+        reaches models the packing order cannot: Tomba's own model is a
+        trail file shared by every area rather than an entry in any
+        one area's SDAT, so nothing sits above his animation to find.
+
+        Names win over packing order where both have an opinion, and
+        the two together got all 92 of those pairs right.
+        """
+        out = []
+        seen = set()
+
+        def add(row_item, trusted):
+            data = row_label_data(row_item)
+            if not data or data[1] != "SMST":
+                return
+            entry = row_item.data(Qt.ItemDataRole.UserRole) or ()
+            if not entry:
+                return
+            size = entry[2] if isinstance(entry[0], str) else (
+                entry[3] if len(entry) > 3 else 0)
+            if not size or data[2] in seen:
+                return
+            seen.add(data[2])
+            out.append((row_item.text(), data[2], size, trusted))
+
+        subject = self._row_subject(item.text())
+        parent = item.parent()
+
+        # 1. Named the same thing, this area first, then anywhere.
+        if subject and subject != "?":
+            here, elsewhere = [], []
+            model = self.tree_view.model()
+            if model is not None:
+                stack = [model.invisibleRootItem()]
+                while stack:
+                    node = stack.pop()
+                    for row in range(node.rowCount()):
+                        child = node.child(row, 0)
+                        stack.append(child)
+                        found = row_label_data(child)
+                        if (found and found[1] == "SMST"
+                                and self._row_subject(child.text()) == subject):
+                            (here if child.parent() is parent
+                             else elsewhere).append(child)
+            for row_item in here + elsewhere:
+                add(row_item, True)
+
+        # 2. The model packed just above it in this area, then just below.
+        if parent is not None:
+            start = item.row()
+            for step, stop in ((-1, -1), (1, parent.rowCount())):
+                for row in range(start + step, stop, step):
+                    sibling = parent.child(row, 0)
+                    found = row_label_data(sibling)
+                    if found and found[1] == "SMST":
+                        add(sibling, False)
+                        break
+        return out
 
     def _smst_candidates(self, limit=400):
         """Every SMST on the disc, as (label, address, size) - what the
@@ -2083,7 +2177,8 @@ class MainWindow(QMainWindow):
                                     vram_image=(vram_index_image(vram_bytes)
                                                 if vram_bytes else None),
                                     area_membership=self.area_membership,
-                                    current_area=chunk_index)
+                                    current_area=chunk_index,
+                                    preferred=self._preferred_models(selected_item))
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")
                         except Exception as e:
