@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from gui import panel_title
 from gui.anmp.anmp_parser import ANMPError, blend, load_anmp
 from gui.anmp.skeleton import (
-    hierarchy_for, pose_transforms, rest_pivots, rest_pose)
+    SPARES, hierarchy_for, pose_transforms, rest_pivots, rest_pose)
+from gui.anmp import game_rest
 from gui.smst.smst_parser import load_smst
 from gui.smst.smst_viewer import SMSTViewer
 
@@ -48,6 +49,7 @@ class ANMPViewer(QWidget):
         self._measured_rest = False
         self._where = 0.0                 # position in table frames
         self._source = None               # (dat_path, address, size)
+        self._skeletons = []              # (label, bytes) to read trees from
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
@@ -159,6 +161,14 @@ class ANMPViewer(QWidget):
 
     # --- loading -----------------------------------------------------
 
+    def set_skeleton_sources(self, sources):
+        """Where to look for the game's own bone trees: [(label, bytes)].
+
+        The area's overlay carries its characters' trees and MAIN.EXE
+        carries the player's, so the owner supplies whichever it has -
+        without them the viewer falls back to the measured rest pose."""
+        self._skeletons = sources or []
+
     def load_anmp_data(self, dat_file_path, address, size, candidates=None,
                        vram_bytes=None, vram_image=None):
         """Parse the animation at `address` and show it.
@@ -250,7 +260,13 @@ class ANMPViewer(QWidget):
         # ones, and it is the seventeen that his skeleton is.
         counts = self.anmp.limb_counts
         limbs = counts.most_common(1)[0][0] if counts else 0
-        self._hierarchy, self._named_hierarchy = hierarchy_for(limbs)
+        # The game's own tree first - it gives the hierarchy and the
+        # exact joints. hierarchy_for() is the hand-built fallback.
+        bones = game_rest.pick(self._skeletons, limbs)
+        if bones is not None:
+            self._hierarchy, self._named_hierarchy = game_rest.hierarchy(bones), True
+        else:
+            self._hierarchy, self._named_hierarchy = hierarchy_for(limbs)
 
         # Stand the model up first if its rest pose has been measured -
         # an SMST is packed, not assembled, so without this the limbs
@@ -260,7 +276,12 @@ class ANMPViewer(QWidget):
         # the other. Hidden here, and switchable from the part list.
         self.viewer.hidden_groups = set(range(len(self._hierarchy),
                                               len(model["groups"])))
-        standing = rest_pose(model, self._hierarchy) if self._named_hierarchy else None
+        if bones is not None:
+            standing = game_rest.rest_pose(model, bones,
+                                           SPARES.get(len(bones)))
+        else:
+            standing = (rest_pose(model, self._hierarchy)
+                        if self._named_hierarchy else None)
         self._measured_rest = standing is not None
         if standing is not None:
             vertices, self._pivots = standing

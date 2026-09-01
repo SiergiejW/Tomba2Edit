@@ -22,6 +22,7 @@ from gui.drwb.drwb_viewer import DRWBViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.anmp.anmp_viewer import ANMPViewer
+from gui.anmp import game_rest
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
@@ -1872,6 +1873,13 @@ class MainWindow(QMainWindow):
                                 chunk_index = self._area_chunk_index(selected_item)
                                 vram_bytes = self._load_area_vram_bytes(
                                     chunk_index, merge_common=True)
+                                # The bone trees: this area's overlay for
+                                # its characters, MAIN.EXE for the player.
+                                self.anmp_viewer.set_skeleton_sources(
+                                    game_rest.load_sources(
+                                        getattr(self.mainexe_viewer,
+                                                "exe_path", None),
+                                        self.overlay_for_area(chunk_index)))
                                 self.anmp_viewer.load_anmp_data(
                                     self.dat_file, dat_start + offset, entry_size,
                                     candidates=self._smst_candidates(),
