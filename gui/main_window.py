@@ -588,6 +588,7 @@ class MainWindow(QMainWindow):
                         found = row_label_data(child)
                         if found and found[1] == "SMST":
                             models.append((self._row_subject(child.text()), child))
+            matched = False
             for length in range(len(words), 0, -1):
                 wanted = " ".join(words[:length])
                 here = [c for s, c in models
@@ -597,7 +598,24 @@ class MainWindow(QMainWindow):
                 if here or elsewhere:
                     for row_item in here + elsewhere:
                         add(row_item, True)
+                    matched = True
                     break
+
+            # Failing that, a model whose name CONTAINS the animation's:
+            # "Sea Anemone Animation" belongs to the models called
+            # "Pink Sea Anemone segments (mouth closed)" and its two
+            # open-mouthed variants, which no amount of trimming the
+            # animation's own name will ever reach. Two words at least,
+            # so this cannot latch onto a single common one, and the
+            # shortest names first, which is the one carrying the least
+            # that the animation did not ask for.
+            if not matched and len(words) >= 2:
+                inside = [(len(s), c) for s, c in models
+                          if subject in s and c.parent() is parent]
+                inside += [(len(s) + 1000, c) for s, c in models
+                           if subject in s and c.parent() is not parent]
+                for _length, row_item in sorted(inside, key=lambda r: r[0]):
+                    add(row_item, True)
 
         # 2. The model packed just above it in this area, then just below.
         if parent is not None:
