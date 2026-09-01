@@ -6,7 +6,7 @@ back as soon as something is renamed - there is no Save button for
 names, because losing a rename to a forgotten one would be worse than
 the occasional extra write.
 """
-from functions import labels
+from functions import audio_names
 
 
 class NameStore:
@@ -15,12 +15,12 @@ class NameStore:
     def __init__(self, section):
         self.section = section
         self.disc = None
-        self._all = labels.load(None)
+        self._all = audio_names.load(None)
 
     def load(self, image_path):
         """Pick up the names belonging to the disc being opened."""
-        self.disc = labels.disc_id(image_path)
-        self._all = labels.load(self.disc)
+        self.disc = audio_names.disc_id(image_path)
+        self._all = audio_names.load(self.disc)
         return self.disc
 
     def names(self):
@@ -37,10 +37,10 @@ class NameStore:
         and writing it back would undo whatever another tab renamed in
         the meantime. It also means a file edited by hand is respected
         rather than overwritten."""
-        self._all = labels.load(self.disc)
+        self._all = audio_names.load(self.disc)
         section = self._all.setdefault(self.section, {})
         if name:
             section[key] = name
         else:
             section.pop(key, None)
-        return labels.save(self.disc, self._all)
+        return audio_names.save(self.disc, self._all)

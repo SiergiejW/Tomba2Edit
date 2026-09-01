@@ -131,9 +131,10 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    # labels/ is read at runtime by functions/labels.py, which looks for
-    # it beside the executable (sys._MEIPASS when frozen).
-    datas=_icon_files() + [('labels', 'labels')] + _multimedia_plugins(),
+    # labels/ names files inside TOMBA2.DAT; audio_names/ names the
+    # streamed audio. Both are read beside the executable at runtime
+    # (sys._MEIPASS when frozen).
+    datas=_icon_files() + [('labels', 'labels'), ('audio_names', 'audio_names')] + _multimedia_plugins(),
     # QtMultimedia is imported inside the functions that play audio, so
     # the analysis does not always see it; naming it here is what gets
     # its DLLs collected.

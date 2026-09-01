@@ -1,119 +1,351 @@
-"""Names for the things on the disc, kept per release.
+"""Names for the files on the disc.
 
-The audio on the disc has no names in it. A dialogue channel is
-"channel 3", a piece of music is "BGM.XA channel 1, track 2", a sound
-effect is waveform 46 of bank 0 - true, and useless for finding the one
-you want. So they can be renamed, and the names are kept here.
+Nothing in TOMBA2.DAT carries a filename. format_detect reads what a
+file IS out of its own bytes, on any build - but "the MDAT at
+0x1B724" is as close as that gets to saying WHICH one it is. The names
+are knowledge that only exists outside the disc, worked out by hand by
+people opening files and looking at them.
 
-Names are stored against the disc's own serial, read out of SYSTEM.CNF:
-the US retail disc boots SCUS_944.54, and a European or Japanese release
-boots something else. Keying on that means one file of names per
-release, and opening a different disc will not show you names that were
-written for another one - the channel numbering is not promised to match
-across releases, and quietly reusing names would be worse than having
-none.
+A LABELS FILE is where that knowledge lives: a list of addresses in one
+build of TOMBA2.DAT, each with the name someone gave it. They live in
+the labels/ folder, one file per build, and any of them can be replaced
+or added to without touching code - a new translation, a prototype, a
+build nobody has mapped yet.
 
-Keys name the thing rather than its position in a list, so inserting or
-reordering entries cannot shuffle the names onto the wrong audio:
+    {
+      "name":  "Tomba! 2: The Evil Swine Return (USA)",
+      "build": "us-retail",
+      "dat_size": 9537536,
+      "entries": [
+        {"start": "053724", "end": "075FDB", "type": "MDAT",
+         "name": "Town of the Fishermen"},
+        ...
+      ]
+    }
 
-    music       BGM.XA:1:2          file, channel, track
-                TRACK2              the CD audio track
-    dialogue    VOICE.XA:3          channel
-    sfx         0:46                bank, waveform
+`start` and `end` are hex offsets into TOMBA2.DAT, `end` inclusive, as
+the hand-written TOMBAMAP txt files they came from wrote them. `type`
+is what the person who mapped it recorded; the tool works the type out
+for itself and only uses this to notice when the two disagree.
+
+WHICH FILE FITS A DISC
+
+Not by version string or checksum - the tool edits and repacks these
+discs, so a checksum would stop matching the moment it was used in
+anger. A labels file is instead scored against the disc in front of it:
+how many of the addresses it names are really there in the IDX. The
+right file for a retail disc scores near 1.0 and the demo's scores
+about 0.02, which is a wide enough gap to decide on and a direct
+measure of the only thing that matters - whether these names will land
+on the right files.
+
+Run as a script to turn a TOMBAMAP txt into one of these:
+
+    python -m functions.labels convert examples/TOMBAMAP_us.txt \\
+        labels/us-retail.json --name "Tomba! 2 (USA)" --build us-retail
 """
 import json
 import os
-import re
 import sys
+from dataclasses import dataclass, field
 
-FOLDER = "labels"
-SECTIONS = ("music", "dialogue", "sfx")
+# A labels file has to name at least this fraction of its own addresses
+# on a disc before it is offered for it. Retail labels on a retail disc
+# score 1.00 and on the demo 0.02, so anything in between is a disc
+# that has been repacked far enough that the names can't be trusted.
+MATCH_THRESHOLD = 0.5
 
-# BOOT = cdrom:\SCUS_944.54;1
-_BOOT = re.compile(rb"BOOT\s*=\s*cdrom:?\\?([A-Z0-9_.]+)\s*;", re.I)
-
-
-def disc_id(image_path):
-    """The serial the disc boots, or None.
-
-    Read from SYSTEM.CNF rather than from the file name, so a renamed
-    rip still finds its own names."""
-    from functions import voice
-
-    try:
-        cnf = voice.extract_file(image_path, "SYSTEM.CNF")
-    except Exception:
-        return None
-    if not cnf:
-        return None
-    found = _BOOT.search(cnf)
-    if not found:
-        return None
-    return found.group(1).decode("ascii", "replace").upper()
+# Entries the TOMBAMAP files leave unnamed are written as a bare "_".
+UNNAMED = "_"
 
 
-def folder():
-    """Where names are written - beside the program, not inside it.
+class LabelError(ValueError):
+    """Raised when a file doesn't read as a labels file."""
 
-    A frozen build unpacks itself somewhere temporary that is wiped on
-    exit, so anything written there would be lost."""
+
+@dataclass
+class Label:
+    start: int
+    end: int = 0            # inclusive, as the source maps write it
+    kind: str = ""          # the type whoever mapped it recorded
+    name: str = ""
+
+
+@dataclass
+class LabelSet:
+    name: str = ""
+    build: str = ""
+    serial: str = ""                             # disc serial, e.g. SCUS-94454
+    source: str = ""
+    dat_size: int = 0
+    path: str = ""                               # where it was loaded from
+    entries: dict = field(default_factory=dict)  # start address -> Label
+    areas: dict = field(default_factory=dict)    # chunk index -> area name
+    bins: dict = field(default_factory=dict)     # BIN filename -> what it is
+
+    def __len__(self):
+        return len(self.entries)
+
+    def area_name(self, chunk_index):
+        return self.areas.get(chunk_index, "")
+
+    def bin_name(self, filename):
+        return self.bins.get(filename.upper(), "")
+
+    def rename(self, address, name, kind="", end=0):
+        """Give the file at `address` a name, adding an entry for it if
+        this set has never heard of it - which is how a build with no
+        labels of its own gets its first ones, typed into the tree.
+
+        An empty name clears it back to unnamed rather than recording an
+        empty string, so an entry that was named by mistake goes back to
+        being an address like any other."""
+        label = self.entries.get(address)
+        if label is None:
+            label = Label(start=address, end=end, kind=kind)
+            self.entries[address] = label
+        label.name = name.strip()
+        if kind and not label.kind:
+            label.kind = kind
+        if end and not label.end:
+            label.end = end
+        return label
+
+    def rename_area(self, chunk_index, name):
+        """Name an AREA folder, or clear it back to whatever the level
+        inside it is called (see idx_parser._area_name_from_mdat)."""
+        name = name.strip()
+        if name:
+            self.areas[chunk_index] = name
+        else:
+            self.areas.pop(chunk_index, None)
+
+    @property
+    def named(self):
+        """How many entries actually carry a name - the TOMBAMAP files
+        leave a lot of addresses recorded but unnamed."""
+        return sum(1 for label in self.entries.values() if label.name)
+
+    def get(self, address):
+        return self.entries.get(address)
+
+    def label_for(self, address):
+        """The name at `address`, or None."""
+        label = self.entries.get(address)
+        return label.name if label and label.name else None
+
+    def score(self, addresses):
+        """How much of this labels file is really on the disc, as a
+        fraction of its own entries. `addresses` is every entry address
+        the IDX gives (see idx_addresses)."""
+        if not self.entries:
+            return 0.0
+        found = sum(1 for start in self.entries if start in addresses)
+        return found / len(self.entries)
+
+
+def labels_dir():
+    """The built-in labels/ folder, next to the code - or inside the
+    bundle when this is running as a built exe."""
     if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, FOLDER)
+    return os.path.join(base, "labels")
 
 
-def bundled_folder():
-    """The names shipped inside a frozen build, if there are any.
+def load(path):
+    """Read one labels file. Raises LabelError if it isn't one."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise LabelError(f"couldn't read {os.path.basename(path)}: {e}") from e
+    if not isinstance(raw, dict) or not isinstance(raw.get("entries"), list):
+        raise LabelError(f"{os.path.basename(path)} has no \"entries\" list")
 
-    A build carries the catalogued names with it, but writes go beside
-    the executable - so this is read only, and only when nothing has
-    been written for that disc yet."""
-    inside = getattr(sys, "_MEIPASS", None)
-    return os.path.join(inside, FOLDER) if inside else None
-
-
-def path_for(disc):
-    return os.path.join(folder(), f"{disc}.json")
-
-
-def load(disc):
-    """{section: {key: name}} for one disc, empty when there is no file."""
-    empty = {name: {} for name in SECTIONS}
-    if not disc:
-        return empty
-    tries = [path_for(disc)]
-    inside = bundled_folder()
-    if inside:
-        tries.append(os.path.join(inside, f"{disc}.json"))
-    stored = None
-    for path in tries:
+    entries = {}
+    for i, item in enumerate(raw["entries"]):
         try:
-            with open(path, encoding="utf-8") as f:
-                stored = json.load(f)
-            break
-        except (OSError, ValueError):
+            start = int(str(item["start"]), 16)
+            end = int(str(item.get("end", "0")), 16)
+        except (KeyError, TypeError, ValueError) as e:
+            raise LabelError(f"entry {i} has no readable start address: {e}") from e
+        name = str(item.get("name", "") or "")
+        entries[start] = Label(start=start, end=end,
+                               kind=str(item.get("type", "") or ""),
+                               name="" if name == UNNAMED else name)
+
+    return LabelSet(
+        name=str(raw.get("name", "") or os.path.basename(path)),
+        build=str(raw.get("build", "") or ""),
+        serial=str(raw.get("serial", "") or ""),
+        source=str(raw.get("source", "") or ""),
+        dat_size=int(raw.get("dat_size", 0) or 0),
+        path=path,
+        entries=entries,
+        areas=_expand_areas(raw.get("areas") or {}, path),
+        bins={str(k).upper(): str(v) for k, v in (raw.get("bins") or {}).items()},
+    )
+
+
+def _expand_areas(raw, path):
+    """The "areas" table - hex chunk numbers to names."""
+    areas = {}
+    for key, value in raw.items():
+        try:
+            areas[int(str(key), 16)] = str(value)
+        except ValueError:
+            print(f"Ignoring area key {key!r} in {os.path.basename(path)}")
+    return areas
+
+
+def builtin():
+    """Every labels file in the labels/ folder, unreadable ones skipped
+    with a printed reason rather than taking the app down."""
+    folder = labels_dir()
+    sets = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return sets
+    for filename in names:
+        if not filename.lower().endswith(".json"):
             continue
-    if stored is None:
-        return empty
-    for name in SECTIONS:
-        value = stored.get(name)
-        if isinstance(value, dict):
-            empty[name] = {str(k): str(v) for k, v in value.items()}
-    return empty
+        try:
+            sets.append(load(os.path.join(folder, filename)))
+        except LabelError as e:
+            print(f"Skipping labels file {filename}: {e}")
+    return sets
 
 
-def save(disc, names):
-    """Write the names back, dropping any that were cleared."""
-    if not disc:
-        return None
-    os.makedirs(folder(), exist_ok=True)
-    out = {"disc": disc}
-    for name in SECTIONS:
-        out[name] = {k: v for k, v in sorted(names.get(name, {}).items()) if v}
-    path = path_for(disc)
+def idx_addresses(idx_path):
+    """Every absolute DAT address the IDX names, SDAT entries and trail
+    files alike - what a labels file is scored against."""
+    import struct
+
+    chunk_size = 0x800
+    trailer = 0x700
+    addresses = set()
+    size = os.path.getsize(idx_path)
+    with open(idx_path, "rb") as idx:
+        for chunk in range(size // chunk_size):
+            idx.seek(chunk * chunk_size)
+            _, _, dat_start, _, count = struct.unpack("<5I", idx.read(20))
+            if count:
+                for value in struct.unpack(f"<{count}I", idx.read(count * 4)):
+                    addresses.add(dat_start + (value & 0xFFFFFF))
+            idx.seek(chunk * chunk_size + (chunk_size - trailer))
+            trail = struct.unpack(f"<{trailer >> 2}I", idx.read(trailer))
+            for i in range(0, len(trail), 2):
+                if trail[i + 1] - trail[i]:
+                    addresses.add(trail[i])
+    return addresses
+
+
+def choose(idx_path, candidates=None):
+    """The labels file that fits this disc, as (LabelSet, score), or
+    (None, best score seen) if none of them reach MATCH_THRESHOLD."""
+    sets = builtin() if candidates is None else candidates
+    if not sets:
+        return None, 0.0
+    try:
+        addresses = idx_addresses(idx_path)
+    except (OSError, Exception) as e:      # a truncated IDX shouldn't be fatal
+        print(f"Couldn't read {idx_path} to match labels against: {e}")
+        return None, 0.0
+    scored = sorted(((s.score(addresses), s) for s in sets),
+                    key=lambda pair: pair[0], reverse=True)
+    best_score, best = scored[0]
+    return (best, best_score) if best_score >= MATCH_THRESHOLD else (None, best_score)
+
+
+# --------------------------------------------------------------------
+# Turning a hand-written TOMBAMAP txt into one of these
+# --------------------------------------------------------------------
+
+def from_tombamap(txt_path, name="", build="", dat_size=0):
+    """Read a TOMBAMAP txt - fixed-width "000000-00288F : SPRT : name"
+    lines - into a LabelSet."""
+    entries = {}
+    with open(txt_path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if len(line) < 20:
+                continue
+            try:
+                start, end = int(line[:6], 16), int(line[7:13], 16)
+            except ValueError:
+                continue
+            label_name = line[23:].strip()
+            entries[start] = Label(
+                start=start, end=end, kind=line[16:20].strip(),
+                name="" if label_name == UNNAMED else label_name)
+    return LabelSet(name=name or os.path.basename(txt_path), build=build,
+                    source=os.path.basename(txt_path), dat_size=dat_size,
+                    entries=entries)
+
+
+def save(label_set, path, keep_existing=True):
+    """Write a LabelSet out as a labels file, addresses in order.
+
+    `keep_existing` merges into whatever is already at `path`, replacing
+    only the entry list - the ids, areas and bins sections are written
+    by hand and there is nothing in a TOMBAMAP txt to regenerate them
+    from, so converting a map again must not wipe them."""
+    document = {}
+    if keep_existing and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                document = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Couldn't merge into {path}, writing it fresh: {e}")
+            document = {}
+
+    document.update({
+        "name": label_set.name or document.get("name", ""),
+        "build": label_set.build or document.get("build", ""),
+        "serial": label_set.serial or document.get("serial", ""),
+        "source": label_set.source or document.get("source", ""),
+        "dat_size": label_set.dat_size or document.get("dat_size", 0),
+        "areas": {f"{index:02X}": name
+                  for index, name in sorted(label_set.areas.items())},
+        "bins": dict(sorted(label_set.bins.items())),
+        "entries": [
+            {
+                "start": f"{label.start:06X}",
+                "end": f"{label.end:06X}",
+                "type": label.kind,
+                "name": label.name,
+            }
+            for label in sorted(label_set.entries.values(), key=lambda l: l.start)
+        ],
+    })
+    # "entries" is long; keep it last so the sections a person edits are
+    # at the top of the file.
+    document = {k: document[k] for k in
+                sorted(document, key=lambda k: k == "entries")}
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+        json.dump(document, f, indent=1, ensure_ascii=False)
         f.write("\n")
-    return path
+
+
+def _main(argv):
+    if len(argv) < 4 or argv[1] != "convert":
+        print(__doc__.strip().splitlines()[-2].strip())
+        return 1
+    txt_path, out_path = argv[2], argv[3]
+    options = dict(zip(argv[4::2], argv[5::2]))
+    label_set = from_tombamap(
+        txt_path,
+        name=options.get("--name", ""),
+        build=options.get("--build", ""),
+        dat_size=int(options.get("--dat-size", 0)),
+    )
+    save(label_set, out_path)
+    print(f"{len(label_set)} entries ({label_set.named} named) -> {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv))
