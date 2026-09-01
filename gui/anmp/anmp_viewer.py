@@ -34,7 +34,7 @@ DEFAULT_FPS = 30
 # are the whole of it - so this is a viewing aid with a mild default
 # rather than a measurement. 1 turns it off and shows exactly what is
 # stored.
-DEFAULT_STEPS = 2
+DEFAULT_STEPS = 3
 
 # How much of an animation's limbs a model has to have parts for before
 # a pairing made on packing order alone is believed - see _fill_models.
