@@ -45,6 +45,26 @@ obeys to the unit, animated or not:
 so a rest pose needs nothing but the tree, and an animated pose needs
 only each bone's rotation matrix on top of it.
 
+SCALE NEEDS NO SEPARATE STEP
+
+The scale at +0x38 is real - the game stretches bones, and Tomba's
+upper body is 4392/4096 wide in two of the savestates here - but it is
+already inside the matrix at +0x18 by the time a pose is written out:
+in both of those the matrix diagonal reads (4392, 4096, 4096), the
+scale exactly. Across the 23 character arrays in these savestates that
+provably reconstruct, those two bones are the only non-unit scales
+there are, and both agree with their matrix. So multiplying the local
+offset by the parent's scale on top of the matrix double-counts it;
+the rule above is complete as it stands, which is what makes it exact.
+
+Nor is there per-frame scale to apply. An animation frame is three
+rotations a limb plus an optional root translation and nothing else
+(see gui/anmp/anmp_parser.py), and the one part of it left undecoded -
+the frames whose tag sets bit 6 - carries no values anywhere near 4096
+and so is not scale either. Stretch is something the game's own code
+does to a character at runtime, not something written into the
+animation.
+
 What is not worked out here is how the rotation SVECTOR at +0x08 encodes
 that matrix - it is not Euler angles in any axis order, in the usual
 4096-units-to-a-turn convention. Animation therefore still has to read
