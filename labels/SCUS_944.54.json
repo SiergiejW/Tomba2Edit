@@ -1,7 +1,9 @@
 {
   "disc": "SCUS_944.54",
   "music": {},
-  "dialogue": {},
+  "dialogue": {
+    "VOICE.XA:5": "sdads"
+  },
   "sfx": {
     "0:10": "destruction",
     "0:11": "punch",
