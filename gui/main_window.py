@@ -1,7 +1,7 @@
 import os
 import struct
 import numpy as np
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QItemSelectionModel
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup, QIcon, QImage, QPixmap, QColor, QBrush
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
@@ -39,8 +39,8 @@ from gui.txtd.voice_panel import VoicePanel
 from gui.music_panel import MusicPanel
 from gui.sfx_panel import SfxPanel
 from functions.idx_parser import (
-    parse_idx_file, apply_labels, row_label_data, area_index_of,
-    LabelNameDelegate)
+    parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
+    row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
@@ -104,6 +104,32 @@ class MainWindow(QMainWindow):
         self.widgets_area = QStackedWidget()
         self.splitter.addWidget(self.widgets_area)
 
+        # Data View: one row per DAT address instead of the Indexed
+        # View's one row per area that reaches it - see
+        # idx_parser.build_dat_view(). It has no preview pane of its
+        # own; opening a row jumps to the same address in the Indexed
+        # View instead, which is what actually knows how to show each
+        # file type - see _open_from_dat_view.
+        self.dat_view = QTreeView()
+        self.dat_view.setHeaderHidden(True)
+        self.dat_view.doubleClicked.connect(self._open_from_dat_view)
+        self.dat_view.setItemDelegate(LabelNameDelegate(self.rename_row, self.dat_view))
+        self.dat_search = QLineEdit()
+        self.dat_search.setPlaceholderText(
+            "Search by name or offset (e.g. 55F54, 19-11Da4)...")
+        self.dat_search.setClearButtonEnabled(True)
+        self.dat_search.textChanged.connect(self._filter_dat_view)
+        dat_panel = QWidget()
+        dat_panel_layout = QVBoxLayout()
+        dat_panel_layout.setContentsMargins(0, 0, 0, 0)
+        dat_panel_layout.setSpacing(0)
+        dat_panel_layout.addWidget(panel_title.make_panel_title(
+            "Every file in TOMBA2.DAT, once each - double-click to open it "
+            "in the Indexed View"))
+        dat_panel_layout.addWidget(self.dat_search)
+        dat_panel_layout.addWidget(self.dat_view)
+        dat_panel.setLayout(dat_panel_layout)
+
         # Tab 1 (default): the existing tree + per-file viewer splitter.
         # Tab 2: MAIN.EXE's own string-pool editor (gui/mainbin_viewer.py) -
         # populated whenever a MAIN.EXE is found alongside the opened
@@ -112,7 +138,8 @@ class MainWindow(QMainWindow):
         self.mainexe_viewer = MainExeViewer()
         self.bins_viewer = BinsViewer()
         self.main_tabs = QTabWidget()
-        self.main_tabs.addTab(self.splitter, "DAT Assets")
+        self.main_tabs.addTab(self.splitter, "Indexed View (IDX)")
+        self.main_tabs.addTab(dat_panel, "Data View (DAT)")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
         # Its own tab rather than beside the text: the voice track has to
@@ -355,6 +382,7 @@ class MainWindow(QMainWindow):
             score, source = 0.0, "built-in"
 
         named = apply_labels(self)
+        apply_labels_flat(self)
         # Relabel, never reload - the BINs tab may be holding a SOP.BIN
         # path from a disc that has since been closed and cleaned up.
         self.bins_viewer.set_descriptions(self.labels.bins if self.labels else None)
@@ -416,6 +444,51 @@ class MainWindow(QMainWindow):
         visit(root, self.tree_view.rootIndex(), False)
         if needle:
             self.tree_view.expandAll()
+
+    def _filter_dat_view(self, text):
+        """The Data View's search: same matching rule as _filter_tree,
+        simpler to apply since it has no folders - every row is a
+        top-level one."""
+        needle = text.strip().lower()
+        model = self.dat_view.model()
+        if model is None:
+            return
+        root = model.invisibleRootItem()
+        for row in range(root.rowCount()):
+            matched = not needle or needle in root.child(row).text().lower()
+            self.dat_view.setRowHidden(row, self.dat_view.rootIndex(), not matched)
+
+    def _open_from_dat_view(self, index):
+        """A Data View row was double-clicked: show that same file in
+        the Indexed View, which is what actually knows how to preview
+        and edit each type - the Data View is a way to find a file by
+        address, not a second copy of the viewer machinery."""
+        item = self.dat_view.model().itemFromIndex(index)
+        data = row_label_data(item) if item else None
+        if not data:
+            return
+        address = data[2]
+        target = self.address_item.get(address)
+        tree_model = self.tree_view.model()
+        if target is None or tree_model is None:
+            return
+
+        target_index = tree_model.indexFromItem(target)
+        if not target_index.isValid():
+            return
+
+        self.tree_search.clear()      # fires _filter_tree("") - unhides everything
+        walked = target_index.parent()
+        while walked.isValid():
+            self.tree_view.expand(walked)
+            walked = walked.parent()
+
+        self.main_tabs.setCurrentIndex(0)
+        self.tree_view.selectionModel().setCurrentIndex(
+            target_index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows)
+        self.tree_view.scrollTo(target_index)
 
     def _smst_candidates(self, limit=400):
         """Every SMST on the disc, as (label, address, size) - what the
@@ -482,6 +555,7 @@ class MainWindow(QMainWindow):
 
         self.labels_dirty = True
         apply_labels(self)
+        apply_labels_flat(self)
         self._refresh_edit_status()
 
     def export_labels_dialog(self):
@@ -687,9 +761,10 @@ class MainWindow(QMainWindow):
         n_mainexe = len(self.mainexe_viewer.pending_edits())
         n_sop = len(self.bins_viewer.pending_edits())
 
-        self.main_tabs.setTabText(0, "DAT Assets*" if n_txtd else "DAT Assets")
-        self.main_tabs.setTabText(1, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
-        self.main_tabs.setTabText(2, "BINs*" if n_sop else "BINs")
+        self.main_tabs.setTabText(0, "Indexed View (IDX)*" if n_txtd else "Indexed View (IDX)")
+        self.main_tabs.setTabText(1, "Data View (DAT)*" if n_txtd else "Data View (DAT)")
+        self.main_tabs.setTabText(2, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
+        self.main_tabs.setTabText(3, "BINs*" if n_sop else "BINs")
 
         renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
 
@@ -865,6 +940,13 @@ class MainWindow(QMainWindow):
                 area_item = sdat_item.parent()
                 if area_item is not None:
                     self._refresh_folder_state_color(area_item)
+
+        # The Data View has exactly one row for this address rather than
+        # one per location, so it's colored once, directly - no folders
+        # to recompute either, since that view has none.
+        dat_item = getattr(self, "dat_view_lookup", {}).get(address)
+        if dat_item is not None:
+            self._apply_tree_item_state_color(dat_item, state)
 
     @staticmethod
     def _apply_tree_item_state_color(item, state):

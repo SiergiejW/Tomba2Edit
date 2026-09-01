@@ -82,15 +82,49 @@ _ROW_LABEL_DATA = Qt.ItemDataRole.UserRole + 3
 _ANIM_FAMILY = frozenset(("ANMP", "TANP", "BETP", "ALFD", "ALFP", "MDAP"))
 
 
+def _relabel_file_item(main_window, child, label_set):
+    """Rewrite one file row's text/icon/tooltip from the labels file.
+    Returns True if the row has a name (in `label_set` or not is what
+    apply_labels()/apply_labels_flat() count as "named" between them).
+
+    Shared by the Indexed View's tree walk and the Data View's flat
+    walk - a row means the same thing in both, so relabelling it does
+    too."""
+    data = child.data(_ROW_LABEL_DATA)
+    if not data:
+        return False
+    stem, filetype, address, detail = data
+    label = label_set.get(address) if label_set else None
+    name = label.name if label else ""
+    shown = filetype
+    tooltip = detail
+    if label:
+        if label.kind and label.kind != filetype:
+            if filetype in _ANIM_FAMILY and label.kind in _ANIM_FAMILY:
+                shown = label.kind
+            else:
+                # Elsewhere the hand-written type is only a note. It
+                # is wrong twice on the retail disc, and the type on
+                # the row is the one the tool read out of the bytes.
+                tooltip += f"\nlabels file calls this {label.kind}"
+    elif label_set:
+        tooltip += "\nnot in the labels file"
+    child.setText(f"{stem} {name}.{shown}" if name else f"{stem}.{shown}")
+    child.setIcon(_type_icon(main_window, shown, child.icon()))
+    child.setToolTip(tooltip)
+    return bool(name)
+
+
 def apply_labels(main_window):
-    """Rewrite every row in the tree from main_window.labels - the names
-    someone worked out for this build of the disc (see
+    """Rewrite every row in the Indexed View from main_window.labels -
+    the names someone worked out for this build of the disc (see
     functions/labels.py). Returns how many file rows got a name.
 
     Separate from building the tree so that loading a different labels
     file is a rename pass over what's already there, rather than a
     reparse that would drop the expanded folders and the edit colouring
-    along with it."""
+    along with it. apply_labels_flat() is the Data View's counterpart -
+    kept separate because that view has no AREA folders to rename."""
     model = main_window.tree_view.model()
     if model is None:
         return 0
@@ -99,29 +133,7 @@ def apply_labels(main_window):
 
     def relabel_file(child):
         nonlocal named
-        data = child.data(_ROW_LABEL_DATA)
-        if not data:
-            return
-        stem, filetype, address, detail = data
-        label = label_set.get(address) if label_set else None
-        name = label.name if label else ""
-        shown = filetype
-        tooltip = detail
-        if label:
-            named += bool(name)
-            if label.kind and label.kind != filetype:
-                if filetype in _ANIM_FAMILY and label.kind in _ANIM_FAMILY:
-                    shown = label.kind
-                else:
-                    # Elsewhere the hand-written type is only a note. It
-                    # is wrong twice on the retail disc, and the type on
-                    # the row is the one the tool read out of the bytes.
-                    tooltip += f"\nlabels file calls this {label.kind}"
-        elif label_set:
-            tooltip += "\nnot in the labels file"
-        child.setText(f"{stem} {name}.{shown}" if name else f"{stem}.{shown}")
-        child.setIcon(_type_icon(main_window, shown, child.icon()))
-        child.setToolTip(tooltip)
+        named += _relabel_file_item(main_window, child, label_set)
 
     def relabel_area(area_item):
         """An AREA folder takes the name of the level inside it - which
@@ -149,6 +161,57 @@ def apply_labels(main_window):
 
     walk(model.invisibleRootItem())
     return named
+
+
+def apply_labels_flat(main_window):
+    """apply_labels()'s counterpart for the Data View: the same rename
+    pass, over a model that is one flat list of file rows with no AREA
+    folders to also rename."""
+    model = getattr(main_window, "dat_view_model", None)
+    if model is None:
+        return 0
+    label_set = getattr(main_window, "labels", None)
+    named = 0
+    root = model.invisibleRootItem()
+    for row in range(root.rowCount()):
+        named += _relabel_file_item(main_window, root.child(row), label_set)
+    return named
+
+
+def build_dat_view(main_window):
+    """One row per DAT address, in address order - what TOMBA2.DAT
+    actually holds, as opposed to the Indexed View's one row per area
+    that points at it. Built from the Indexed View's own tree rather
+    than by re-reading the IDX: parse_idx_file() has already typed and
+    named every entry once, and main_window.address_item already keeps
+    the first row it reached for each address (see its own docstring),
+    so this is a sort, not a second parse.
+
+    Returns the populated model; main_window.dat_view_model is also set,
+    since apply_labels_flat() and the edit-highlighting in MainWindow
+    both need to find it again later."""
+    model = QStandardItemModel()
+    model.setHorizontalHeaderLabels(["Name"])
+    root = model.invisibleRootItem()
+
+    main_window.dat_view_lookup = {}     # address -> this model's item
+
+    for address in sorted(main_window.address_item):
+        source = main_window.address_item[address]
+        data = source.data(_ROW_LABEL_DATA)
+        if not data:
+            continue                      # an EMPTY slot - nothing to list
+        stem, filetype, _address, detail = data
+        item = QStandardItem(source.icon(), f"{stem}.{filetype}")
+        item.setData(data, _ROW_LABEL_DATA)
+        item.setData(source.data(Qt.ItemDataRole.UserRole), Qt.ItemDataRole.UserRole)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setToolTip(detail)
+        root.appendRow(item)
+        main_window.dat_view_lookup[address] = item
+
+    main_window.dat_view_model = model
+    return model
 
 
 def row_label_data(item):
@@ -276,6 +339,14 @@ def parse_idx_file(main_window, cd_folder):
     # MainWindow._smst_candidates and gui/anmp/game_rest.py.
     main_window.area_membership = {}
 
+    # DAT address -> the first QStandardItem the parse reaches for it, of
+    # any type - what the Data View tab is built from (one row per
+    # address instead of one per area that reaches it) and how a row
+    # there navigates back to a real, previewable spot in the Indexed
+    # View. Kept to the first rather than every occurrence: navigation
+    # only needs somewhere to land, not the complete list.
+    main_window.address_item = {}
+
     # (address, size) -> (type, tooltip) for every file, so the trail's
     # repeated copies are only read once.
     entry_types = {}
@@ -351,6 +422,8 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setIcon(_type_icon(main_window, filetype, file_icon))
                     main_window.area_membership.setdefault(
                         dat_start + offset, set()).add(chunk_index)
+                    main_window.address_item.setdefault(
+                        dat_start + offset, file_item)
                     if filetype in ("TXTD", "TXT1", "TXT2"):
                         # TXT1 and TXT2 are the same layout under different
                         # SDAT ids - separate labels, one viewer.
@@ -396,6 +469,7 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item.setData((stem, filetype, adr, tooltip), _ROW_LABEL_DATA)
                 trail_file_item.setToolTip(tooltip)
                 main_window.area_membership.setdefault(adr, set()).add(chunk_index)
+                main_window.address_item.setdefault(adr, trail_file_item)
                 trail_item.appendRow(trail_file_item)
 
         main_window.update_folder_name(area_item)
@@ -408,6 +482,12 @@ def parse_idx_file(main_window, cd_folder):
 
     main_window.tree_view.setModel(model)
     main_window.tree_view.selectionModel().selectionChanged.connect(main_window.on_tree_selection_changed)
+
+    # One row per address, built from the tree just finished above -
+    # see its own docstring for why this is a sort rather than a
+    # second parse.
+    build_dat_view(main_window)
+    main_window.dat_view.setModel(main_window.dat_view_model)
 
     # Names last, over the finished tree - see apply_labels above.
     main_window.load_labels_for_disc(idx_path)
