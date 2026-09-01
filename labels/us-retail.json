@@ -27,12 +27,23 @@
   "A0J.BIN": "Golden Tower",
   "A0K.BIN": "Tiny Mouse's House & Minigame",
   "A0L.BIN": "Outro",
-  "SOP.BIN": "Intro",
   "CRD.BIN": "Credits",
-  "OPN.BIN": "Skippable opening sequence, just before the first level",
-  "GAME.BIN": "Data present in every save",
   "DEMO.BIN": "Town of the Fishermen demo",
+  "GAME.BIN": "Data present in every save",
+  "OPN.BIN": "Skippable opening sequence, just before the first level",
+  "SOP.BIN": "Intro",
   "START.BIN": "Calls for the game data stored in the CD folder"
+ },
+ "areas": {
+  "00": "Fonts",
+  "01": "System",
+  "02": "Main Title",
+  "03": "Intro Scene",
+  "24": "Pipe Area Uncursing Sequence",
+  "25": "Kujara Ranch Uncursing Sequence",
+  "26": "Donglin Forest Uncursing Sequence",
+  "27": "Circus Village Uncursing Sequence",
+  "28": "Water Temple Uncursing Sequence"
  },
  "entries": [
   {
@@ -63,19 +74,19 @@
    "start": "0091CC",
    "end": "02125F",
    "type": "TANP",
-   "name": "Tomba Animation Pointers 1152"
+   "name": "Tomba Animations"
   },
   {
    "start": "021260",
    "end": "023A9B",
    "type": "SMST",
-   "name": "Baron"
+   "name": "Baron Model"
   },
   {
    "start": "023A9C",
    "end": "0247FF",
    "type": "MDAP",
-   "name": "Model Animation Pointers for Baron"
+   "name": "Baron Animations"
   },
   {
    "start": "024800",
