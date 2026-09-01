@@ -91,7 +91,31 @@ def pick(sources, limbs):
     return found[0][2] if found else None
 
 
-def fit(bones, model):
+def mesh_blocks(model):
+    """One vertex array per group, or None for a group with no mesh.
+
+    Built once and handed to fit() for every candidate: an area's
+    overlay can offer thousands of same-sized tables to score, and
+    rebuilding a model's several thousand vertices as an array inside
+    each of those calls is what turned scoring a busy area into a
+    visible hang."""
+    import numpy as np
+
+    vertices = np.asarray(model.get("vertices") or (), dtype=float)
+    groups = model.get("groups") or ()
+    if not len(vertices) or not groups:
+        return None
+    blocks = []
+    for group in groups:
+        if group.vertex_count < 3:
+            blocks.append(None)
+        else:
+            blocks.append(
+                vertices[group.first_vertex:group.first_vertex + group.vertex_count])
+    return blocks
+
+
+def fit(bones, model, blocks=None):
     """How badly a skeleton fits a model - lower is better, or None if
     there is nothing to measure against.
 

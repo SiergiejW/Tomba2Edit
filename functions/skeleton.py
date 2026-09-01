@@ -187,7 +187,14 @@ def tables_of_size(data, bones, words=None):
     span = bones * step
     out = []
     limit = len(words) - span
-    for start in range(0, limit + 1):
+    # Every table actually found on this disc - the player's in
+    # MAIN.EXE, the miner's, the pig's, and the block of them in
+    # A02.BIN - starts on a 4-byte boundary, which is no surprise for
+    # data a MIPS binary indexes as 16-bit pairs. Stepping in whole
+    # words rather than halves throws out a large tail of matches that
+    # begin midway through a record and are noise, and halves the scan
+    # besides.
+    for start in range(0, limit + 1, 2):
         if words[start] != -1:            # cheap first filter: a root?
             continue
         moved = 0
