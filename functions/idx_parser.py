@@ -266,6 +266,16 @@ def parse_idx_file(main_window, cd_folder):
     # on_txtd_content_changed and _set_txtd_tree_item_state.
     main_window.address_locations = {}
 
+    # DAT address -> {chunk_index, ...} for every kind of entry, not just
+    # TXTD/TXT2 - the same "one DAT file, many areas" fact applies to
+    # SMST/ANMP just as much, and there it's what tells an SMST or a bone
+    # tree candidate apart from an unrelated one that happens to be the
+    # right size: whichever candidate this address is actually used from
+    # the area being viewed is far more likely to be the right one than
+    # whichever the tree walk happens to reach first. See
+    # MainWindow._smst_candidates and gui/anmp/game_rest.py.
+    main_window.area_membership = {}
+
     # (address, size) -> (type, tooltip) for every file, so the trail's
     # repeated copies are only read once.
     entry_types = {}
@@ -339,6 +349,8 @@ def parse_idx_file(main_window, cd_folder):
                         _ROW_LABEL_DATA)
                     file_item.setFlags(file_item.flags() | Qt.ItemFlag.ItemIsEditable)
                     file_item.setIcon(_type_icon(main_window, filetype, file_icon))
+                    main_window.area_membership.setdefault(
+                        dat_start + offset, set()).add(chunk_index)
                     if filetype in ("TXTD", "TXT1", "TXT2"):
                         # TXT1 and TXT2 are the same layout under different
                         # SDAT ids - separate labels, one viewer.
@@ -383,6 +395,7 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item.setData((chunk_index, i), Qt.ItemDataRole.UserRole + 2)  # ✅ NEW for trail files
                 trail_file_item.setData((stem, filetype, adr, tooltip), _ROW_LABEL_DATA)
                 trail_file_item.setToolTip(tooltip)
+                main_window.area_membership.setdefault(adr, set()).add(chunk_index)
                 trail_item.appendRow(trail_file_item)
 
         main_window.update_folder_name(area_item)

@@ -13,8 +13,8 @@ gui/anmp/skeleton.py).
 """
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QSlider, QSpinBox, QSplitter, QTableWidget,
+    QAbstractItemView, QComboBox, QCompleter, QHBoxLayout, QHeaderView,
+    QLabel, QPushButton, QSlider, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -50,6 +50,8 @@ class ANMPViewer(QWidget):
         self._where = 0.0                 # position in table frames
         self._source = None               # (dat_path, address, size)
         self._skeletons = []              # (label, bytes) to read trees from
+        self._area_membership = {}        # address -> {chunk_index, ...}
+        self._current_area = None
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
@@ -76,8 +78,23 @@ class ANMPViewer(QWidget):
         self.model_box = QComboBox()
         self.model_box.setToolTip(
             "Which model to pose. An ANMP doesn't name one, so this is a "
-            "choice, not a fact - the default is the first model with "
-            "enough groups for the frames' limbs.")
+            "choice, not a fact - the default is the model this ANMP's "
+            "own area actually uses, or otherwise the first with enough "
+            "groups for the frames' limbs. Type to search by name or "
+            "offset.")
+        # Editable + a substring completer turns the plain dropdown into
+        # a search box without adding a second widget: typing "55F54"
+        # or "zippo" narrows the popup the same way the tree's search
+        # does, and choosing a match still fires currentIndexChanged
+        # exactly as picking one with the mouse always did.
+        self.model_box.setEditable(True)
+        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        completer = QCompleter(self.model_box.model(), self.model_box)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(
+            QCompleter.CompletionMode.PopupCompletion)
+        self.model_box.setCompleter(completer)
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
 
         self.info_label = panel_title.make_info_label("No animation loaded")
@@ -170,12 +187,18 @@ class ANMPViewer(QWidget):
         self._skeletons = sources or []
 
     def load_anmp_data(self, dat_file_path, address, size, candidates=None,
-                       vram_bytes=None, vram_image=None):
+                       vram_bytes=None, vram_image=None,
+                       area_membership=None, current_area=None):
         """Parse the animation at `address` and show it.
 
         `candidates` is [(label, address, size), ...] of the SMSTs on the
         disc, for the model chooser - see the module docstring on why
-        this has to be offered rather than looked up."""
+        this has to be offered rather than looked up. `area_membership`
+        ({address: {chunk_index, ...}}) and `current_area` are what let
+        the auto-pick in _fill_models() prefer a model that is actually
+        used in the area this ANMP was opened from, instead of whichever
+        big-enough model the tree walk reaches first - see its
+        docstring."""
         self.play_button.setChecked(False)
         try:
             self.anmp = load_anmp(dat_file_path, address, size)
@@ -185,6 +208,8 @@ class ANMPViewer(QWidget):
             return False
 
         self._source = (dat_file_path, address, size)
+        self._area_membership = area_membership or {}
+        self._current_area = current_area
         self.viewer.set_vram(vram_bytes, vram_image)
         self._candidates = list(candidates or [])
         self._fill_frames()
@@ -220,7 +245,17 @@ class ANMPViewer(QWidget):
 
     def _fill_models(self):
         """Offer every SMST, best fit first - the models with enough
-        groups for these frames' limbs, largest limb count first."""
+        groups for these frames' limbs, largest limb count first.
+
+        An ANMP does not say which model it animates, so the auto-pick
+        is a guess - but not a blind one. Candidates that this address
+        is actually used from the same area the ANMP was opened from go
+        first, smallest sufficient group count first within that group;
+        everything else follows in whatever order the tree walk found
+        it, which was the entire ranking before. That "same area" tier
+        is usually small - a handful of characters in one area - so
+        loading just it to sort by group count is cheap; the fallback
+        tier is answered lazily, one at a time, same as always."""
         self.model_box.blockSignals(True)
         self.model_box.clear()
         needed = max((f.limb_count for f in self.anmp.frames), default=0)
@@ -228,17 +263,50 @@ class ANMPViewer(QWidget):
             self.model_box.addItem(label, (address, size))
         self.model_box.blockSignals(False)
 
-        # Pick the first that can carry the limbs.
-        for i, (_label, address, size) in enumerate(self._candidates):
+        same_area, rest = [], []
+        for entry in self._candidates:
+            _label, address, _size = entry
+            areas = self._area_membership.get(address, ())
+            (same_area if self._current_area in areas else rest).append(entry)
+        ranked = []
+        for label, address, size in same_area:
+            try:
+                model = load_smst(self._source[0], address, size)
+            except Exception:
+                continue
+            ranked.append((len(model["groups"]), label, address, size, model))
+        ranked.sort(key=lambda r: r[0])
+
+        print(f"[ANMP] {len(self.anmp)} frames, largest frame needs {needed} "
+              f"limbs. {len(self._candidates)} SMST candidate(s), "
+              f"{len(same_area)} used in area {self._current_area}.")
+
+        for _groups, label, address, size, model in ranked:
+            if len(model["groups"]) >= needed:
+                print(f"[ANMP] picked {label} (0x{address:X}, "
+                      f"{len(model['groups'])} groups) - used in this area")
+                self.model_box.setCurrentIndex(
+                    self._candidates.index((label, address, size)))
+                self._use_model(model)
+                return
+
+        for label, address, size in rest:
             try:
                 model = load_smst(self._source[0], address, size)
             except Exception:
                 continue
             if len(model["groups"]) >= needed:
-                self.model_box.setCurrentIndex(i)
+                print(f"[ANMP] picked {label} (0x{address:X}, "
+                      f"{len(model['groups'])} groups) - not used here, "
+                      "first elsewhere on disc that fits")
+                self.model_box.setCurrentIndex(
+                    self._candidates.index((label, address, size)))
                 self._use_model(model)
                 return
+
         if self._candidates:
+            print("[ANMP] nothing offered enough groups - showing the "
+                  "first candidate anyway")
             self.model_box.setCurrentIndex(0)
             self._on_model_changed(0)
 
@@ -255,14 +323,35 @@ class ANMPViewer(QWidget):
     def _use_model(self, model):
         self.model = model
         self.viewer.spread = False
-        # The shape most of the frames have, not the largest: Tomba's
-        # table is 1147 seventeen-limb frames and five nineteen-limb
-        # ones, and it is the seventeen that his skeleton is.
+        # Every limb count the frames actually use is tried, not just
+        # the most common one - a bone a character only occasionally
+        # moves (the Miner's held pickaxe) can be missing from its
+        # majority shape, and there the majority is a size with no
+        # correct table at all. Whichever count comes back with the
+        # fewest matching tables wins: a rarer, more specific size is
+        # more likely to name one real skeleton than a common size that
+        # several unrelated characters in the same area happen to share.
+        # Frequency in the frame data only breaks a tie in that count -
+        # which is what keeps this landing on Tomba's own 17-limb table
+        # over the 19 that a handful of his frames also use, since both
+        # sizes are equally (mis)matched by three tables each here.
         counts = self.anmp.limb_counts
-        limbs = counts.most_common(1)[0][0] if counts else 0
-        # The game's own tree first - it gives the hierarchy and the
-        # exact joints. hierarchy_for() is the hand-built fallback.
-        bones = game_rest.pick(self._skeletons, limbs)
+        by_frequency = [count for count, _n in counts.most_common()] if counts else []
+        tried = [(limbs, game_rest.candidates(self._skeletons, limbs))
+                 for limbs in by_frequency]
+        nonempty = [(limbs, found) for limbs, found in tried if found]
+        if nonempty:
+            best = min(nonempty, key=lambda t: (len(t[1]), by_frequency.index(t[0])))
+            limbs, found = best
+        else:
+            limbs, found = (by_frequency[0] if by_frequency else 0), []
+        bones = found[0][2] if found else None
+        print(f"[ANMP] skeleton: tried {[(c, len(f)) for c, f in tried]} "
+              f"(limbs, matches) - "
+              + (f"using {found[0][0]} 0x{found[0][1]:X} at {limbs} limbs"
+                 + (" (ambiguous - more than one matched, first used)"
+                    if len(found) > 1 else "")
+                 if found else "none matched, falling back to the measured/flat rest pose"))
         if bones is not None:
             self._hierarchy, self._named_hierarchy = game_rest.hierarchy(bones), True
         else:

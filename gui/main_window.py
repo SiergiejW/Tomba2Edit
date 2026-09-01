@@ -6,7 +6,7 @@ from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
-    QTabWidget, QApplication, QAbstractItemView, QMenu,
+    QTabWidget, QApplication, QAbstractItemView, QMenu, QLineEdit,
 )
 from icons.icons import (icon_window, icon_disc,
                          icon_TXTD, icon_TXT2, icon_SPRT, icon_TANP, icon_SMST, icon_MDAT,
@@ -87,11 +87,17 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
         self.tree_view = QTreeView()
+        self.tree_search = QLineEdit()
+        self.tree_search.setPlaceholderText(
+            "Search by name or offset (e.g. 55F54, 19-11Da4)...")
+        self.tree_search.setClearButtonEnabled(True)
+        self.tree_search.textChanged.connect(self._filter_tree)
         tree_panel = QWidget()
         tree_panel_layout = QVBoxLayout()
         tree_panel_layout.setContentsMargins(0, 0, 0, 0)
         tree_panel_layout.setSpacing(0)
         tree_panel_layout.addWidget(panel_title.make_panel_title("Main tree view"))
+        tree_panel_layout.addWidget(self.tree_search)
         tree_panel_layout.addWidget(self.tree_view)
         tree_panel.setLayout(tree_panel_layout)
         self.splitter.addWidget(tree_panel)
@@ -365,6 +371,51 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Named {named} rows from the {source} labels for "
             f"\"{self.labels.name}\" ({self.labels.named} names){fit}", 15000)
+
+    def _filter_tree(self, text):
+        """Hide every row whose own text doesn't contain `text`, folders
+        included whenever something under them matches.
+
+        Matches by plain substring against the row's displayed text,
+        case-insensitive - which is deliberately the same text a rename
+        writes, offset and all ("82F000-832F2C Tomba model.SMST" keeps
+        its address after being named), so a search for either a name or
+        a raw offset works today and keeps working after a rename,
+        without needing two different matching rules.
+
+        Rows are hidden in place with setRowHidden rather than through a
+        filter proxy model: several other places read tree_view.model()
+        expecting the real QStandardItemModel and its own row/column
+        indices directly (_smst_candidates, on_tree_selection_changed,
+        the labels code...), and a proxy would put a second index space
+        between them and it for no benefit this search needs."""
+        needle = text.strip().lower()
+        model = self.tree_view.model()
+        if model is None:
+            return
+        root = model.invisibleRootItem()
+
+        def visit(item, parent_index, ancestor_matched):
+            any_visible = False
+            for row in range(item.rowCount()):
+                child = item.child(row)
+                child_index = model.index(row, 0, parent_index)
+                self_matched = ancestor_matched or not needle or \
+                    needle in child.text().lower()
+                if child.hasChildren():
+                    # A matching folder (an area, or an id-named group
+                    # like AREA_0C's own name) shows everything under
+                    # it, same as a matching leaf shows its own row.
+                    matched = visit(child, child_index, self_matched) or self_matched
+                else:
+                    matched = self_matched
+                self.tree_view.setRowHidden(row, parent_index, not matched)
+                any_visible = any_visible or matched
+            return any_visible
+
+        visit(root, self.tree_view.rootIndex(), False)
+        if needle:
+            self.tree_view.expandAll()
 
     def _smst_candidates(self, limit=400):
         """Every SMST on the disc, as (label, address, size) - what the
@@ -1919,7 +1970,9 @@ class MainWindow(QMainWindow):
                                     candidates=self._smst_candidates(),
                                     vram_bytes=vram_bytes,
                                     vram_image=(vram_index_image(vram_bytes)
-                                                if vram_bytes else None))
+                                                if vram_bytes else None),
+                                    area_membership=self.area_membership,
+                                    current_area=chunk_index)
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")
                         except Exception as e:
