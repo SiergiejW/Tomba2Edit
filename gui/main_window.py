@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         dat_panel_layout.setContentsMargins(0, 0, 0, 0)
         dat_panel_layout.setSpacing(0)
         dat_panel_layout.addWidget(panel_title.make_panel_title(
-            "Every file in TOMBA2.DAT, once each - double-click to open it "
+            "Every file in TOMBA2.DAT, - double-click to open it "
             "in the Indexed View"))
         dat_panel_layout.addWidget(self.dat_search)
         dat_panel_layout.addWidget(self.dat_view)
