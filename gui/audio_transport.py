@@ -144,6 +144,13 @@ class AudioTransport(QWidget):
             "Play an entry as soon as it's selected, instead of only on "
             "double-click or Play. Off by default so browsing the list "
             "with the arrow keys doesn't talk over itself.")
+        self.loop = QCheckBox("Loop")
+        self.loop.setChecked(True)
+        self.loop.setToolTip(
+            "Repeat an entry marked as a loop instead of playing it once. "
+            "On by default. Autoplay overrides it while both are checked - "
+            "browsing entry to entry would otherwise never move on from "
+            "one that loops.")
 
         self.save_wav = QPushButton("Save selected to WAV...")
         self.save_wav.clicked.connect(lambda: self._save("wav"))
@@ -179,6 +186,7 @@ class AudioTransport(QWidget):
         tools = QHBoxLayout()
         tools.addWidget(rename)
         tools.addWidget(self.autoplay)
+        tools.addWidget(self.loop)
         tools.addStretch(1)
 
         layout = QVBoxLayout(self)
@@ -358,13 +366,18 @@ class AudioTransport(QWidget):
 
         Loops if the currently selected row was marked as one - a sound
         effect the game holds a button down to sustain rather than one
-        that plays once through - which is why this reads _current
-        rather than taking a "should it loop" argument: play_bytes is
-        always answering the most recent play_row/play_key, and that
-        row already knows."""
+        that plays once through - and the Loop checkbox agrees, and
+        Autoplay isn't on. Autoplay overriding it is deliberate: stepping
+        through entries with Autoplay is meant to move on, and a looping
+        entry would otherwise just keep answering forever on the row it
+        started on. This reads _current rather than taking a "should it
+        loop" argument because play_bytes is always answering the most
+        recent play_row/play_key, and that row already knows."""
         self.stop()
         current = self.list.item(self._current, 0) if self._current >= 0 else None
-        self._looping = bool(current and current.data(LOOPS))
+        self._looping = (bool(current and current.data(LOOPS))
+                         and self.loop.isChecked()
+                         and not self.autoplay.isChecked())
         self.player.setLoops(QMediaPlayer.Loops.Infinite if self._looping else 1)
         self._buffer = QBuffer(self)
         self._buffer.setData(QByteArray(data))

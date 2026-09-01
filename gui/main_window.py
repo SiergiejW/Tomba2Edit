@@ -157,6 +157,18 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.sfx_panel, "SFX")
         self.setCentralWidget(self.main_tabs)
 
+        # A tab whose player is actually making sound gets a note added
+        # to its name - the audio equivalent of the "*" the other tabs
+        # use for unsaved edits, since walking away from the Dialogues
+        # tab with a channel still playing is otherwise easy to forget.
+        self._playback_tabs = ((4, "Dialogues", self.voice_panel),
+                               (5, "Music", self.music_panel),
+                               (6, "SFX", self.sfx_panel))
+        for _index, _label, panel in self._playback_tabs:
+            panel.transport.player.playbackStateChanged.connect(
+                self._refresh_playback_status)
+        self._refresh_playback_status()
+
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
         # "data"} for every TXTD/TXT2 file that's been edited but not yet
         # exported. Both file types share this one dict - the "kind" tag
@@ -753,6 +765,19 @@ class MainWindow(QMainWindow):
         """Same as on_mainexe_content_changed, for SOP.BIN's own pending
         edits (self.bins_viewer.pending_edits()/has_pending_edits())."""
         self._refresh_edit_status()
+
+    def _refresh_playback_status(self, *_args):
+        """Add "♫" to a Dialogues/Music/SFX tab's name while that tab's
+        own player is actually making sound, and take it off again the
+        moment it stops or pauses - connected to all three players'
+        playbackStateChanged so this runs on every play, pause, stop,
+        and track change, whichever tab it happens on."""
+        from PyQt6.QtMultimedia import QMediaPlayer
+
+        for index, label, panel in self._playback_tabs:
+            playing = (panel.transport.player.playbackState()
+                      == QMediaPlayer.PlaybackState.PlayingState)
+            self.main_tabs.setTabText(index, f"{label} ♫" if playing else label)
 
     def _refresh_edit_status(self):
         """Status bar text AND the tabs' own "*" unsaved-marker, both
