@@ -57,6 +57,10 @@ HUMANOID = (-1, 0, 0, 2, 3, 0, 5, 6, -1, 8, 9, 10, 8, 12, 13)
 # rest of the viewer already uses for them.
 TOMBA_EXTRA = ("ponytail_start", "ponytail_end")
 
+# How much better one skeleton has to fit than another before the
+# difference is believed rather than treated as a tie - see best_for.
+MARGIN = 0.10
+
 
 def load_sources(exe_path, overlay_path, others=(), cache=None):
     """[(label, bytes)] to look for skeletons in, nearest first.
@@ -196,15 +200,34 @@ def best_for(sources, model, limb_counts):
     order they were tried in."""
     blocks = mesh_blocks(model)
     scored = []
-    for limbs in limb_counts:
-        for label, offset, bones in candidates(sources, limbs):
-            grade = fit(bones, model, blocks)
-            scored.append((grade if grade is not None else 9e9,
-                           label, offset, bones, limbs))
+    for rank, (label, data) in enumerate(sources or ()):
+        for limbs in limb_counts:
+            for offset in skeleton.tables_of_size(data, limbs):
+                bones = skeleton.read_table(data, offset, limbs)
+                grade = fit(bones, model, blocks)
+                scored.append([grade if grade is not None else 9e9,
+                               rank, offset, label, bones, limbs])
     if not scored:
         return None
-    scored.sort(key=lambda row: row[0])
-    grade, label, offset, bones, limbs = scored[0]
+
+    # Fit tells one character's skeleton from another's easily - the
+    # miner's own scores 0.12 against 0.36 and worse for his
+    # neighbours', the pig's 0.18 against 0.47. What it cannot do is
+    # tell a character's own costume variants apart: Tomba has five
+    # 17-bone tables in MAIN.EXE, one per outfit, and against his
+    # default model they score 0.156 to 0.230 - noise, with two of them
+    # byte-identical. Letting fit choose there picks the pig-suit
+    # table's wider shoulders for plain Tomba, which is exactly the
+    # arms-too-far-apart it produced.
+    #
+    # So fit only decides when it is actually deciding something. Among
+    # everything within MARGIN of the best, the nearest source wins, and
+    # the earliest table within that source breaks the remaining tie -
+    # which is the order the game's own data is written in.
+    best = min(row[0] for row in scored)
+    close = [row for row in scored if row[0] <= best + MARGIN]
+    close.sort(key=lambda row: (row[1], row[2]))
+    grade, _rank, offset, label, bones, limbs = close[0]
     return label, offset, bones, limbs, grade, len(scored)
 
 
