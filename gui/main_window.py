@@ -36,6 +36,7 @@ from functions import voice
 from gui.txtd.font_editor import FontEditor
 from gui.txtd.voice_panel import VoicePanel
 from gui.music_panel import MusicPanel
+from gui.sfx_panel import SfxPanel
 from functions.idx_parser import (
     parse_idx_file, apply_labels, row_label_data, area_index_of,
     LabelNameDelegate)
@@ -118,6 +119,8 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.voice_panel, "Dialogues")
         self.music_panel = MusicPanel()
         self.main_tabs.addTab(self.music_panel, "Music")
+        self.sfx_panel = SfxPanel()
+        self.main_tabs.addTab(self.sfx_panel, "SFX")
         self.setCentralWidget(self.main_tabs)
 
         # (chunk_index, file_index) -> {"kind", "id", "dat_start", "offset",
@@ -219,7 +222,7 @@ class MainWindow(QMainWindow):
         self.export_iso_action = export_iso_action
         open_action.triggered.connect(lambda: self.open_iso_dialog())
 
-        open_iso_action = QAction("Open ISO...", self)
+        open_iso_action = QAction("Open ISO/IMG...", self)
         open_iso_action.setToolTip(
             "Open a 2048-byte ISO. Everything except the streamed audio "
             "works; the XA music and voice are not in an ISO to begin with")
@@ -1233,6 +1236,7 @@ class MainWindow(QMainWindow):
         # it, and the panel says so itself.
         self.voice_panel.set_image(iso_path)
         self.music_panel.set_image(iso_path)
+        self.sfx_panel.set_image(iso_path)
 
     def open_folder_dialog(self):
         """Open an already-extracted CD folder directly, no ISO needed.

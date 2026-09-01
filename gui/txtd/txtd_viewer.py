@@ -308,7 +308,7 @@ class TXTDViewer(QWidget):
         # master uses is not established, so it is a choice here rather
         # than a guess - if a line plays the wrong clip, step the table.
         voice_row = QHBoxLayout()
-        self.open_voice_button = QPushButton("Open BIN...")
+        self.open_voice_button = QPushButton("Open BIN/IMG...")
         self.open_voice_button.setToolTip(
             "The disc's data track (Track 1) - the voice track only "
             "survives there, not in a CD folder or an ISO")

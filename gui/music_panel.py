@@ -23,8 +23,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
                              QVBoxLayout, QWidget)
 
-from functions import bgm, voice, xa
+from functions import audio_export, bgm, voice, xa
 from gui.audio_transport import AudioTransport, clock
+from gui.name_store import NameStore
 
 # The streamed music files, in the order they are listed.
 STREAMS = ("BGM.XA", "DEMO.XA")
@@ -71,14 +72,18 @@ class MusicPanel(QWidget):
         self._entries = []          # (kind, payload) per row
         self._cache = {}
         self._decode = None
+        self._pending_save = None   # (row, path) waiting on a decode
+        self.names = NameStore("music")
 
-        self.pick = QPushButton("Open BIN...")
+        self.pick = QPushButton("Open BIN/IMG...")
         self.pick.setToolTip(
             "Only needed for a disc opened as a folder - opening a BIN "
             "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
         self.transport = AudioTransport()
         self.transport.wanted.connect(self._wanted)
+        self.transport.renamed.connect(self._renamed)
+        self.transport.save_requested.connect(self._save)
         self.status = QLabel(
             "No disc open. The music is streamed CD-XA, which only survives "
             "in a raw data track - not a CD folder or an ISO.")
@@ -106,7 +111,7 @@ class MusicPanel(QWidget):
         self.transport.stop()
         self._cache.clear()
         self._entries = []
-        labels = []
+        rows = []
         try:
             exe = voice.extract_file(path, "MAIN.EXE")
             for name in STREAMS:
@@ -127,11 +132,13 @@ class MusicPanel(QWidget):
                 for channel, ordinal, indices in pieces:
                     self._entries.append(("xa", (lba, indices)))
                     length = clock(len(indices) * frames * 1000 // rate)
-                    where = f"channel {channel}"
+                    place = f"channel {channel}"
                     if per_channel[channel] > 1:
-                        where += f", track {ordinal + 1} of {per_channel[channel]}"
-                    labels.append(f"{stem}  {len(labels) + 1:2d}   "
-                                  f"{length:>5}      {where}")
+                        place += (f", track {ordinal + 1} "
+                                  f"of {per_channel[channel]}")
+                    rows.append((f"{name}:{channel}:{ordinal + 1}",
+                                 f"{stem}  {len(rows) + 1:2d}   "
+                                 f"{length:>5}      {place}"))
         except Exception as exc:
             self.status.setText(f"Could not read the disc: {exc}")
             return
@@ -146,13 +153,15 @@ class MusicPanel(QWidget):
         if audio:
             size = os.path.getsize(audio) - CDDA_PREGAP
             self._entries.append(("cdda", audio))
-            labels.append(f"Track 2  CD audio   "
-                          f"~{clock(size * 1000 // CDDA_BYTES_PER_SECOND)}")
-        self.transport.set_entries(labels)
+            rows.append(("TRACK2", f"Track 2  CD audio   "
+                         f"~{clock(size * 1000 // CDDA_BYTES_PER_SECOND)}"))
+        disc = self.names.load(path)
+        self.transport.set_entries(rows, self.names.names())
         self.status.setText(
-            f"{os.path.basename(path)}: {len(labels)} piece(s) of music. "
-            "A streamed channel takes a few seconds to decode the first "
-            "time, then it is kept.")
+            f"{os.path.basename(path)}: {len(rows)} piece(s) of music"
+            + (f", {len(self.names.names())} named ({disc})." if disc else ".")
+            + " A track takes a few seconds to decode the first time, then "
+            "it is kept. Select one and press F2, or Rename, to name it.")
 
     @staticmethod
     def _audio_track(path):
@@ -166,26 +175,33 @@ class MusicPanel(QWidget):
     # --- playing ------------------------------------------------------
 
     def _wanted(self, row):
+        self._request(row, play=True)
+
+    def _request(self, row, play):
+        """Make sure row `row` is decoded; play it or save it when it is.
+
+        Track 2 needs no decoding at all - it is already PCM - so it is
+        answered here rather than on the worker."""
         if not (0 <= row < len(self._entries)):
             return
         cached = self._cache.get(row)
         if cached is not None:
-            self.transport.play_bytes(cached)
+            self._ready(row, cached, play)
             return
         kind, payload = self._entries[row]
         if kind == "cdda":
-            # Nothing to decode - it is already PCM. The pregap is
-            # dropped so it starts on the music rather than 2s of silence.
+            # The pregap is dropped so it starts on the music rather
+            # than on two seconds of silence.
             with open(payload, "rb") as f:
                 f.seek(CDDA_PREGAP)
                 wav = xa.wav_bytes_raw(f.read(), CDDA_RATE, 2)
             self._cache[row] = wav
             self.status.setText("Track 2: CD audio, 44100 Hz stereo.")
-            self.transport.play_bytes(wav)
+            self._ready(row, wav, play)
             return
         lba, indices = payload
         self._stop_decode()
-        self.status.setText("Decoding...")
+        self.status.setText("Decoding..." if play else "Decoding to save...")
         self._decode = _Decode(row, self.image, lba, indices)
         self._decode.done.connect(self._decoded)
         self._decode.start()
@@ -193,11 +209,49 @@ class MusicPanel(QWidget):
     def _decoded(self, row, wav, note):
         if wav is None:
             self.status.setText(f"Could not decode that channel: {note}")
+            self._pending_save = None
             return
         self._cache[row] = wav
         self.status.setText(f"{note} - decoded once and kept.")
-        if self.transport.current_row() == row:
+        self._ready(row, wav, play=self.transport.current_row() == row)
+
+    def _ready(self, row, wav, play):
+        """A row's audio is in hand: play it, and write it if one was
+        asked for while it was still decoding."""
+        if self._pending_save and self._pending_save[0] == row:
+            _row, path = self._pending_save
+            self._pending_save = None
+            self._write(path, wav)
+        elif play:
             self.transport.play_bytes(wav)
+
+    # --- naming and saving --------------------------------------------
+
+    def _renamed(self, key, name):
+        path = self.names.rename(key, name)
+        self.status.setText(
+            (f"Named {key}." if name else f"Cleared the name for {key}.")
+            + (f" Saved to {os.path.basename(path)}." if path else
+               " No disc serial found, so the name was not saved."))
+
+    def _save(self, row, path):
+        """Save a piece of music. Decoding one takes a few seconds, so
+        if it is not in hand yet the write waits on the worker rather
+        than freezing the window."""
+        cached = self._cache.get(row)
+        if cached is not None:
+            self._write(path, cached)
+            return
+        self._pending_save = (row, path)
+        self._request(row, play=False)
+
+    def _write(self, path, wav):
+        try:
+            audio_export.save(path, wav)
+        except Exception as exc:
+            self.status.setText(f"Could not save: {exc}")
+            return
+        self.status.setText(f"Wrote {os.path.basename(path)}.")
 
     def _stop_decode(self):
         if self._decode is not None and self._decode.isRunning():

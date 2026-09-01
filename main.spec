@@ -137,7 +137,7 @@ a = Analysis(
     # QtMultimedia is imported inside the functions that play audio, so
     # the analysis does not always see it; naming it here is what gets
     # its DLLs collected.
-    hiddenimports=['gui', 'PyQt6.QtMultimedia'],
+    hiddenimports=['gui', 'PyQt6.QtMultimedia', 'lameenc'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

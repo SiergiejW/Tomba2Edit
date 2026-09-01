@@ -23,8 +23,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
                              QVBoxLayout, QWidget)
 
-from functions import voice, xa
+from functions import audio_export, voice, xa
 from gui.audio_transport import AudioTransport, clock
+from gui.name_store import NameStore
 
 
 class _Decode(QThread):
@@ -75,8 +76,10 @@ class VoicePanel(QWidget):
         self._channels = []
         self._decode = None
         self._cache = {}
+        self._pending_save = None   # (row, path) waiting on a decode
+        self.names = NameStore("dialogue")
 
-        self.pick = QPushButton("Open BIN...")
+        self.pick = QPushButton("Open BIN/IMG...")
         self.pick.setToolTip(
             "Only needed for a disc opened as a folder - opening a BIN "
             "normally sets this up on its own")
@@ -91,6 +94,8 @@ class VoicePanel(QWidget):
 
         self.transport = AudioTransport()
         self.transport.wanted.connect(self._wanted)
+        self.transport.renamed.connect(self._renamed)
+        self.transport.save_requested.connect(self._save)
 
         self.status = QLabel("No disc open - the voice track needs a raw "
                              "2352-byte data track, not a CD folder or ISO.")
@@ -126,14 +131,19 @@ class VoicePanel(QWidget):
         self._cache.clear()
         self._channels = voice.channels(path, self.lba, self.sectors)
         per_sector = xa.SAMPLES_PER_SECTOR
-        self.transport.set_entries([
-            f"Channel {channel:2d}   {count:,} sectors   "
-            f"~{clock(count * per_sector * 1000 // 18900)}"
-            for channel, count in self._channels])
+        disc = self.names.load(path)
+        self.transport.set_entries(
+            [(f"VOICE.XA:{channel}",
+              f"Channel {channel:2d}   {count:,} sectors   "
+              f"~{clock(count * per_sector * 1000 // 18900)}")
+             for channel, count in self._channels],
+            self.names.names())
         self.status.setText(
             f"{os.path.basename(path)}: {len(self._channels)} channels, "
-            f"{self.sectors:,} sectors. Pick one to decode and play it "
-            "whole - the seek bar scrubs through it.")
+            f"{self.sectors:,} sectors"
+            + (f", {len(self.names.names())} named ({disc})." if disc else ".")
+            + " Pick one to decode and play it whole - the seek bar scrubs "
+            "through it, and F2 names it.")
         self.extract.setEnabled(True)
         self.image_opened.emit(path)
 
@@ -160,12 +170,15 @@ class VoicePanel(QWidget):
 
     def _wanted(self, row):
         """The transport asked for a row; decode it if it is not cached."""
+        self._request(row, play=True)
+
+    def _request(self, row, play):
         if not (0 <= row < len(self._channels)) or not self.image:
             return
         channel = self._channels[row][0]
         cached = self._cache.get(channel)
         if cached is not None:
-            self.transport.play_bytes(cached)
+            self._ready(row, cached, play)
             return
         self._stop_decode()
         self.status.setText(f"Decoding channel {channel}...")
@@ -176,14 +189,52 @@ class VoicePanel(QWidget):
     def _decoded(self, channel, wav, rate):
         if wav is None:
             self.status.setText(f"Could not decode channel {channel}.")
+            self._pending_save = None
             return
         self._cache[channel] = wav
         self.status.setText(
             f"Channel {channel} at {rate} Hz - decoded once and kept, so "
             "coming back to it is instant.")
-        if self.transport.current_row() < len(self._channels) and \
-                self._channels[self.transport.current_row()][0] == channel:
+        row = next((n for n, (c, _count) in enumerate(self._channels)
+                    if c == channel), -1)
+        self._ready(row, wav, play=self.transport.current_row() == row)
+
+    def _ready(self, row, wav, play):
+        if self._pending_save and self._pending_save[0] == row:
+            _row, path = self._pending_save
+            self._pending_save = None
+            self._write(path, wav)
+        elif play:
             self.transport.play_bytes(wav)
+
+    # --- naming and saving --------------------------------------------
+
+    def _renamed(self, key, name):
+        path = self.names.rename(key, name)
+        self.status.setText(
+            (f"Named {key}." if name else f"Cleared the name for {key}.")
+            + (f" Saved to {os.path.basename(path)}." if path else
+               " No disc serial found, so the name was not saved."))
+
+    def _save(self, row, path):
+        """Write a channel out. A channel takes a few seconds to decode,
+        so if it is not in hand the write waits on the worker."""
+        if not (0 <= row < len(self._channels)):
+            return
+        cached = self._cache.get(self._channels[row][0])
+        if cached is not None:
+            self._write(path, cached)
+            return
+        self._pending_save = (row, path)
+        self._request(row, play=False)
+
+    def _write(self, path, wav):
+        try:
+            audio_export.save(path, wav)
+        except Exception as exc:
+            self.status.setText(f"Could not save: {exc}")
+            return
+        self.status.setText(f"Wrote {os.path.basename(path)}.")
 
     def _stop_decode(self):
         if self._decode is not None and self._decode.isRunning():
