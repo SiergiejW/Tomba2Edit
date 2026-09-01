@@ -136,9 +136,16 @@ class ANMPViewer(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
 
+        self.rest_button = QPushButton("Reset pose")
+        self.rest_button.setToolTip(
+            "Show the model in its rest pose - the skeleton with no "
+            "rotation applied, which is what the animation moves from.")
+        self.rest_button.clicked.connect(self.show_rest)
+
         transport = QHBoxLayout()
         transport.setContentsMargins(8, 4, 8, 4)
         transport.addWidget(self.play_button)
+        transport.addWidget(self.rest_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
         transport.addWidget(self.steps_box)
@@ -223,8 +230,13 @@ class ANMPViewer(QWidget):
         self._fill_models()
         self._rescale_slider()
         self.slider.setValue(0)
-        if self.frames_table.rowCount():
-            self.frames_table.selectRow(0)
+        # Opens on the rest pose rather than on frame 0. The rest pose
+        # is the model as the skeleton alone lays it out, so it is the
+        # thing to look at first: whether the right model got paired
+        # with the right skeleton is visible in it directly, without an
+        # animation on top to confuse a bad pairing with a badly
+        # applied rotation. Picking any frame, or Play, leaves it.
+        self.show_rest()
         self._update_info()
         return True
 
@@ -379,35 +391,23 @@ class ANMPViewer(QWidget):
     def _use_model(self, model):
         self.model = model
         self.viewer.spread = False
-        # Every limb count the frames actually use is tried, not just
-        # the most common one - a bone a character only occasionally
-        # moves (the Miner's held pickaxe) can be missing from its
-        # majority shape, and there the majority is a size with no
-        # correct table at all. Whichever count comes back with the
-        # fewest matching tables wins: a rarer, more specific size is
-        # more likely to name one real skeleton than a common size that
-        # several unrelated characters in the same area happen to share.
-        # Frequency in the frame data only breaks a tie in that count -
-        # which is what keeps this landing on Tomba's own 17-limb table
-        # over the 19 that a handful of his frames also use, since both
-        # sizes are equally (mis)matched by three tables each here.
+        # Which skeleton is this character's is decided by how well each
+        # candidate fits THIS model, not by bone count alone - an area's
+        # overlay holds one per character and plenty are the same size,
+        # so counting bones picks a stranger's proportions about as
+        # often as not. See game_rest.fit for what "fits" measures.
         counts = self.anmp.limb_counts
         by_frequency = [count for count, _n in counts.most_common()] if counts else []
-        tried = [(limbs, game_rest.candidates(self._skeletons, limbs))
-                 for limbs in by_frequency]
-        nonempty = [(limbs, found) for limbs, found in tried if found]
-        if nonempty:
-            best = min(nonempty, key=lambda t: (len(t[1]), by_frequency.index(t[0])))
-            limbs, found = best
+        chosen = game_rest.best_for(self._skeletons, model, by_frequency)
+        if chosen:
+            label, offset, bones, limbs, grade, seen = chosen
+            print(f"[ANMP] skeleton: {seen} candidate(s) across limb counts "
+                  f"{by_frequency} - using {label} 0x{offset:X} at {limbs} "
+                  f"limbs, fit {grade:.2f}")
         else:
-            limbs, found = (by_frequency[0] if by_frequency else 0), []
-        bones = found[0][2] if found else None
-        print(f"[ANMP] skeleton: tried {[(c, len(f)) for c, f in tried]} "
-              f"(limbs, matches) - "
-              + (f"using {found[0][0]} 0x{found[0][1]:X} at {limbs} limbs"
-                 + (" (ambiguous - more than one matched, first used)"
-                    if len(found) > 1 else "")
-                 if found else "none matched, falling back to the measured/flat rest pose"))
+            bones, limbs = None, (by_frequency[0] if by_frequency else 0)
+            print(f"[ANMP] skeleton: nothing matched limb counts "
+                  f"{by_frequency} - falling back to the measured/flat rest pose")
         if bones is not None:
             self._hierarchy, self._named_hierarchy = game_rest.hierarchy(bones), True
         else:
@@ -467,6 +467,26 @@ class ANMPViewer(QWidget):
     def show_frame(self, index):
         """Jump to a whole frame - what the frame list selects."""
         self.slider.setValue(int(index) * self.steps)
+
+    def show_rest(self):
+        """Drop the animation and show the model in its rest pose - the
+        skeleton laid out with no rotation anywhere.
+
+        This is what an animation is applied ON TOP of, so it is worth
+        being able to get back to on its own: a model that looks wrong
+        here is wrong in the skeleton or the pairing, and one that looks
+        right here but wrong once it moves is a rotation being applied
+        wrongly. Telling those two apart otherwise means guessing."""
+        if not self.model or self._pivots is None:
+            return
+        self.play_button.setChecked(False)
+        still = [(0.0, 0.0, 0.0)] * len(self._hierarchy)
+        transforms = pose_transforms(still, (0.0, 0.0, 0.0),
+                                     self._hierarchy, self._pivots)
+        self.viewer.set_pose(transforms, self._pivots)
+        self.frames_table.clearSelection()
+        self.frame_label.setText(f"rest / {len(self.anmp) if self.anmp else 0}")
+        self.limbs_table.setRowCount(0)
 
     def show_position(self, sub):
         """Pose at `sub` sub-steps in: between two frames when the blend

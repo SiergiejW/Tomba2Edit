@@ -567,8 +567,16 @@ class MainWindow(QMainWindow):
         parent = item.parent()
 
         # 1. Named the same thing, this area first, then anywhere.
+        #
+        # Then the same thing with the tail of the name dropped, a word
+        # at a time: "Tomba Trolley Animation" is Tomba riding a
+        # trolley, and the model it wants is plain "Tomba Model" - the
+        # trolley is separate scenery with four groups. Whole words
+        # only, longest first, so this narrows from the most specific
+        # name to the least and stops at the first that names anything.
         if subject and subject != "?":
-            here, elsewhere = [], []
+            words = subject.split()
+            models = []
             model = self.tree_view.model()
             if model is not None:
                 stack = [model.invisibleRootItem()]
@@ -578,12 +586,18 @@ class MainWindow(QMainWindow):
                         child = node.child(row, 0)
                         stack.append(child)
                         found = row_label_data(child)
-                        if (found and found[1] == "SMST"
-                                and self._row_subject(child.text()) == subject):
-                            (here if child.parent() is parent
-                             else elsewhere).append(child)
-            for row_item in here + elsewhere:
-                add(row_item, True)
+                        if found and found[1] == "SMST":
+                            models.append((self._row_subject(child.text()), child))
+            for length in range(len(words), 0, -1):
+                wanted = " ".join(words[:length])
+                here = [c for s, c in models
+                        if s == wanted and c.parent() is parent]
+                elsewhere = [c for s, c in models
+                             if s == wanted and c.parent() is not parent]
+                if here or elsewhere:
+                    for row_item in here + elsewhere:
+                        add(row_item, True)
+                    break
 
         # 2. The model packed just above it in this area, then just below.
         if parent is not None:
