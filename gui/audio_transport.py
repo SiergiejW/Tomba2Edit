@@ -23,6 +23,15 @@ Dialogues use it that way, and it looks exactly like a plain list. SFX
 asks for extra columns (`columns=`) to show the index, bank and slot,
 length and loop flag alongside the name.
 
+`pitch=True` (SFX only) adds a pitch slider. This is not a cosmetic
+effect: the SPU plays a waveform at a pitch by resampling it faster or
+slower, exactly what changing playback speed does to already-decoded
+PCM, so speeding this up or down is the same knob the original hardware
+turns for the games that reuse one sample at several pitches. The range
+is deliberately modest - enough to hear what a slightly different pitch
+would have sounded like, not a toy for turning a footstep into a
+chipmunk.
+
 Sorting is on, which is the reason `wanted` and `save_requested` carry a
 KEY rather than a row number: sorting physically moves rows, and a
 decode is asynchronous - the row a click meant when it was made is not
@@ -81,13 +90,14 @@ class AudioTransport(QWidget):
     renamed = pyqtSignal(str, str)          # key, new name ("" clears it)
     save_requested = pyqtSignal(str, str)   # key, path
 
-    def __init__(self, parent=None, columns=None):
+    def __init__(self, parent=None, columns=None, pitch=False):
         super().__init__(parent)
         self._scrubbing = False
         self._buffer = None
         self._current = -1
         self._looping = False
         self._extra_columns = list(columns or [])
+        self._has_pitch = pitch
 
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
@@ -174,6 +184,23 @@ class AudioTransport(QWidget):
         self.volume.valueChanged.connect(
             lambda v: self.output.setVolume(v / 100))
 
+        if self._has_pitch:
+            # +/-50%, i.e. half speed to one and a half times over -
+            # enough range to hear a genuinely different pitch, not so
+            # much that "a little up or down" turns into a novelty
+            # voice. 0 is the sample's own, unmodified pitch.
+            self.pitch = QSlider(Qt.Orientation.Horizontal)
+            self.pitch.setRange(-50, 50)
+            self.pitch.setValue(0)
+            self.pitch.setMaximumWidth(120)
+            self.pitch.setToolTip(
+                "Preview this waveform resampled faster or slower - the "
+                "same thing the SPU does to play one sample at several "
+                "pitches. Purely a preview; nothing is written back.")
+            self.pitch_label = QLabel("Pitch 0%")
+            self.pitch_label.setMinimumWidth(64)
+            self.pitch.valueChanged.connect(self._pitch_changed)
+
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
         seek.addWidget(self.time)
@@ -181,6 +208,9 @@ class AudioTransport(QWidget):
         for button in (previous, self.play_button, stop, following):
             row.addWidget(button)
         row.addStretch(1)
+        if self._has_pitch:
+            row.addWidget(self.pitch_label)
+            row.addWidget(self.pitch)
         row.addWidget(QLabel("Volume"))
         row.addWidget(self.volume)
         tools = QHBoxLayout()
@@ -234,6 +264,11 @@ class AudioTransport(QWidget):
                 self.list.setItem(row, col, cell)
         self.list.blockSignals(False)
         self.list.setSortingEnabled(True)
+        if self._extra_columns:
+            # Column 1 is "Index" on all three callers - the disc's own
+            # order, and the one a freshly opened list should read in
+            # regardless of however the table was last left sorted.
+            self.list.sortItems(1, Qt.SortOrder.AscendingOrder)
         if entries:
             self.list.setCurrentCell(0, 0)
 
@@ -384,6 +419,8 @@ class AudioTransport(QWidget):
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
         self.player.setSourceDevice(self._buffer)
         self.player.play()
+        if self._has_pitch:
+            self.player.setPlaybackRate(1 + self.pitch.value() / 100)
 
     def stop(self):
         self.player.stop()
@@ -415,6 +452,14 @@ class AudioTransport(QWidget):
         retrigger this and restart the same row it's mid-answering."""
         if row >= 0 and row != previous_row and self.autoplay.isChecked():
             self.play_row(row)
+
+    def _pitch_changed(self, value):
+        """Live while something is already playing, not just on the next
+        play_bytes() - dragging the slider mid-clip is the whole point
+        of it being a slider rather than a per-play setting."""
+        sign = "+" if value > 0 else ""
+        self.pitch_label.setText(f"Pitch {sign}{value}%")
+        self.player.setPlaybackRate(1 + value / 100)
 
     def _grab(self):
         self._scrubbing = True
