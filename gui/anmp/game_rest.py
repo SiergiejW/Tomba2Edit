@@ -59,7 +59,12 @@ TOMBA_EXTRA = ("ponytail_start", "ponytail_end")
 
 # How much better one skeleton has to fit than another before the
 # difference is believed rather than treated as a tie - see best_for.
+# MARGIN covers a character's costume variants, which sit well apart
+# without being different skeletons; TIE is for scores close enough to
+# be the same measurement twice, as Mizuno's 0.09 and her neighbour's
+# 0.08 are.
 MARGIN = 0.10
+TIE = 0.03
 
 
 def load_sources(exe_path, overlay_path, others=(), cache=None):
@@ -202,23 +207,38 @@ def best_for(sources, model, limb_counts):
         return None
 
     # Fit tells one character's skeleton from another's easily - the
-    # miner's own scores 0.12 against 0.36 and worse for his
-    # neighbours', the pig's 0.18 against 0.47. What it cannot do is
-    # tell a character's own costume variants apart: Tomba has five
-    # 17-bone tables in MAIN.EXE, one per outfit, and against his
-    # default model they score 0.156 to 0.230 - noise, with two of them
-    # byte-identical. Letting fit choose there picks the pig-suit
-    # table's wider shoulders for plain Tomba, which is exactly the
-    # arms-too-far-apart it produced.
+    # miner's own scores 0.14 against 0.21 and worse for his
+    # neighbours', the pig's 0.19 against 0.41. Where it stops deciding
+    # anything, two different things are going on, and they want
+    # opposite answers.
     #
-    # So fit only decides when it is actually deciding something. Among
-    # everything within MARGIN of the best, the nearest source wins, and
-    # the earliest table within that source breaks the remaining tie -
-    # which is the order the game's own data is written in.
+    # In MAIN.EXE the tables are one character in several outfits.
+    # Tomba has five 17-bone tables there, and against his default model
+    # they score 0.156 to 0.230 - noise, two of them byte-identical.
+    # Fit picks the pig suit's wider shoulders, which is exactly the
+    # arms-too-far-apart it produced, so there the earliest table wins
+    # instead: the order the game's own data is written in.
     best = min(row[0] for row in scored)
-    close = [row for row in scored if row[0] <= best + MARGIN]
-    close.sort(key=lambda row: (row[1], row[2]))
-    grade, _rank, offset, label, bones, limbs = close[0]
+    winner = min(scored, key=lambda row: (row[0], row[1], row[2]))
+    if winner[3] == "MAIN.EXE":
+        close = [row for row in scored
+                 if row[0] <= best + MARGIN and row[3] == "MAIN.EXE"]
+        grade, _rank, offset, label, bones, limbs = min(
+            close, key=lambda row: (row[1], row[2]))
+        return label, offset, bones, limbs, grade, len(scored)
+
+    # An overlay's tables are different characters, and there position
+    # says nothing - Mizuno's is the second of four near-identical
+    # scorers, so taking the earliest picks a neighbour. What separates
+    # her is that her table has as many bones as her animation mostly
+    # moves. That only breaks a genuine tie: the miner's own table is
+    # 16 bones where his frames mostly use 15, and it wins anyway
+    # because 0.14 against 0.21 is fit actually deciding.
+    tied = [row for row in scored if row[0] <= best + TIE]
+    usual = limb_counts[0] if limb_counts else None
+    preferred = [row for row in tied if row[5] == usual]
+    grade, _rank, offset, label, bones, limbs = min(
+        preferred or tied, key=lambda row: row[0])
     return label, offset, bones, limbs, grade, len(scored)
 
 
