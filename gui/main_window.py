@@ -504,6 +504,24 @@ class MainWindow(QMainWindow):
             | QItemSelectionModel.SelectionFlag.Rows)
         self.tree_view.scrollTo(target_index)
 
+    def _skeleton_sources(self, chunk_index):
+        """Where to look for bone trees when posing an area's animation:
+        that area's own overlay first, then MAIN.EXE, then every other
+        area's - see game_rest.load_sources for why the others are worth
+        reaching for. The files are kept, since this is asked again on
+        every animation opened and they do not change while a disc is."""
+        if getattr(self, "_overlay_bytes", None) is None:
+            self._overlay_bytes = {}
+        others = []
+        for other in range(48):
+            path = self.overlay_for_area(other)
+            if path and path not in others:
+                others.append(path)
+        return game_rest.load_sources(
+            getattr(self.mainexe_viewer, "exe_path", None),
+            self.overlay_for_area(chunk_index),
+            others, self._overlay_bytes)
+
     @staticmethod
     def _row_subject(text):
         """A row's name with the stem and the word Model/Animation taken
@@ -2195,13 +2213,8 @@ class MainWindow(QMainWindow):
                                 chunk_index = self._area_chunk_index(selected_item)
                                 vram_bytes = self._load_area_vram_bytes(
                                     chunk_index, merge_common=True)
-                                # The bone trees: this area's overlay for
-                                # its characters, MAIN.EXE for the player.
                                 self.anmp_viewer.set_skeleton_sources(
-                                    game_rest.load_sources(
-                                        getattr(self.mainexe_viewer,
-                                                "exe_path", None),
-                                        self.overlay_for_area(chunk_index)))
+                                    self._skeleton_sources(chunk_index))
                                 self.anmp_viewer.load_anmp_data(
                                     self.dat_file, dat_start + offset, entry_size,
                                     candidates=self._smst_candidates(),

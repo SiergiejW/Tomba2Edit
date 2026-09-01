@@ -129,6 +129,32 @@ def archive_offsets(data, at=0):
 
 REACH = 512             # no bone sits further than this from its parent
 
+MOST_ROOTS = 3          # see most_roots() below
+
+
+def most_roots(bones):
+    """How many bones may hang off nothing in a skeleton this size.
+
+    A character has an upper body and a pelvis - Tomba's roots are
+    bones 0 and 8, the miner's 0 and 8, the Town of the Fishermen pig's
+    0 and 10 - so two is what a real skeleton has, and three is
+    headroom for a big one that does something unusual.
+
+    Being strict here matters more than it looks. The alternative is
+    not a few extra guesses to sort through: a stretch of 0xFFFF filler
+    reads as a skeleton in which every bone is a root, and A02.BIN
+    holds enough of it to answer a 16-bone search with 4,206 imaginary
+    skeletons out of 4,214. Scoring that many against a model is what
+    made opening one of that area's animations hang. Capped, the same
+    overlay offers four.
+
+    The allowance scales because a small table is far easier to satisfy
+    by accident than a large one - three records of filler are nothing,
+    where sixteen consecutive plausible ones are rare. Letting a
+    3-bone search take three roots puts that overlay back to 5,442
+    matches; holding it to two gives eleven."""
+    return min(MOST_ROOTS, max(2, bones // 4))
+
 
 def _shorts(data):
     """The whole binary as signed 16-bit words - what the scan reads.
@@ -187,6 +213,7 @@ def tables_of_size(data, bones, words=None):
     span = bones * step
     out = []
     limit = len(words) - span
+    root_cap = most_roots(bones)
     # Every table actually found on this disc - the player's in
     # MAIN.EXE, the miner's, the pig's, and the block of them in
     # A02.BIN - starts on a 4-byte boundary, which is no surprise for
@@ -198,6 +225,7 @@ def tables_of_size(data, bones, words=None):
         if words[start] != -1:            # cheap first filter: a root?
             continue
         moved = 0
+        roots = 0
         for i in range(bones):
             at = start + i * step
             parent = words[at]
@@ -205,6 +233,9 @@ def tables_of_size(data, bones, words=None):
                 if parent != -1:
                     break
             elif not -1 <= parent <= i - 1:
+                break
+            roots += parent == -1
+            if roots > root_cap:
                 break
             x, y, z = words[at + 1], words[at + 2], words[at + 3]
             if abs(x) > REACH or abs(y) > REACH or abs(z) > REACH:

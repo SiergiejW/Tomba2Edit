@@ -58,20 +58,41 @@ HUMANOID = (-1, 0, 0, 2, 3, 0, 5, 6, -1, 8, 9, 10, 8, 12, 13)
 TOMBA_EXTRA = ("ponytail_start", "ponytail_end")
 
 
-def load_sources(exe_path, overlay_path):
+def load_sources(exe_path, overlay_path, others=(), cache=None):
     """[(label, bytes)] to look for skeletons in, nearest first.
 
-    The overlay comes first: an area's own characters are the ones being
-    posed, and the player's table in MAIN.EXE is the fallback."""
+    This area's own overlay leads, then the player's table in MAIN.EXE,
+    then every other area's overlay.
+
+    Reaching into other areas is not sloppiness. A character that
+    appears in several areas has its skeleton written into each of their
+    overlays, and the copies are not all equally good: the tiny mouse
+    is the same model and the same animation in areas 5, 8 and 34, but
+    only area 8's overlay carries a table that actually fits it - 0.13
+    against 0.43 and 0.44 - so an area-only search leaves two of the
+    three posed on whatever fitted least badly. Fit decides between
+    them all, and ties fall to the nearest source because this list is
+    in that order and the sort that ranks them is stable."""
     out = []
-    for label, path in (("overlay", overlay_path), ("MAIN.EXE", exe_path)):
+    cache = {} if cache is None else cache
+
+    def read(label, path):
         if not path:
-            continue
-        try:
-            with open(path, "rb") as f:
-                out.append((label, f.read()))
-        except OSError:
-            continue
+            return
+        if path not in cache:
+            try:
+                with open(path, "rb") as f:
+                    cache[path] = f.read()
+            except OSError:
+                cache[path] = None
+        if cache[path] is not None:
+            out.append((label, cache[path]))
+
+    read("overlay", overlay_path)
+    read("MAIN.EXE", exe_path)
+    for path in others:
+        if path != overlay_path:
+            read("other", path)
     return out
 
 
@@ -141,25 +162,26 @@ def fit(bones, model, blocks=None):
     the other."""
     import numpy as np
 
-    vertices = np.asarray(model.get("vertices") or (), dtype=float)
-    groups = model.get("groups") or ()
-    if not len(vertices) or not groups:
+    if blocks is None:
+        blocks = mesh_blocks(model)
+    if not blocks:
         return None
-    errors = []
+    total = 0.0
+    counted = 0
     for parent, x, y, z in bones:
-        if not 0 <= parent < len(groups):
+        if not 0 <= parent < len(blocks):
             continue
-        group = groups[parent]
-        if not group.vertex_count or group.vertex_count < 3:
+        block = blocks[parent]
+        if block is None:
             continue
-        offset = np.array([z, -y, x], dtype=float)
-        distance = float(np.linalg.norm(offset))
+        distance = (x * x + y * y + z * z) ** 0.5
         if distance < 1e-6:
             continue
-        block = vertices[group.first_vertex:group.first_vertex + group.vertex_count]
-        reach = float(np.max(block @ (offset / distance)))
-        errors.append(abs(distance - reach) / max(distance, 1.0))
-    return float(np.mean(errors)) if errors else None
+        offset = np.array([z / distance, -y / distance, x / distance])
+        reach = float(np.max(block @ offset))
+        total += abs(distance - reach) / max(distance, 1.0)
+        counted += 1
+    return total / counted if counted else None
 
 
 def best_for(sources, model, limb_counts):
@@ -172,10 +194,11 @@ def best_for(sources, model, limb_counts):
     known up front. Fit decides between them, so a wrong guess at the
     count loses to the right one on its own merits rather than on the
     order they were tried in."""
+    blocks = mesh_blocks(model)
     scored = []
     for limbs in limb_counts:
         for label, offset, bones in candidates(sources, limbs):
-            grade = fit(bones, model)
+            grade = fit(bones, model, blocks)
             scored.append((grade if grade is not None else 9e9,
                            label, offset, bones, limbs))
     if not scored:
