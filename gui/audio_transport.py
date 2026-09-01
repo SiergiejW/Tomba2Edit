@@ -21,22 +21,37 @@ and says so.
 The list itself is a single-column table by default - Music and
 Dialogues use it that way, and it looks exactly like a plain list. SFX
 asks for extra columns (`columns=`) to show the index, bank and slot,
-length and loop flag alongside the name, since "SFX 214" alone is not
-enough to tell one waveform from another the way a channel number or a
-track's length already is for the other two."""
+length and loop flag alongside the name.
+
+Sorting is on, which is the reason `wanted` and `save_requested` carry a
+KEY rather than a row number: sorting physically moves rows, and a
+decode is asynchronous - the row a click meant when it was made is not
+promised to still hold that entry by the time a worker thread calls
+back. A key travels with its row wherever it sorts to, so the owner's
+callback resolving late is only ever wrong if the owner itself indexes
+by position instead of by key too, which is why each panel keeps its
+own key -> data mapping rather than a plain list indexed by row.
+"""
 import os
 
 from PyQt6.QtCore import (QBuffer, QByteArray, Qt, QUrl, pyqtSignal)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout,
-                             QHeaderView, QLabel, QPushButton, QSlider,
-                             QTableWidget, QTableWidgetItem, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
+                             QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                             QSlider, QTableWidget, QTableWidgetItem,
+                             QVBoxLayout, QWidget)
 
 from functions import audio_export
 
 KEY = Qt.ItemDataRole.UserRole
 DESCRIPTION = Qt.ItemDataRole.UserRole + 1
+LOOPS = Qt.ItemDataRole.UserRole + 2
+
+# A narrower default than Stretch would give it: with extra columns
+# competing for room (SFX's Index/Bank/Slot/Length/Loop), the name does
+# not need to eat every pixel that isn't currently used, and the user
+# can still drag it wider - see the Interactive resize mode below.
+NAME_COLUMN_WIDTH = 220
 
 
 def clock(ms):
@@ -51,19 +66,27 @@ class AudioTransport(QWidget):
     """A playlist with transport controls, renaming and saving.
 
     The owner supplies the audio by connecting `wanted`, which carries
-    the row being played; it answers with play_url() or play_bytes().
-    That keeps decoding - which can be slow enough to need a thread -
-    out of here. Saving works the same way through `save_requested`."""
+    the KEY of the row wanted; it answers with play_url() or
+    play_bytes(). That keeps decoding - which can be slow enough to need
+    a thread - out of here. Saving works the same way through
+    `save_requested`.
 
-    wanted = pyqtSignal(int)
+    Save buttons (`save_wav`/`save_mp3`) are built here but are plain
+    QPushButtons an owner is expected to reparent into its own toolbar
+    rather than leave in this widget's own layout - see any of the three
+    panels for the pattern. That is also where a bulk "save all" lives,
+    since which "all" means is specific to what the panel is browsing."""
+
+    wanted = pyqtSignal(str)
     renamed = pyqtSignal(str, str)          # key, new name ("" clears it)
-    save_requested = pyqtSignal(int, str)   # row, path
+    save_requested = pyqtSignal(str, str)   # key, path
 
     def __init__(self, parent=None, columns=None):
         super().__init__(parent)
         self._scrubbing = False
         self._buffer = None
         self._current = -1
+        self._looping = False
         self._extra_columns = list(columns or [])
 
         self.player = QMediaPlayer(self)
@@ -81,20 +104,22 @@ class AudioTransport(QWidget):
         self.list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
         self.list.verticalHeader().setVisible(False)
-        if self._extra_columns:
-            self.list.setHorizontalHeaderLabels(["Name"] + self._extra_columns)
-            header = self.list.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            for i in range(len(self._extra_columns)):
-                header.setSectionResizeMode(
-                    i + 1, QHeaderView.ResizeMode.ResizeToContents)
-        else:
-            # No extra columns: one column, no header - a plain list.
-            self.list.horizontalHeader().setVisible(False)
-            self.list.horizontalHeader().setSectionResizeMode(
-                0, QHeaderView.ResizeMode.Stretch)
+        self.list.setSortingEnabled(True)
+        header = self.list.horizontalHeader()
+        self.list.setHorizontalHeaderLabels(["Name"] + self._extra_columns)
+        # Interactive on every column - a person can drag any of them -
+        # but the name starts at a fixed, narrower width rather than
+        # Stretch's whole-remaining-space default: with extra columns
+        # to share room with, "SFX 214" does not need the width "Fire
+        # Pig Robe Model Animation Pointers" would. With none, it is
+        # still the only column, so this just becomes its starting size
+        # rather than a hard limit - the user can always drag it.
+        for i in range(self.list.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+        self.list.setColumnWidth(0, NAME_COLUMN_WIDTH)
         self.list.cellDoubleClicked.connect(
             lambda row, _col: self.play_row(row))
+        self.list.currentCellChanged.connect(self._maybe_autoplay)
         # F2 renames. Deliberately not SelectedClicked, which would start
         # an edit whenever a chosen row is clicked again.
         self.list.setEditTriggers(
@@ -114,6 +139,12 @@ class AudioTransport(QWidget):
         rename.setToolTip("Give this entry a name of your own (or press F2). "
                           "Names are saved per disc.")
         rename.clicked.connect(self.rename_current)
+        self.autoplay = QCheckBox("Autoplay")
+        self.autoplay.setToolTip(
+            "Play an entry as soon as it's selected, instead of only on "
+            "double-click or Play. Off by default so browsing the list "
+            "with the arrow keys doesn't talk over itself.")
+
         self.save_wav = QPushButton("Save selected to WAV...")
         self.save_wav.clicked.connect(lambda: self._save("wav"))
         self.save_mp3 = QPushButton("Save selected to MP3...")
@@ -147,9 +178,8 @@ class AudioTransport(QWidget):
         row.addWidget(self.volume)
         tools = QHBoxLayout()
         tools.addWidget(rename)
+        tools.addWidget(self.autoplay)
         tools.addStretch(1)
-        tools.addWidget(self.save_wav)
-        tools.addWidget(self.save_mp3)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -163,29 +193,39 @@ class AudioTransport(QWidget):
     def set_entries(self, entries, names=None):
         """Fill the list.
 
-        Each entry is (key, description) or, with extra columns,
-        (key, description, values) where `values` has one string per
-        extra column. The key names the audio and is what a name is
-        stored against; the description is what to show when it has no
-        name."""
+        Each entry is (key, description), (key, description, values), or
+        (key, description, values, loops) - `values` has one string per
+        extra column, and `loops` (default False) marks a row that
+        should repeat rather than play once through, for SFX's benefit.
+        The key names the audio and is what a name is stored against;
+        the description is what to show when it has no name.
+
+        Sorting is turned off while the table is rebuilt: it applies to
+        every insertion otherwise, which is pointless work here and
+        fights the row-by-row fill besides."""
         names = names or {}
         self.stop()
+        self.list.setSortingEnabled(False)
         self.list.blockSignals(True)
         self.list.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             key, description, *rest = entry
             values = rest[0] if rest else ()
+            loops = rest[1] if len(rest) > 1 else False
             item = QTableWidgetItem()
             item.setData(KEY, key)
             item.setData(DESCRIPTION, description)
+            item.setData(LOOPS, bool(loops))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._show(item, names.get(key, ""))
             self.list.setItem(row, 0, item)
             for col, value in enumerate(values, start=1):
-                cell = QTableWidgetItem(str(value))
+                cell = QTableWidgetItem()
+                cell.setData(Qt.ItemDataRole.DisplayRole, value)
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.list.setItem(row, col, cell)
         self.list.blockSignals(False)
+        self.list.setSortingEnabled(True)
         if entries:
             self.list.setCurrentCell(0, 0)
 
@@ -204,6 +244,15 @@ class AudioTransport(QWidget):
         item.setText(name or description)
         item.setToolTip(description if name else "")
 
+    def _row_for_key(self, key):
+        """The row a key is currently sitting at - not assumed stable,
+        since sorting moves rows around underneath it."""
+        for row in range(self.list.rowCount()):
+            item = self.list.item(row, 0)
+            if item is not None and item.data(KEY) == key:
+                return row
+        return -1
+
     def key_at(self, row):
         item = self.list.item(row, 0)
         return item.data(KEY) if item is not None else None
@@ -218,6 +267,9 @@ class AudioTransport(QWidget):
 
     def current_row(self):
         return self.list.currentRow()
+
+    def current_key(self):
+        return self.key_at(self.current_row())
 
     def set_label(self, row, description):
         """Replace a row's description, keeping any name it has."""
@@ -262,6 +314,7 @@ class AudioTransport(QWidget):
         if row < 0:
             return
         item = self.list.item(row, 0)
+        key = item.data(KEY)
         stem = audio_export.safe_name(
             self.name_at(row) or item.data(DESCRIPTION) or "audio")
         chosen, _ = QFileDialog.getSaveFileName(
@@ -272,19 +325,28 @@ class AudioTransport(QWidget):
             return
         if os.path.splitext(chosen)[1].lower() != f".{suffix}":
             chosen += f".{suffix}"
-        self.save_requested.emit(row, chosen)
+        self.save_requested.emit(key, chosen)
 
     # --- playing ------------------------------------------------------
 
     def play_row(self, row):
         """Ask the owner for row `row`; it calls back with the audio."""
         if 0 <= row < self.list.rowCount():
+            key = self.key_at(row)
             self._current = row
             self.list.setCurrentCell(row, 0)
-            self.wanted.emit(row)
+            if key:
+                self.wanted.emit(key)
+
+    def play_key(self, key):
+        """Select and request a row by key, wherever it currently sits."""
+        row = self._row_for_key(key)
+        if row >= 0:
+            self.play_row(row)
 
     def play_url(self, url):
         self.stop()
+        self._looping = False
         self.player.setSource(QUrl(url) if isinstance(url, str) else url)
         self.player.play()
 
@@ -292,8 +354,18 @@ class AudioTransport(QWidget):
         """Play a file held in memory - a WAV built from decoded audio.
 
         The buffer is kept on the instance: the player reads from it for
-        as long as it plays, and letting it go collects it mid-play."""
+        as long as it plays, and letting it go collects it mid-play.
+
+        Loops if the currently selected row was marked as one - a sound
+        effect the game holds a button down to sustain rather than one
+        that plays once through - which is why this reads _current
+        rather than taking a "should it loop" argument: play_bytes is
+        always answering the most recent play_row/play_key, and that
+        row already knows."""
         self.stop()
+        current = self.list.item(self._current, 0) if self._current >= 0 else None
+        self._looping = bool(current and current.data(LOOPS))
+        self.player.setLoops(QMediaPlayer.Loops.Infinite if self._looping else 1)
         self._buffer = QBuffer(self)
         self._buffer.setData(QByteArray(data))
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
@@ -302,6 +374,7 @@ class AudioTransport(QWidget):
 
     def stop(self):
         self.player.stop()
+        self._looping = False
         if self._buffer is not None:
             self._buffer.close()
             self._buffer = None
@@ -321,6 +394,14 @@ class AudioTransport(QWidget):
             self.play_row(max(self.list.currentRow(), 0))
 
     # --- signals ------------------------------------------------------
+
+    def _maybe_autoplay(self, row, _col, previous_row, _previous_col):
+        """Selecting a different row plays it, but only with Autoplay
+        on - and only for a genuinely new row: play_row() itself moves
+        the current cell to where it already is, which would otherwise
+        retrigger this and restart the same row it's mid-answering."""
+        if row >= 0 and row != previous_row and self.autoplay.isChecked():
+            self.play_row(row)
 
     def _grab(self):
         self._scrubbing = True
@@ -343,7 +424,9 @@ class AudioTransport(QWidget):
         self.play_button.setText("Pause" if playing else "Play")
 
     def _status_changed(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+        # A looping track's own repeats must never be read as it having
+        # finished - only step to the next row for one that really has.
+        if status == QMediaPlayer.MediaStatus.EndOfMedia and not self._looping:
             self.step(1)
 
     def closeEvent(self, event):

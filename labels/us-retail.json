@@ -51,7 +51,7 @@
    "start": "000000",
    "end": "00288F",
    "type": "SPRP",
-   "name": ""
+   "name": "Items and GUI"
   },
   {
    "content": "665e60f81595194e",
@@ -79,7 +79,7 @@
    "start": "0091CC",
    "end": "02125F",
    "type": "TANP",
-   "name": "Tomba Animations"
+   "name": "Tomba Animation"
   },
   {
    "content": "65f3ede816d01636",
@@ -93,14 +93,14 @@
    "start": "023A9C",
    "end": "0247FF",
    "type": "MDAP",
-   "name": "Baron Animations"
+   "name": "Baron Animation"
   },
   {
    "content": "b17fab05dadcabd1",
    "start": "024800",
    "end": "026307",
    "type": "SMST",
-   "name": "Intro Zippo"
+   "name": "Zippo Model"
   },
   {
    "content": "8ab56588ec9759d6",
@@ -128,14 +128,14 @@
    "start": "031420",
    "end": "035613",
    "type": "SMST",
-   "name": "Tabby from Intro"
+   "name": "Intro Tabby Model"
   },
   {
    "content": "195ef68aa3095ca7",
    "start": "035614",
    "end": "0364DB",
    "type": "ALFP",
-   "name": "Tabby"
+   "name": "Intro Tabby Model"
   },
   {
    "content": "7f5f490d0eaf8378",
@@ -275,7 +275,7 @@
    "start": "09B574",
    "end": "09D207",
    "type": "SMST",
-   "name": "Fisherman with a fishing rod"
+   "name": "Fisherman"
   },
   {
    "content": "8aff9a43e0f8516e",
@@ -1269,7 +1269,7 @@
    "start": "34BA58",
    "end": "34F177",
    "type": "SMST",
-   "name": "Tiny Mouse with different colored tails"
+   "name": "Tiny Mouse"
   },
   {
    "content": "7fde7376e4b45199",

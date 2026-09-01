@@ -20,8 +20,8 @@ audio for good.
 import os
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
+                             QPushButton, QVBoxLayout, QWidget)
 
 from functions import audio_export, voice, xa
 from gui.audio_transport import AudioTransport, clock
@@ -73,10 +73,10 @@ class VoicePanel(QWidget):
         super().__init__(parent)
         self.image = None
         self.lba = self.sectors = 0
-        self._channels = []
+        self._by_key = {}           # key -> sector count
         self._decode = None
-        self._cache = {}
-        self._pending_save = None   # (row, path) waiting on a decode
+        self._cache = {}            # channel -> wav bytes
+        self._pending_save = None   # (key, path) waiting on a decode
         self.names = NameStore("dialogue")
 
         self.pick = QPushButton("Open BIN/IMG...")
@@ -92,10 +92,16 @@ class VoicePanel(QWidget):
         self.extract.clicked.connect(self._extract)
         self.extract.setEnabled(False)
 
-        self.transport = AudioTransport()
+        self.transport = AudioTransport(columns=["Index", "Channel", "Sectors", "Length"])
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)
+
+        self.export_all = QPushButton("Save all as WAV...")
+        self.export_all.setToolTip("Write every channel into a folder, "
+                                   "using the names given here")
+        self.export_all.clicked.connect(self._save_all)
+        self.export_all.setEnabled(False)
 
         self.status = QLabel("No disc open - the voice track needs a raw "
                              "2352-byte data track, not a CD folder or ISO.")
@@ -105,6 +111,9 @@ class VoicePanel(QWidget):
         top.addWidget(self.pick)
         top.addWidget(self.extract)
         top.addStretch(1)
+        top.addWidget(self.transport.save_wav)
+        top.addWidget(self.transport.save_mp3)
+        top.addWidget(self.export_all)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -129,22 +138,29 @@ class VoicePanel(QWidget):
             return
         self.image = path
         self._cache.clear()
-        self._channels = voice.channels(path, self.lba, self.sectors)
+        channels = voice.channels(path, self.lba, self.sectors)
         per_sector = xa.SAMPLES_PER_SECTOR
         disc = self.names.load(path)
-        self.transport.set_entries(
-            [(f"VOICE.XA:{channel}",
-              f"Channel {channel:2d}   {count:,} sectors   "
-              f"~{clock(count * per_sector * 1000 // 18900)}")
-             for channel, count in self._channels],
-            self.names.names())
+
+        self._by_key = {}
+        entries = []
+        for number, (channel, count) in enumerate(channels, 1):
+            key = f"VOICE.XA:{channel}"
+            self._by_key[key] = count
+            entries.append((
+                key, f"Channel {channel}",
+                (number, channel, f"{count:,}",
+                 clock(count * per_sector * 1000 // 18900)),
+            ))
+        self.transport.set_entries(entries, self.names.names())
         self.status.setText(
-            f"{os.path.basename(path)}: {len(self._channels)} channels, "
+            f"{os.path.basename(path)}: {len(entries)} channels, "
             f"{self.sectors:,} sectors"
             + (f", {len(self.names.names())} named ({disc})." if disc else ".")
             + " Pick one to decode and play it whole - the seek bar scrubs "
             "through it, and F2 names it.")
         self.extract.setEnabled(True)
+        self.export_all.setEnabled(True)
         self.image_opened.emit(path)
 
     def _extract(self):
@@ -168,17 +184,21 @@ class VoicePanel(QWidget):
 
     # --- playing ------------------------------------------------------
 
-    def _wanted(self, row):
-        """The transport asked for a row; decode it if it is not cached."""
-        self._request(row, play=True)
+    @staticmethod
+    def _channel_of(key):
+        return int(key.rsplit(":", 1)[1])
 
-    def _request(self, row, play):
-        if not (0 <= row < len(self._channels)) or not self.image:
+    def _wanted(self, key):
+        """The transport asked for a key; decode it if it is not cached."""
+        self._request(key, play=True)
+
+    def _request(self, key, play):
+        if key not in self._by_key or not self.image:
             return
-        channel = self._channels[row][0]
+        channel = self._channel_of(key)
         cached = self._cache.get(channel)
         if cached is not None:
-            self._ready(row, cached, play)
+            self._ready(key, cached, play)
             return
         self._stop_decode()
         self.status.setText(f"Decoding channel {channel}...")
@@ -187,6 +207,7 @@ class VoicePanel(QWidget):
         self._decode.start()
 
     def _decoded(self, channel, wav, rate):
+        key = f"VOICE.XA:{channel}"
         if wav is None:
             self.status.setText(f"Could not decode channel {channel}.")
             self._pending_save = None
@@ -195,13 +216,11 @@ class VoicePanel(QWidget):
         self.status.setText(
             f"Channel {channel} at {rate} Hz - decoded once and kept, so "
             "coming back to it is instant.")
-        row = next((n for n, (c, _count) in enumerate(self._channels)
-                    if c == channel), -1)
-        self._ready(row, wav, play=self.transport.current_row() == row)
+        self._ready(key, wav, play=self.transport.current_key() == key)
 
-    def _ready(self, row, wav, play):
-        if self._pending_save and self._pending_save[0] == row:
-            _row, path = self._pending_save
+    def _ready(self, key, wav, play):
+        if self._pending_save and self._pending_save[0] == key:
+            _key, path = self._pending_save
             self._pending_save = None
             self._write(path, wav)
         elif play:
@@ -216,17 +235,49 @@ class VoicePanel(QWidget):
             + (f" Saved to {os.path.basename(path)}." if path else
                " No disc serial found, so the name was not saved."))
 
-    def _save(self, row, path):
+    def _save(self, key, path):
         """Write a channel out. A channel takes a few seconds to decode,
         so if it is not in hand the write waits on the worker."""
-        if not (0 <= row < len(self._channels)):
+        if key not in self._by_key:
             return
-        cached = self._cache.get(self._channels[row][0])
+        cached = self._cache.get(self._channel_of(key))
         if cached is not None:
             self._write(path, cached)
             return
-        self._pending_save = (row, path)
-        self._request(row, play=False)
+        self._pending_save = (key, path)
+        self._request(key, play=False)
+
+    def _save_all(self):
+        """Write every channel into a folder, decoding as it goes."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Write every channel into...")
+        if not folder:
+            return
+        self._stop_decode()
+        total = len(self._by_key)
+        for row, key in enumerate(self._by_key, 1):
+            channel = self._channel_of(key)
+            name = self.names.get(key)
+            stem = audio_export.safe_name(
+                f"{row:02d}_channel_{channel}" + (f"_{name}" if name else ""))
+            self.status.setText(f"Saving {row}/{total}: {stem}...")
+            QApplication.processEvents()
+            try:
+                wav = self._cache.get(channel)
+                if wav is None:
+                    with open(self.image, "rb") as f:
+                        frame = xa.framing(self.image) or xa.RAW
+                        chans = xa.channel_map(f, self.lba, self.sectors, frame)
+                        found = next((k for k in chans if k[1] == channel), None)
+                        samples, rate, speakers = xa.decode_channel(
+                            f, self.lba, chans[found], frame=frame)
+                    wav = xa.wav_bytes(samples, rate, speakers)
+                    self._cache[channel] = wav
+                audio_export.save(os.path.join(folder, f"{stem}.wav"), wav)
+            except Exception as exc:
+                self.status.setText(f"Stopped at {stem}: {exc}")
+                return
+        self.status.setText(f"Wrote {total} channel(s) into {folder}.")
 
     def _write(self, path, wav):
         try:

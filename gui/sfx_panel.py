@@ -32,7 +32,7 @@ class SfxPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.image = None
-        self._slots = []            # (bank, index, offset, length)
+        self._by_key = {}           # "bank:index" -> (offset, length, loops)
         self._snd = None
         self._cache = {}
         self.names = NameStore("sfx")
@@ -59,19 +59,19 @@ class SfxPanel(QWidget):
                              "TOMBA2.SND on the disc.")
         self.status.setWordWrap(True)
 
+        # Individual saves first, the bulk one last, all in the one row -
+        # "Save all" is what the other two do repeated over everything,
+        # not a separate action, so it reads as the last step along the
+        # same line rather than off on its own above them.
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
-        # "Save all" comes after the transport's own selected-item saves
-        # rather than before them, up here - it is the bulk version of
-        # what those already do one at a time, not a separate action.
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        bottom.addWidget(self.export_all)
+        top.addWidget(self.transport.save_wav)
+        top.addWidget(self.transport.save_mp3)
+        top.addWidget(self.export_all)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.transport, 1)
-        layout.addLayout(bottom)
         layout.addWidget(self.status)
 
     # --- opening ------------------------------------------------------
@@ -98,42 +98,46 @@ class SfxPanel(QWidget):
             self.transport.set_entries([])
             return
         self._snd = data
-        self._slots = sfx.samples(data)
+        slots = sfx.samples(data)
         self.image = path
         disc = self.names.load(path)
 
+        self._by_key = {}
         entries = []
-        for number, (bank, index, offset, size) in enumerate(self._slots, 1):
+        for number, (bank, index, offset, size) in enumerate(slots, 1):
             held = sfx.loops(data, offset, size)
+            key = f"{bank}:{index}"
+            self._by_key[key] = (offset, size, held)
             entries.append((
-                f"{bank}:{index}",
-                f"SFX {number}",
+                key, f"SFX {number}",
                 (number, bank, index,
                  seconds(sfx.length(size), sfx.RATE), "loop" if held else ""),
+                held,
             ))
         self.transport.set_entries(entries, self.names.names())
         self.export_all.setEnabled(True)
         named = len(self.names.names())
         self.status.setText(
-            f"{os.path.basename(path)}: {len(self._slots)} waveforms in "
-            f"{1 + max(s[0] for s in self._slots)} banks"
+            f"{os.path.basename(path)}: {len(slots)} waveforms in "
+            f"{1 + max(s[0] for s in slots)} banks"
             + (f", {named} named ({disc})." if disc else ".")
-            + " Select one and press F2, or Rename, to name it.")
+            + " Select one and press F2, or Rename, to name it. A looping "
+            "one repeats until you play something else.")
 
     # --- playing ------------------------------------------------------
 
-    def _wav(self, row):
+    def _wav(self, key):
         """One waveform as WAV bytes, decoded once and kept."""
-        if row not in self._cache:
-            _bank, _index, offset, length = self._slots[row]
+        if key not in self._cache:
+            offset, length, _loops = self._by_key[key]
             samples = sfx.decode(self._snd, offset, length)
-            self._cache[row] = xa.wav_bytes(samples, sfx.RATE, 1)
-        return self._cache[row]
+            self._cache[key] = xa.wav_bytes(samples, sfx.RATE, 1)
+        return self._cache[key]
 
-    def _wanted(self, row):
-        if not (0 <= row < len(self._slots)) or self._snd is None:
+    def _wanted(self, key):
+        if key not in self._by_key or self._snd is None:
             return
-        self.transport.play_bytes(self._wav(row))
+        self.transport.play_bytes(self._wav(key))
 
     # --- naming and saving --------------------------------------------
 
@@ -144,11 +148,11 @@ class SfxPanel(QWidget):
             + (f" Saved to {os.path.basename(path)}." if path else
                " No disc serial found, so the name was not saved."))
 
-    def _save_one(self, row, path):
-        if not (0 <= row < len(self._slots)):
+    def _save_one(self, key, path):
+        if key not in self._by_key:
             return
         try:
-            audio_export.save(path, self._wav(row))
+            audio_export.save(path, self._wav(key))
         except Exception as exc:
             self.status.setText(f"Could not save: {exc}")
             return
@@ -160,13 +164,14 @@ class SfxPanel(QWidget):
         if not folder:
             return
         written = 0
-        for row, (bank, index, _offset, _length) in enumerate(self._slots):
-            name = self.names.get(f"{bank}:{index}")
+        for row, key in enumerate(self._by_key):
+            name = self.names.get(key)
+            bank, index = key.split(":")
             stem = audio_export.safe_name(
                 f"{row:03d}_{bank}-{index}" + (f"_{name}" if name else ""))
             try:
                 audio_export.save(os.path.join(folder, f"{stem}.wav"),
-                                  self._wav(row))
+                                  self._wav(key))
                 written += 1
             except Exception as exc:
                 self.status.setText(f"Stopped at {stem}: {exc}")
