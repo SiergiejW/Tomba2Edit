@@ -191,14 +191,14 @@
    "start": "049DA4",
    "end": "04AF73",
    "type": "ALFP",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "db4b69e25709192f",
    "start": "04AF74",
    "end": "04D3FB",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "825bcd62dc891f03",
@@ -310,7 +310,7 @@
    "start": "09D208",
    "end": "09EF8F",
    "type": "ALFP",
-   "name": ""
+   "name": "Fisherman Animations?"
   },
   {
    "content": "333bdbba20103134",
@@ -352,7 +352,7 @@
    "start": "0BF7DC",
    "end": "0DB53F",
    "type": "SMST",
-   "name": "Asset pack Cursed Pipe Area (roomsenemies)"
+   "name": "Asset pack Cursed Pipe Area (roomsenemies) Models"
   },
   {
    "content": "31e428c89f69247e",
@@ -387,21 +387,21 @@
    "start": "0E7E44",
    "end": "0E932B",
    "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth closed)"
+   "name": "Pink Sea Anemone segments (mouth closed) Model"
   },
   {
    "content": "490dfd0ff7a03afc",
    "start": "0E932C",
    "end": "0EAA23",
    "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth opened var 1)"
+   "name": "Pink Sea Anemone segments (mouth opened var 1) Model"
   },
   {
    "content": "d9bdcc5796d45967",
    "start": "0EAA24",
    "end": "0EC71B",
    "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth opened var 2)"
+   "name": "Pink Sea Anemone segments (mouth opened var 2) Model"
   },
   {
    "content": "1159a3c89425cf6e",
@@ -478,7 +478,7 @@
    "start": "105A68",
    "end": "127AFB",
    "type": "SMST",
-   "name": "Asset pack Mining Town"
+   "name": "Asset pack Mining Town Models"
   },
   {
    "content": "727e5f2d77c4cf1a",
@@ -555,7 +555,7 @@
    "start": "16A2B8",
    "end": "16BFFF",
    "type": "SMST",
-   "name": "Conveyor belts"
+   "name": "Conveyor Belt Models"
   },
   {
    "content": "2ae8be8e5f78617f",
@@ -730,21 +730,21 @@
    "start": "202CA4",
    "end": "20418B",
    "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth closed)"
+   "name": "Blue Sea Anemone segments (mouth closed) Model"
   },
   {
    "content": "24a505904c02427c",
    "start": "20418C",
    "end": "205883",
    "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 1)"
+   "name": "Blue Sea Anemone segments (mouth opened var 1) Model"
   },
   {
    "content": "22676434bf673762",
    "start": "205884",
    "end": "20757B",
    "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 2)"
+   "name": "Blue Sea Anemone segments (mouth opened var 2) Model"
   },
   {
    "content": "1eb6067f192be6e9",
@@ -814,7 +814,7 @@
    "start": "21A130",
    "end": "2374CF",
    "type": "SMST",
-   "name": "Asset pack - Kujara Ranch Summit"
+   "name": "Asset pack - Kujara Ranch Summit Models"
   },
   {
    "content": "e230eddcab310dc9",
@@ -849,28 +849,28 @@
    "start": "25DA68",
    "end": "264C17",
    "type": "____",
-   "name": ""
+   "name": "NPC Animation"
   },
   {
    "content": "7de4cddb9b0f7039",
    "start": "264C18",
    "end": "2667DB",
    "type": "SMST",
-   "name": "Phams Daughter 01"
+   "name": "Phams Daughter 01 Model"
   },
   {
    "content": "62fa91c8db4357b8",
    "start": "2667DC",
    "end": "2681EF",
    "type": "SMST",
-   "name": "Phams Daughter 02"
+   "name": "Phams Daughter 02 Model"
   },
   {
    "content": "5cbfc8191383d1e3",
    "start": "2681F0",
    "end": "269B1B",
    "type": "SMST",
-   "name": "Phams Daughter 03"
+   "name": "Phams Daughter 03 Model"
   },
   {
    "content": "6c54394d1c00e436",
@@ -905,7 +905,7 @@
    "start": "26F47C",
    "end": "271BCB",
    "type": "SMST",
-   "name": "Toradako Enemy"
+   "name": "Toradako Enemy Model"
   },
   {
    "content": "3e86040bbdc298d6",
@@ -919,35 +919,35 @@
    "start": "272DD8",
    "end": "2735C7",
    "type": "SMST",
-   "name": "Kujara Bird (burned gray)"
+   "name": "Kujara Bird (burned gray) Model"
   },
   {
    "content": "318bb00b260655b2",
    "start": "2735C8",
    "end": "273D7F",
    "type": "SMST",
-   "name": "Kujara Bird"
+   "name": "Kujara Bird Model"
   },
   {
    "content": "3158e4c242f51eed",
    "start": "273D80",
    "end": "27439F",
    "type": "SMST",
-   "name": "Kujara Bird (shaved)"
+   "name": "Kujara Bird (shaved) Model"
   },
   {
    "content": "0cec5d651d395c83",
    "start": "2743A0",
    "end": "274BB7",
    "type": "SMST",
-   "name": "Kujara Bird (burned black)"
+   "name": "Kujara Bird (burned black) Model"
   },
   {
    "content": "3eb82899297c0153",
    "start": "274BB8",
    "end": "2752F7",
    "type": "SMST",
-   "name": "Kujara Bird (fat shaved dorito)"
+   "name": "Kujara Bird (fat shaved) Model"
   },
   {
    "content": "5778094a8213a4b1",
@@ -961,21 +961,21 @@
    "start": "2756F8",
    "end": "277CFB",
    "type": "SMST",
-   "name": "Kainen"
+   "name": "Kainen Model"
   },
   {
    "content": "181812f775f4b061",
    "start": "277CFC",
    "end": "27A067",
    "type": "SMST",
-   "name": "Kainen (swimming suit)"
+   "name": "Kainen (swimming suit) Model"
   },
   {
    "content": "4aa9b6cd71e87819",
    "start": "27A068",
    "end": "27B973",
    "type": "____",
-   "name": "?"
+   "name": "Tiny Mouse Animation"
   },
   {
    "content": "a0706d1c76e83971",
@@ -1010,14 +1010,14 @@
    "start": "2B7E74",
    "end": "2CD133",
    "type": "SMST",
-   "name": "Asset pack Donglin Forest"
+   "name": "Asset pack Donglin Forest Models"
   },
   {
    "content": "4fd6d4091bc46096",
    "start": "2CD134",
    "end": "2CE947",
    "type": "SMST",
-   "name": "Trap mechanisms"
+   "name": "Trap Mechanisms Model"
   },
   {
    "content": "e0ae698253f390c4",
@@ -1038,7 +1038,7 @@
    "start": "2D2F54",
    "end": "2D580F",
    "type": "SMST",
-   "name": "Donglin Forest Inhabitant 01 and 02"
+   "name": "Donglin Forest Inhabitant 01 and 02 Model"
   },
   {
    "content": "c3ca56fc0b0f8e63",
@@ -1052,7 +1052,7 @@
    "start": "2D9508",
    "end": "2D9CA7",
    "type": "SMST",
-   "name": "Rock Crab"
+   "name": "Rock Crab Model"
   },
   {
    "content": "c2f5660d91adfb39",
@@ -1080,7 +1080,7 @@
    "start": "2DB048",
    "end": "2DC9F3",
    "type": "SMST",
-   "name": "Pig enemy (Donglin Forest)"
+   "name": "Pig enemy (Donglin Forest) Model"
   },
   {
    "content": "e50e62642c63d3a3",
@@ -1115,21 +1115,21 @@
    "start": "2E3948",
    "end": "2E796B",
    "type": "SMST",
-   "name": "Ghost Guard"
+   "name": "Ghost Guard Model"
   },
   {
    "content": "3a31d45077fde4ed",
    "start": "2E796C",
    "end": "2E9CCF",
    "type": "____",
-   "name": ""
+   "name": "Ghost Guard Animation"
   },
   {
    "content": "00dc535b8b4a1757",
    "start": "2E9CD0",
    "end": "2E9EDB",
    "type": "____",
-   "name": ""
+   "name": "Donglin Asset Animation"
   },
   {
    "content": "776f935a8e8fb80b",
@@ -1157,7 +1157,7 @@
    "start": "30471C",
    "end": "31BFCF",
    "type": "SMST",
-   "name": "Asset pack Circus Village"
+   "name": "Asset pack Circus Village Models"
   },
   {
    "content": "8090a8cf1b0cd08a",
@@ -1178,14 +1178,14 @@
    "start": "31E6E8",
    "end": "3258E7",
    "type": "____",
-   "name": ""
+   "name": "NPC Animation"
   },
   {
    "content": "551aaa1eeda6e5a0",
    "start": "3258E8",
    "end": "32941B",
    "type": "SMST",
-   "name": "Fountain Statue"
+   "name": "Fountain Statue Model"
   },
   {
    "content": "4033a845f42ff8ce",
@@ -1199,28 +1199,28 @@
    "start": "32F9D0",
    "end": "3320B7",
    "type": "SMST",
-   "name": "Pig Elder"
+   "name": "Pig Elderwith Staff Model"
   },
   {
    "content": "d8f705f4b192a268",
    "start": "3320B8",
    "end": "33435B",
    "type": "SMST",
-   "name": "Cursed Villager 01 (man)"
+   "name": "Cursed Villager 01 (man) Model"
   },
   {
    "content": "ca1b8b9449b7cda2",
    "start": "33435C",
    "end": "33667F",
    "type": "SMST",
-   "name": "Cursed Villager 02 (woman)"
+   "name": "Cursed Villager 02 (woman) Model"
   },
   {
    "content": "76cc551a3cf7860d",
    "start": "336680",
    "end": "339093",
    "type": "SMST",
-   "name": "Cursed Villager 03 (clown)"
+   "name": "Cursed Villager 03 (clown) Model"
   },
   {
    "content": "72cccdc8bdc65a5a",
@@ -1262,7 +1262,7 @@
    "start": "3438EC",
    "end": "3450EF",
    "type": "____",
-   "name": ""
+   "name": "Flying Paon Animation"
   },
   {
    "content": "f9c69456d61c4d56",
@@ -1304,7 +1304,7 @@
    "start": "34F178",
    "end": "350F27",
    "type": "SMST",
-   "name": "Yan of The Hidden Village"
+   "name": "Yan of The Hidden Village Model"
   },
   {
    "content": "374f95ff4c01a734",
@@ -1332,7 +1332,7 @@
    "start": "364798",
    "end": "386BD3",
    "type": "SMST",
-   "name": "Asset pack Water Temple"
+   "name": "Asset pack Water Temple Models"
   },
   {
    "content": "30d88c841b47034a",
@@ -1346,14 +1346,14 @@
    "start": "386D78",
    "end": "3888BB",
    "type": "SMST",
-   "name": "Mermaid 01 (with harp)"
+   "name": "Mermaid 01 (with harp) Model"
   },
   {
    "content": "8d66168df612aa46",
    "start": "3888BC",
    "end": "38A23B",
    "type": "SMST",
-   "name": "Mermaid 02"
+   "name": "Mermaid 02 Model"
   },
   {
    "content": "53bb52f81f0f72ce",
@@ -1367,105 +1367,105 @@
    "start": "38B964",
    "end": "38CE43",
    "type": "SMST",
-   "name": "Flying Spiker enemy"
+   "name": "Flying Spiker Enemy Model"
   },
   {
    "content": "9eab1c17f572fbd3",
    "start": "38CE44",
    "end": "38DB27",
    "type": "____",
-   "name": ""
+   "name": "Flying Spiker Enemy Animation"
   },
   {
    "content": "202a7732a5de403d",
    "start": "38DB28",
    "end": "392413",
    "type": "SMST",
-   "name": "Crab enemy"
+   "name": "Crab Enemy Model"
   },
   {
    "content": "bfe9951bfa32726c",
    "start": "392414",
    "end": "394C83",
    "type": "____",
-   "name": ""
+   "name": "Crab Enemy Animation"
   },
   {
    "content": "dbc56da6b265cf7f",
    "start": "394C84",
    "end": "3988BF",
    "type": "SMST",
-   "name": "Pig enemy (Water Temple)"
+   "name": "Pig enemy (Water Temple) Model"
   },
   {
    "content": "6e96802519f95383",
    "start": "3988C0",
    "end": "39A9FB",
    "type": "____",
-   "name": ""
+   "name": "Pig enemy (Water Temple) Animation"
   },
   {
    "content": "5113524f50b1c929",
    "start": "39A9FC",
    "end": "39E4FF",
    "type": "____",
-   "name": ""
+   "name": "NPC Animation"
   },
   {
    "content": "6affc14b39bfd820",
    "start": "39E500",
    "end": "3A11F3",
    "type": "SMST",
-   "name": "Starving Traveller"
+   "name": "Starving Traveller Model"
   },
   {
    "content": "4bd4cc36aba9145e",
    "start": "3A11F4",
    "end": "3A30B7",
    "type": "SMST",
-   "name": "Water Temple man (Spiked Hair)"
+   "name": "Water Temple man (Spiked Hair) Model"
   },
   {
    "content": "fcd12d8e963c7da1",
    "start": "3A30B8",
    "end": "3A5483",
    "type": "SMST",
-   "name": "Water Temple man (Blue beard)"
+   "name": "Water Temple man (Blue beard) Model"
   },
   {
    "content": "3992768ac1d28fc7",
    "start": "3A5484",
    "end": "3A82D7",
    "type": "SMST",
-   "name": "Water Temple men (Brown hair and Blue hair)"
+   "name": "Water Temple men (Brown hair and Blue hair) Model"
   },
   {
    "content": "d28ca31ca961d68e",
    "start": "3A92F8",
    "end": "3AB5F3",
    "type": "SMST",
-   "name": "The Giant Fish"
+   "name": "The Giant Fish Model"
   },
   {
    "content": "c6399f670d88f916",
    "start": "3AB5F4",
    "end": "3ABA53",
    "type": "____",
-   "name": ""
+   "name": "The Giant Fish Animation"
   },
   {
    "content": "d077815b3df52c8d",
    "start": "3AD1C8",
    "end": "3AEF57",
    "type": "SMST",
-   "name": "Nishiki Bird"
+   "name": "Nishiki Bird Model"
   },
   {
    "content": "ff5f775921d95d80",
    "start": "3AEF58",
    "end": "3AF8E7",
    "type": "____",
-   "name": ""
+   "name": "Nishiki Bird Animation"
   },
   {
    "content": "ea2279e9510e576e",
@@ -1479,7 +1479,7 @@
    "start": "3B4268",
    "end": "3C5717",
    "type": "MDAT",
-   "name": "unused Ranch Summit no vram"
+   "name": "unused Ranch Summit no vram Level"
   },
   {
    "content": "42eb66c46321a6cc",
@@ -1528,21 +1528,21 @@
    "start": "3E5224",
    "end": "3E841B",
    "type": "SMST",
-   "name": "Asset pack Flame Pig Boss"
+   "name": "Asset pack Flame Pig Boss Models"
   },
   {
    "content": "37033b65679c2580",
    "start": "3E841C",
    "end": "3EC437",
    "type": "SMST",
-   "name": "Flame Pig Boss"
+   "name": "Flame Pig Boss Model"
   },
   {
    "content": "25b16044cb169d1e",
    "start": "3EC438",
    "end": "3EDF0F",
    "type": "SCLD",
-   "name": "Flame Pig Boss"
+   "name": "Flame Pig Boss Animation"
   },
   {
    "content": "fa66f0f589eb9dea",
@@ -1556,14 +1556,14 @@
    "start": "3EED74",
    "end": "3F08BF",
    "type": "SMST",
-   "name": "Flame Pig Robe"
+   "name": "Flame Pig Robe Model"
   },
   {
    "content": "f100ac039d0d65d9",
    "start": "3F08C0",
    "end": "3F0FFF",
    "type": "____",
-   "name": ""
+   "name": "Flame Pig Robe Animation"
   },
   {
    "content": "0eaa9e2b6201bc71",
@@ -1591,21 +1591,21 @@
    "start": "403110",
    "end": "409543",
    "type": "SMST",
-   "name": "Asset pack Ice Pig Boss"
+   "name": "Asset pack Ice Pig Boss Models"
   },
   {
    "content": "edec3b8ac406f977",
    "start": "409544",
    "end": "40D5D3",
    "type": "SMST",
-   "name": "Ice Pig Boss"
+   "name": "Ice Pig Boss Model"
   },
   {
    "content": "20754c144683af09",
    "start": "40D5D4",
    "end": "40FA5B",
    "type": "____",
-   "name": ""
+   "name": "Ice Pig Boss Animation"
   },
   {
    "content": "e2053e8aef0c1f5a",
@@ -1626,7 +1626,7 @@
    "start": "410C98",
    "end": "4127E3",
    "type": "SMST",
-   "name": "Ice Pig Robe"
+   "name": "Ice Pig Robe Model"
   },
   {
    "content": "f15019aadacb8ee2",
@@ -1661,7 +1661,7 @@
    "start": "423808",
    "end": "427C3B",
    "type": "SMST",
-   "name": "Asset pack Ghost Pig Boss"
+   "name": "Asset pack Ghost Pig Boss Models"
   },
   {
    "content": "04d5efb908257d3d",
@@ -1675,14 +1675,14 @@
    "start": "4292D4",
    "end": "42E987",
    "type": "SMST",
-   "name": "Ghost Pig Boss"
+   "name": "Ghost Pig Boss Model"
   },
   {
    "content": "9b2f3501b6364a7e",
    "start": "42E988",
    "end": "431D33",
    "type": "ALFP",
-   "name": ""
+   "name": "Ghost Pig Boss Animation"
   },
   {
    "content": "0967dbe5814fd1d4",
@@ -1696,21 +1696,21 @@
    "start": "432BA8",
    "end": "4346F3",
    "type": "SMST",
-   "name": "Ghost Pig Robe"
+   "name": "Ghost Pig Robe Model"
   },
   {
    "content": "f7f0af0b1719fb54",
    "start": "434770",
    "end": "4357FF",
    "type": "SMST",
-   "name": "Ghost enemy"
+   "name": "Ghost Enemy Model"
   },
   {
    "content": "7279f758c09f3674",
    "start": "435800",
    "end": "435FFF",
    "type": "UNKB",
-   "name": ""
+   "name": "Ghost Enemy Animation"
   },
   {
    "content": "ad2ce6e2c1935e22",
@@ -1731,7 +1731,7 @@
    "start": "4482E4",
    "end": "44C35F",
    "type": "SMST",
-   "name": "Asset pack Earth Pig Boss"
+   "name": "Asset pack Earth Pig Boss Models"
   },
   {
    "content": "3ebcd9d23ab82f8e",
@@ -1745,14 +1745,14 @@
    "start": "44D9F8",
    "end": "4515AB",
    "type": "SMST",
-   "name": "Earth Pig Boss"
+   "name": "Earth Pig Boss Model"
   },
   {
    "content": "0a8a3976a5aebf4a",
    "start": "4515AC",
    "end": "45A057",
    "type": "____",
-   "name": ""
+   "name": "Earth Pig Boss Animation"
   },
   {
    "content": "3016687623e783df",
@@ -1766,14 +1766,14 @@
    "start": "45AF7C",
    "end": "45CAC7",
    "type": "SMST",
-   "name": "Earth Pig Robe"
+   "name": "Earth Pig Robe Model"
   },
   {
    "content": "dc08a478ef109414",
    "start": "45CAC8",
    "end": "45CFFF",
    "type": "____",
-   "name": ""
+   "name": "Earth Pig Robe Animation"
   },
   {
    "content": "5054d79e2775bdd5",
@@ -1801,21 +1801,21 @@
    "start": "47457C",
    "end": "47745B",
    "type": "SMST",
-   "name": "Asset pack Water Pig Boss"
+   "name": "Asset pack Water Pig Boss Models"
   },
   {
    "content": "3dc7c1ce2416942d",
    "start": "47745C",
    "end": "47BF4F",
    "type": "SMST",
-   "name": "Evil Water Pig Model"
+   "name": "Water Pig Model"
   },
   {
    "content": "9e3f6d284114d32b",
    "start": "47BF50",
    "end": "483FF7",
    "type": "____",
-   "name": "Evil Water Pig Animation"
+   "name": "Water Pig Animation"
   },
   {
    "content": "6ff09117ec44ea1d",
@@ -1829,14 +1829,14 @@
    "start": "484F34",
    "end": "486A7F",
    "type": "SMST",
-   "name": "Water Pig Robe"
+   "name": "Water Pig Robe Model"
   },
   {
    "content": "69d58ce3c49860b7",
    "start": "486A80",
    "end": "486FFF",
    "type": "____",
-   "name": ""
+   "name": "Water Pig Robe Animation"
   },
   {
    "content": "5d9f9f6c87602c72",
@@ -1864,21 +1864,21 @@
    "start": "498E40",
    "end": "49BFCB",
    "type": "SMST",
-   "name": "Asset pack Last Pig Boss"
+   "name": "Asset pack Last Pig Boss Models"
   },
   {
    "content": "39837dd3e3f9e64e",
    "start": "49BFCC",
    "end": "4A5077",
    "type": "SMST",
-   "name": "Last Pig Boss"
+   "name": "Last Pig Boss Model"
   },
   {
    "content": "5c77cbc31fca4e9b",
    "start": "4A5078",
    "end": "4A74D3",
    "type": "____",
-   "name": ""
+   "name": "Last Pig Boss Animation"
   },
   {
    "content": "7e354258c6a2c5d9",
@@ -1892,21 +1892,21 @@
    "start": "4A7EAC",
    "end": "4ABA7F",
    "type": "SMST",
-   "name": "Tabby"
+   "name": "Tabby Model"
   },
   {
    "content": "eb9650c3c316508d",
    "start": "4ABA80",
    "end": "4AF653",
    "type": "SMST",
-   "name": "Petrified Tabby"
+   "name": "Petrified Tabby Model"
   },
   {
    "content": "a25889b851c06026",
    "start": "4AF654",
    "end": "4B0823",
    "type": "____",
-   "name": ""
+   "name": "Tabby Animation"
   },
   {
    "content": "230932c9f32212e2",
@@ -1934,7 +1934,7 @@
    "start": "4BC838",
    "end": "4BCE93",
    "type": "SMST",
-   "name": "Doors"
+   "name": "Door Models"
   },
   {
    "content": "1aedc04a0f0d6839",
@@ -1962,7 +1962,7 @@
    "start": "4C7880",
    "end": "4C7D23",
    "type": "SMST",
-   "name": "Asset pack Tower of Strength"
+   "name": "Asset pack Tower of Strength Models"
   },
   {
    "content": "ee0d850701fcf856",
@@ -1990,7 +1990,7 @@
    "start": "4D1310",
    "end": "4D1763",
    "type": "SMST",
-   "name": "Asset pack Tower of Wisdom"
+   "name": "Asset pack Tower of Wisdom Models"
   },
   {
    "content": "65338f9f0e8c1d18",
@@ -2018,7 +2018,7 @@
    "start": "4E13C4",
    "end": "4E16CF",
    "type": "SMST",
-   "name": "Asset pack Golden Tower"
+   "name": "Asset pack Golden Tower Models"
   },
   {
    "content": "cbf5d86e3e615505",
@@ -2032,14 +2032,14 @@
    "start": "4E17D4",
    "end": "4E2133",
    "type": "____",
-   "name": ""
+   "name": "Pig Elder Animation"
   },
   {
    "content": "4ac7b97faaf55366",
    "start": "4E2134",
    "end": "4E481B",
    "type": "SMST",
-   "name": "Pig Elder"
+   "name": "Pig Elder Model"
   },
   {
    "content": "2d88cad686e2c4b1",
@@ -2053,14 +2053,14 @@
    "start": "4E5000",
    "end": "4E90D3",
    "type": "SMST",
-   "name": "Tiny Mouse with different colored tails"
+   "name": "Tiny Mouse with different colored tails Model"
   },
   {
    "content": "0b16ae77bdbb8f17",
    "start": "4EA848",
    "end": "4F1DC3",
    "type": "SMST",
-   "name": "Tiny Mouses Room doors"
+   "name": "Tiny Mouses Room door Models"
   },
   {
    "content": "a0db4a92c73c6b1b",
@@ -2123,7 +2123,7 @@
    "start": "518B3C",
    "end": "525F9F",
    "type": "SMST",
-   "name": "Wins boat Kainens ending chest"
+   "name": "Wins boat Kainens ending chest Models"
   },
   {
    "content": "0efe9a5b93f02925",
@@ -2137,133 +2137,133 @@
    "start": "526090",
    "end": "52A083",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "2b0915351fbfede4",
    "start": "52A084",
    "end": "52C2D3",
    "type": "SMST",
-   "name": "Win"
+   "name": "Win Model"
   },
   {
    "content": "38b3af5d18d86bc7",
    "start": "52C2D4",
    "end": "52DC7B",
    "type": "SMST",
-   "name": "Ark"
+   "name": "Ark Model"
   },
   {
    "content": "770adf0341d8755e",
    "start": "52DC7C",
    "end": "534D33",
    "type": "SMST",
-   "name": "Tabby"
+   "name": "Tabby Model"
   },
   {
    "content": "f31237620815ffc8",
    "start": "534D34",
    "end": "536507",
    "type": "SMST",
-   "name": "Parrot"
+   "name": "Parrot Model"
   },
   {
    "content": "6dee430c57433ff0",
    "start": "536508",
    "end": "5387CB",
    "type": "SMST",
-   "name": "Kainen"
+   "name": "Kainen Model"
   },
   {
    "content": "50e56e3f5d7829b5",
    "start": "5387CC",
    "end": "53A877",
    "type": "SMST",
-   "name": "Pham"
+   "name": "Pham Model"
   },
   {
    "content": "f2267281c773d565",
    "start": "53A878",
    "end": "53C43B",
    "type": "SMST",
-   "name": "Phams Daughter 01"
+   "name": "Phams Daughter 01 Model"
   },
   {
    "content": "175a2a2c8d020bd4",
    "start": "53C43C",
    "end": "53DE4F",
    "type": "SMST",
-   "name": "Phams Daughter 02"
+   "name": "Phams Daughter 02 Model"
   },
   {
    "content": "f13ad5cf812adf18",
    "start": "53DE50",
    "end": "53F77B",
    "type": "SMST",
-   "name": "Phams daughter 03"
+   "name": "Phams daughter 03 Model"
   },
   {
    "content": "1ce9e3f33f184c4f",
    "start": "53F77C",
    "end": "54118B",
    "type": "SMST",
-   "name": "Mole"
+   "name": "Mole Model"
   },
   {
    "content": "d9abf25f700f4b02",
    "start": "54118C",
    "end": "5440A7",
    "type": "SMST",
-   "name": "Woman with basket on her head"
+   "name": "Basket Woman Model"
   },
   {
    "content": "6bfa92b6a283f903",
    "start": "5440A8",
    "end": "545FAF",
    "type": "SMST",
-   "name": "Gran"
+   "name": "Gran Model"
   },
   {
    "content": "660508c7128b053e",
    "start": "545FB0",
    "end": "54717F",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "69d30235c6f06c57",
    "start": "547430",
    "end": "547F73",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "7a23e8955c353c49",
    "start": "547F74",
    "end": "54839B",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "ee0e2f6c70888abc",
    "start": "54839C",
    "end": "548A97",
    "type": "____",
-   "name": ""
+   "name": "?"
   },
   {
    "content": "ccb40fa58cebdf29",
    "start": "54B19C",
    "end": "54F637",
    "type": "SMST",
-   "name": "Tuxedo Tomba (black)"
+   "name": "Tuxedo Tomba (black) Model"
   },
   {
    "content": "8c38174b7a1ecc04",
    "start": "54F638",
    "end": "553FFF",
    "type": "SMST",
-   "name": "Tuxedo Tomba (red)"
+   "name": "Tuxedo Tomba (red) Model"
   },
   {
    "content": "5b3ee5d38154615e",
@@ -2284,7 +2284,7 @@
    "start": "56E688",
    "end": "58A3EB",
    "type": "SMST",
-   "name": "Asset pack Cursed Pipe Area (roomsenemies)"
+   "name": "Asset pack Cursed Pipe Area (roomsenemies) Models"
   },
   {
    "content": "7344b30daf761e31",
@@ -2347,14 +2347,14 @@
    "start": "5DA93C",
    "end": "5FC9CF",
    "type": "SMST",
-   "name": "Asset pack Purified Coal Mining Town"
+   "name": "Asset pack Purified Coal Mining Town Models"
   },
   {
    "content": "4805a346f0de0f18",
    "start": "627270",
    "end": "6287FF",
    "type": "SMST",
-   "name": "Conveyor belts"
+   "name": "Conveyor Belt Models"
   },
   {
    "content": "a5f284b68d022a54",
@@ -2382,56 +2382,56 @@
    "start": "655274",
    "end": "66795F",
    "type": "SMST",
-   "name": "Asset pack - Purified Kujara Ranch Area"
+   "name": "Asset pack - Purified Kujara Ranch Area Models"
   },
   {
    "content": "1583ec91a78ff5c6",
    "start": "669F4C",
    "end": "66C537",
    "type": "SMST",
-   "name": "Kokka Bird (red)"
+   "name": "Kokka Bird (red) Model"
   },
   {
    "content": "cd0a3c1f2361ed6f",
    "start": "671550",
    "end": "674AEF",
    "type": "SMST",
-   "name": "Armadillo enemy"
+   "name": "Armadillo Enemy Model"
   },
   {
    "content": "1ee289a6eb9c3488",
    "start": "6790D0",
    "end": "67AC93",
    "type": "SMST",
-   "name": "Phams Daughter 01"
+   "name": "Phams Daughter 01 Model"
   },
   {
    "content": "fa6a289e4cce2aee",
    "start": "67AC94",
    "end": "67C6A7",
    "type": "SMST",
-   "name": "Phams Daughter 02"
+   "name": "Phams Daughter 02 Model"
   },
   {
    "content": "61397ba644884313",
    "start": "67C6A8",
    "end": "67DFD3",
    "type": "SMST",
-   "name": "Phams Daugther 03s"
+   "name": "Phams Daugther 03s Model"
   },
   {
    "content": "f8c64b463e7be2cd",
    "start": "67DFD4",
    "end": "680063",
    "type": "SMST",
-   "name": "Leaf Traveller"
+   "name": "Leaf Traveller Model"
   },
   {
    "content": "580f35471f52e4f5",
    "start": "680064",
    "end": "681ECF",
    "type": "SMST",
-   "name": "Kujara Ranch Man 02 Model"
+   "name": "Kujara Ranch Man 02 Model Model"
   },
   {
    "content": "2e65f934763dfd62",
@@ -2529,21 +2529,21 @@
    "start": "6E5F80",
    "end": "6E7B43",
    "type": "SMST",
-   "name": "Phams Daughter 01"
+   "name": "Phams Daughter 01 Model"
   },
   {
    "content": "059e61b9498ffde4",
    "start": "6E7B44",
    "end": "6E9557",
    "type": "SMST",
-   "name": "Phams Daughter 02"
+   "name": "Phams Daughter 02 Model"
   },
   {
    "content": "2e60d9148610b71c",
    "start": "6E9558",
    "end": "6EAE83",
    "type": "SMST",
-   "name": "Phams Daughter 03"
+   "name": "Phams Daughter 03 Model"
   },
   {
    "content": "9179dc69cb2b6c01",
@@ -2620,14 +2620,14 @@
    "start": "6F6504",
    "end": "6F8B07",
    "type": "SMST",
-   "name": "Kainen"
+   "name": "Kainen Model"
   },
   {
    "content": "797eeec58d83ff7d",
    "start": "6F8B08",
    "end": "6FAE73",
    "type": "SMST",
-   "name": "Kainen (swimming suit)"
+   "name": "Kainen (swimming suit) Model"
   },
   {
    "content": "a806c649f2120b8c",
@@ -2648,14 +2648,14 @@
    "start": "73CB68",
    "end": "752D23",
    "type": "SMST",
-   "name": "Asset pack Purified Donglin Forest"
+   "name": "Asset pack Purified Donglin Forest Models"
   },
   {
    "content": "d1da59f81ae7961a",
    "start": "752D24",
    "end": "754537",
    "type": "SMST",
-   "name": "Trap mechanisms"
+   "name": "Trap mechanisms Models"
   },
   {
    "content": "cd2a7f319b9e0e0a",
@@ -2690,14 +2690,14 @@
    "start": "7AF8A4",
    "end": "7B24A7",
    "type": "SMST",
-   "name": "Purified Villager 01 (man)"
+   "name": "Purified Villager 01 (man) Model"
   },
   {
    "content": "860dcb805635d8a2",
    "start": "7B24A8",
    "end": "7B4C43",
    "type": "SMST",
-   "name": "Purified Villager 02 (woman)"
+   "name": "Purified Villager 02 (woman) Model"
   },
   {
    "content": "a89260cad95782e5",
@@ -2802,140 +2802,140 @@
    "start": "869800",
    "end": "86B1A7",
    "type": "SMST",
-   "name": "Ark"
+   "name": "Ark Model"
   },
   {
    "content": "4f7cf3f62f2dc490",
    "start": "86B800",
    "end": "86DA4F",
    "type": "SMST",
-   "name": "Win"
+   "name": "Win Model"
   },
   {
    "content": "4feb92b07a28fccf",
    "start": "86E000",
    "end": "8700EF",
    "type": "SMST",
-   "name": "Thirsty Traveller"
+   "name": "Thirsty Traveller Model"
   },
   {
    "content": "0e688f1a7f5094e4",
    "start": "873000",
    "end": "8753CF",
    "type": "SMST",
-   "name": "Santa"
+   "name": "Santa Model"
   },
   {
    "content": "ba1f049d935a29a0",
    "start": "875800",
    "end": "877833",
    "type": "SMST",
-   "name": "Pham Outside clothes"
+   "name": "Pham Outside clothes Model"
   },
   {
    "content": "97f31736a1e8918a",
    "start": "87A800",
    "end": "87C8AB",
    "type": "SMST",
-   "name": "Pham Yellow suit"
+   "name": "Pham Yellow suit Model"
   },
   {
    "content": "9d1cf4f5f6a6fcc7",
    "start": "87D000",
    "end": "87F0EF",
    "type": "SMST",
-   "name": "Oil-Smeared Traveller"
+   "name": "Oil-Smeared Traveller Model"
   },
   {
    "content": "4acd601090a5df3c",
    "start": "87F800",
    "end": "8819AF",
    "type": "SMST",
-   "name": "Collector"
+   "name": "Collector Model"
   },
   {
    "content": "5f86f87a9b7f5986",
    "start": "882000",
    "end": "884033",
    "type": "SMST",
-   "name": "Pham Blue Suit"
+   "name": "Pham Blue Suit Model"
   },
   {
    "content": "945e441ebaae2039",
    "start": "884800",
    "end": "886A8B",
    "type": "SMST",
-   "name": "Sculptor"
+   "name": "Sculptor Model"
   },
   {
    "content": "12e0d2aaaa607726",
    "start": "887000",
    "end": "8890EF",
    "type": "SMST",
-   "name": "Oil-Smeared Traveller"
+   "name": "Oil-Smeared Traveller Model"
   },
   {
    "content": "348c7364a93b3014",
    "start": "889800",
    "end": "88B423",
    "type": "SMST",
-   "name": "Collector"
+   "name": "Collector Model"
   },
   {
    "content": "ae3f151709134add",
    "start": "88B800",
    "end": "88D8AB",
    "type": "SMST",
-   "name": "Pham Yellow suit"
+   "name": "Pham Yellow suit Model"
   },
   {
    "content": "13c5fa287ffa523a",
    "start": "88E000",
    "end": "890063",
    "type": "SMST",
-   "name": "Sculptor"
+   "name": "Sculptor Model"
   },
   {
    "content": "cf7084e30e139d3e",
    "start": "890800",
    "end": "89293B",
    "type": "SMST",
-   "name": "Painter"
+   "name": "Painter Model"
   },
   {
    "content": "d0612476aaecb649",
    "start": "893000",
    "end": "895603",
    "type": "SMST",
-   "name": "Kainen"
+   "name": "Kainen Model"
   },
   {
    "content": "6122175a61d74691",
    "start": "895800",
    "end": "8976D3",
    "type": "SMST",
-   "name": "Mizuno"
+   "name": "Mizuno the Witch Model"
   },
   {
    "content": "a42cf0ab4ba39fe4",
    "start": "897800",
    "end": "8998EF",
    "type": "SMST",
-   "name": "Laughing Traveller"
+   "name": "Laughing Traveller Model"
   },
   {
    "content": "7b2fd7a2b0abed0f",
    "start": "8A5800",
    "end": "8A72A3",
    "type": "SMST",
-   "name": "100 Year Old Man"
+   "name": "100 Year Old Man Model"
   },
   {
    "content": "bc6bb4444038453a",
    "start": "8AA000",
    "end": "8ABD17",
    "type": "SMST",
-   "name": "Mermaid"
+   "name": "Mermaid Model"
   },
   {
    "content": "4dcbec67640e66dc",
