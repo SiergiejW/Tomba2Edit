@@ -65,18 +65,9 @@ MARGIN = 0.10
 def load_sources(exe_path, overlay_path, others=(), cache=None):
     """[(label, bytes)] to look for skeletons in, nearest first.
 
-    This area's own overlay leads, then the player's table in MAIN.EXE,
-    then every other area's overlay.
-
-    Reaching into other areas is not sloppiness. A character that
-    appears in several areas has its skeleton written into each of their
-    overlays, and the copies are not all equally good: the tiny mouse
-    is the same model and the same animation in areas 5, 8 and 34, but
-    only area 8's overlay carries a table that actually fits it - 0.13
-    against 0.43 and 0.44 - so an area-only search leaves two of the
-    three posed on whatever fitted least badly. Fit decides between
-    them all, and ties fall to the nearest source because this list is
-    in that order and the sort that ranks them is stable."""
+    This area's own overlay leads, then the player's table in MAIN.EXE.
+    `others` is offered for a caller that wants to search wider, but
+    MainWindow deliberately does not - see its _skeleton_sources."""
     out = []
     cache = {} if cache is None else cache
 

@@ -506,21 +506,28 @@ class MainWindow(QMainWindow):
 
     def _skeleton_sources(self, chunk_index):
         """Where to look for bone trees when posing an area's animation:
-        that area's own overlay first, then MAIN.EXE, then every other
-        area's - see game_rest.load_sources for why the others are worth
-        reaching for. The files are kept, since this is asked again on
-        every animation opened and they do not change while a disc is."""
+        that area's own overlay, and MAIN.EXE for the player.
+
+        Deliberately not the other areas' overlays. Reaching into them
+        looked like it helped - it found a better-fitting table for the
+        tiny mouse than its own area had - but every character since
+        checked against a savestate keeps its skeleton in the overlay of
+        the area it appears in: Mizuno in A06, the armadillo in A04,
+        Pham's daughter in A05, the mole and the miner in A01, the pig
+        in A00, Tomba alone in MAIN.EXE. Searching wider only adds
+        another area's characters as competition, and they win often
+        enough to matter - the armadillo's own table scores 0.79 where a
+        stranger's from another overlay scores 0.44, so widening got it
+        wrong where the local search gets it right.
+
+        The files are kept, since this is asked again on every animation
+        opened and they do not change while a disc is."""
         if getattr(self, "_overlay_bytes", None) is None:
             self._overlay_bytes = {}
-        others = []
-        for other in range(48):
-            path = self.overlay_for_area(other)
-            if path and path not in others:
-                others.append(path)
         return game_rest.load_sources(
             getattr(self.mainexe_viewer, "exe_path", None),
             self.overlay_for_area(chunk_index),
-            others, self._overlay_bytes)
+            cache=self._overlay_bytes)
 
     @staticmethod
     def _row_subject(text):
@@ -622,12 +629,17 @@ class MainWindow(QMainWindow):
             # Failing that, a model whose name CONTAINS the animation's:
             # "Sea Anemone Animation" belongs to the models called
             # "Pink Sea Anemone segments (mouth closed)" and its two
-            # open-mouthed variants, which no amount of trimming the
-            # animation's own name will ever reach. Two words at least,
-            # so this cannot latch onto a single common one, and the
-            # shortest names first, which is the one carrying the least
-            # that the animation did not ask for.
-            if not matched and len(words) >= 2:
+            # open-mouthed variants, and "Mizuno Animation" to "Mizuno
+            # the Witch", none of which any amount of trimming the
+            # animation's own name will ever reach. Shortest names
+            # first, that being the one carrying the least the
+            # animation did not ask for.
+            #
+            # The name has to be distinctive enough to be worth
+            # matching on - two words, or one long enough not to be a
+            # word half the disc shares. "Mizuno" earns it; "pig" would
+            # match a dozen unrelated models and does not.
+            if not matched and (len(words) >= 2 or len(subject) >= 5):
                 inside = [(len(s), c) for s, c in models
                           if subject in s and c.parent() is parent]
                 inside += [(len(s) + 1000, c) for s, c in models
