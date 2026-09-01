@@ -47,7 +47,7 @@ from PyQt6.QtCore import (QBuffer, QByteArray, Qt, QUrl, pyqtSignal)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
                              QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                             QSlider, QTableWidget, QTableWidgetItem,
+                             QSlider, QSpinBox, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget)
 
 from functions import audio_export
@@ -160,7 +160,9 @@ class AudioTransport(QWidget):
             "Repeat an entry marked as a loop instead of playing it once. "
             "On by default. Autoplay overrides it while both are checked - "
             "browsing entry to entry would otherwise never move on from "
-            "one that loops.")
+            "one that loops. Unchecking it stops a loop already playing, "
+            "rather than waiting for the next one you pick.")
+        self.loop.toggled.connect(self._loop_toggled)
 
         self.save_wav = QPushButton("Save selected to WAV...")
         self.save_wav.clicked.connect(lambda: self._save("wav"))
@@ -189,17 +191,29 @@ class AudioTransport(QWidget):
             # enough range to hear a genuinely different pitch, not so
             # much that "a little up or down" turns into a novelty
             # voice. 0 is the sample's own, unmodified pitch.
+            pitch_tip = ("Preview this waveform resampled faster or slower "
+                        "- the same thing the SPU does to play one sample "
+                        "at several pitches. Purely a preview; nothing is "
+                        "written back.")
             self.pitch = QSlider(Qt.Orientation.Horizontal)
             self.pitch.setRange(-50, 50)
             self.pitch.setValue(0)
             self.pitch.setMaximumWidth(120)
-            self.pitch.setToolTip(
-                "Preview this waveform resampled faster or slower - the "
-                "same thing the SPU does to play one sample at several "
-                "pitches. Purely a preview; nothing is written back.")
-            self.pitch_label = QLabel("Pitch 0%")
-            self.pitch_label.setMinimumWidth(64)
-            self.pitch.valueChanged.connect(self._pitch_changed)
+            self.pitch.setToolTip(pitch_tip)
+            # The spin box's up/down arrows (and typing a number, and the
+            # keyboard once it has focus) are what "fine tuning" actually
+            # needs - a step of 1% at a time, versus a slider a mouse can
+            # only ever be so precise dragging. The two stay in sync with
+            # each other; only the spin box's end of that also applies
+            # the pitch, since by the time it changes the slider already
+            # agrees with it either way.
+            self.pitch_box = QSpinBox()
+            self.pitch_box.setRange(-50, 50)
+            self.pitch_box.setSuffix("%")
+            self.pitch_box.setToolTip(pitch_tip)
+            self.pitch.valueChanged.connect(self.pitch_box.setValue)
+            self.pitch_box.valueChanged.connect(self.pitch.setValue)
+            self.pitch_box.valueChanged.connect(self._pitch_changed)
 
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
@@ -209,8 +223,9 @@ class AudioTransport(QWidget):
             row.addWidget(button)
         row.addStretch(1)
         if self._has_pitch:
-            row.addWidget(self.pitch_label)
+            row.addWidget(QLabel("Pitch"))
             row.addWidget(self.pitch)
+            row.addWidget(self.pitch_box)
         row.addWidget(QLabel("Volume"))
         row.addWidget(self.volume)
         tools = QHBoxLayout()
@@ -453,12 +468,24 @@ class AudioTransport(QWidget):
         if row >= 0 and row != previous_row and self.autoplay.isChecked():
             self.play_row(row)
 
+    def _loop_toggled(self, checked):
+        """Applies live to whatever is already playing, not just to the
+        next thing picked - unchecking Loop mid-loop should stop it
+        right there, not wait for the entry to be reselected. Only has
+        anything to do when the current row is a looping one and
+        Autoplay isn't on to begin with; otherwise nothing here was
+        looping regardless of this checkbox."""
+        current = self.list.item(self._current, 0) if self._current >= 0 else None
+        if not (current and current.data(LOOPS)) or self.autoplay.isChecked():
+            return
+        self._looping = checked
+        self.player.setLoops(QMediaPlayer.Loops.Infinite if checked else 1)
+
     def _pitch_changed(self, value):
         """Live while something is already playing, not just on the next
-        play_bytes() - dragging the slider mid-clip is the whole point
-        of it being a slider rather than a per-play setting."""
-        sign = "+" if value > 0 else ""
-        self.pitch_label.setText(f"Pitch {sign}{value}%")
+        play_bytes() - dragging the slider or nudging the spin box
+        mid-clip is the whole point of them, rather than a setting that
+        only takes effect on the next play."""
         self.player.setPlaybackRate(1 + value / 100)
 
     def _grab(self):
@@ -482,9 +509,14 @@ class AudioTransport(QWidget):
         self.play_button.setText("Pause" if playing else "Play")
 
     def _status_changed(self, status):
-        # A looping track's own repeats must never be read as it having
-        # finished - only step to the next row for one that really has.
-        if status == QMediaPlayer.MediaStatus.EndOfMedia and not self._looping:
+        # Advancing to the next row when one finishes is Autoplay's job
+        # too, not just playing a row the moment it's selected - with it
+        # off, a track (or a short SFX clip that ends almost right away)
+        # is meant to just stop, not silently carry on through the list.
+        # A looping track's own repeats must also never be read as it
+        # having finished.
+        if (status == QMediaPlayer.MediaStatus.EndOfMedia
+                and not self._looping and self.autoplay.isChecked()):
             self.step(1)
 
     def closeEvent(self, event):
