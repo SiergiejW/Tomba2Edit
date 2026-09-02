@@ -29,6 +29,21 @@ nothing. Each material is cropped to the region its own faces actually
 sample and its UVs rescaled into that crop, so a character exports as a
 handful of small textures instead.
 
+LIT, NOT UNLIT
+--------------
+A PSX model is painted rather than lit - the viewer draws the palette
+colour times the vertex colour and nothing else - so KHR_materials_unlit
+describes what the game does most exactly. It is deliberately not used.
+Unlit materials ignore lamps, and a model that cannot be lit is no use
+to anyone building a scene around it. These export as ordinary
+metallic-roughness materials, so a lamp works on them straight away;
+the vertex colours are still there and still multiply, which means the
+game's own baked shading is what a light adds to rather than replaces.
+
+That needs normals, and the disc has none - there was never anything to
+store. They are computed from the geometry here, which makes them the
+one thing in these files derived rather than read (see _normals).
+
 WHAT IS LOST, HONESTLY
 ----------------------
 Quads. The OBJ path keeps them; glTF has no quad primitive, so
@@ -198,6 +213,40 @@ def _quaternion(matrix):
     return [float(x), float(y), float(z), float(w)]
 
 
+def _normals(points, triangles):
+    """Smooth vertex normals, averaged from the faces meeting at each.
+
+    The disc has none - a PSX model is painted, not lit, so there was
+    never anything to store - but a glTF material that responds to a
+    lamp needs them, and a mesh without them shades flat and facetted.
+    So they are worked out from the geometry here. That makes them the
+    one thing in the file that is derived rather than read.
+
+    Winding is not consistent across a model that was always drawn
+    double-sided, so two faces meeting at a vertex can point opposite
+    ways and cancel. Each face's contribution is flipped to agree with
+    the first one that reached the vertex, which keeps a seam smooth
+    instead of leaving a black band along it."""
+    normals = np.zeros(points.shape, dtype=np.float64)
+    for tri in triangles:
+        a, b, c = points[tri[0]], points[tri[1]], points[tri[2]]
+        face = np.cross(b - a, c - a)
+        size = np.linalg.norm(face)
+        if size < 1e-12:
+            continue
+        face /= size
+        for at in tri:
+            if normals[at] @ face < 0 and normals[at].any():
+                normals[at] -= face
+            else:
+                normals[at] += face
+    lengths = np.linalg.norm(normals, axis=1)
+    empty = lengths < 1e-9
+    normals[empty] = (0.0, 0.0, 1.0)
+    lengths[empty] = 1.0
+    return (normals / lengths[:, None]).astype(np.float32)
+
+
 def _triangles(face):
     """A face as triangles - glTF has no quad."""
     if len(face) == 3:
@@ -305,10 +354,6 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
                 "baseColorTexture": {"index": len(textures) - 1},
                 "metallicFactor": 0.0, "roughnessFactor": 1.0,
             },
-            # PSX art is painted, not lit - the viewer shows the palette
-            # colour times the vertex colour and nothing else, and unlit
-            # is the only way to say that in glTF.
-            "extensions": {"KHR_materials_unlit": {}},
             "doubleSided": True,
             # Black is the transparent colour, not a dark shade, so it
             # is cut out rather than blended.
@@ -320,9 +365,13 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         local_uv[:, 0] = (part_uv[:, 0] * ATLAS_WIDTH - x0) / (x1 - x0)
         local_uv[:, 1] = (part_uv[:, 1] * ATLAS_HEIGHT - y0) / (y1 - y0)
 
+        local = np.ascontiguousarray(vertices[used])
         attributes = {
-            "POSITION": buffer.add(np.ascontiguousarray(vertices[used]),
-                                   "VEC3", FLOAT, ARRAY_BUFFER, minmax=True),
+            "POSITION": buffer.add(local, "VEC3", FLOAT,
+                                   ARRAY_BUFFER, minmax=True),
+            "NORMAL": buffer.add(
+                _normals(local, [[remap[i] for i in tri] for tri in tris]),
+                "VEC3", FLOAT, ARRAY_BUFFER),
             "TEXCOORD_0": buffer.add(np.ascontiguousarray(local_uv),
                                      "VEC2", FLOAT, ARRAY_BUFFER),
             "COLOR_0": buffer.add(np.ascontiguousarray(colors[used]),
@@ -334,6 +383,17 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
             joints[:, 0] = [_bone_of(groups, v, len(bones or ()) or len(groups),
                                      spares) for v in used]
             weights[:, 0] = 1.0
+            # Nothing downstream checks this. Blender indexes its joint
+            # matrices with whatever is here and comes apart with
+            # "index 18 is out of bounds for axis 0 with size 18", a
+            # long way from the mistake - so it is checked here, where
+            # the mistake would be.
+            limit = len(bones or ()) or len(groups)
+            if joints.size and int(joints.max()) >= limit:
+                raise ValueError(
+                    f"joint index {int(joints.max())} in a skin of "
+                    f"{limit} - a group past the end of the skeleton "
+                    f"was not mapped back onto one")
             attributes["JOINTS_0"] = buffer.add(joints, "VEC4",
                                                 UNSIGNED_SHORT, ARRAY_BUFFER)
             attributes["WEIGHTS_0"] = buffer.add(weights, "VEC4",
@@ -351,7 +411,6 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
 
     gltf = {
         "asset": {"version": "2.0", "generator": "Tomba310"},
-        "extensionsUsed": ["KHR_materials_unlit"],
         "scene": 0,
         "meshes": [{"name": name, "primitives": primitives}],
         "materials": materials,

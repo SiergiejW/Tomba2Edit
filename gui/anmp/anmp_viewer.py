@@ -65,6 +65,9 @@ class ANMPViewer(QWidget):
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
+        # The embedded view's own export would write the model alone;
+        # this one's writes the skeleton and the animation with it.
+        self.viewer.toolbar.removeAction(self.viewer.export_action)
 
         self.frames_table = QTableWidget(0, 4)
         self.frames_table.setHorizontalHeaderLabels(["Frame", "Limbs", "Tag", "Offset"])

@@ -153,11 +153,15 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         frame_action.triggered.connect(self.frame_model)
         self.toolbar.addAction(frame_action)
 
-        export_action = QAction(
+        # Kept as an attribute so a view that embeds this one can take
+        # it away: the ANMP viewer offers its own export, which writes
+        # the animation as well, and two Export buttons on one screen
+        # is one too many.
+        self.export_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
-            "Export GLTF", self)
-        export_action.triggered.connect(self.export_to_gltf)
-        self.toolbar.addAction(export_action)
+            "Export glTF", self)
+        self.export_action.triggered.connect(self.export_to_gltf)
+        self.toolbar.addAction(self.export_action)
 
         self.stats_label = QLabel(self)
         self.stats_label.setStyleSheet("""
