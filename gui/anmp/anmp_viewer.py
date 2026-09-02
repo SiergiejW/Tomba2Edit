@@ -315,6 +315,12 @@ class ANMPViewer(QWidget):
             self._clear(f"Not readable as an animation table: {e}")
             return False
 
+        # Stop the transport first. Loading while it runs frames the
+        # new model against a pose the timer is still moving, which is
+        # what made Frame Model land slightly off on the next
+        # animation opened.
+        self.play_button.setChecked(False)
+        self._timer.stop()
         self._source = (dat_file_path, address, size)
         self._area_membership = area_membership or {}
         self._current_area = current_area
@@ -683,6 +689,7 @@ class ANMPViewer(QWidget):
         self.first_group_box.blockSignals(False)
         first = self.first_group_box.value()
         self.viewer.pose_first_group = first
+        self.viewer.pose_spares = dict(self._variations)
         keep = set(range(first, first + len(self._hierarchy)))
         self.viewer.hidden_groups = set(range(total)) - keep
         if bones is not None:
@@ -773,10 +780,16 @@ class ANMPViewer(QWidget):
         _path, address, _size = self._source
         model_data = self.model_box.itemData(self.model_box.currentIndex())
         model_at = f"0x{model_data[0]:X}" if model_data else "?"
+        # The first part is only written when it is not the usual 0, so
+        # a line stays readable for the ordinary case where limb i is
+        # part i.
+        window = (f" | from part {self.first_group_box.value()}"
+                  if self.first_group_box.value() else "")
         line = (f"{verdict} | {self.export_name or 'animation'} | "
                 f"ANMP 0x{address:X} | area {self._current_area} | "
                 f"model {self.model_box.currentText()} @ {model_at} | "
-                f"skeleton {self._skeleton_text(self.skeleton_box.itemData(self.skeleton_box.currentIndex()))}")
+                f"skeleton {self._skeleton_text(self.skeleton_box.itemData(self.skeleton_box.currentIndex()))}"
+                f"{window}")
         print(f"[PAIRING] {line}")
         for note in extra:
             print(f"          {note}")

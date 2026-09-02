@@ -112,6 +112,11 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         # Animation's two limbs are an oven's base and lid, groups 12
         # and 13 of a twenty-group room. See ANMPViewer's First group.
         self.pose_first_group = 0
+        # {spare part: the limb it stands in for}. A spare sits past the
+        # animated limbs, so it has no transform of its own - without
+        # this it stays put while the rest of the model moves, which is
+        # what made a swapped-in variation look frozen.
+        self.pose_spares = {}
         # On by default: stacked at the origin is how the file has the
         # parts, but it is not how anyone wants to first see a model.
         self.spread = True
@@ -315,8 +320,13 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         verts = np.array(self.model_data["vertices"], dtype=np.float32)
         if self.pose is not None:
             for group in self.groups:
+                if not group.vertex_count:
+                    continue
                 which = group.index - self.pose_first_group
-                if not group.vertex_count or not 0 <= which < len(self.pose):
+                if not 0 <= which < len(self.pose):
+                    # A spare part moves with whatever it replaces.
+                    which = self.pose_spares.get(group.index)
+                if which is None or not 0 <= which < len(self.pose):
                     continue
                 rotation, offset = self.pose[which]
                 pivot = self.pose_pivots[which]
