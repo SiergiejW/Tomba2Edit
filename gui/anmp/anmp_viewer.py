@@ -41,11 +41,6 @@ DEFAULT_STEPS = 3
 # a pairing made on packing order alone is believed - see _fill_models.
 GROUP_RATIO = 0.8
 
-# TEMPORARY - where the Approve and Problematic buttons write. Sits
-# beside the program rather than in it, so a frozen build can still be
-# used to gather these. See ANMPViewer._record.
-RECORD_FILE = "animation_pairings.txt"
-
 
 class ANMPViewer(QWidget):
     def __init__(self, parent=None):
@@ -192,25 +187,6 @@ class ANMPViewer(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
 
-        # TEMPORARY - debugging aid for working out which model and
-        # skeleton each animation really wants. Records what is on
-        # screen at the moment it is pressed; delete once the pairings
-        # are settled.
-        self.approve_button = QPushButton("Approve")
-        self.approve_button.setToolTip(
-            "Write down that THIS animation, with the model and skeleton "
-            f"currently chosen, is right - to the console and to "
-            f"{RECORD_FILE} beside the program.")
-        self.approve_button.clicked.connect(self.approve_pairing)
-
-        self.problem_button = QPushButton("Problematic")
-        self.problem_button.setToolTip(
-            "Write down that none of the offered skeletons work for this "
-            "animation. Every candidate is recorded with it, so a case "
-            "where the right table simply is not on offer can be told "
-            "from one where it is just ranked badly.")
-        self.problem_button.clicked.connect(self.mark_problematic)
-
         self.rest_button = QPushButton("Reset pose")
         self.rest_button.setToolTip(
             "Show the model in its rest pose - the skeleton with no "
@@ -221,8 +197,6 @@ class ANMPViewer(QWidget):
         transport.setContentsMargins(8, 4, 8, 4)
         transport.addWidget(self.play_button)
         transport.addWidget(self.rest_button)
-        transport.addWidget(self.approve_button)
-        transport.addWidget(self.problem_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
         transport.addWidget(self.steps_box)
@@ -758,79 +732,6 @@ class ANMPViewer(QWidget):
     def show_frame(self, index):
         """Jump to a whole frame - what the frame list selects."""
         self.slider.setValue(int(index) * self.steps)
-
-    def _skeleton_text(self, which):
-        """One candidate written out, or "none"."""
-        if which is None or not 0 <= which < len(self._skeleton_choices):
-            return "none"
-        label, offset, bones, limbs, grade = self._skeleton_choices[which]
-        kind = self._type_names.get(game_rest.signature(bones), "Type ?")
-        return (f"{kind} | {label} 0x{offset:X} | {limbs} bones | "
-                f"{game_rest.describe(bones)} | fit "
-                + ("-" if grade == float("inf") else f"{grade:.2f}"))
-
-    def _record(self, verdict, extra=()):
-        """TEMPORARY. Write down what is on screen, as judged by eye.
-
-        Fit can tell one character's skeleton from another's but not a
-        character's own costume variants, and the model chooser is a
-        guess made from names and packing order - so which pairings are
-        actually right can only be settled by looking. This is that,
-        written down: the same kind of ground truth the savestates gave
-        for four characters, at the cost of a button press.
-
-        Console and file both - the console to read as you go, the file
-        so a session's worth of judgements outlives the session."""
-        if not self.anmp or not self._source:
-            print(f"[{verdict}] nothing loaded")
-            return
-        _path, address, _size = self._source
-        model_data = self.model_box.itemData(self.model_box.currentIndex())
-        model_at = f"0x{model_data[0]:X}" if model_data else "?"
-        # The first part is only written when it is not the usual 0, so
-        # a line stays readable for the ordinary case where limb i is
-        # part i.
-        window = (f" | from part {self.first_group_box.value()}"
-                  if self.first_group_box.value() else "")
-        line = (f"{verdict} | {self.export_name or 'animation'} | "
-                f"ANMP 0x{address:X} | area {self._current_area} | "
-                f"model {self.model_box.currentText()} @ {model_at} | "
-                f"skeleton {self._skeleton_text(self.skeleton_box.itemData(self.skeleton_box.currentIndex()))}"
-                f"{window}")
-        print(f"[PAIRING] {line}")
-        for note in extra:
-            print(f"          {note}")
-        try:
-            with open(RECORD_FILE, "a", encoding="utf-8") as out:
-                out.write(line + "\n")
-                for note in extra:
-                    out.write(f"    {note}\n")
-        except OSError as e:
-            print(f"[{verdict}] could not write {RECORD_FILE}: {e}")
-            return
-        panel_title.set_info(self.info_label, f"{verdict}: {line[:88]}")
-
-    def approve_pairing(self):
-        """This animation, model and skeleton are right - write it down."""
-        self._record("OK")
-
-    def mark_problematic(self):
-        """None of the offered skeletons work - write that down too.
-
-        The candidates go in with it. "Nothing here fits" is only worth
-        recording if it says what was on offer: if a whole area's list
-        turns out to be the wrong shapes, the table being looked for is
-        not in the sources being searched, which is a different problem
-        from ranking the right ones badly."""
-        offered = []
-        for i in range(len(self._skeleton_choices)):
-            offered.append(f"candidate {i}: {self._skeleton_text(i)}")
-        if not offered:
-            offered = ["no candidates at all - posed on the measured/flat rest"]
-        counts = self.anmp.limb_counts if self.anmp else None
-        if counts:
-            offered.append(f"limb counts in the frames: {dict(counts)}")
-        self._record("PROBLEM", offered)
 
     def export_gltf(self):
         """Write model + skeleton + this animation out as one file."""
