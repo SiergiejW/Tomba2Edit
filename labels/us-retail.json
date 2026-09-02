@@ -61,7 +61,7 @@
   "17": "Golden Tower",
   "18": "Tiny Mouses Minigame",
   "19": "Outro Scene Level",
-  "1B": "Purified Pipe Area",
+  "1B": "Purified Large Mine Underground",
   "1E": "Purified Kujara Ranch Area",
   "1F": "Purified Kujara Ranch Summit",
   "20": "Purified Donglin Forest",
@@ -247,14 +247,14 @@
    "start": "07B2EC",
    "end": "07F4EF",
    "type": "SMST",
-   "name": "Pig Enemy Town of the Fishermen Model"
+   "name": "Koma Pig (Town of the Fishermen) Model"
   },
   {
    "content": "8ec1a0cac52e131c",
    "start": "07F4F0",
    "end": "088447",
    "type": "ALFP",
-   "name": "Pig Enemy Town of the Fishermen Animation"
+   "name": "Koma Pig (Town of the Fishermen) Animation"
   },
   {
    "content": "0e55060be9877a88",
@@ -282,7 +282,7 @@
    "start": "08E830",
    "end": "090417",
    "type": "____",
-   "name": "Seagull Anmiation"
+   "name": "Seagull Animation"
   },
   {
    "content": "ebf0b626cc6bf3d3",
@@ -345,28 +345,28 @@
    "start": "0A9A68",
    "end": "0BF7DB",
    "type": "MDAT",
-   "name": "Cursed Pipe Area Level"
+   "name": "Large Mine Underground Level"
   },
   {
    "content": "18e13be9e2cf0e77",
    "start": "0BF7DC",
    "end": "0DB53F",
    "type": "SMST",
-   "name": "Asset pack Cursed Pipe Area (roomsenemies) Models"
+   "name": "Asset pack Cursed Large Mine Underground (roomsenemies) Models"
   },
   {
    "content": "31e428c89f69247e",
    "start": "0DB540",
    "end": "0E22AF",
    "type": "____",
-   "name": "Cursed Pipe Area Collision"
+   "name": "Cursed Large Mine Underground Collision"
   },
   {
    "content": "f4890eb841e3f427",
    "start": "0E22B0",
    "end": "0E5337",
    "type": "TXTD",
-   "name": "Cursed Pipe Area Text"
+   "name": "Large Mine Underground Text"
   },
   {
    "content": "234eba5fa57c04cd",
@@ -450,14 +450,14 @@
    "start": "0F84E0",
    "end": "0FBE47",
    "type": "SMST",
-   "name": "Pig enemy (Pipe Area) Model"
+   "name": "Koma Pig (Large Mine Underground) Model"
   },
   {
    "content": "800903774e14fef7",
    "start": "0FBE48",
    "end": "0FED83",
    "type": "____",
-   "name": "Pig enemy (Pipe Area) Animation"
+   "name": "Koma Pig (Large Mine Underground) Animation"
   },
   {
    "content": "7c2cfe392765d7bb",
@@ -492,14 +492,14 @@
    "start": "13FA18",
    "end": "145A27",
    "type": "TXTD",
-   "name": "Cursed Coal Mining Town Text"
+   "name": "Coal Mining Town Text"
   },
   {
    "content": "643113a84de7e6e8",
    "start": "145A28",
    "end": "14D903",
    "type": "BETP",
-   "name": "NPC Animations"
+   "name": "NPC Animation"
   },
   {
    "content": "5524774675e9cca5",
@@ -618,14 +618,14 @@
    "start": "1D0808",
    "end": "1D3447",
    "type": "TXTD",
-   "name": "Cursed Kujara Ranch Area Text"
+   "name": "Kujara Ranch Area Text"
   },
   {
    "content": "3fb5b799b4e29eec",
    "start": "1D3448",
    "end": "1E5AC3",
    "type": "SMST",
-   "name": "Asset pack - Kujara Ranch Area Models"
+   "name": "Asset pack Kujara Ranch Area Models"
   },
   {
    "content": "6326c53dc95ee462",
@@ -751,14 +751,14 @@
    "start": "20757C",
    "end": "209F03",
    "type": "SMST",
-   "name": "Pig enemy (Kujara Ranch) Model"
+   "name": "Koma Pig (Kujara Ranch) Model"
   },
   {
    "content": "ff1a32aaca492b40",
    "start": "209F04",
    "end": "20F217",
    "type": "____",
-   "name": "Pig enemy (Kujara Ranch) Animation"
+   "name": "Koma Pig (Kujara Ranch) Animation"
   },
   {
    "content": "f20e6953ae2cf393",
@@ -814,7 +814,7 @@
    "start": "21A130",
    "end": "2374CF",
    "type": "SMST",
-   "name": "Asset pack - Kujara Ranch Summit Models"
+   "name": "Asset pak- Kujara Ranch Summit Models"
   },
   {
    "content": "e230eddcab310dc9",
@@ -835,7 +835,7 @@
    "start": "25371C",
    "end": "2587BF",
    "type": "TXTD",
-   "name": "Cursed Kujara Ranch Summit Text"
+   "name": "Kujara Ranch Summit Text"
   },
   {
    "content": "c88f83e89aad5a18",
@@ -996,7 +996,7 @@
    "start": "2ACE6C",
    "end": "2AD8FB",
    "type": "DRWB",
-   "name": "Cursed Donglin Forest Drawmap"
+   "name": "Donglin Forest Drawmap"
   },
   {
    "content": "14cab588c16637a6",
@@ -1045,7 +1045,7 @@
    "start": "2D5810",
    "end": "2D9507",
    "type": "TXTD",
-   "name": "Cursed Donglin Forest Text"
+   "name": "Donglin Forest Text"
   },
   {
    "content": "1b3de080c279dee0",
@@ -1080,14 +1080,14 @@
    "start": "2DB048",
    "end": "2DC9F3",
    "type": "SMST",
-   "name": "Pig enemy (Donglin Forest) Model"
+   "name": "Koma Pig (Donglin Forest) Model"
   },
   {
    "content": "e50e62642c63d3a3",
    "start": "2DC9F4",
    "end": "2DCC0F",
    "type": "____",
-   "name": "Pig enemy (Donglin Forest) Animation"
+   "name": "Koma Pig (Donglin Forest) Animation"
   },
   {
    "content": "a14dbd8d582759dd",
@@ -1192,7 +1192,7 @@
    "start": "32941C",
    "end": "32F9CF",
    "type": "TXTD",
-   "name": "Cursed Circus Village Text"
+   "name": "Circus Village Text"
   },
   {
    "content": "c3b4f589bb07eb14",
@@ -1395,14 +1395,14 @@
    "start": "394C84",
    "end": "3988BF",
    "type": "SMST",
-   "name": "Pig enemy (Water Temple) Model"
+   "name": "Koma Pig (Water Temple) Model"
   },
   {
    "content": "6e96802519f95383",
    "start": "3988C0",
    "end": "39A9FB",
    "type": "____",
-   "name": "Pig enemy (Water Temple) Animation"
+   "name": "Koma Pig (Water Temple) Animation"
   },
   {
    "content": "5113524f50b1c929",
@@ -2270,14 +2270,14 @@
    "start": "558268",
    "end": "56DBF7",
    "type": "MDAT",
-   "name": "Purified Pipe Area Level"
+   "name": "Purified Large Mine Underground Level"
   },
   {
    "content": "3f9848e0dfbeb9c8",
    "start": "56DBF8",
    "end": "56E687",
    "type": "DRWB",
-   "name": "Purified Pipe Area Drawmap"
+   "name": "Purified Large Mine Underground Drawmap"
   },
   {
    "content": "36ca9b022b7c769f",
@@ -2466,7 +2466,7 @@
    "start": "689150",
    "end": "68BAD7",
    "type": "SMST",
-   "name": "Pig enemy (Kujara Ranch)"
+   "name": "Koma Pig (Kujara Ranch) Model"
   },
   {
    "content": "4996c633de51270e",

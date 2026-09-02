@@ -34,7 +34,7 @@ from functions.camera_controls import (
     CameraEventMixin, scene_of,
 )
 from functions.format_detect import FormatError
-from gui.mdat.mdat_export import export_mdat_to_gltf
+from functions import gltf_export
 from gui.smst.smst_parser import load_smst
 
 # World units per GL unit. A level MDAT is thousands of units across and
@@ -65,6 +65,11 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
 
         self.index_texture = None
         self.vram_raw_bytes = bytearray()
+        # Set by MainWindow when it knows which skeleton this area's
+        # models are posed on, so an export can be rigged rather than a
+        # heap of loose parts. None just means nobody has said.
+        self.export_bones = None
+        self.export_name = None
         self.vram_qimage = None
         self.clut_map = {}                  # CLUT address -> GL texture id
 
@@ -439,19 +444,34 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         self.update()
 
     def export_to_gltf(self):
+        """Write the model out, rigged if a skeleton has been found.
+
+        The bones come from whatever the ANMP viewer worked out for this
+        area, so a model exported while its animation is open carries
+        the same skeleton it is being posed on here."""
         if not self.model_data:
             QMessageBox.warning(self, "Nothing to export", "No SMST is loaded.")
             return
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save GLTF file", "", "GLTF Files (*.gltf)")
+            self, "Save model", "", "glTF binary (*.glb);;glTF (*.gltf)")
         if not file_path:
             return
-        if export_mdat_to_gltf(self.model_data, self.vram_qimage,
-                               self.clut_map, file_path):
-            QMessageBox.information(self, "Export Complete",
-                                    "Exported model successfully!")
-        else:
-            QMessageBox.critical(self, "Export Failed", "Failed to export model.")
+        try:
+            write = (gltf_export.write_gltf if file_path.lower().endswith(".gltf")
+                     else gltf_export.write_glb)
+            write(file_path, self.model_data, self.vram_raw_bytes,
+                  groups=self.groups, bones=self.export_bones,
+                  name=self.export_name or "model",
+                  skip=self.hidden_groups)
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
+            return
+        rigged = " with its skeleton" if self.export_bones else ""
+        QMessageBox.information(
+            self, "Exported",
+            f"Wrote the model{rigged} and "
+            f"{len({c for _p, c, _t in self.model_data.get('texture_info') or ()})} "
+            f"baked palette texture(s).")
 
     # --- camera ------------------------------------------------------
 

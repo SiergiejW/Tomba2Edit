@@ -66,6 +66,9 @@ TOMBA_EXTRA = ("ponytail_start", "ponytail_end")
 MARGIN = 0.10
 TIE = 0.03
 
+# How many candidates the skeleton chooser offers - see ranked().
+MOST_CHOICES = 60
+
 
 def load_sources(exe_path, overlay_path, others=(), cache=None):
     """[(label, bytes)] to look for skeletons in, nearest first.
@@ -182,6 +185,36 @@ def fit(bones, model, blocks=None):
         total += abs(distance - reach) / max(distance, 1.0)
         counted += 1
     return total / counted if counted else None
+
+
+def ranked(sources, model, limb_counts):
+    """Every skeleton that could be this model's, best fit first, as
+    [(label, offset, bones, limbs, grade)].
+
+    What best_for chooses between, offered whole so the choice can be
+    overridden by eye. Fit is a measurement, not an oracle - it cannot
+    tell a character's costume variants apart, and the armadillo's own
+    table scores 0.79 where a stranger's scores 0.44 - so being able to
+    walk the list and look is worth more than another tie-break."""
+    blocks = mesh_blocks(model)
+    out = []
+    seen = set()
+    for label, data in sources or ():
+        for limbs in limb_counts:
+            for offset in skeleton.tables_of_size(data, limbs):
+                if (label, offset, limbs) in seen:
+                    continue
+                seen.add((label, offset, limbs))
+                bones = skeleton.read_table(data, offset, limbs)
+                grade = fit(bones, model, blocks)
+                out.append((label, offset, bones, limbs,
+                            grade if grade is not None else float("inf")))
+    out.sort(key=lambda row: row[4])
+    # A noisy overlay can still offer more tables than anyone will read.
+    # The list is for walking past a wrong pick by eye, and the right
+    # one is never hundreds down a list sorted by fit, so it is cut to
+    # something a dropdown can hold.
+    return out[:MOST_CHOICES]
 
 
 def best_for(sources, model, limb_counts):

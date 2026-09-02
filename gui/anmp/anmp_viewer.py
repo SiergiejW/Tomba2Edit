@@ -13,11 +13,12 @@ gui/anmp/skeleton.py).
 """
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QHBoxLayout, QHeaderView,
-    QLabel, QPushButton, QSlider, QSpinBox, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QCompleter, QFileDialog, QHBoxLayout,
+    QHeaderView, QLabel, QMessageBox, QPushButton, QSlider, QSpinBox,
+    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from functions import gltf_export
 from gui import panel_title
 from gui.anmp.anmp_parser import ANMPError, blend, load_anmp
 from gui.anmp.skeleton import (
@@ -48,6 +49,10 @@ class ANMPViewer(QWidget):
         self.model = None                 # the posed SMST's model dict
         self._candidates = []             # [(label, address, size), ...]
         self._pivots = None
+        self._export_model = None     # the model as the file has it
+        self._export_bones = None     # the skeleton it is posed on
+        self._skeleton_choices = []   # every table that could fit, ranked
+        self._variations = {}         # spare group -> the limb it replaces
         self._hierarchy = ()
         self._named_hierarchy = False
         self._measured_rest = False
@@ -102,6 +107,25 @@ class ANMPViewer(QWidget):
         self.model_box.setCompleter(completer)
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
 
+        self.skeleton_box = QComboBox()
+        self.skeleton_box.setToolTip(
+            "Which bone table to pose on. The default is the one that "
+            "best fits this model, but fit is a measurement and it gets "
+            "it wrong - it cannot separate a character's costume "
+            "variants, and a character's own table sometimes scores "
+            "worse than a stranger's. Every candidate is listed, best "
+            "fit first, so a wrong pick can be walked past by eye.")
+        self.skeleton_box.currentIndexChanged.connect(self._on_skeleton_changed)
+
+        self.variation_box = QComboBox()
+        self.variation_box.setToolTip(
+            "Spare parts the model carries but the animation never "
+            "moves - Tomba's mouth-open head and open hands, the ghost "
+            "guard's second set of tongue segments. The game draws one "
+            "or the other, so picking one here hides the part it stands "
+            "in for.")
+        self.variation_box.currentIndexChanged.connect(self._on_variation_changed)
+
         self.info_label = panel_title.make_info_label("No animation loaded")
 
         # --- transport ---
@@ -142,10 +166,18 @@ class ANMPViewer(QWidget):
             "rotation applied, which is what the animation moves from.")
         self.rest_button.clicked.connect(self.show_rest)
 
+        self.export_button = QPushButton("Export glTF")
+        self.export_button.setToolTip(
+            "Write the posed model out as a rigged, animated glTF - the "
+            "model, the skeleton it is being posed on, and every frame "
+            "of this animation, with the palettes baked into textures.")
+        self.export_button.clicked.connect(self.export_gltf)
+
         transport = QHBoxLayout()
         transport.setContentsMargins(8, 4, 8, 4)
         transport.addWidget(self.play_button)
         transport.addWidget(self.rest_button)
+        transport.addWidget(self.export_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
         transport.addWidget(self.steps_box)
@@ -169,6 +201,13 @@ class ANMPViewer(QWidget):
         model_row.addWidget(QLabel("Model:"))
         model_row.addWidget(self.model_box, 1)
         right_layout.addLayout(model_row)
+        rig_row = QHBoxLayout()
+        rig_row.setContentsMargins(8, 4, 8, 0)
+        rig_row.addWidget(QLabel("Skeleton:"))
+        rig_row.addWidget(self.skeleton_box, 2)
+        rig_row.addWidget(QLabel("Variation:"))
+        rig_row.addWidget(self.variation_box, 1)
+        right_layout.addLayout(rig_row)
         right_layout.addWidget(self.viewer, 1)
         right_layout.addLayout(transport)
 
@@ -408,6 +447,108 @@ class ANMPViewer(QWidget):
             bones, limbs = None, (by_frequency[0] if by_frequency else 0)
             print(f"[ANMP] skeleton: nothing matched limb counts "
                   f"{by_frequency} - falling back to the measured/flat rest pose")
+        self._fill_skeletons(model, by_frequency, bones)
+        self._pose_on(model, bones, limbs)
+
+    def _fill_skeletons(self, model, limb_counts, chosen):
+        """List every table that could be this model's, best fit first.
+
+        The automatic pick is a measurement and it is wrong sometimes -
+        it cannot separate a character's costume variants, and the
+        armadillo's own table fits worse than a stranger's - so the
+        whole pool is offered rather than only the winner."""
+        self._skeleton_choices = game_rest.ranked(
+            self._skeletons, model, limb_counts)
+        self.skeleton_box.blockSignals(True)
+        self.skeleton_box.clear()
+        at = 0
+        for i, (label, offset, bones, limbs, grade) in enumerate(
+                self._skeleton_choices):
+            mark = ""
+            if chosen is not None and bones == chosen:
+                mark, at = "auto: ", i
+            score = "-" if grade == float("inf") else f"{grade:.2f}"
+            self.skeleton_box.addItem(
+                f"{mark}{label} 0x{offset:X} - {limbs} bones, fit {score}", i)
+        if not self._skeleton_choices:
+            self.skeleton_box.addItem("no bone table found", -1)
+        self.skeleton_box.setCurrentIndex(at)
+        self.skeleton_box.blockSignals(False)
+
+    def _on_skeleton_changed(self, index):
+        """Re-pose on a table picked by hand instead of by fit."""
+        which = self.skeleton_box.itemData(index)
+        if which is None or which < 0 or not self.model:
+            return
+        label, offset, bones, limbs, grade = self._skeleton_choices[which]
+        print(f"[ANMP] skeleton: chosen by hand - {label} 0x{offset:X} "
+              f"at {limbs} bones, fit {grade:.2f}")
+        self._pose_on(self.model, bones, limbs)
+
+    def _fill_variations(self, model, animated):
+        """The spare parts, and which limb each stands in for.
+
+        A model carries more groups than the animation moves: Tomba has
+        a mouth-open head and a pair of open hands, and the ghost guard
+        has a whole second run of tongue segments. The game draws one or
+        the other, so they are hidden by default and swapped in from
+        here.
+
+        Which limb a spare replaces is not written down, so it is found
+        by shape - a spare sits where the part it stands in for sits,
+        both being modelled around their own origin, so the limb whose
+        bounding box is nearest the spare's is the one it replaces.
+        That reads the ghost's second tongue onto its first without
+        anything being told about ghosts."""
+        groups = model.get("groups") or ()
+        spares = [g for g in groups[animated:] if g.vertex_count and g.bounds]
+        self.variation_box.blockSignals(True)
+        self.variation_box.clear()
+        self.variation_box.addItem("Default", None)
+        self._variations = {}
+        def extent(g):
+            x0, x1, y0, y1, z0, z1 = g.bounds
+            return (x1 - x0, y1 - y0, z1 - z0)
+
+        for spare in spares:
+            best, score = None, None
+            for limb in groups[:animated]:
+                if not limb.vertex_count or not limb.bounds:
+                    continue
+                gap = (sum(abs(a - b) for a, b in zip(spare.centre, limb.centre))
+                       + sum(abs(a - b)
+                             for a, b in zip(extent(spare), extent(limb))))
+                if score is None or gap < score:
+                    best, score = limb.index, gap
+            if best is None:
+                continue
+            name = (self._hierarchy[best][0]
+                    if best < len(self._hierarchy) else f"limb {best}")
+            self._variations[spare.index] = best
+            self.variation_box.addItem(
+                f"part {spare.index} instead of {name}", spare.index)
+        self.variation_box.setEnabled(self.variation_box.count() > 1)
+        self.variation_box.setCurrentIndex(0)
+        self.variation_box.blockSignals(False)
+
+    def _on_variation_changed(self, index):
+        """Show a spare part in place of the limb it stands in for."""
+        spare = self.variation_box.itemData(index)
+        hidden = set(range(len(self._hierarchy),
+                           len(self.model["groups"]) if self.model else 0))
+        if spare is not None:
+            hidden.discard(spare)
+            hidden.add(self._variations[spare])
+        self.viewer.hidden_groups = hidden
+        self.viewer.prepare_buffers()
+        self.viewer.update()
+
+    def _pose_on(self, model, bones, limbs):
+        """Stand `model` up on `bones` and show it.
+
+        Split out of _use_model so the skeleton chooser can put a
+        different table under the same model without reloading it."""
+        self.model = model
         if bones is not None:
             self._hierarchy, self._named_hierarchy = game_rest.hierarchy(bones), True
         else:
@@ -418,16 +559,29 @@ class ANMPViewer(QWidget):
         # would rotate about each other in a heap.
         # The spare parts - Tomba's mouth-open head and open hands - stand
         # in for a limb rather than joining it, so the game draws one or
-        # the other. Hidden here, and switchable from the part list.
+        # the other. Hidden here, and switchable from the Variation box.
+        self._fill_variations(model, len(self._hierarchy))
         self.viewer.hidden_groups = set(range(len(self._hierarchy),
                                               len(model["groups"])))
         if bones is not None:
-            standing = game_rest.rest_pose(model, bones,
-                                           SPARES.get(len(bones)))
+            # The spare-to-limb map is worked out from the model rather
+            # than looked up: skeleton.SPARES only ever knew Tomba's
+            # four, and reading it off the shapes gives the same answer
+            # for him - 17 and 18 to the head, 19 and 20 to the hands -
+            # while also covering every other character that carries
+            # alternates.
+            standing = game_rest.rest_pose(model, bones, self._variations)
         else:
             standing = (rest_pose(model, self._hierarchy)
                         if self._named_hierarchy else None)
         self._measured_rest = standing is not None
+        # Export wants the model as the file has it - each part around
+        # its own origin - because that is what a glTF skin binds to.
+        # What goes to the viewer below is the standing pose instead,
+        # with every part already moved onto its joint, so the two are
+        # kept apart here rather than one being derived from the other.
+        self._export_model = model
+        self._export_bones = bones
         if standing is not None:
             vertices, self._pivots = standing
             model = dict(model, vertices=vertices.tolist())
@@ -467,6 +621,43 @@ class ANMPViewer(QWidget):
     def show_frame(self, index):
         """Jump to a whole frame - what the frame list selects."""
         self.slider.setValue(int(index) * self.steps)
+
+    def export_gltf(self):
+        """Write model + skeleton + this animation out as one file."""
+        model = getattr(self, "_export_model", None)
+        if not model or not self.anmp:
+            QMessageBox.warning(self, "Nothing to export",
+                                "Load an animation and a model first.")
+            return
+        if self._export_bones is None:
+            QMessageBox.warning(
+                self, "No skeleton",
+                "No bone table was found for this model, so there is "
+                "nothing to rig the animation to. The model can still be "
+                "exported on its own from the SMST view.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save animated model", "",
+            "glTF binary (*.glb);;glTF (*.gltf)")
+        if not path:
+            return
+        try:
+            write = (gltf_export.write_gltf if path.lower().endswith(".gltf")
+                     else gltf_export.write_glb)
+            write(path, model, self.viewer.vram_raw_bytes,
+                  groups=model["groups"], bones=self._export_bones,
+                  frames=self.anmp.frames, fps=self.fps_box.value(),
+                  name=self.model_box.currentText() or "model",
+                  spares=self._variations,
+                  skip=self.viewer.hidden_groups)
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed",
+                                 f"Couldn't write it:\n\n{e}")
+            return
+        QMessageBox.information(
+            self, "Exported",
+            f"Wrote {len(self._export_bones)} bones and "
+            f"{len(self.anmp)} frames at {self.fps_box.value()}fps.")
 
     def show_rest(self):
         """Drop the animation and show the model in its rest pose - the

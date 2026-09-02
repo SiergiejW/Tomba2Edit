@@ -504,6 +504,28 @@ class MainWindow(QMainWindow):
             | QItemSelectionModel.SelectionFlag.Rows)
         self.tree_view.scrollTo(target_index)
 
+    def _bones_for_model(self, model, chunk_index):
+        """The skeleton this model is built on, or None.
+
+        Without an animation there is no limb count to search by, so
+        every size the model could plausibly be is tried and fit picks
+        between them - the same measurement the ANMP viewer uses, just
+        with the model's own group count standing in for what the frames
+        would otherwise say."""
+        if not model or not model.get("groups"):
+            return None
+        counts = list(range(min(len(model["groups"]), 32), 1, -1))
+        try:
+            found = game_rest.best_for(
+                self._skeleton_sources(chunk_index), model, counts)
+        except Exception as e:
+            print(f"[SMST] no skeleton for export: {e}")
+            return None
+        if found:
+            print(f"[SMST] export skeleton: {found[0]} 0x{found[1]:X} "
+                  f"at {found[3]} bones, fit {found[4]:.2f}")
+        return found[2] if found else None
+
     def _skeleton_sources(self, chunk_index):
         """Where to look for bone trees when posing an area's animation:
         that area's own overlay, and MAIN.EXE for the player.
@@ -2204,6 +2226,15 @@ class MainWindow(QMainWindow):
                                 success = self.smst_viewer.load_smst_data(
                                     self.dat_file, dat_start + offset, entry_size)
                                 self.smst_panel.populate_table()
+                                # Find this model's skeleton now, so
+                                # exporting it writes a rigged file
+                                # rather than a bag of loose parts. It
+                                # only sets up the export - the view
+                                # itself still shows the packed model.
+                                self.smst_viewer.export_name = \
+                                    self._row_subject(selected_item.text()) or "model"
+                                self.smst_viewer.export_bones = self._bones_for_model(
+                                    self.smst_viewer.model_data, chunk_index)
                                 if not success:
                                     QMessageBox.critical(
                                         self, "Error",

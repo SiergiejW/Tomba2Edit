@@ -11,7 +11,7 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-from gui.mdat.mdat_export import export_mdat_to_gltf
+from functions import gltf_export
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
@@ -40,6 +40,9 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.shader_program = QOpenGLShaderProgram()
         self.texcoord_buffer = QOpenGLBuffer()
         self.vram_texture = None  # OpenGL texture ID
+        # The palettes are read straight out of this at export time, and
+        # a model can be exported before the view has ever been painted.
+        self.vram_raw_bytes = bytearray()
         # Initialize the camera controls
         self.camera_controls = CameraControls(self)
 
@@ -145,13 +148,27 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         layout.addStretch()
 
     def export_to_glb(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save GLTF file", "", "GLTF Files (*.gltf)")
-        if file_path:
-            success = export_mdat_to_gltf(self.model_data, self.vram_qimage, self.clut_map, file_path)
-            if success:
-                QMessageBox.information(self, "Export Complete", "Exported model successfully!")
-            else:
-                QMessageBox.critical(self, "Export Failed", "Failed to export model.")
+        """Write the level geometry out with its palettes baked in.
+
+        No skeleton here - an MDAT (and the SCLD that reuses this view)
+        is scenery, so it exports as one static mesh split by palette."""
+        if not self.model_data:
+            QMessageBox.warning(self, "Nothing to export", "No model is loaded.")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save model", "", "glTF binary (*.glb);;glTF (*.gltf)")
+        if not file_path:
+            return
+        try:
+            write = (gltf_export.write_gltf if file_path.lower().endswith(".gltf")
+                     else gltf_export.write_glb)
+            write(file_path, self.model_data, self.vram_raw_bytes, name="model")
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
+            return
+        cluts = len({c for _p, c, _t in self.model_data.get("texture_info") or ()})
+        QMessageBox.information(
+            self, "Exported", f"Wrote the model and {cluts} baked palette texture(s).")
 
     def toggle_culling(self, checked):
         # Applied in paintGL rather than here: this can be toggled (and

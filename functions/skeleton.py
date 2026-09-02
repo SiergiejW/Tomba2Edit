@@ -205,7 +205,13 @@ def tables_of_size(data, bones, words=None):
         really runs longer carries on with a bone pointing back into
         itself and is rejected here instead of being truncated to fit.
     """
-    if bones < 2:
+    # Two records is not evidence of a skeleton. A pair that passes
+    # every test here is a coincidence rather than a find - A02.BIN
+    # answers a 2-bone search with 5,648 of them against 11 for three -
+    # and nothing on the disc is jointed that simply anyway: the
+    # smallest table any savestate has confirmed is the armadillo's
+    # seven.
+    if bones < 3:
         return []
     if words is None:
         words = _shorts(data)
