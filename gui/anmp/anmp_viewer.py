@@ -647,14 +647,21 @@ class ANMPViewer(QWidget):
                       len(self._hierarchy) or 0)
 
     def _on_variation_changed(self, index):
-        """Show a spare part in place of the limb it stands in for."""
+        """Show a spare part in place of the limb it stands in for.
+
+        Built from the same window _pose_on uses, so this agrees with
+        the First part offset instead of assuming the animation starts
+        at part 0."""
+        if not self.model:
+            return
         spare = self.variation_box.itemData(index)
-        hidden = set(range(len(self._hierarchy),
-                           len(self.model["groups"]) if self.model else 0))
+        total = len(self.model["groups"])
+        first = self.viewer.pose_first_group
+        keep = set(range(first, first + len(self._hierarchy)))
         if spare is not None:
-            hidden.discard(spare)
-            hidden.add(self._variations[spare])
-        self.viewer.hidden_groups = hidden
+            keep.add(spare)
+            keep.discard(first + self._variations[spare])
+        self.viewer.hidden_groups = set(range(total)) - keep
         self.viewer.prepare_buffers()
         self.viewer.update()
 
