@@ -25,7 +25,9 @@ from functions.camera_controls import (
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QFileDialog, QMessageBox,
 )
+from functions import gltf_export
 
 
 class SCLDViewer(CameraEventMixin, QOpenGLWidget):
@@ -90,6 +92,10 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         self.shader_program = QOpenGLShaderProgram()
         self.camera_controls = CameraControls(self)
+
+        # Set by MainWindow from the tree row, so a save dialog opens
+        # with the file's name in it rather than empty.
+        self.export_name = None
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -162,6 +168,16 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         frame_action.setToolTip("Put the whole of this file's collision back in shot")
         frame_action.triggered.connect(lambda: self.frame_collision())
         self.toolbar.addAction(frame_action)
+
+        self.export_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
+            "Export glTF", self)
+        self.export_action.setToolTip(
+            "Write this file's collision out as glTF lines - the runs "
+            "the game walks along and the verticals it stops at, in the "
+            "colours they are drawn in here.")
+        self.export_action.triggered.connect(self.export_to_gltf)
+        self.toolbar.addAction(self.export_action)
 
         self.stats_label = QLabel(self)
         self.stats_label.setStyleSheet("""
@@ -243,6 +259,38 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self._level_loaded_for_chunk = self._chunk_index
         except Exception as e:
             print(f"Error loading level mesh: {e}")
+
+    def export_to_gltf(self):
+        """Write the collision out, exactly as it is being shown.
+
+        The surface and wall toggles are honoured, so what lands in
+        Blender is what the toolbar has turned on rather than everything
+        the file holds."""
+        if not self.scld_data:
+            QMessageBox.warning(self, "Nothing to export",
+                                "No SCLD is loaded.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save collision", (self.export_name or "collision") + ".glb",
+            "glTF binary (*.glb)")
+        if not path:
+            return
+        verts, colors = build_lines(
+            self.scld_data, self.scld_data.entries,
+            surfaces=self.show_surfaces, seams=self.show_surfaces,
+            walls=self.show_walls,
+            color_by=unkn_color if self.color_by_unkn else None)
+        try:
+            gltf_export.write_lines_glb(
+                path, np.array(verts, dtype=np.float32) / UNIT_SCALE, colors,
+                name=self.export_name or "collision")
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed",
+                                 f"Couldn't write it:\n\n{e}")
+            return
+        QMessageBox.information(
+            self, "Exported",
+            f"Wrote {len(verts) // 2} collision lines.")
 
     def _upload_mesh(self, model_data):
         vertices = model_data.get("vertices") or []

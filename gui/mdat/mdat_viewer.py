@@ -43,6 +43,9 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         # The palettes are read straight out of this at export time, and
         # a model can be exported before the view has ever been painted.
         self.vram_raw_bytes = bytearray()
+        # Set by MainWindow from the tree row, so a save dialog opens
+        # with the file's name in it rather than empty.
+        self.export_name = None
         # Initialize the camera controls
         self.camera_controls = CameraControls(self)
 
@@ -107,9 +110,9 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.toolbar.addAction(frame_action)
 
         # Export button
-        export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export GLTF", self)
-        export_action.triggered.connect(self.export_to_glb)
-        self.toolbar.addAction(export_action)
+        self.export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export glTF", self)
+        self.export_action.triggered.connect(self.export_to_glb)
+        self.toolbar.addAction(self.export_action)
 
         # Stats overlay - tri/quad count (static per model) and live camera
         # position, updated once per frame in paintGL().
@@ -156,13 +159,15 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             QMessageBox.warning(self, "Nothing to export", "No model is loaded.")
             return
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save model", "", "glTF binary (*.glb);;glTF (*.gltf)")
+            self, "Save model", (self.export_name or "model") + ".glb",
+            "glTF binary (*.glb);;glTF (*.gltf)")
         if not file_path:
             return
         try:
             write = (gltf_export.write_gltf if file_path.lower().endswith(".gltf")
                      else gltf_export.write_glb)
-            write(file_path, self.model_data, self.vram_raw_bytes, name="model")
+            write(file_path, self.model_data, self.vram_raw_bytes,
+                  name=self.export_name or "model")
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return

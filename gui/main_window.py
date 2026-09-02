@@ -60,6 +60,24 @@ EXPORTED_TXTD_ITEM_COLOR = "green"
 # _load_area_vram_bytes(merge_common=True).
 COMMON_VRAM_AREA = 1
 
+
+def _export_name(item):
+    """A tree row's name, made safe to hand a Save dialog as a filename.
+
+    The row already reads well - "23-45964 Giant Ice Pig Model.SMST" -
+    so it is the name to offer, minus the extension it came with and
+    anything Windows will not take in a filename."""
+    text = (item.text() if item is not None else "") or "model"
+    for kind in (".SMST", ".ANMP", ".TANP", ".MDAP", ".ALFP", ".MDAT",
+                 ".SCLD", ".IDX", ".BIN"):
+        if text.upper().endswith(kind):
+            text = text[:-len(kind)]
+            break
+    for bad in '<>:"/\\|?*':
+        text = text.replace(bad, "-")
+    return text.strip().strip(".") or "model"
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2180,6 +2198,7 @@ class MainWindow(QMainWindow):
                                     print(f"❌ Could not load VRAM for AREA_{area_number}: {e}")
                             if self.dat_file:
                                 print("Loading MDAT data...")
+                                self.mdat_viewer.export_name = _export_name(selected_item)
                                 success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
@@ -2231,8 +2250,7 @@ class MainWindow(QMainWindow):
                                 # rather than a bag of loose parts. It
                                 # only sets up the export - the view
                                 # itself still shows the packed model.
-                                self.smst_viewer.export_name = \
-                                    self._row_subject(selected_item.text()) or "model"
+                                self.smst_viewer.export_name = _export_name(selected_item)
                                 self.smst_viewer.export_bones = self._bones_for_model(
                                     self.smst_viewer.model_data, chunk_index)
                                 if not success:
@@ -2258,6 +2276,7 @@ class MainWindow(QMainWindow):
                                     chunk_index, merge_common=True)
                                 self.anmp_viewer.set_skeleton_sources(
                                     self._skeleton_sources(chunk_index))
+                                self.anmp_viewer.export_name = _export_name(selected_item)
                                 self.anmp_viewer.load_anmp_data(
                                     self.dat_file, dat_start + offset, entry_size,
                                     candidates=self._smst_candidates(),
@@ -2292,6 +2311,7 @@ class MainWindow(QMainWindow):
                                         chunk_index = int(area_number, 16)
                                     except ValueError:
                                         chunk_index = None
+                                self.scld_viewer.export_name = _export_name(selected_item)
                                 success = self.scld_viewer.load_scld_data(
                                     self.dat_file, dat_start, offset, entry_size, chunk_index=chunk_index)
                                 if success:

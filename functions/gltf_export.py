@@ -88,6 +88,21 @@ NEAREST = 9728
 CLAMP_TO_EDGE = 33071
 TRIANGLES = 4
 
+# How far two faces meeting at a point may turn away from each other and
+# still be smoothed together. Past this they keep their edge.
+#
+# Measured off the disc rather than picked. On a character, neighbouring
+# faces turn 47 degrees at the median and 69 at the upper quartile -
+# these models are coarse, so Blender's 30-degree auto-smooth default
+# would leave two thirds of Tomba faceted. Level geometry has a
+# different shape entirely: a quarter of its joins are dead flat and
+# another quarter sit at exactly 90 degrees, which are real corners
+# where two walls meet.
+#
+# 80 smooths 86% of a character while leaving that 90-degree spike
+# alone, so scenery keeps its corners crisp and a face does not.
+SMOOTH_ANGLE = 80.0
+
 # A texel of padding around each cropped material, so a renderer that
 # filters at the edge has something to filter against instead of
 # sampling whatever the neighbouring texture page happens to hold.
@@ -214,32 +229,63 @@ def _quaternion(matrix):
 
 
 def _normals(points, triangles):
-    """Smooth vertex normals, averaged from the faces meeting at each.
+    """Smooth vertex normals, averaged over the faces meeting at each
+    POSITION rather than at each vertex.
 
-    The disc has none - a PSX model is painted, not lit, so there was
-    never anything to store - but a glTF material that responds to a
-    lamp needs them, and a mesh without them shades flat and facetted.
-    So they are worked out from the geometry here. That makes them the
-    one thing in the file that is derived rather than read.
+    The disc has no normals - a PSX model is painted, not lit, so there
+    was never anything to store - but a material that responds to a lamp
+    needs them. They are computed here, which makes them the one thing
+    in these files derived rather than read.
 
-    Winding is not consistent across a model that was always drawn
-    double-sided, so two faces meeting at a vertex can point opposite
-    ways and cancel. Each face's contribution is flipped to agree with
-    the first one that reached the vertex, which keeps a seam smooth
-    instead of leaving a black band along it."""
-    normals = np.zeros(points.shape, dtype=np.float64)
+    Averaging per vertex index would do nothing. The vertex list stores
+    a separate entry per face corner so each can carry its own UV and
+    colour: Tomba has 1,334 vertices standing on 284 distinct positions,
+    and only 1.10 face corners per vertex. Every vertex would belong to
+    one face, take that face's normal, and shade flat. Averaging over
+    what meets at the POSITION instead - about five faces there - is
+    what makes the surface read as smooth, and it needs no change to the
+    topology, so the UV and colour seams the format depends on all
+    survive.
+
+    Two things are not smoothed over. A corner sharper than SMOOTH_ANGLE
+    keeps its edge, or a crate would come out as a pillow. And winding
+    is not consistent on a model that was always drawn double-sided, so
+    a neighbour pointing the opposite way is taken as the same surface
+    seen from behind and flipped to agree, rather than cancelling into a
+    black band along the seam."""
+    limit = np.cos(np.radians(SMOOTH_ANGLE))
+    faces = []
+    at_position = {}
     for tri in triangles:
         a, b, c = points[tri[0]], points[tri[1]], points[tri[2]]
         face = np.cross(b - a, c - a)
         size = np.linalg.norm(face)
         if size < 1e-12:
             continue
-        face /= size
+        faces.append((tri, face / size))
+    for tri, face in faces:
         for at in tri:
-            if normals[at] @ face < 0 and normals[at].any():
-                normals[at] -= face
-            else:
-                normals[at] += face
+            at_position.setdefault(tuple(np.round(points[at], 3)), []).append(face)
+
+    normals = np.zeros(points.shape, dtype=np.float64)
+    own = np.zeros(points.shape, dtype=np.float64)
+    for tri, face in faces:
+        for at in tri:
+            own[at] += face if own[at] @ face >= 0 or not own[at].any() else -face
+
+    for i, point in enumerate(points):
+        here = at_position.get(tuple(np.round(point, 3)), ())
+        reference = own[i]
+        if not reference.any():
+            reference = here[0] if len(here) else np.array([0.0, 0.0, 1.0])
+        reference = reference / max(np.linalg.norm(reference), 1e-12)
+        total = np.zeros(3)
+        for face in here:
+            agreement = reference @ face
+            if abs(agreement) >= limit:
+                total += face if agreement >= 0 else -face
+        normals[i] = total if total.any() else reference
+
     lengths = np.linalg.norm(normals, axis=1)
     empty = lengths < 1e-9
     normals[empty] = (0.0, 0.0, 1.0)
@@ -320,6 +366,14 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         _page, clut, transparent = (info[f] if f < len(info) else (0, 0, False))
         by_clut.setdefault((clut, bool(transparent)), []).extend(_triangles(face))
 
+    # Normals come from the whole model at once, not from each material
+    # in turn. A position is usually shared by faces wearing different
+    # palettes - Tomba's eleven materials all meet somewhere - and a
+    # per-material pass would only ever see its own side of that join
+    # and leave a flat seam down it.
+    smooth = _normals(vertices, [tri for tris in by_clut.values()
+                                 for tri in tris])
+
     buffer = _Buffer()
     primitives, materials, textures, images = [], [], [], []
 
@@ -369,9 +423,8 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         attributes = {
             "POSITION": buffer.add(local, "VEC3", FLOAT,
                                    ARRAY_BUFFER, minmax=True),
-            "NORMAL": buffer.add(
-                _normals(local, [[remap[i] for i in tri] for tri in tris]),
-                "VEC3", FLOAT, ARRAY_BUFFER),
+            "NORMAL": buffer.add(np.ascontiguousarray(smooth[used]),
+                                 "VEC3", FLOAT, ARRAY_BUFFER),
             "TEXCOORD_0": buffer.add(np.ascontiguousarray(local_uv),
                                      "VEC2", FLOAT, ARRAY_BUFFER),
             "COLOR_0": buffer.add(np.ascontiguousarray(colors[used]),
@@ -515,6 +568,70 @@ def _rig(gltf, buffer, bones, frames, fps, name):
 
     gltf["animations"] = [{"name": "take", "samplers": samplers,
                            "channels": channels}]
+
+
+LINES = 1
+
+
+def write_lines_glb(path, vertices, colors, name="collision"):
+    """Write line geometry - what a SCLD is.
+
+    Collision is not a surface. It is the runs the game walks along and
+    the verticals it stops at, so it exports as glTF's LINES rather than
+    as triangles: consecutive vertex pairs, carrying the same colours
+    the viewer draws them in. Blender brings that in as a mesh with
+    edges and no faces, which is what it is.
+
+    `vertices` is a flat sequence of coordinates, two points per line,
+    exactly as gui/scld/scld_render.build_lines returns them."""
+    points = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+    if not len(points):
+        raise ValueError("no collision to export")
+    shades = np.asarray(colors, dtype=np.float32).reshape(-1, 3)
+    if len(shades) != len(points):
+        shades = np.ones((len(points), 3), dtype=np.float32)
+
+    buffer = _Buffer()
+    attributes = {
+        "POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER,
+                               minmax=True),
+        "COLOR_0": buffer.add(np.clip(shades, 0.0, 1.0), "VEC3", FLOAT,
+                              ARRAY_BUFFER),
+    }
+    gltf = {
+        "asset": {"version": "2.0", "generator": "Tomba310"},
+        "extensionsUsed": ["KHR_materials_unlit"],
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": name, "mesh": 0}],
+        "meshes": [{"name": name, "primitives": [
+            {"attributes": attributes, "mode": LINES, "material": 0}]}],
+        # Lines have no normals and no facing, so lighting them means
+        # nothing - this is the one place unlit is the honest answer.
+        "materials": [{"name": "collision",
+                       "pbrMetallicRoughness": {"metallicFactor": 0.0,
+                                                "roughnessFactor": 1.0},
+                       "extensions": {"KHR_materials_unlit": {}}}],
+        "bufferViews": buffer.views,
+        "accessors": buffer.accessors,
+        "buffers": [{"byteLength": len(buffer.data)}],
+    }
+    _write_glb(path, gltf, buffer.data)
+    return True
+
+
+def _write_glb(path, gltf, blob):
+    """The container: a JSON chunk and a binary one, both 4-byte aligned."""
+    payload = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    payload += b" " * (-len(payload) % 4)
+    blob = bytes(blob) + b"\x00" * (-len(blob) % 4)
+    with open(path, "wb") as out:
+        out.write(struct.pack("<III", 0x46546C67, 2,
+                              12 + 8 + len(payload) + 8 + len(blob)))
+        out.write(struct.pack("<II", len(payload), 0x4E4F534A))
+        out.write(payload)
+        out.write(struct.pack("<II", len(blob), 0x004E4942))
+        out.write(blob)
 
 
 def write_glb(path, model_data, vram_bytes, groups=None, bones=None,

@@ -457,7 +457,8 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             QMessageBox.warning(self, "Nothing to export", "No SMST is loaded.")
             return
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save model", "", "glTF binary (*.glb);;glTF (*.gltf)")
+            self, "Save model", (self.export_name or "model") + ".glb",
+            "glTF binary (*.glb);;glTF (*.gltf)")
         if not file_path:
             return
         try:

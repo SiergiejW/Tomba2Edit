@@ -51,6 +51,7 @@ class ANMPViewer(QWidget):
         self._pivots = None
         self._export_model = None     # the model as the file has it
         self._export_bones = None     # the skeleton it is posed on
+        self.export_name = None       # the tree row's name, for the dialog
         self._skeleton_choices = []   # every table that could fit, ranked
         self._variations = {}         # spare group -> the limb it replaces
         self._hierarchy = ()
@@ -65,9 +66,16 @@ class ANMPViewer(QWidget):
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
-        # The embedded view's own export would write the model alone;
-        # this one's writes the skeleton and the animation with it.
-        self.viewer.toolbar.removeAction(self.viewer.export_action)
+        # The export lives on the embedded viewer's toolbar, the same
+        # icon in the same place as every other view has it - but wired
+        # to this one's export, which writes the skeleton and the
+        # animation as well as the model.
+        self.viewer.export_action.triggered.disconnect()
+        self.viewer.export_action.triggered.connect(self.export_gltf)
+        self.viewer.export_action.setToolTip(
+            "Write the posed model out as a rigged, animated glTF - the "
+            "model, the skeleton it is being posed on, and every frame "
+            "of this animation, with the palettes baked into textures.")
 
         self.frames_table = QTableWidget(0, 4)
         self.frames_table.setHorizontalHeaderLabels(["Frame", "Limbs", "Tag", "Offset"])
@@ -169,18 +177,10 @@ class ANMPViewer(QWidget):
             "rotation applied, which is what the animation moves from.")
         self.rest_button.clicked.connect(self.show_rest)
 
-        self.export_button = QPushButton("Export glTF")
-        self.export_button.setToolTip(
-            "Write the posed model out as a rigged, animated glTF - the "
-            "model, the skeleton it is being posed on, and every frame "
-            "of this animation, with the palettes baked into textures.")
-        self.export_button.clicked.connect(self.export_gltf)
-
         transport = QHBoxLayout()
         transport.setContentsMargins(8, 4, 8, 4)
         transport.addWidget(self.play_button)
         transport.addWidget(self.rest_button)
-        transport.addWidget(self.export_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
         transport.addWidget(self.steps_box)
@@ -640,7 +640,8 @@ class ANMPViewer(QWidget):
                 "exported on its own from the SMST view.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save animated model", "",
+            self, "Save animated model",
+            (self.export_name or "animation") + ".glb",
             "glTF binary (*.glb);;glTF (*.gltf)")
         if not path:
             return
