@@ -62,7 +62,7 @@ def exportMDAT(drwa_addr, datpath):
         'vertex_colors': [],
         'faces': [],
         'texture_coords': [],
-        'texture_info': [],  # (texture_page, clut_address, is_transparent)
+        'texture_info': [],  # (page, clut_address, is_transparent, blend_mode)
         'tri_count': 0,
         'quad_count': 0,
     }
@@ -155,11 +155,14 @@ def exportMDAT(drwa_addr, datpath):
                     # matters to anything that gets the UVs without the
                     # wrap - the GLTF export, for one.
                     texture_page = char(rom, ind, 11) & 0x1F
+                    # Bits 5-6 of the same byte are the blend mode - see
+                    # gui/smst/smst_parser.py on why they matter.
+                    blend_mode = (char(rom, ind, 11) >> 5) & 3
                     clut_coords = getClutCoords(short(rom, ind, 7))
                     clut_address = clutCoords2Address(clut_coords)
 
                     # Store texture info
-                    tex_info = (texture_page, clut_address, transparent)
+                    tex_info = (texture_page, clut_address, transparent, blend_mode)
 
                     # Get UV coordinates
                     uv1 = adjust_uv(char(rom, ind, 5), char(rom, ind, 6), texture_page)
@@ -200,11 +203,14 @@ def exportMDAT(drwa_addr, datpath):
 
                     # Get texture info
                     texture_page = char(rom, ind, 11) & 0x1F
+                    # Bits 5-6 of the same byte are the blend mode - see
+                    # gui/smst/smst_parser.py on why they matter.
+                    blend_mode = (char(rom, ind, 11) >> 5) & 3
                     clut_coords = getClutCoords(short(rom, ind, 7))
                     clut_address = clutCoords2Address(clut_coords)
 
                     # Store texture info
-                    tex_info = (texture_page, clut_address, transparent)
+                    tex_info = (texture_page, clut_address, transparent, blend_mode)
 
                     # Get UV coordinates
                     uv1 = adjust_uv(char(rom, ind, 13), char(rom, ind, 14), texture_page)

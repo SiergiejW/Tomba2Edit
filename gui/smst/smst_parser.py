@@ -152,6 +152,11 @@ def _read_packets(data, at, count, stride, layout, codes, model):
         ind = at + 3
         code = data[ind]
         transparent = bool(codes.get(code, 0))
+        # The page byte carries the blend mode above the page number.
+        # Masking it off entirely - which is what this did - left every
+        # semi-transparent surface on the disc drawn additively, when
+        # most of them ask for a half-and-half mix.
+        blend = (data[ind + 11] >> 5) & 3
         page = data[ind + 11] & 0x1F
         clut = _clut_address(struct.unpack_from("<h", data, ind + 7)[0])
 
@@ -165,7 +170,7 @@ def _read_packets(data, at, count, stride, layout, codes, model):
             model["texture_coords"].append(
                 psx_vram.atlas_uv(data[ind + ou], data[ind + ov], page))
 
-        info = (page, clut, transparent)
+        info = (page, clut, transparent, blend)
         if len(verts) == 3:
             model["faces"].append([base + 2, base + 1, base])
             model["texture_info"].append(info)

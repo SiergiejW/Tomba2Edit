@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox,
 )
 from functions import gltf_export
+from gui.origin_axes import OriginAxes
 
 
 class SCLDViewer(CameraEventMixin, QOpenGLWidget):
@@ -37,6 +38,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         # How big the collision on screen is, in GL units - the clip
         # planes are set from it, and so is every camera step.
         self.scene_radius = 0.0
+        # The world origin - see gui/origin_axes.py.
+        self.show_origin = False
+        self.origin_axes = OriginAxes()
         self._scene_points = ()
         self.show_markers = True
         # Join each walkable surface into a line along the entry - see
@@ -169,6 +173,18 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         frame_action.triggered.connect(lambda: self.frame_collision())
         self.toolbar.addAction(frame_action)
 
+        self.origin_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
+            "Origin", self)
+        self.origin_action.setCheckable(True)
+        self.origin_action.setChecked(self.show_origin)
+        self.origin_action.setToolTip(
+            "Mark the world origin: X red, Y green, Z blue, with the "
+            "negative half of each axis dimmed. Collision and the room "
+            "it belongs to are placed against this point.")
+        self.origin_action.toggled.connect(self.toggle_origin)
+        self.toolbar.addAction(self.origin_action)
+
         self.export_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
             "Export glTF", self)
@@ -210,6 +226,10 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toolbar)
         layout.addStretch()
+
+    def toggle_origin(self, checked):
+        self.show_origin = checked
+        self.update()
 
     def toggle_markers(self, checked):
         self.show_markers = checked
@@ -281,9 +301,16 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             walls=self.show_walls,
             color_by=unkn_color if self.color_by_unkn else None)
         try:
+            # Scaled by the exporter's unit, not this view's. The 3D
+            # views do not share one: collision and level geometry are
+            # drawn at 1000 because a room is thousands of units across,
+            # while a character is drawn at 100. Exports have to agree
+            # or a room and its collision land in Blender ten times
+            # apart, so everything written out uses the exporter's.
             gltf_export.write_lines_glb(
-                path, np.array(verts, dtype=np.float32) / UNIT_SCALE, colors,
-                name=self.export_name or "collision")
+                path,
+                np.array(verts, dtype=np.float32) / gltf_export.UNIT_SCALE,
+                colors, name=self.export_name or "collision")
         except Exception as e:
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write it:\n\n{e}")
@@ -693,6 +720,11 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             GL.glDepthMask(GL.GL_TRUE)
             self.shader_program.setUniformValue("alpha", 1.0)
             self.point_vao.release()
+
+        if self.show_origin:
+            self.shader_program.setUniformValue("alpha", 1.0)
+            self.shader_program.setUniformValue("useOverrideColor", False)
+            self.origin_axes.draw(radius)
 
         self.shader_program.release()
 

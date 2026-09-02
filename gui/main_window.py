@@ -24,6 +24,7 @@ from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.anmp.anmp_viewer import ANMPViewer
 from gui.anmp import game_rest
+from functions import pairings
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
@@ -69,7 +70,7 @@ def _export_name(item):
     anything Windows will not take in a filename."""
     text = (item.text() if item is not None else "") or "model"
     for kind in (".SMST", ".ANMP", ".TANP", ".MDAP", ".ALFP", ".MDAT",
-                 ".SCLD", ".IDX", ".BIN"):
+                 ".SCLD", ".SPRT", ".BGMP", ".TXTD", ".IDX", ".BIN"):
         if text.upper().endswith(kind):
             text = text[:-len(kind)]
             break
@@ -522,6 +523,39 @@ class MainWindow(QMainWindow):
             | QItemSelectionModel.SelectionFlag.Rows)
         self.tree_view.scrollTo(target_index)
 
+    def _approved_pairings(self):
+        """The judged pairings, resolved to the bone tables they name.
+
+        Built once - it reads every area an approval was made in, which
+        needs the overlays, and they do not change while a disc is."""
+        if getattr(self, "_approvals", None) is None:
+            self._approvals = pairings.resolve(
+                pairings.load(), self._skeleton_sources)
+            print(f"[ANMP] approved pairings on file: {len(self._approvals)}")
+        return self._approvals
+
+    def _skeleton_types(self):
+        """The disc-wide shape catalogue, built once - see
+        game_rest.catalogue. A second of work, and only when the first
+        animation is opened rather than while the disc is loading."""
+        if getattr(self, "_type_names", None) is None:
+            everywhere = []
+            exe = getattr(self.mainexe_viewer, "exe_path", None)
+            if exe:
+                everywhere.append(exe)
+            for area in range(48):
+                path = self.overlay_for_area(area)
+                if path and path not in everywhere:
+                    everywhere.append(path)
+            if getattr(self, "_overlay_bytes", None) is None:
+                self._overlay_bytes = {}
+            sources = game_rest.load_sources(
+                exe, None, everywhere, self._overlay_bytes)
+            self._type_names = game_rest.catalogue(sources)
+            print(f"[ANMP] skeleton shapes on this disc: "
+                  f"{len(self._type_names)}")
+        return self._type_names
+
     def _bones_for_model(self, model, chunk_index):
         """The skeleton this model is built on, or None.
 
@@ -581,6 +615,47 @@ class MainWindow(QMainWindow):
                       body, flags=re.I)
         return " ".join(body.lower().split())
 
+    def _approved_models(self):
+        """{animation: {model, ...}} - every model judged right for an
+        animation, so a later one can be offered them first.
+
+        This is what makes a shared animation land on a character at
+        all. "NPC Animation" names no model and matches none, so it
+        used to fall through to packing order and take whatever the
+        area happened to pack beside it - an anemone, an armadillo, an
+        asset pack. All twelve of them defaulted to something that was
+        not a person. The judgements say which models really wear it."""
+        if getattr(self, "_approved_by_animation", None) is None:
+            out = {}
+            for animation, model in pairings.load():
+                out.setdefault(animation, set()).add(model)
+            self._approved_by_animation = out
+        return self._approved_by_animation
+
+    def _nearness(self, item):
+        """Sort key that puts models this area actually loads first.
+
+        Comparing tree folders is not enough. A character's model can be
+        a trail file, which sits in its own folder while still belonging
+        to the area - Ark and Win in the Town of the Fishermen are both
+        like that - so ranking by folder sent them to the Ark and Win
+        models packed with the OUTRO instead, whose texture pages are
+        not in this area's VRAM and which therefore came out miscoloured.
+        What settles it is which areas actually load a file, which the
+        IDX already says."""
+        here = self._area_chunk_index(item)
+        parent = item.parent()
+        membership = getattr(self, "area_membership", None) or {}
+
+        def key(row_item):
+            data = row_label_data(row_item)
+            address = data[2] if data else 0
+            areas = membership.get(address) or ()
+            return (0 if here in areas else 1,
+                    0 if row_item.parent() is parent else 1,
+                    address)
+        return key
+
     def _preferred_models(self, item):
         """The SMSTs to try first for the animation on `item`, best
         guess first - [(label, address, size, trusted), ...], where
@@ -631,6 +706,28 @@ class MainWindow(QMainWindow):
         subject = self._row_subject(item.text())
         parent = item.parent()
 
+        # 0. Anything already judged right for this animation. A
+        # judgement beats every guess below it, and one made in another
+        # area still applies - see functions/pairings.py on why a name
+        # is what travels.
+        approved = self._approved_models().get(pairings.subject(item.text()))
+        if approved:
+            model = self.tree_view.model()
+            wanted = []
+            if model is not None:
+                stack = [model.invisibleRootItem()]
+                while stack:
+                    node = stack.pop()
+                    for row in range(node.rowCount()):
+                        child = node.child(row, 0)
+                        stack.append(child)
+                        found = row_label_data(child)
+                        if (found and found[1] == "SMST"
+                                and pairings.subject(child.text()) in approved):
+                            wanted.append(child)
+            for row_item in sorted(wanted, key=self._nearness(item)):
+                add(row_item, True)
+
         # 1. Named the same thing, this area first, then anywhere.
         #
         # Then the same thing with the tail of the name dropped, a word
@@ -656,12 +753,9 @@ class MainWindow(QMainWindow):
             matched = False
             for length in range(len(words), 0, -1):
                 wanted = " ".join(words[:length])
-                here = [c for s, c in models
-                        if s == wanted and c.parent() is parent]
-                elsewhere = [c for s, c in models
-                             if s == wanted and c.parent() is not parent]
-                if here or elsewhere:
-                    for row_item in here + elsewhere:
+                named = [c for s, c in models if s == wanted]
+                if named:
+                    for row_item in sorted(named, key=self._nearness(item)):
                         add(row_item, True)
                     matched = True
                     break
@@ -680,11 +774,11 @@ class MainWindow(QMainWindow):
             # word half the disc shares. "Mizuno" earns it; "pig" would
             # match a dozen unrelated models and does not.
             if not matched and (len(words) >= 2 or len(subject) >= 5):
-                inside = [(len(s), c) for s, c in models
-                          if subject in s and c.parent() is parent]
-                inside += [(len(s) + 1000, c) for s, c in models
-                           if subject in s and c.parent() is not parent]
-                for _length, row_item in sorted(inside, key=lambda r: r[0]):
+                inside = [c for s, c in models if subject in s]
+                near = self._nearness(item)
+                for row_item in sorted(inside,
+                                       key=lambda c: (near(c)[0],
+                                                      len(c.text()), near(c))):
                     add(row_item, True)
 
         # 2. The model packed just above it in this area, then just below.
@@ -2274,6 +2368,10 @@ class MainWindow(QMainWindow):
                                 chunk_index = self._area_chunk_index(selected_item)
                                 vram_bytes = self._load_area_vram_bytes(
                                     chunk_index, merge_common=True)
+                                self.anmp_viewer.set_approvals(
+                                    self._approved_pairings())
+                                self.anmp_viewer.set_skeleton_types(
+                                    self._skeleton_types())
                                 self.anmp_viewer.set_skeleton_sources(
                                     self._skeleton_sources(chunk_index))
                                 self.anmp_viewer.export_name = _export_name(selected_item)
@@ -2355,6 +2453,7 @@ class MainWindow(QMainWindow):
                                 print(f"Loading {kind} data...")
                                 chunk_index = self._area_chunk_index(selected_item)
                                 vram_bytes = self._load_area_vram_bytes(chunk_index)
+                                self.sprt_viewer.export_name = _export_name(selected_item)
                                 loader = (self.sprt_viewer.load_sprt_data if kind == "SPRT"
                                           else self.bgmp_viewer.load_bgmp_data)
                                 loader(self.dat_file, dat_start, offset, entry_size,

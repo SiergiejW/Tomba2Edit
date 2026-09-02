@@ -31,10 +31,28 @@ DEFAULT_SCENE_RADIUS = 5.0
 # The angles each kind of thing is opened at. A level reads from above
 # and off to one side - this is the fixed pose the MDAT and SCLD views
 # used to sit at, kept now that only the angle is fixed and the position
-# is measured. A model reads face-on: these face +Z, so the opposite
-# heading opens every character showing the back of its head.
+# is measured.
+#
+# A model opens square on. These face +Z, so a heading of 0 looks
+# straight at the front of a character rather than at the back of its
+# head, and no pitch keeps the camera level with it - which is what an
+# animation wants, since a limb swinging towards the camera is far
+# easier to read against a straight-on silhouette than a three-quarter
+# one. The camera is free afterwards; this is only where it starts.
 LEVEL_HEADING, LEVEL_PITCH = 134.5, 33.2
-MODEL_HEADING, MODEL_PITCH = 20.0, 12.0
+MODEL_HEADING, MODEL_PITCH = 0.0, 0.0
+
+# How far above the middle of a model the camera looks, as a fraction of
+# its radius. Framing on the bounding box's centre puts the camera at a
+# character's belly, which is a strange height to watch anything from
+# now that the view is level rather than tilted down at them. This lifts
+# it to about chest height without pitching, so the model still reads
+# square on.
+#
+# Raising the camera pushes the model down the frame, so this is as far
+# as it can go before feet start meeting the bottom edge: at 0.15 a tall
+# character reaches 0.89 of the way down, where 0.22 puts it at 0.93.
+MODEL_LIFT = 0.15
 
 # One wheel notch moves the camera this much of the scene radius, so
 # framed at frame()'s default margin it takes about fifteen notches to
@@ -132,18 +150,23 @@ class CameraControls:
     def zoom_step(self):
         return self.scene_radius * ZOOM_FRACTION
 
-    def frame(self, centre, radius, heading=20.0, pitch=12.0, margin=2.5):
+    def frame(self, centre, radius, heading=MODEL_HEADING,
+              pitch=MODEL_PITCH, margin=2.5, lift=0.0):
         """Point the camera at a scene of `radius` around `centre`, from
         `heading` and `pitch`, far enough back to see all of it.
 
         The views build their matrix as rotate(pitch) * rotate(heading)
         * translate(camera), so this is that solved for the translation
         that lands `centre` `distance` in front of the camera. Also sets
-        the scene radius, since it has just been told it."""
+        the scene radius, since it has just been told it.
+
+        `lift` aims that far above the centre, as a fraction of the
+        radius - see MODEL_LIFT."""
         distance = max(radius * margin, 1e-6)
         h, v = math.radians(heading), math.radians(pitch)
+        aim_y = centre[1] + radius * lift
         self.camera_x = distance * math.cos(v) * math.sin(h) - centre[0]
-        self.camera_y = -distance * math.sin(v) - centre[1]
+        self.camera_y = -distance * math.sin(v) - aim_y
         self.camera_z = -distance * math.cos(v) * math.cos(h) - centre[2]
         self.camera_angle_h = heading
         self.camera_angle_v = pitch

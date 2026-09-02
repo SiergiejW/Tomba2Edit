@@ -155,3 +155,32 @@ def render_sheet(sprites, textures, columns):
         cy = (sprite.index // columns) * cell_h + oy - sy
         sheet.alpha_composite(im, (cx, cy))
     return sheet, cell_w, cell_h, ox, oy
+
+
+# The cell border drawn into an exported sheet. Faint on purpose: it is
+# there to say where one sprite stops and the next starts, on artwork
+# that is often only a few pixels across, without being mistaken for
+# part of the art.
+SHEET_BORDER = (255, 255, 255, 64)
+
+
+def draw_cell_borders(sheet, cell_w, cell_h, columns, count,
+                      color=SHEET_BORDER):
+    """A copy of `sheet` with a line around every occupied cell.
+
+    The viewer draws its grid as a screen overlay, which is not in the
+    image the exporter saves - so a sheet written out has nothing
+    separating one card from the next. This puts the same lines into the
+    pixels.
+
+    Only cells that hold a sprite are boxed. The last row is usually
+    part empty, and ruling lines across the gap would suggest cards that
+    are not there."""
+    lined = sheet.copy()
+    pen = ImageDraw.Draw(lined)
+    columns = max(1, columns)
+    for index in range(count):
+        col, row = index % columns, index // columns
+        x, y = col * cell_w, row * cell_h
+        pen.rectangle([x, y, x + cell_w - 1, y + cell_h - 1], outline=color)
+    return lined

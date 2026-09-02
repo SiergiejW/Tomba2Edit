@@ -12,6 +12,7 @@ from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from functions import gltf_export
+from gui.origin_axes import OriginAxes
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
@@ -33,6 +34,9 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         # How big the room on screen is, in GL units - the clip planes
         # are set from it, and so is every step the camera takes.
         self.scene_radius = 0.0
+        # The world origin - see gui/origin_axes.py.
+        self.show_origin = False
+        self.origin_axes = OriginAxes()
         self.vao = QOpenGLVertexArrayObject()
         self.vertex_buffer = QOpenGLBuffer()
         self.color_buffer = QOpenGLBuffer()
@@ -109,6 +113,19 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         frame_action.triggered.connect(lambda: self.frame_level())
         self.toolbar.addAction(frame_action)
 
+        self.origin_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
+            "Origin", self)
+        self.origin_action.setCheckable(True)
+        self.origin_action.setChecked(self.show_origin)
+        self.origin_action.setToolTip(
+            "Mark the world origin: X red, Y green, Z blue, with the "
+            "negative half of each axis dimmed. A room and its collision "
+            "are placed against this point, so it is where to look when "
+            "the two do not line up.")
+        self.origin_action.toggled.connect(self.toggle_origin)
+        self.toolbar.addAction(self.origin_action)
+
         # Export button
         self.export_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Export glTF", self)
         self.export_action.triggered.connect(self.export_to_glb)
@@ -171,9 +188,13 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
-        cluts = len({c for _p, c, _t in self.model_data.get("texture_info") or ()})
+        cluts = len({e[1] for e in self.model_data.get("texture_info") or ()})
         QMessageBox.information(
             self, "Exported", f"Wrote the model and {cluts} baked palette texture(s).")
+
+    def toggle_origin(self, checked):
+        self.show_origin = checked
+        self.update()
 
     def toggle_culling(self, checked):
         # Applied in paintGL rather than here: this can be toggled (and
@@ -276,6 +297,25 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.collision_point_vao.release()
 
     def extract_clut_from_vram(self, clut_address, transparent=False):
+        """One 16-colour palette, read the way the hardware reads it.
+
+    The PSX decides transparency per TEXEL, not per polygon. A palette
+    entry is 16 bits: five each of B, G, R and, at the top, STP. What
+    that bit means depends on the primitive:
+
+      word == 0x0000            never drawn, whatever the primitive is
+      STP set, primitive blends blended against what is behind it
+      STP set, primitive opaque drawn opaque
+      STP clear                 drawn opaque, ALWAYS
+
+    The last line is the one that matters here. A primitive carrying the
+    semi-transparency bit does not make the whole polygon see-through -
+    it only enables blending for the texels whose palette entry asks for
+    it. Every boss pig is built from faces that all carry that bit, and
+    their palettes are about 95% STP-clear, so the hardware draws them
+    solid; blending the lot made them ghosts. The water pig is the
+    exception that proves it - 89% of its entries DO set STP, and it is
+    meant to look like water."""
         clut = []
         # Direct linear address usage (NO x, y calculation here!)
         addr = clut_address  # linear address directly!
@@ -293,7 +333,12 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             R = (word & 0x1F) * 8
             G = ((word >> 5) & 0x1F) * 8
             B = ((word >> 10) & 0x1F) * 8
-            A = 0 if (R == 0 and G == 0 and B == 0) else (128 if transparent else 255)
+            if word == 0:
+                A = 0
+            elif transparent and (word & 0x8000):
+                A = 128
+            else:
+                A = 255
             clut.append([R, G, B, A])
         return np.array(clut, dtype=np.uint8)
 
@@ -389,7 +434,7 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
                     self.clut_index_groups[clut_address] = []
 
                     # Generate a fake CLUT (16 random RGBA values)
-                    _, clut_address, is_transparent = tex_info
+                    _, clut_address, is_transparent = tex_info[0], tex_info[1], tex_info[2]
                     clut_array = self.extract_clut_from_vram(clut_address, is_transparent)
                     #print(f" CLUT 0x{clut_address:X}: {clut_array}")
                     self.clut_map[clut_address] = self.upload_clut(clut_array)
@@ -637,11 +682,17 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             if not is_transparent:
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT, ctypes.c_void_p(offset))
 
-        # Second Pass: Transparent objects - additive blending (matches the
-        # PSX's own "add" semi-transparency mode used by these draw types),
-        # so overlapping transparent faces brighten instead of just alpha-mixing.
+        # Second Pass: the semi-transparent faces, added rather than
+        # mixed - the PSX's "add" mode, which is what these draw types
+        # ask for, and it is B + F.
+        #
+        # It used to be SRC_ALPHA, ONE, which is B + F/2, because the
+        # palette hands a blended texel an alpha of 0.5. That halves the
+        # surface's own brightness on top of blending it, and a model
+        # built entirely from these faces comes out looking like a
+        # ghost - which is exactly what the boss pigs did.
         GL.glDepthMask(GL.GL_FALSE)
-        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
 
         current_tex_id = None
         for clut_address, tex_id in self.clut_map.items():
@@ -702,6 +753,11 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             GL.glDepthFunc(GL.GL_LESS)
             GL.glDepthMask(GL.GL_TRUE)
             self.shader_program.setUniformValue("alpha", 1.0)
+
+        if self.show_origin:
+            self.shader_program.setUniformValue("useTextures", False)
+            self.shader_program.setUniformValue("alpha", 1.0)
+            self.origin_axes.draw(radius)
 
         self.shader_program.release()
 

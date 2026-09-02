@@ -90,10 +90,14 @@ _ROW_LABEL_DATA = Qt.ItemDataRole.UserRole + 3
 
 
 # TANP, BETP, ALFD and the map's ALFP/MDAP are one container - see
-# format_detect - so the bytes can only ever say ANMP. Which of the
-# names a build uses for a given file is knowledge, not structure, so a
-# labels file is allowed to say, and the row follows it.
-_ANIM_FAMILY = frozenset(("ANMP", "TANP", "BETP", "ALFD", "ALFP", "MDAP"))
+# format_detect - so the bytes can only ever say ANMP, and every one of
+# these names describes the same layout. Older labels files hand out
+# four or five of them between animations that are not different in any
+# way a reader could act on, which made the tree look like it held
+# several animation formats. They are all shown as ANMP now, and a
+# labels file still carrying an old name is read as meaning that.
+_ANIM_FAMILY = frozenset(("ANMP", "TANP", "BETP", "ALFD", "ALFP",
+                          "MDAP", "TAND", "MDAD"))
 
 
 def _relabel_file_item(main_window, child, label_set):
@@ -115,7 +119,7 @@ def _relabel_file_item(main_window, child, label_set):
     if label:
         if label.kind and label.kind != filetype:
             if filetype in _ANIM_FAMILY and label.kind in _ANIM_FAMILY:
-                shown = label.kind
+                shown = "ANMP"
             else:
                 # Elsewhere the hand-written type is only a note. It
                 # is wrong twice on the retail disc, and the type on

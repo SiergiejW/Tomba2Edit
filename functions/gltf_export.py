@@ -134,9 +134,25 @@ def index_atlas(vram_bytes):
 def palette(vram_bytes, address, transparent=False):
     """One CLUT as (16, 4) RGBA, read the way the viewers read it.
 
-    BGR555, 5 bits a channel scaled by 8, and black is the PSX's
-    transparent - which is a colour key, not an alpha channel, so it
-    comes out as alpha 0 here and the material masks on it."""
+    BGR555, five bits a channel scaled by 8.
+
+    The PSX decides transparency per TEXEL, not per polygon. A palette
+    entry is 16 bits: five each of B, G, R and, at the top, STP. What
+    that bit means depends on the primitive:
+
+      word == 0x0000            never drawn, whatever the primitive is
+      STP set, primitive blends blended against what is behind it
+      STP set, primitive opaque drawn opaque
+      STP clear                 drawn opaque, ALWAYS
+
+    The last line is the one that matters here. A primitive carrying the
+    semi-transparency bit does not make the whole polygon see-through -
+    it only enables blending for the texels whose palette entry asks for
+    it. Every boss pig is built from faces that all carry that bit, and
+    their palettes are about 95% STP-clear, so the hardware draws them
+    solid; blending the lot made them ghosts. The water pig is the
+    exception that proves it - 89% of its entries DO set STP, and it is
+    meant to look like water."""
     out = np.zeros((16, 4), dtype=np.uint8)
     data = bytes(vram_bytes)
     for i in range(16):
@@ -145,7 +161,12 @@ def palette(vram_bytes, address, transparent=False):
         r = (word & 0x1F) * 8
         g = ((word >> 5) & 0x1F) * 8
         b = ((word >> 10) & 0x1F) * 8
-        alpha = 0 if not (r or g or b) else (128 if transparent else 255)
+        if word == 0:
+            alpha = 0
+        elif transparent and (word & 0x8000):
+            alpha = 128
+        else:
+            alpha = 255
         out[i] = (r, g, b, alpha)
     return out
 
@@ -363,7 +384,8 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
     for f, face in enumerate(faces):
         if dropped and any(v in dropped for v in face):
             continue
-        _page, clut, transparent = (info[f] if f < len(info) else (0, 0, False))
+        entry = info[f] if f < len(info) else (0, 0, False, 0)
+        _page, clut, transparent = entry[0], entry[1], entry[2]
         by_clut.setdefault((clut, bool(transparent)), []).extend(_triangles(face))
 
     # Normals come from the whole model at once, not from each material

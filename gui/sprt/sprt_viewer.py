@@ -22,7 +22,8 @@ from functions.psx_vram import VRAMError
 from gui import panel_title
 from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
 from gui.sprt.sprt_parser import SPRTError, load_sprt
-from gui.sprt.sprt_render import VRAMTextures, piece_color, render_sheet, render_sprite
+from gui.sprt.sprt_render import (
+    VRAMTextures, draw_cell_borders, piece_color, render_sheet, render_sprite)
 
 # Sprites are small, so a view opens zoomed to fit rather than at 1:1,
 # where a 24x24 sprite would be a speck in a 900px pane. The caps keep
@@ -156,6 +157,9 @@ class SPRTViewer(QWidget):
         self.current_index = None
         self._sprite_images = {}     # sprite index -> (PIL image, ox, oy)
         self._sheet_image = None     # PIL image of the whole bank
+        # The tree row's name, set by MainWindow, so a save dialog opens
+        # with what the file is called rather than its offsets.
+        self.export_name = None
         self._source = ("", 0, 0, None)  # dat path, dat_start, offset, chunk
         self._file_key = None        # which blob is loaded, for _fit_zoom
         self._fitted_for = None      # (view, file key) the zoom was fitted to
@@ -268,8 +272,16 @@ class SPRTViewer(QWidget):
                               "single sprite - as a transparent PNG")
         export_btn.clicked.connect(self.export_png)
 
+        export_all_btn = QPushButton("Export Sheet")
+        export_all_btn.setToolTip(
+            "Save the whole bank as one PNG - every card laid out on a "
+            "sheet - named after this file in the tree. Works whether or "
+            "not the Whole bank view is on.")
+        export_all_btn.clicked.connect(self.export_bank_png)
+
         for w in (self.sheet_btn, zoom_out, zoom_in, zoom_reset, self.zoom_label,
-                  self.origin_check, self.outline_check, self.grid_check, export_btn):
+                  self.origin_check, self.outline_check, self.grid_check,
+                  export_btn, export_all_btn):
             bar.addWidget(w)
         return bar
 
@@ -523,12 +535,13 @@ class SPRTViewer(QWidget):
             return
         _, dat_start, offset, chunk = self._source
         area = f"AREA_{chunk:02X}_" if chunk is not None else ""
+        stem = self.export_name or f"{area}SPRT_{dat_start + offset:08X}"
         if self.sheet_btn.isChecked():
             image = self._sheet_image[0]
-            default = f"{area}SPRT_{dat_start + offset:08X}_sheet.png"
+            default = f"{stem}.png"
         else:
             image = self._sprite_image(self.current_index or 0)[0]
-            default = f"{area}SPRT_{dat_start + offset:08X}_{self.current_index or 0:03d}.png"
+            default = f"{stem}_{self.current_index or 0:03d}.png"
         path, _unused = QFileDialog.getSaveFileName(
             self, "Save sprite as PNG", default, "PNG Image (*.png)")
         if not path:
@@ -539,6 +552,49 @@ class SPRTViewer(QWidget):
             QMessageBox.critical(self, "Export failed", f"Couldn't write {path}:\n\n{e}")
             return
         panel_title.set_info(self.info_label, f"Wrote {os.path.basename(path)}")
+
+
+    def export_bank_png(self):
+        """The whole bank as one PNG - the contact sheet, saved as seen.
+
+        The sheet is rendered here rather than taken from the canvas,
+        so this works with the single-sprite view on and does not depend
+        on having looked at the bank first.
+
+        Named after the row in the tree, since that is what the file is
+        called everywhere else in the program - the offsets the other
+        export falls back to are only useful for a file nobody has
+        named yet."""
+        if not self.sprt_data or not self.sprt_data.sprites:
+            return
+        if self._sheet_image is None:
+            self._sheet_image = render_sheet(
+                self.sprt_data.sprites, self.textures, SHEET_COLUMNS)
+        image, cell_w, cell_h, _ox, _oy = self._sheet_image
+        # The Grid checkbox draws cell lines on screen as an overlay,
+        # which is not in the image itself - so the same switch decides
+        # whether they are drawn into the file.
+        if self.grid_check.isChecked():
+            image = draw_cell_borders(image, cell_w, cell_h, SHEET_COLUMNS,
+                                      len(self.sprt_data.sprites))
+        _unused, dat_start, offset, chunk = self._source
+        area = f"AREA_{chunk:02X}_" if chunk is not None else ""
+        default = (self.export_name
+                   or f"{area}SPRT_{dat_start + offset:08X}") + ".png"
+        path, _picked = QFileDialog.getSaveFileName(
+            self, "Save the whole bank as PNG", default, "PNG Image (*.png)")
+        if not path:
+            return
+        try:
+            image.save(path)
+        except OSError as e:
+            QMessageBox.critical(self, "Export failed",
+                                 f"Couldn't write {path}:\n\n{e}")
+            return
+        panel_title.set_info(
+            self.info_label,
+            f"Wrote {os.path.basename(path)} - {len(self.sprt_data.sprites)} "
+            f"sprites, {image.width}x{image.height}")
 
 
 def _to_qimage(pil_image):

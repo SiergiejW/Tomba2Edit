@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from functions import gltf_export
+from functions import gltf_export, pairings, skeleton
 from gui import panel_title
 from gui.anmp.anmp_parser import ANMPError, blend, load_anmp
 from gui.anmp.skeleton import (
@@ -41,6 +41,11 @@ DEFAULT_STEPS = 3
 # a pairing made on packing order alone is believed - see _fill_models.
 GROUP_RATIO = 0.8
 
+# TEMPORARY - where the Approve and Problematic buttons write. Sits
+# beside the program rather than in it, so a frozen build can still be
+# used to gather these. See ANMPViewer._record.
+RECORD_FILE = "animation_pairings.txt"
+
 
 class ANMPViewer(QWidget):
     def __init__(self, parent=None):
@@ -53,6 +58,11 @@ class ANMPViewer(QWidget):
         self._export_bones = None     # the skeleton it is posed on
         self.export_name = None       # the tree row's name, for the dialog
         self._skeleton_choices = []   # every table that could fit, ranked
+        self._type_names = {}         # signature -> "Type A"
+        # Pairings already judged by eye. Filled in by MainWindow once
+        # the disc is open, since resolving them to bone tables needs
+        # the overlays - see functions/pairings.py.
+        self._approvals = {}
         self._variations = {}         # spare group -> the limb it replaces
         self._hierarchy = ()
         self._named_hierarchy = False
@@ -137,6 +147,17 @@ class ANMPViewer(QWidget):
             "in for.")
         self.variation_box.currentIndexChanged.connect(self._on_variation_changed)
 
+        self.first_group_box = QSpinBox()
+        self.first_group_box.setPrefix("from part ")
+        self.first_group_box.setRange(0, 0)
+        self.first_group_box.setToolTip(
+            "Which part of the model the animation's first limb drives. "
+            "Normally 0 - limb 0 is part 0 - but an animation can drive "
+            "one object inside an asset pack: the Machine Animation's "
+            "limbs are an oven's base and lid, parts 12 and 13 of a "
+            "twenty-part room, and at 0 it animates the walls instead.")
+        self.first_group_box.valueChanged.connect(self._on_first_group_changed)
+
         self.info_label = panel_title.make_info_label("No animation loaded")
 
         # --- transport ---
@@ -171,6 +192,25 @@ class ANMPViewer(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
 
+        # TEMPORARY - debugging aid for working out which model and
+        # skeleton each animation really wants. Records what is on
+        # screen at the moment it is pressed; delete once the pairings
+        # are settled.
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setToolTip(
+            "Write down that THIS animation, with the model and skeleton "
+            f"currently chosen, is right - to the console and to "
+            f"{RECORD_FILE} beside the program.")
+        self.approve_button.clicked.connect(self.approve_pairing)
+
+        self.problem_button = QPushButton("Problematic")
+        self.problem_button.setToolTip(
+            "Write down that none of the offered skeletons work for this "
+            "animation. Every candidate is recorded with it, so a case "
+            "where the right table simply is not on offer can be told "
+            "from one where it is just ranked badly.")
+        self.problem_button.clicked.connect(self.mark_problematic)
+
         self.rest_button = QPushButton("Reset pose")
         self.rest_button.setToolTip(
             "Show the model in its rest pose - the skeleton with no "
@@ -181,6 +221,8 @@ class ANMPViewer(QWidget):
         transport.setContentsMargins(8, 4, 8, 4)
         transport.addWidget(self.play_button)
         transport.addWidget(self.rest_button)
+        transport.addWidget(self.approve_button)
+        transport.addWidget(self.problem_button)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.frame_label)
         transport.addWidget(self.steps_box)
@@ -210,6 +252,7 @@ class ANMPViewer(QWidget):
         rig_row.addWidget(self.skeleton_box, 2)
         rig_row.addWidget(QLabel("Variation:"))
         rig_row.addWidget(self.variation_box, 1)
+        rig_row.addWidget(self.first_group_box)
         right_layout.addLayout(rig_row)
         right_layout.addWidget(self.viewer, 1)
         right_layout.addLayout(transport)
@@ -231,6 +274,16 @@ class ANMPViewer(QWidget):
         layout.addLayout(bottom)
 
     # --- loading -----------------------------------------------------
+
+    def set_approvals(self, approved):
+        """{(animation, model): (bones, table)} already judged by eye."""
+        self._approvals = dict(approved or {})
+
+    def set_skeleton_types(self, names):
+        """{signature: "Type A"} - the disc's shape catalogue, so the
+        chooser can name a skeleton by what kind of rig it is rather
+        than only by where it sits."""
+        self._type_names = dict(names or {})
 
     def set_skeleton_sources(self, sources):
         """Where to look for the game's own bone trees: [(label, bytes)].
@@ -440,18 +493,55 @@ class ANMPViewer(QWidget):
         # often as not. See game_rest.fit for what "fits" measures.
         counts = self.anmp.limb_counts
         by_frequency = [count for count, _n in counts.most_common()] if counts else []
+
+        # A judgement already made by eye beats any measurement. See
+        # functions/pairings.py - fit is right about three quarters of
+        # the time, and the quarter it misses is not something anything
+        # in the files can settle.
+        settled = self._approved(model, by_frequency)
+        if settled:
+            label, offset, bones, limbs = settled
+            kind = self._type_names.get(game_rest.signature(bones), "Type ?")
+            print(f"[ANMP] skeleton: APPROVED pairing - {kind}, {label} "
+                  f"0x{offset:X} at {limbs} limbs, {game_rest.describe(bones)}")
+            self._fill_skeletons(model, by_frequency, bones)
+            self._pose_on(model, bones, limbs)
+            return
+
         chosen = game_rest.best_for(self._skeletons, model, by_frequency)
         if chosen:
             label, offset, bones, limbs, grade, seen = chosen
+            kind = self._type_names.get(game_rest.signature(bones), "Type ?")
             print(f"[ANMP] skeleton: {seen} candidate(s) across limb counts "
-                  f"{by_frequency} - using {label} 0x{offset:X} at {limbs} "
-                  f"limbs, fit {grade:.2f}")
+                  f"{by_frequency} - using {kind}, {label} 0x{offset:X} at "
+                  f"{limbs} limbs, {game_rest.describe(bones)}, fit {grade:.2f}")
         else:
             bones, limbs = None, (by_frequency[0] if by_frequency else 0)
             print(f"[ANMP] skeleton: nothing matched limb counts "
                   f"{by_frequency} - falling back to the measured/flat rest pose")
         self._fill_skeletons(model, by_frequency, bones)
         self._pose_on(model, bones, limbs)
+
+    def _approved(self, model, limb_counts):
+        """The skeleton someone signed off for this pairing, or None.
+
+        Matched by the table's content rather than by where it sat when
+        it was judged - see pairings.resolve. If this area has no table
+        holding those records, nothing is returned and the measurement
+        takes over, rather than posing on whatever occupies that offset
+        here."""
+        answer = pairings.find(self._approvals, self.export_name or "",
+                               self.model_box.currentText())
+        if not answer:
+            return None
+        bones, wanted = answer
+        for label, data in self._skeletons or ():
+            for offset in skeleton.tables_of_size(data, bones):
+                table = skeleton.read_table(data, offset, bones)
+                if tuple(tuple(int(v) for v in row) for row in table) != wanted:
+                    continue
+                return label, offset, table, bones
+        return None
 
     def _fill_skeletons(self, model, limb_counts, chosen):
         """List every table that could be this model's, best fit first.
@@ -469,10 +559,16 @@ class ANMPViewer(QWidget):
                 self._skeleton_choices):
             mark = ""
             if chosen is not None and bones == chosen:
-                mark, at = "auto: ", i
+                mark, at = "* ", i
             score = "-" if grade == float("inf") else f"{grade:.2f}"
+            # The type leads, because it is the part that says what kind
+            # of thing this is - two candidates sharing one are the same
+            # rig at different sizes, and choosing between those is a
+            # different question from choosing between shapes.
+            kind = self._type_names.get(game_rest.signature(bones), "Type ?")
             self.skeleton_box.addItem(
-                f"{mark}{label} 0x{offset:X} - {limbs} bones, fit {score}", i)
+                f"{mark}{kind} - {limbs} bones, {game_rest.describe(bones)}"
+                f", fit {score} - {label} 0x{offset:X}", i)
         if not self._skeleton_choices:
             self.skeleton_box.addItem("no bone table found", -1)
         self.skeleton_box.setCurrentIndex(at)
@@ -484,8 +580,10 @@ class ANMPViewer(QWidget):
         if which is None or which < 0 or not self.model:
             return
         label, offset, bones, limbs, grade = self._skeleton_choices[which]
-        print(f"[ANMP] skeleton: chosen by hand - {label} 0x{offset:X} "
-              f"at {limbs} bones, fit {grade:.2f}")
+        kind = self._type_names.get(game_rest.signature(bones), "Type ?")
+        print(f"[ANMP] skeleton: chosen by hand - {kind}, {label} "
+              f"0x{offset:X} at {limbs} bones, "
+              f"{game_rest.describe(bones)}, fit {grade:.2f}")
         self._pose_on(self.model, bones, limbs)
 
     def _fill_variations(self, model, animated):
@@ -534,6 +632,14 @@ class ANMPViewer(QWidget):
         self.variation_box.setCurrentIndex(0)
         self.variation_box.blockSignals(False)
 
+    def _on_first_group_changed(self, first):
+        """Re-pose with the animation driving a different run of parts."""
+        if not self.model:
+            return
+        self.viewer.pose_first_group = first
+        self._pose_on(self.model, self._export_bones,
+                      len(self._hierarchy) or 0)
+
     def _on_variation_changed(self, index):
         """Show a spare part in place of the limb it stands in for."""
         spare = self.variation_box.itemData(index)
@@ -564,8 +670,21 @@ class ANMPViewer(QWidget):
         # in for a limb rather than joining it, so the game draws one or
         # the other. Hidden here, and switchable from the Variation box.
         self._fill_variations(model, len(self._hierarchy))
-        self.viewer.hidden_groups = set(range(len(self._hierarchy),
-                                              len(model["groups"])))
+        # Only the run of parts the animation actually drives is shown.
+        # With no offset that is the front of the model and the spares
+        # behind it; with one it is the object inside an asset pack that
+        # this animation belongs to, and the rest of the room stays out
+        # of the way.
+        first = self.viewer.pose_first_group
+        total = len(model["groups"])
+        self.first_group_box.blockSignals(True)
+        self.first_group_box.setRange(0, max(0, total - 1))
+        self.first_group_box.setValue(min(first, max(0, total - 1)))
+        self.first_group_box.blockSignals(False)
+        first = self.first_group_box.value()
+        self.viewer.pose_first_group = first
+        keep = set(range(first, first + len(self._hierarchy)))
+        self.viewer.hidden_groups = set(range(total)) - keep
         if bones is not None:
             # The spare-to-limb map is worked out from the model rather
             # than looked up: skeleton.SPARES only ever knew Tomba's
@@ -573,7 +692,8 @@ class ANMPViewer(QWidget):
             # for him - 17 and 18 to the head, 19 and 20 to the hands -
             # while also covering every other character that carries
             # alternates.
-            standing = game_rest.rest_pose(model, bones, self._variations)
+            standing = game_rest.rest_pose(model, bones, self._variations,
+                                           first=self.viewer.pose_first_group)
         else:
             standing = (rest_pose(model, self._hierarchy)
                         if self._named_hierarchy else None)
@@ -624,6 +744,73 @@ class ANMPViewer(QWidget):
     def show_frame(self, index):
         """Jump to a whole frame - what the frame list selects."""
         self.slider.setValue(int(index) * self.steps)
+
+    def _skeleton_text(self, which):
+        """One candidate written out, or "none"."""
+        if which is None or not 0 <= which < len(self._skeleton_choices):
+            return "none"
+        label, offset, bones, limbs, grade = self._skeleton_choices[which]
+        kind = self._type_names.get(game_rest.signature(bones), "Type ?")
+        return (f"{kind} | {label} 0x{offset:X} | {limbs} bones | "
+                f"{game_rest.describe(bones)} | fit "
+                + ("-" if grade == float("inf") else f"{grade:.2f}"))
+
+    def _record(self, verdict, extra=()):
+        """TEMPORARY. Write down what is on screen, as judged by eye.
+
+        Fit can tell one character's skeleton from another's but not a
+        character's own costume variants, and the model chooser is a
+        guess made from names and packing order - so which pairings are
+        actually right can only be settled by looking. This is that,
+        written down: the same kind of ground truth the savestates gave
+        for four characters, at the cost of a button press.
+
+        Console and file both - the console to read as you go, the file
+        so a session's worth of judgements outlives the session."""
+        if not self.anmp or not self._source:
+            print(f"[{verdict}] nothing loaded")
+            return
+        _path, address, _size = self._source
+        model_data = self.model_box.itemData(self.model_box.currentIndex())
+        model_at = f"0x{model_data[0]:X}" if model_data else "?"
+        line = (f"{verdict} | {self.export_name or 'animation'} | "
+                f"ANMP 0x{address:X} | area {self._current_area} | "
+                f"model {self.model_box.currentText()} @ {model_at} | "
+                f"skeleton {self._skeleton_text(self.skeleton_box.itemData(self.skeleton_box.currentIndex()))}")
+        print(f"[PAIRING] {line}")
+        for note in extra:
+            print(f"          {note}")
+        try:
+            with open(RECORD_FILE, "a", encoding="utf-8") as out:
+                out.write(line + "\n")
+                for note in extra:
+                    out.write(f"    {note}\n")
+        except OSError as e:
+            print(f"[{verdict}] could not write {RECORD_FILE}: {e}")
+            return
+        panel_title.set_info(self.info_label, f"{verdict}: {line[:88]}")
+
+    def approve_pairing(self):
+        """This animation, model and skeleton are right - write it down."""
+        self._record("OK")
+
+    def mark_problematic(self):
+        """None of the offered skeletons work - write that down too.
+
+        The candidates go in with it. "Nothing here fits" is only worth
+        recording if it says what was on offer: if a whole area's list
+        turns out to be the wrong shapes, the table being looked for is
+        not in the sources being searched, which is a different problem
+        from ranking the right ones badly."""
+        offered = []
+        for i in range(len(self._skeleton_choices)):
+            offered.append(f"candidate {i}: {self._skeleton_text(i)}")
+        if not offered:
+            offered = ["no candidates at all - posed on the measured/flat rest"]
+        counts = self.anmp.limb_counts if self.anmp else None
+        if counts:
+            offered.append(f"limb counts in the frames: {dict(counts)}")
+        self._record("PROBLEM", offered)
 
     def export_gltf(self):
         """Write model + skeleton + this animation out as one file."""

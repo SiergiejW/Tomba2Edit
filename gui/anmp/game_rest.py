@@ -275,6 +275,84 @@ def best_for(sources, model, limb_counts):
     return label, offset, bones, limbs, grade, len(scored)
 
 
+def signature(bones):
+    """What shape a skeleton is: its parent list and nothing else.
+
+    Two tables with the same signature are the same rig with different
+    proportions - a character and its costume variant, or two NPCs built
+    from one template. It is the thing worth grouping a candidate list
+    by, because picking between tables that share a signature is a
+    question of size, while picking between signatures is a question of
+    what kind of creature it is."""
+    return tuple(int(b[0]) for b in bones)
+
+
+def describe(bones):
+    """A short read of a skeleton's build, for a chooser to show.
+
+    Says what can be said from the tree alone. Nothing here is a
+    reading of what a bone IS - see COMMON on why that is only safe for
+    a skeleton shaped like the one those names describe."""
+    if not bones:
+        return "empty"
+    parents = signature(bones)
+    if humanoid(bones):
+        return "humanoid"
+    roots = sum(1 for p in parents if p < 0)
+    kids = {}
+    for i, p in enumerate(parents):
+        if p >= 0:
+            kids.setdefault(p, 0)
+            kids[p] += 1
+    ends = sum(1 for i in range(len(parents)) if i not in kids)
+    forks = sum(1 for n in kids.values() if n > 1)
+    depth = 0
+    for i in range(len(parents)):
+        run, at, seen = 0, i, set()
+        while 0 <= parents[at] and at not in seen:
+            seen.add(at)
+            at = parents[at]
+            run += 1
+        depth = max(depth, run)
+    return (f"{roots} root{'s' if roots != 1 else ''}, {ends} tips, "
+            f"{forks} fork{'s' if forks != 1 else ''}, {depth} deep")
+
+
+def _letters(n):
+    """0 -> A, 25 -> Z, 26 -> AA, in the spreadsheet way."""
+    name = ""
+    n += 1
+    while n:
+        n, rest = divmod(n - 1, 26)
+        name = chr(ord("A") + rest) + name
+    return name
+
+
+def catalogue(sources, sizes=range(3, 25)):
+    """{signature: "Type A"} for every skeleton shape on the disc.
+
+    A letter has to mean one shape and one shape only, or it is worse
+    than the offset it replaces - so the names are handed out from the
+    whole disc at once rather than per animation. Scanning MAIN.EXE and
+    every overlay for tables of 3 to 24 bones takes about a second and
+    turns up 419 tables in 99 distinct shapes.
+
+    Ordered by how widespread a shape is, so the letters early in the
+    alphabet are the rigs the game reuses - Type A is the eight-bone
+    upper body 69 characters share - with bone count and the signature
+    itself breaking ties, which keeps the naming identical from one run
+    to the next."""
+    seen = {}
+    for _label, data in sources or ():
+        words = skeleton._shorts(data)
+        for count in sizes:
+            for offset in skeleton.tables_of_size(data, count, words):
+                sign = signature(skeleton.read_table(data, offset, count))
+                seen[sign] = seen.get(sign, 0) + 1
+    order = sorted(seen, key=lambda s: (-seen[s], len(s), s))
+    return {sign: f"Type {_letters(i)}" for i, sign in enumerate(order)}
+
+
 def humanoid(bones):
     """Whether COMMON's names really describe this skeleton - see it."""
     return tuple(b[0] for b in bones[:len(HUMANOID)]) == HUMANOID
@@ -302,13 +380,16 @@ def joints(bones):
                     dtype=np.float64)
 
 
-def rest_pose(model, bones, spares=None):
+def rest_pose(model, bones, spares=None, first=0):
     """Stand a packed SMST up on its own skeleton: (vertices, pivots).
 
     Each group is moved to its bone's joint - no rotation, because the
     game applies none either. A spare group, one past the animated
     bones, is placed with the bone it stands in for so switching to it
-    puts it where its counterpart was."""
+    puts it where its counterpart was.
+
+    `first` says which group bone 0 belongs to, for an animation that
+    drives part of an asset pack rather than a model of its own."""
     pivots = joints(bones)
     vertices = np.array(model["vertices"], dtype=np.float64)
     groups = model["groups"]
@@ -324,7 +405,7 @@ def rest_pose(model, bones, spares=None):
         vertices[first:first + group.vertex_count] = block + at
 
     for i in range(len(bones)):
-        place(i, pivots[i])
+        place(first + i, pivots[i])
     for extra, stands_in_for in (spares or {}).items():
         if stands_in_for < len(bones):
             place(extra, pivots[stands_in_for])

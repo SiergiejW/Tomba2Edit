@@ -30,10 +30,11 @@ from PyQt6.QtWidgets import (
 )
 
 from functions.camera_controls import (
-    CONTROLS_HINT, MODEL_HEADING, MODEL_PITCH, CameraControls,
+    CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
 )
 from functions.format_detect import FormatError
+from gui.origin_axes import OriginAxes
 from functions import gltf_export
 from gui.smst.smst_parser import load_smst
 
@@ -48,6 +49,20 @@ SPREAD_GAP = 1.35
 
 # What the parts that aren't selected fade to while one is highlighted.
 DIMMED_ALPHA = 0.15
+
+# The PSX's four semi-transparency modes, held in bits 5-6 of a face's
+# texture-page byte. B is what is already in the framebuffer, F the
+# incoming pixel. They apply only where the face's draw code sets the
+# semi-transparency bit AND the texel's palette entry sets STP.
+HALF = 0        # B/2 + F/2
+ADD = 1         # B + F
+SUBTRACT = 2    # B - F
+QUARTER = 3     # B + F/4
+
+# What weight a blended texel is drawn at in each mode. The blend
+# function supplies the rest of the sum; this is the part of it that
+# varies per texel, so it goes through the shader instead.
+WEIGHTS = {HALF: 0.5, ADD: 1.0, SUBTRACT: 1.0, QUARTER: 0.25}
 
 
 class SMSTViewer(CameraEventMixin, QOpenGLWidget):
@@ -91,6 +106,12 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         # see set_pose and gui/anmp/anmp_viewer.py.
         self.pose = None
         self.pose_pivots = None
+        # Which group the animation's first limb drives. Normally 0 -
+        # limb i is group i - but an asset pack holds several objects
+        # and an animation may drive one of them: the Machine
+        # Animation's two limbs are an oven's base and lid, groups 12
+        # and 13 of a twenty-group room. See ANMPViewer's First group.
+        self.pose_first_group = 0
         # On by default: stacked at the origin is how the file has the
         # parts, but it is not how anyone wants to first see a model.
         self.spread = True
@@ -102,6 +123,9 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
 
         self.texture_mode_enabled = True
         self.culling_enabled = True
+        # The world origin, drawn over the model - see gui/origin_axes.py.
+        self.show_origin = False
+        self.origin_axes = OriginAxes()
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -152,6 +176,19 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             "Frame Model", self)
         frame_action.triggered.connect(self.frame_model)
         self.toolbar.addAction(frame_action)
+
+        self.origin_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
+            "Origin", self)
+        self.origin_action.setCheckable(True)
+        self.origin_action.setChecked(self.show_origin)
+        self.origin_action.setToolTip(
+            "Mark the world origin: X red, Y green, Z blue, with the "
+            "negative half of each axis dimmed. An SMST's parts are each "
+            "modelled around their own origin, so this is where they are "
+            "all stacked before a skeleton stands them up.")
+        self.origin_action.toggled.connect(self.toggle_origin)
+        self.toolbar.addAction(self.origin_action)
 
         # Kept as an attribute so a view that embeds this one can take
         # it away: the ANMP viewer offers its own export, which writes
@@ -278,10 +315,11 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         verts = np.array(self.model_data["vertices"], dtype=np.float32)
         if self.pose is not None:
             for group in self.groups:
-                if not group.vertex_count or group.index >= len(self.pose):
+                which = group.index - self.pose_first_group
+                if not group.vertex_count or not 0 <= which < len(self.pose):
                     continue
-                rotation, offset = self.pose[group.index]
-                pivot = self.pose_pivots[group.index]
+                rotation, offset = self.pose[which]
+                pivot = self.pose_pivots[which]
                 at = group.first_vertex
                 block = verts[at:at + group.vertex_count].astype(np.float64)
                 verts[at:at + group.vertex_count] = (
@@ -316,11 +354,17 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         for group in self.groups:
             by_clut = {}
             for f in range(group.first_face, group.first_face + group.face_count):
-                _page, clut, transparent = info[f]
-                by_clut.setdefault(clut, ([], transparent))[0].extend(faces[f])
-            for clut, (face_indices, transparent) in by_clut.items():
+                entry = info[f]
+                clut, transparent = entry[1], entry[2]
+                blend = entry[3] if len(entry) > 3 else 0
+                # Split by blend mode as well as by palette: the mode is
+                # per face, and the four of them cannot be drawn in one
+                # call because each needs its own blend function.
+                key = (clut, transparent, blend)
+                by_clut.setdefault(key, []).extend(faces[f])
+            for (clut, transparent, blend), face_indices in by_clut.items():
                 ranges.append((group.index, clut, len(indices) * 4,
-                               len(face_indices), transparent))
+                               len(face_indices), transparent, blend))
                 indices.extend(face_indices)
                 if clut not in self._clut_arrays:
                     self._clut_arrays[clut] = self._clut_from_vram(clut, transparent)
@@ -388,7 +432,25 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
     def _clut_from_vram(self, address, transparent=False):
         """One 16-colour palette out of the VRAM, in the same 5-bit
         BGR555 the PSX stores it as - the same read
-        MDATViewer.extract_clut_from_vram does."""
+        MDATViewer.extract_clut_from_vram does.
+
+    The PSX decides transparency per TEXEL, not per polygon. A palette
+    entry is 16 bits: five each of B, G, R and, at the top, STP. What
+    that bit means depends on the primitive:
+
+      word == 0x0000            never drawn, whatever the primitive is
+      STP set, primitive blends blended against what is behind it
+      STP set, primitive opaque drawn opaque
+      STP clear                 drawn opaque, ALWAYS
+
+    The last line is the one that matters here. A primitive carrying the
+    semi-transparency bit does not make the whole polygon see-through -
+    it only enables blending for the texels whose palette entry asks for
+    it. Every boss pig is built from faces that all carry that bit, and
+    their palettes are about 95% STP-clear, so the hardware draws them
+    solid; blending the lot made them ghosts. The water pig is the
+    exception that proves it - 89% of its entries DO set STP, and it is
+    meant to look like water."""
         clut = []
         for i in range(16):
             at = address + i * 2
@@ -399,7 +461,12 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             r = (word & 0x1F) * 8
             g = ((word >> 5) & 0x1F) * 8
             b = ((word >> 10) & 0x1F) * 8
-            alpha = 0 if not (r or g or b) else (128 if transparent else 255)
+            if word == 0:
+                alpha = 0
+            elif transparent and (word & 0x8000):
+                alpha = 128
+            else:
+                alpha = 255
             clut.append([r, g, b, alpha])
         return np.array(clut, dtype=np.uint8)
 
@@ -417,6 +484,10 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
 
     def toggle_texture_mode(self, checked):
         self.texture_mode_enabled = checked
+        self.update()
+
+    def toggle_origin(self, checked):
+        self.show_origin = checked
         self.update()
 
     def toggle_culling(self, checked):
@@ -475,7 +546,7 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         QMessageBox.information(
             self, "Exported",
             f"Wrote the model{rigged} and "
-            f"{len({c for _p, c, _t in self.model_data.get('texture_info') or ()})} "
+            f"{len({e[1] for e in self.model_data.get('texture_info') or ()})} "
             f"baked palette texture(s).")
 
     # --- camera ------------------------------------------------------
@@ -490,7 +561,8 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             return
         centre, radius = scene
         self.scene_radius = radius
-        self.camera_controls.frame(centre, radius, heading, pitch)
+        self.camera_controls.frame(centre, radius, heading, pitch,
+                                   lift=MODEL_LIFT)
         self.update()
 
     # --- GL ----------------------------------------------------------
@@ -532,6 +604,15 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
                 uniform sampler1D clutTexture;
                 uniform bool useTextures;
                 uniform float alpha;
+                // Which texels this pass wants: 0 all, 1 only the ones
+                // the hardware draws opaque, 2 only the ones it blends.
+                // A semi-transparent face carries both - the palette
+                // decides per texel - and a blend function is per draw,
+                // so they are drawn in separate passes.
+                uniform int texelClass;
+                // What weight a blended texel gets, which is the part of
+                // the PSX's blend mode that a blend function cannot say.
+                uniform float blendWeight;
 
                 void main() {
                     if (useTextures) {
@@ -545,8 +626,15 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
                         vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
+                        // Alpha 0.5 out of the palette means the entry
+                        // set its STP bit and the hardware blends it;
+                        // 1.0 means it does not, whatever the primitive
+                        // asked for.
+                        bool blended = clutColor.a < 0.9;
+                        if (texelClass == 1 && blended) discard;
+                        if (texelClass == 2 && !blended) discard;
                         outColor = clutColor * vec4(fragColor, 1.0);
-                        outColor.a *= alpha;
+                        outColor.a = (blended ? blendWeight : 1.0) * alpha;
                     } else {
                         outColor = vec4(fragColor, alpha);
                     }
@@ -624,22 +712,70 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         self.shader_program.setUniformValue("clutTexture", 1)
 
         self.vao.bind()
+        self.shader_program.setUniformValue("texelClass", 0)
+        self.shader_program.setUniformValue("blendWeight", 1.0)
         self._draw_pass(transparent=False)
-        # Semi-transparent primitives add rather than mix on the PSX, so
-        # overlapping ones brighten - same second pass the MDAT view does.
-        GL.glDepthMask(GL.GL_FALSE)
-        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE)
-        self._draw_pass(transparent=True)
-        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
-        GL.glDepthMask(GL.GL_TRUE)
+
+        # A face flagged semi-transparent still draws most of its texels
+        # solid - the palette decides, per texel. So its opaque half goes
+        # down first, with depth writing, exactly like ordinary geometry.
+        modes = sorted({r[5] for r in self.draw_ranges if r[4]})
+        if modes:
+            self.shader_program.setUniformValue("texelClass", 1)
+            self._draw_pass(transparent=True)
+
+            # Then the texels that really do blend, one pass per mode.
+            # The PSX has four; treating them all as additive - which is
+            # what this did - washes out everything that asked for the
+            # half-and-half mix, and that is most of them. The boss pigs
+            # are 70% HALF, which is why they came out as ghosts.
+            GL.glDepthMask(GL.GL_FALSE)
+            self.shader_program.setUniformValue("texelClass", 2)
+            for mode in modes:
+                self._set_blend(mode)
+                self.shader_program.setUniformValue("blendWeight", WEIGHTS[mode])
+                self._draw_pass(transparent=True, blend=mode)
+            GL.glBlendEquation(GL.GL_FUNC_ADD)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glDepthMask(GL.GL_TRUE)
+            self.shader_program.setUniformValue("texelClass", 0)
+            self.shader_program.setUniformValue("blendWeight", 1.0)
         self.vao.release()
+        if self.show_origin:
+            # Untextured and at full alpha, whatever the model is drawn
+            # with - the marker is not part of the art.
+            self.shader_program.setUniformValue("useTextures", False)
+            self.shader_program.setUniformValue("alpha", 1.0)
+            self.origin_axes.draw(radius)
         self.shader_program.release()
 
-    def _draw_pass(self, transparent):
+    @staticmethod
+    def _set_blend(mode):
+        """Put OpenGL into one of the PSX's four blend modes.
+
+        The palette hands each texel an alpha of 0.5 when its STP bit is
+        set and 1.0 when it is not, so the fixed-function blend does the
+        rest: a texel the hardware would leave opaque comes through at
+        full weight in every mode below."""
+        GL.glBlendEquation(GL.GL_FUNC_ADD)
+        if mode == ADD:                      # B + F
+            GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
+        elif mode == SUBTRACT:               # B - F
+            GL.glBlendEquation(GL.GL_FUNC_REVERSE_SUBTRACT)
+            GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
+        elif mode == QUARTER:                # B + F/4
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE)
+        else:                                # HALF: B/2 + F/2
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+
+    def _draw_pass(self, transparent, blend=None):
         bound = None
         alpha = None
-        for group_index, clut, offset, count, is_transparent in self.draw_ranges:
+        for (group_index, clut, offset, count, is_transparent,
+             face_blend) in self.draw_ranges:
             if is_transparent != transparent or group_index in self.hidden_groups:
+                continue
+            if blend is not None and face_blend != blend:
                 continue
             want = (DIMMED_ALPHA if self.highlighted_group not in (None, group_index)
                     else 1.0)
