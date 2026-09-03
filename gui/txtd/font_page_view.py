@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 
 from functions import fontpage
 from gui.txtd import translation
-from gui.pixel_canvas import PixelCanvas, fit_zoom
+from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
 
 # What lives where, in page rows. The names are the ones the module
 # docstring of functions/fontpage.py uses.
@@ -65,6 +65,14 @@ SPRITES = (
     ("Full!!", 193, 207, 169, 199),
     ("Load",   208, 223,   3,  44),
     ("Save",   208, 223,  51,  95),
+    # The dialogue frame. It sits INSIDE the glyph grid - rows 136-151
+    # are grid row 6, and it fills cells 0xD7 to 0xDF - but it is
+    # artwork, not glyphs: three 18x16 pieces the game composes its
+    # boxes out of rather than a finished border. Named here so it is
+    # picked as one thing and drawn with its own palette, which the
+    # grid's would get wrong.
+    ("dialogue frame", fontpage.FRAME_Y, fontpage.FRAME_Y + 16,
+     fontpage.FRAME_X, 253),
 )
 
 # A PALETTE HERE IS TWO GRADIENTS, NOT ONE
@@ -84,9 +92,12 @@ SPRITES = (
 # and matches nothing. That is why three separate attempts to identify
 # these by colour failed.
 #
-# Full!! is the case that proves it: it spans both halves of 241/3, so
-# "Full" comes out orange from the low end while "!!" comes out blue
-# from index 10 (00ACFF). The game draws it exactly that way.
+# Full!! is the case that proves it: it spans both halves of 241/2, so
+# "Full" comes out of the low end - FFFF6A through to 310000, a yellow
+# highlight over orange over dark red - while "!!" comes out of indices
+# 8-11, which are 00F6F6 and 008BF6, cyan and blue. The game draws it
+# exactly that way, and the same low half is what colours the health
+# digits.
 #
 # The menu words appear in several colours because these are the menu's
 # own states - a highlighted entry and an unhighlighted one are the same
@@ -102,14 +113,19 @@ HIGH_HALF = {
 # blue state because that is what the captures show; the others have
 # only one colour each.
 SPRITE_CLUTS = {
+    # The frame is drawn in whichever palette the box it belongs to
+    # uses: (255, 2) is the grey dialogue box, (255, 3) the pink one
+    # item notices use, (254, 3) the pale yellow of the control hints.
+    # Same art in all three - only the palette says which box it is.
+    "dialogue frame": fontpage.FRAME_CLUT,
     "Items": (242, 1),
     "Event": (242, 1),
     "Status": (242, 1),
     "Help": (242, 1),
     "Load": (242, 1),
     "Save": (242, 1),
-    "Full!!": (241, 3),
-    "health digits and +": (241, 3),
+    "Full!!": (241, 2),
+    "health digits and +": (241, 2),
 }
 
 # The ground a transparent texel is seen against. Left to the canvas to
@@ -251,6 +267,7 @@ class FontPageView(QWidget):
         self.detail.copy_wanted.connect(self.copy_selection)
         self.detail.paste_wanted.connect(self.paste_selection)
         self.detail.palette_chosen.connect(self._palette_for_selection)
+        self.detail.show_clut.connect(self._mark_clut)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -327,6 +344,21 @@ class FontPageView(QWidget):
         self.info.setText(
             f"Reset {describe(*self.selection)} - {touched} texel(s) put back"
             if touched else f"{describe(*self.selection)} was unchanged")
+
+    def _mark_clut(self, on):
+        """Outline the selected palette's own 16 words in the page.
+
+        A palette is stored in the page like anything else - the last 32
+        rows are four palettes each, sixteen 16-bit words apiece, which
+        is 64 texels - so it can be pointed at. Held rather than
+        toggled, because it is a "where is it" question, not a mode."""
+        if not on or not self.selection:
+            self.canvas.clut_mark = None
+        else:
+            row, slot = self._palette_key(*self.selection)
+            self.canvas.clut_mark = (slot * (fontpage.PAGE_W // 4), row,
+                                     fontpage.PAGE_W // 4, 1)
+        self.canvas.update()
 
     def _palette_for_selection(self, key):
         """Draw this part with the palette just picked.
@@ -792,6 +824,7 @@ class _PageCanvas(PixelCanvas):
         self.show_cells = True
         self.glyph_top = fontpage.GLYPH_TOP
         self.selection = None      # (x, y, w, h) in page texels
+        self.clut_mark = None      # a palette's own words, while Show is held
 
     def paint_overlays(self, painter, _area):
         scale = self.scaled
@@ -855,6 +888,7 @@ class _Detail(QWidget):
     copy_wanted = pyqtSignal()
     paste_wanted = pyqtSignal()
     palette_chosen = pyqtSignal(object)    # (row, slot) picked for this part
+    show_clut = pyqtSignal(bool)           # mark where the palette lives
     renamed = pyqtSignal(object, str)      # code, the character it draws
 
     def __init__(self, parent=None):
@@ -865,6 +899,10 @@ class _Detail(QWidget):
         self.code = None                   # the glyph code, when it is one
         self.cluts = []
         self.index = 1                     # what the brush paints
+        # Whether the zoom is still following the selection. Once it has
+        # been set by hand it stays put, so picking through a row of
+        # glyphs does not keep snapping the view back.
+        self._fitted = True
 
         self.canvas = _DetailCanvas()
         self.canvas.checker_light = CHECKER_LIGHT
@@ -902,9 +940,33 @@ class _Detail(QWidget):
             "the code.")
         self.char_edit.editingFinished.connect(self._rename)
 
+        # A sprite is 30 to 166 texels wide against a glyph's 8, so one
+        # fitted zoom cannot suit both - the digits arrive too small to
+        # aim at unless the fit can be overridden.
+        self.zoom_out = QPushButton("-")
+        self.zoom_out.setFixedWidth(28)
+        self.zoom_out.clicked.connect(lambda: self._zoom_by(-1))
+        self.zoom_in = QPushButton("+")
+        self.zoom_in.setFixedWidth(28)
+        self.zoom_in.clicked.connect(lambda: self._zoom_by(1))
+        self.zoom_fit = QPushButton("Fit")
+        self.zoom_fit.setFixedWidth(40)
+        self.zoom_fit.clicked.connect(self._fit)
+        self.zoom_label = QLabel("")
+        self.zoom_label.setMinimumWidth(48)
+
         self.note = QLabel("")
         self.note.setWordWrap(True)
         self.note.setStyleSheet("color: #c8a04a;")
+
+        self.show_button = QPushButton("Show")
+        self.show_button.setToolTip(
+            "Hold to mark where this palette sits in the page. The last "
+            "32 rows are palettes rather than pixels, four to a row, and "
+            "nothing on screen says which sixteen words belong to the "
+            "one being used.")
+        self.show_button.pressed.connect(lambda: self.show_clut.emit(True))
+        self.show_button.released.connect(lambda: self.show_clut.emit(False))
 
         self.copy_button = QPushButton("Copy")
         self.copy_button.setToolTip(
@@ -942,6 +1004,16 @@ class _Detail(QWidget):
         head.addWidget(self.title, 1)
         head.addWidget(QLabel("Palette:"))
         head.addWidget(self.clut_box, 1)
+        head.addWidget(self.show_button)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.setContentsMargins(8, 0, 8, 0)
+        zoom_row.addWidget(QLabel("Zoom:"))
+        zoom_row.addWidget(self.zoom_out)
+        zoom_row.addWidget(self.zoom_in)
+        zoom_row.addWidget(self.zoom_fit)
+        zoom_row.addWidget(self.zoom_label)
+        zoom_row.addStretch(1)
 
         # The assigned letter sits with the drawing tools rather than
         # up by the title: shape and meaning are the two halves of the
@@ -952,13 +1024,13 @@ class _Detail(QWidget):
         name_row.addWidget(QLabel("Assigned letter:"))
         name_row.addWidget(self.char_edit)
         name_row.addStretch(1)
-        name_row.addWidget(self.copy_button)
-        name_row.addWidget(self.paste_button)
+        name_row.addWidget(self.undo_button)
+        name_row.addWidget(self.reset_button)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(8, 0, 8, 6)
-        buttons.addWidget(self.undo_button)
-        buttons.addWidget(self.reset_button)
+        buttons.addWidget(self.copy_button)
+        buttons.addWidget(self.paste_button)
         buttons.addStretch(1)
         buttons.addWidget(self.save_button)
 
@@ -966,6 +1038,7 @@ class _Detail(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.addLayout(head)
+        layout.addLayout(zoom_row)
         layout.addWidget(self.scroll, 1)
         layout.addLayout(name_row)
         layout.addWidget(self.note)
@@ -1019,6 +1092,20 @@ class _Detail(QWidget):
     def _set_index(self, index):
         self.index = index
 
+    def _zoom_by(self, direction):
+        self.canvas.zoom_by(direction)
+        self._fitted = False
+        self.zoom_label.setText(zoom_label(self.canvas.zoom))
+
+    def _fit(self):
+        """Back to whatever fills the pane."""
+        if self.box:
+            _x, _y, width, height = self.box
+            self.canvas.set_zoom(fit_zoom((width, height),
+                                          self.scroll.viewport().size(), 24))
+        self._fitted = True
+        self.zoom_label.setText(zoom_label(self.canvas.zoom))
+
     def _pick_at(self, col, row):
         """Take the palette index under the cursor as the brush."""
         if not self.page or not self.box:
@@ -1059,8 +1146,10 @@ class _Detail(QWidget):
                 if entry and entry[3]:
                     image.setPixelColor(col, row, QColor(*entry))
         self.canvas.set_image(image)
-        self.canvas.set_zoom(fit_zoom((width, height),
-                                      self.scroll.viewport().size(), 24))
+        if self._fitted:
+            self.canvas.set_zoom(fit_zoom((width, height),
+                                          self.scroll.viewport().size(), 24))
+        self.zoom_label.setText(zoom_label(self.canvas.zoom))
 
 
 class _DetailCanvas(PixelCanvas):
