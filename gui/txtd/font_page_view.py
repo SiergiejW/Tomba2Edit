@@ -1147,7 +1147,21 @@ class FontPageView(QWidget):
             except Exception as e:
                 self.info.setText(f"Could not read the page: {e}")
         # Which disc is this? Everything about the layout follows.
-        if self.page:
+        #
+        # Read the FONTS page for this specifically, never self.page -
+        # self.page is whatever kind is currently on show, and detect()
+        # reads rows 224-239 of it looking for the font page's own
+        # empty-vs-artwork signal. Handed the Title page instead (its
+        # rows 224-239 are the picture/menu area, never empty) it read
+        # every disc as European the moment the Title tab was open,
+        # which is a page-switch flipping the build underneath work
+        # already in progress on the Fonts page.
+        try:
+            detect_page = (self.page if self.kind is FONT_PAGE
+                          else fontpage.read_page(cd_folder, fontpage.FONTS))
+        except Exception:
+            detect_page = None
+        if detect_page:
             exe = b""
             try:
                 exe_path = os.path.join(cd_folder, "MAIN.EXE")
@@ -1156,7 +1170,7 @@ class FontPageView(QWidget):
                         exe = f.read()
             except Exception:
                 exe = b""
-            self.detected, self.detected_why = dicts.detect(self.page, exe)
+            self.detected, self.detected_why = dicts.detect(detect_page, exe)
             if self.build_box.currentData() is None:
                 self.build = self.detected
             self.glyph_top = dicts.glyph_top(self.build)
