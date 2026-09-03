@@ -36,7 +36,6 @@ from functions import labels as labels_module
 from functions import fontpage
 from functions import codeuse
 from functions import voice
-from gui.txtd.font_editor import FontEditor
 from gui.txtd.font_page_view import FontPageView
 from gui.txtd.voice_panel import VoicePanel
 from gui.music_panel import MusicPanel
@@ -177,17 +176,15 @@ class MainWindow(QMainWindow):
         self.sfx_panel = SfxPanel()
         self.main_tabs.addTab(self.sfx_panel, "SFX")
 
-        # Translation: the font page whole, and the glyph editor beside
-        # it. Both work on chunk 0 of TOMBA2.IMG - see
-        # functions/fontpage.py - so they belong on one screen rather
-        # than in a window opened from a menu.
-        self.translation_tab = QSplitter(Qt.Orientation.Horizontal)
+        # Translation: the font page, whole, and everything selected
+        # from it. One view rather than two - the page IS the index, so
+        # a separate list of glyphs beside it would only be a second way
+        # of saying where to look.
         self.font_page_view = FontPageView()
-        self.font_editor = FontEditor()
-        self.translation_tab.addWidget(self.font_page_view)
-        self.translation_tab.addWidget(self.font_editor)
-        self.translation_tab.setStretchFactor(0, 1)
-        self.translation_tab.setStretchFactor(1, 1)
+        # A saved glyph changes chunk 0's VRAM, so anything already
+        # showing VRAM is looking at a stale copy of it.
+        self.font_page_view.saved.connect(self._font_page_saved)
+        self.translation_tab = self.font_page_view
         self.main_tabs.addTab(self.translation_tab, "Translation")
         # Loaded when the tab is first looked at rather than when a disc
         # opens: working out which codes the disc's own text uses means
@@ -1198,6 +1195,21 @@ class MainWindow(QMainWindow):
         self.load_translation_tab(cd_folder)
         self.main_tabs.setCurrentWidget(self.translation_tab)
 
+    def _font_page_saved(self):
+        """Reload whatever is showing the VRAM the font page lives in.
+
+        The page is chunk 0 of TOMBA2.IMG, which IS AREA_00's VRAM, so a
+        glyph written here changes what the VRAM and CVRAM views draw.
+        They read the IMG when a row is picked and hold the image after
+        that, so without this the edit is on the disc and invisible
+        everywhere but the Translation tab."""
+        self._area_vram_cache = {}
+        selected = self.tree_view.selectionModel().selectedIndexes()
+        if selected:
+            # Re-run the selection, which is what loaded them in the
+            # first place.
+            self.on_tree_selection_changed()
+
     def _tab_changed(self, index):
         """Fill the Translation tab the first time it is opened."""
         if self.main_tabs.widget(index) is not self.translation_tab:
@@ -1213,7 +1225,6 @@ class MainWindow(QMainWindow):
         if cd_folder is None:
             return
         self.font_page_view.set_source(cd_folder)
-        self.font_editor.set_source(cd_folder, self.dat_file)
         self._translation_loaded = True
 
     def export_font_page(self):
