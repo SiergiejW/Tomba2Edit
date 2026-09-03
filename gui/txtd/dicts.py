@@ -30,7 +30,16 @@ cell number, so no US string asks for cell 160 as a letter.
 Japanese is not covered. Its page shares no glyph shapes with the Latin
 builds, so nothing here can be derived for it by matching.
 """
-from gui.txtd.tombadict import letters as _BASE
+from gui.txtd import tombadict
+
+# A COPY, taken at import, not a reference to the live dict.
+#
+# translation.apply() rewrites tombadict.letters in place so every
+# reader and both packers see a translation at once. Aliasing that dict
+# here meant for_build() built each build's table on top of whatever
+# translation happened to be applied - and after apply() had cleared it,
+# on top of nothing at all. The shipped meanings have to stay put.
+_BASE = dict(tombadict.letters)
 
 # Accented capitals and lowercase, as the European pages lay them out.
 ACCENT_BLOCK = {}
@@ -52,8 +61,19 @@ _LATIN = {
 GLYPH_TOP = {
     "us-retail": 40,
     "us-demo": 40,
-    "de-retail": 66,
-    "sp-retail": 66,
+    # 64, not 66. Matching the European page against the US "@ABC" row
+    # peaks at 66, but that finds where the LETTERS line up, not where
+    # the cell begins: the US glyphs sit flush with the top of their
+    # cell and the European ones sit two rows into theirs.
+    #
+    # The cell boundary is visible directly. Rows 64, 80, 96, 112 and
+    # 160 of the German page are completely blank, and 127 and 143 are
+    # the blank last rows of the cells above them - a 16-row pitch
+    # starting at 64, which is also the only one of the candidates that
+    # is itself a multiple of 16. Being two rows out put every selection
+    # box two rows low, which is what showed on the capitals.
+    "de-retail": 64,
+    "sp-retail": 64,
 }
 
 # Cells the US page fills with button icons and the European pages with
@@ -83,6 +103,56 @@ def for_build(build=DEFAULT_BUILD):
 def glyph_top(build=DEFAULT_BUILD):
     """Where that build's dialogue grid starts in its font page."""
     return GLYPH_TOP.get(build, 40)
+
+
+# Words only one language's executable has, used to tell the European
+# discs apart. Both carry the same font page layout, so the page cannot
+# say which language it is - the strings can.
+_LANGUAGE_MARKS = (
+    ("de-retail", b"Speichern"),
+    ("sp-retail", b"Guardar"),
+    ("us-retail", b"Save Error!"),
+)
+
+
+def detect(page, exe=b""):
+    """Which build a disc is, read off the disc itself.
+
+    Two signals, both measured, neither of them a filename:
+
+    The US page keeps rows 224-239 empty; the European ones fill them
+    with artwork. That is a difference of 0 inked texels against about
+    1,600, so it separates the layouts outright rather than by a
+    threshold anyone has to tune.
+
+    Which European language it is cannot come from the page, because
+    German and Spanish lay theirs out identically. It comes from a word
+    that only one executable contains.
+
+    Returns (build id, why), the reason being worth showing: a detector
+    that silently picks the wrong layout is worse than one that says
+    what it saw.
+    """
+    below = sum(1 for y in range(224, 240)
+                for x in range(len(page[y])) if page[y][x])
+    language = None
+    for build, mark in _LANGUAGE_MARKS:
+        if mark and exe and mark in exe:
+            language = build
+            break
+    if below == 0:
+        return (language if language and language.startswith("us")
+                else DEFAULT_BUILD), (
+            f"rows 224-239 are empty, which is the US layout"
+            + (f", and MAIN.EXE agrees" if language == "us-retail" else ""))
+    if language and not language.startswith("us"):
+        return language, (
+            f"rows 224-239 carry {below} texels of artwork, which is the "
+            f"European layout, and MAIN.EXE names it")
+    return "de-retail", (
+        f"rows 224-239 carry {below} texels of artwork, so this is the "
+        "European layout, but MAIN.EXE did not say which language - "
+        "guessing German, which shares the layout")
 
 
 def derive(page, reference_page, reference_table, top=None, reference_top=40):

@@ -107,11 +107,36 @@ class Table:
 
 
 _active = Table()
+_build = ""
 
 
 def active():
     """The table in force."""
     return _active
+
+
+def build():
+    """Which disc's meanings the table is sitting on."""
+    return _build
+
+
+def use_build(name):
+    """Make this build's own meanings the base a translation sits on.
+
+    The codes are not shared. Where the US disc spends 0xA0 to 0xDF on
+    kana and button icons, the German and Spanish discs draw 64 accented
+    letters, so reading a German disc through the US base turns
+    "Uberquert" into "{$BC}berquert" and "Achz" into "{$A4}chz" - which
+    is exactly what it did.
+
+    Re-applies whatever translation is in force, so switching build
+    keeps a translator's own claims rather than dropping them."""
+    global _BASE, _build
+    from gui.txtd import dicts
+
+    _build = name
+    _BASE = dicts.for_build(name)
+    return apply(_active)
 
 
 def apply(table):

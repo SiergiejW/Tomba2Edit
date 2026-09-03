@@ -51,7 +51,17 @@ FRAME_CLUT = (255, 2)            # row, slot
 # The system font, and where the CLUTs sit. Rows are page rows.
 SYSTEM_TOP = 0
 SYSTEM_H = 8
-CLUT_TOP = 224
+# 240, not 224. The US page has nothing at all in rows 224-239, so
+# either value gave it the same 32 palettes and the difference never
+# showed. The German and Spanish pages put ARTWORK there - the health
+# digits, and the right-hand end of a menu word - and reading it as
+# colour invented 57 palettes that do not exist.
+#
+# What settles it: every one of the 32 palettes from row 240 on is
+# byte-identical across the US, German and Spanish discs. The game's
+# colours are the same everywhere, so that is where the palettes really
+# are, and anything above them is a picture.
+CLUT_TOP = 240
 CLUT_ENTRIES = 16
 
 # The dialogue font's grid - see the module docstring. Where its first
@@ -233,7 +243,7 @@ def _rgb555(word):
     return (r, g, b, 128 if word & 0x8000 else 255)
 
 
-def export_png(cd_folder, path, clut=None):
+def export_png(cd_folder, path, clut=None, spec=None):
     """Write the page to `path` as an indexed PNG.
 
     With `clut` - a list of 16 (r, g, b, a) from read_cluts() - the PNG
@@ -241,8 +251,9 @@ def export_png(cd_folder, path, clut=None):
     Without one it gets a grey ramp. Either way the pixels are the same
     4-bit indices, so a file exported with a palette imports back
     unchanged."""
-    page = read_page(cd_folder)
-    image = Image.new("P", (PAGE_W, PAGE_H))
+    spec = spec or FONTS
+    page = read_page(cd_folder, spec)
+    image = Image.new("P", (spec.width, spec.height))
     if clut:
         flat = []
         for r, g, b, _a in clut:
@@ -256,19 +267,20 @@ def export_png(cd_folder, path, clut=None):
     return path
 
 
-def import_png(cd_folder, path):
+def import_png(cd_folder, path, spec=None):
     """Read an indexed PNG back into the page and rewrite the IMG."""
+    spec = spec or FONTS
     image = Image.open(path)
-    if image.size != (PAGE_W, PAGE_H):
+    if image.size != (spec.width, spec.height):
         raise FontPageError(
             f"{os.path.basename(path)} is {image.size[0]}x{image.size[1]}, "
-            f"and a font page is {PAGE_W}x{PAGE_H}.")
+            f"and {spec.name} is {spec.width}x{spec.height}.")
     if image.mode != "P":
         raise FontPageError(
             f"{os.path.basename(path)} is mode {image.mode}; the page has to "
             "stay indexed (mode P), since its pixels are CLUT indices.")
     return write_page(cd_folder, list(image.getdata()),
-                      what=os.path.basename(path))
+                      what=os.path.basename(path), spec=spec)
 
 
 def write_page(cd_folder, page, what="the page", spec=None):

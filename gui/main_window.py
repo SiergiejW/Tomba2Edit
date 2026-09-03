@@ -189,6 +189,8 @@ class MainWindow(QMainWindow):
         # drawn in the Translation tab reaches the copy on disc and never
         # reaches the disc that gets built from it - the text would come
         # out referring to a letter whose artwork was never shipped.
+        # Which disc is open - see apply_build_table.
+        self.build = ""
         self.font_page_dirty = False
         self.font_page_view.saved.connect(self._font_page_saved)
 
@@ -199,6 +201,11 @@ class MainWindow(QMainWindow):
         # viewer that owns the checkbox is built further down, so the
         # connection is made where it is created.
         self.twin_edits = True
+        # Addresses an export has actually written, twins included. Kept
+        # because turning twin-following off has to put a twin's row back
+        # to what is true of it, and "was written by an earlier export"
+        # is not the same as "never touched" - see _set_twin_edits.
+        self.exported_addresses = set()
         self.translation_tab = self.font_page_view
         self.main_tabs.addTab(self.translation_tab, "Translation")
         # Loaded when the tab is first looked at rather than when a disc
@@ -1222,6 +1229,35 @@ class MainWindow(QMainWindow):
         with open(path, "rb") as f:
             return f.read()
 
+    def apply_build_table(self, cd_folder):
+        """Work out which disc this is and put its character table in
+        force, before anything decodes text with it.
+
+        The font page says which layout it is and MAIN.EXE says which
+        language - see gui/txtd/dicts.detect. Done at open rather than
+        when the Translation tab is first looked at, because the TXTD
+        viewer decodes text long before anyone goes near that tab."""
+        from functions import fontpage
+        from gui.txtd import dicts, translation
+
+        try:
+            page = fontpage.read_page(cd_folder)
+        except Exception as e:
+            print(f"Could not read the font page to identify the build: {e}")
+            self.build = dicts.DEFAULT_BUILD
+            return
+        exe = b""
+        exe_path = os.path.join(cd_folder, "MAIN.EXE")
+        try:
+            if os.path.exists(exe_path):
+                with open(exe_path, "rb") as f:
+                    exe = f.read()
+        except Exception:
+            exe = b""
+        self.build, why = dicts.detect(page, exe)
+        translation.use_build(self.build)
+        print(f"Build: {self.build} - {why}")
+
     def _font_page_saved(self):
         """Reload whatever is showing the VRAM the font page lives in.
 
@@ -1326,8 +1362,15 @@ class MainWindow(QMainWindow):
         if not on:
             for pending in list(self.pending_txtd_edits):
                 for twin in self.txtd_twins.get(pending, ()):
-                    if twin not in self.pending_txtd_edits:
-                        self._colour_address(twin, None)
+                    if twin in self.pending_txtd_edits:
+                        continue
+                    # Back to what is true of it, which is green if an
+                    # earlier export really did write it and plain only
+                    # if nothing ever has.
+                    self._colour_address(
+                        twin,
+                        "exported" if twin in self.exported_addresses
+                        else None)
         self._refresh_edit_status()
 
     def _twins_of(self, address):
@@ -1359,6 +1402,8 @@ class MainWindow(QMainWindow):
 
     def _colour_address(self, address, state):
         """Colour one address's rows - see _set_txtd_tree_item_state."""
+        if state == "exported":
+            self.exported_addresses.add(address)
         for location in self.address_locations.get(address, []):
             file_item = self.txtd_item_lookup.get(location)
             if file_item is None:
@@ -1837,6 +1882,7 @@ class MainWindow(QMainWindow):
             return
 
         extracted_dir = self.iso_handler.get_temp_dir()
+        self.apply_build_table(extracted_dir)
         try:
             parse_idx_file(self, extracted_dir)
         except Exception as e:
@@ -1920,6 +1966,7 @@ class MainWindow(QMainWindow):
         self._refresh_edit_status()
 
         try:
+            self.apply_build_table(cd_folder)
             parse_idx_file(self, cd_folder)
         except Exception as e:
             self.dat_file = None
