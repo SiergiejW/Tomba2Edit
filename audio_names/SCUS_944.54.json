@@ -43,10 +43,16 @@
     "DEMO.XA:7:1": "Outro / Intro"
   },
   "dialogue": {
-    "VOICE.XA:0": "Operations Room Dialogue",
-    "VOICE.XA:1": "Donglin Forest Dialogue",
-    "VOICE.XA:2": "Tiny Mouse Dialogue",
-    "VOICE.XA:3": "Kujara Ranch Dialogue"
+    "VOICE.XA:0": "Operations Room (Kujara Ranch Summit)",
+    "VOICE.XA:1": "Donglin Forest",
+    "VOICE.XA:2": "Tiny Mouse's House",
+    "VOICE.XA:3": "Kujara Ranch",
+    "VOICE.XA:4": "Kujara Ranch Summit",
+    "VOICE.XA:5": "Town of the Fishermen / Coal Mining Town 01",
+    "VOICE.XA:6": "Coal Mining Town 02",
+    "VOICE.XA:7": "Large Mine Underground 01 / Circus Village",
+    "VOICE.XA:8": "Donglin Forest 01 / Circus Village 02",
+    "VOICE.XA:9": "Town of the Fishermen / Large Mine Underground 02"
   },
   "sfx": {
     "0:10": "destruction",
