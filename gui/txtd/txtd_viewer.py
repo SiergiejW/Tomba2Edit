@@ -190,6 +190,8 @@ class TXTDViewer(QWidget):
 
     # (chunk_index, file_index, id_val, dat_start, offset, current_data)
     content_changed = pyqtSignal(int, int, int, int, int, dict)
+    # Whether an edit should reach byte-identical copies of this file.
+    twin_edits_toggled = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -279,6 +281,22 @@ class TXTDViewer(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: gray;")
 
+        # Every cursed area has a purified twin holding a byte-identical
+        # copy of its text - a separate file, not a second pointer at the
+        # same one - so translating one and not the other leaves half the
+        # game in the source language. On by default because that is
+        # almost always what is meant; off when the two are deliberately
+        # being made to differ.
+        self.twin_check = QCheckBox("Edit duplicate twin texts")
+        self.twin_check.setChecked(True)
+        self.twin_check.setToolTip(
+            "Apply each edit to every other text file whose bytes are "
+            "identical to this one - the purified copy of a cursed "
+            "area's text, and the like. Only files that hash the same "
+            "are touched, so a pair that has already been made to differ "
+            "is left alone.")
+        self.twin_check.toggled.connect(self.twin_edits_toggled)
+
         # Raw text on top, the same text as the game draws it below,
         # each taking half the height whatever the window does.
         edit_side = QWidget()
@@ -330,6 +348,7 @@ class TXTDViewer(QWidget):
         # The budget line stays under both halves, where it reads as
         # belonging to the entry rather than to the edit box.
         right_layout.addWidget(self.status_label)
+        right_layout.addWidget(self.twin_check)
         right_panel.setLayout(right_layout)
 
         # Add widgets to the splitter

@@ -183,7 +183,22 @@ class MainWindow(QMainWindow):
         self.font_page_view = FontPageView()
         # A saved glyph changes chunk 0's VRAM, so anything already
         # showing VRAM is looking at a stale copy of it.
+        # Whether the font/title page has been written to the extracted
+        # TOMBA2.IMG since the disc was opened. Exports carry every other
+        # file over from the ORIGINAL image, so without this a glyph
+        # drawn in the Translation tab reaches the copy on disc and never
+        # reaches the disc that gets built from it - the text would come
+        # out referring to a letter whose artwork was never shipped.
+        self.font_page_dirty = False
         self.font_page_view.saved.connect(self._font_page_saved)
+
+        # address -> the addresses of byte-identical copies of it, built
+        # by idx_parser.parse_idx_file. Empty until a disc is open.
+        self.txtd_twins = {}
+        # Whether an edit is applied to those copies as well. The
+        # viewer that owns the checkbox is built further down, so the
+        # connection is made where it is created.
+        self.twin_edits = True
         self.translation_tab = self.font_page_view
         self.main_tabs.addTab(self.translation_tab, "Translation")
         # Loaded when the tab is first looked at rather than when a disc
@@ -253,6 +268,7 @@ class MainWindow(QMainWindow):
         self.setup_tree_view()
         self.setup_widgets()
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
+        self.txtd_viewer.twin_edits_toggled.connect(self._set_twin_edits)
         self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)
         self.mainexe_viewer.content_changed.connect(self.on_mainexe_content_changed)
         self.bins_viewer.content_changed.connect(self.on_bins_content_changed)
@@ -1195,14 +1211,30 @@ class MainWindow(QMainWindow):
         self.load_translation_tab(cd_folder)
         self.main_tabs.setCurrentWidget(self.translation_tab)
 
+    def _edited_img(self):
+        """The working TOMBA2.IMG, if the font page has been written to
+        it, else None. See font_page_dirty."""
+        if not self.font_page_dirty or not getattr(self, "dat_file", None):
+            return None
+        path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            return f.read()
+
     def _font_page_saved(self):
         """Reload whatever is showing the VRAM the font page lives in.
+
+        Also marks the IMG as needing to travel with the next export -
+        see font_page_dirty.
 
         The page is chunk 0 of TOMBA2.IMG, which IS AREA_00's VRAM, so a
         glyph written here changes what the VRAM and CVRAM views draw.
         They read the IMG when a row is picked and hold the image after
         that, so without this the edit is on the disc and invisible
         everywhere but the Translation tab."""
+        self.font_page_dirty = True
+        self._refresh_edit_status()
         self._area_vram_cache = {}
         selected = self.tree_view.selectionModel().selectedIndexes()
         if selected:
@@ -1282,6 +1314,29 @@ class MainWindow(QMainWindow):
             "Reopen the disc to see it in the VRAM view.")
         self.statusBar().showMessage(f"Font page imported from {path}", 8000)
 
+    def _set_twin_edits(self, on):
+        """Turn twin-following on or off, and recolour what changes.
+
+        A pending edit's twin is coloured as edited too, so switching
+        this has to repaint: the rows it was speaking for stop being
+        spoken for."""
+        self.twin_edits = on
+        for pending in list(self.pending_txtd_edits):
+            self._set_txtd_tree_item_state(pending, "edited")
+        if not on:
+            for pending in list(self.pending_txtd_edits):
+                for twin in self.txtd_twins.get(pending, ()):
+                    if twin not in self.pending_txtd_edits:
+                        self._colour_address(twin, None)
+        self._refresh_edit_status()
+
+    def _twins_of(self, address):
+        """Byte-identical copies of this file, if following them is on."""
+        if not self.twin_edits:
+            return []
+        return [twin for twin in self.txtd_twins.get(address, ())
+                if twin not in self.pending_txtd_edits]
+
     def _set_txtd_tree_item_state(self, address, state):
         """Colors every row that points at this DAT address: "edited"
         (orange) while it has pending edits, "exported" (green) once
@@ -1297,6 +1352,13 @@ class MainWindow(QMainWindow):
         Also recomputes the enclosing NN_DATA and AREA_NN folder colors
         for each, so an edit anywhere shows up all the way up the tree
         in every area it touches."""
+        # The twins are shown in the same state, because they are about
+        # to be written with the same bytes - see _twins_of.
+        for also in [address] + self._twins_of(address):
+            self._colour_address(also, state)
+
+    def _colour_address(self, address, state):
+        """Colour one address's rows - see _set_txtd_tree_item_state."""
         for location in self.address_locations.get(address, []):
             file_item = self.txtd_item_lookup.get(location)
             if file_item is None:
@@ -1386,7 +1448,8 @@ class MainWindow(QMainWindow):
             return
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
-        if not self.pending_txtd_edits and not mainexe_edits and not sop_edits:
+        if (not self.pending_txtd_edits and not mainexe_edits
+                and not sop_edits and not self.font_page_dirty):
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
@@ -1402,15 +1465,19 @@ class MainWindow(QMainWindow):
         replacements = {}
         with tempfile.TemporaryDirectory(prefix="tomba2bin_") as work:
             try:
-                from functions.repacker import repack_files
-                dat = os.path.join(work, "TOMBA2.DAT")
-                idx = os.path.join(work, "TOMBA2.IDX")
-                repack_files(self.dat_file,
-                             os.path.join(os.path.dirname(self.dat_file),
-                                          "TOMBA2.IDX"),
-                             edits, dat, idx)
-                replacements["TOMBA2.DAT"] = open(dat, "rb").read()
-                replacements["TOMBA2.IDX"] = open(idx, "rb").read()
+                if edits:
+                    from functions.repacker import repack_files
+                    dat = os.path.join(work, "TOMBA2.DAT")
+                    idx = os.path.join(work, "TOMBA2.IDX")
+                    repack_files(self.dat_file,
+                                 os.path.join(os.path.dirname(self.dat_file),
+                                              "TOMBA2.IDX"),
+                                 edits, dat, idx)
+                    replacements["TOMBA2.DAT"] = open(dat, "rb").read()
+                    replacements["TOMBA2.IDX"] = open(idx, "rb").read()
+                img = self._edited_img()
+                if img is not None:
+                    replacements["TOMBA2.IMG"] = img
                 if mainexe_edits:
                     exe = os.path.join(work, "MAIN.EXE")
                     mainbin_repack_pool(self.mainexe_viewer.exe_path,
@@ -1437,7 +1504,15 @@ class MainWindow(QMainWindow):
                 self.statusBar().clearMessage()
                 return
 
-        extra = self._copy_audio_track(source, target)
+        # The track is already written by here, so nothing this does is
+        # worth losing it over - and an exception escaping a slot does
+        # not raise in PyQt6, it calls qFatal() and takes the whole
+        # program with it, pending edits and all.
+        try:
+            extra = self._copy_audio_track(source, target)
+        except Exception as exc:
+            extra = (f"The track was written, but its audio track and cue "
+                     f"sheet were not: {exc}")
         self.statusBar().clearMessage()
         QMessageBox.information(
             self, "Saved",
@@ -1459,6 +1534,7 @@ class MainWindow(QMainWindow):
             self.mainexe_viewer.mark_exported()
         if sop_edits:
             self.bins_viewer.mark_exported()
+        self.font_page_dirty = False
         self._refresh_edit_status()
 
     def _copy_audio_track(self, source, target):
@@ -1467,6 +1543,8 @@ class MainWindow(QMainWindow):
         A bin/cue names its tracks in separate files, so the second one
         needs copying beside the patched first and a cue written over
         both - otherwise the music track is simply missing."""
+        import shutil
+
         from functions import bin_writer
 
         folder = os.path.dirname(source)
@@ -1498,9 +1576,10 @@ class MainWindow(QMainWindow):
         # would silently get dropped from this one.
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
-        if not self.pending_txtd_edits and not mainexe_edits and not sop_edits:
+        if (not self.pending_txtd_edits and not mainexe_edits
+                and not sop_edits and not self.font_page_dirty):
             QMessageBox.information(self, "Nothing to export",
-                                     "No TXTD/TXT2/MAIN.EXE/SOP.BIN edits are pending. Edit some entry text first.")
+                                     "No TXTD/TXT2/MAIN.EXE/SOP.BIN/font page edits are pending. Edit some entry text first.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -1529,6 +1608,12 @@ class MainWindow(QMainWindow):
             return
 
         output_paths = [output_dat, output_idx]
+        img = self._edited_img()
+        if img is not None:
+            output_img = os.path.join(out_dir, "TOMBA2.IMG")
+            with open(output_img, "wb") as f:
+                f.write(img)
+            output_paths.append(output_img)
         if mainexe_edits:
             output_exe = os.path.join(out_dir, "MAIN.EXE")
             try:
@@ -1564,7 +1649,9 @@ class MainWindow(QMainWindow):
             "Wrote:\n" + "\n".join(output_paths) + "\n\n"
             f"({len(edits)} disc file(s){extras_suffix} repacked.)\n\n"
             "Back up your original CD files, then copy these over them "
-            "to test in-game. TOMBA2.IMG is unchanged and doesn't need copying."
+            "to test in-game." + ("" if img is not None else
+                                  " TOMBA2.IMG is unchanged and doesn't "
+                                  "need copying.")
         )
         for address, info in self.pending_txtd_edits.items():
             self._set_txtd_tree_item_state(address, "exported")
@@ -1902,6 +1989,16 @@ class MainWindow(QMainWindow):
                 # is as good as any to hand the repacker.
                 chunk_index, file_index = info["locations"][0]
                 edits.append({"area": chunk_index, "file_idx": file_index, "data": packed_bytes})
+                # And the same bytes into every byte-identical copy, so
+                # a purified area does not keep the untranslated text
+                # its cursed twin just lost.
+                for twin in self._twins_of(address):
+                    where = self.address_locations.get(twin)
+                    if not where:
+                        continue
+                    twin_chunk, twin_file = where[0]
+                    edits.append({"area": twin_chunk, "file_idx": twin_file,
+                                  "data": packed_bytes})
         except txtd_packer.TxtdPackError as e:
             QMessageBox.critical(self, "Text encoding error",
                                   f"Couldn't encode an entry's text:\n\n{e}\n\n"
@@ -1929,7 +2026,8 @@ class MainWindow(QMainWindow):
         # own comment on this for why.
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
-        has_any_edits = bool(edits) or bool(mainexe_edits) or bool(sop_edits)
+        has_any_edits = (bool(edits) or bool(mainexe_edits)
+                         or bool(sop_edits) or self.font_page_dirty)
 
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
@@ -1986,6 +2084,9 @@ class MainWindow(QMainWindow):
                 with open(tmp_sop, "rb") as f:
                     replacements["SOP.BIN"] = f.read()
 
+            img = self._edited_img()
+            if img is not None:
+                replacements["TOMBA2.IMG"] = img
             build_iso(self.current_iso_path, replacements, output_path)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Failed to rebuild ISO:\n\n{e}")

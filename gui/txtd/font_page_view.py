@@ -370,6 +370,7 @@ class FontPageView(QWidget):
         self.canvas.checker_light = CHECKER_LIGHT
         self.canvas.checker_dark = CHECKER_DARK
         self.canvas.clicked.connect(self._clicked)
+        self.canvas.arrow.connect(self._move_selection)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
@@ -834,6 +835,49 @@ class FontPageView(QWidget):
                                        deep=(kind == "deep"))
         self.selected.emit(kind, what)
         self.info.setText(f"({x}, {y})  {describe(kind, what)}")
+        if box:
+            # Same brief red marking a palette change gives. Picking a
+            # part is the other moment "and which palette is that?" is
+            # worth answering without being asked.
+            self._flash_clut()
+
+    def _move_selection(self, dx, dy):
+        """Step the selection one part in that direction.
+
+        Moving by the selection's OWN size rather than by a fixed cell is
+        what makes one rule serve the whole page: a single glyph steps 8
+        texels, a double-width one steps 16, and a sprite steps its own
+        width, so the arrows always land on the next thing rather than
+        inside the current one.
+
+        Running off the right edge wraps to the next row down, because
+        the grid is read that way and a code order that stops dead at
+        column 31 is not the order anyone is looking in."""
+        if not self.page:
+            return
+        spec = self.kind.spec
+        if not self.selection:
+            self._clicked(0, self.glyph_top if self.kind.grid else 0)
+            return
+        box = self._box_for(*self.selection)
+        if box is None:
+            return
+        x, y, width, height = box
+        if dx:
+            x = x + width if dx > 0 else x - 1
+        if dy:
+            y = y + height if dy > 0 else y - 1
+        if x >= spec.width:
+            x, y = 0, y + height
+        elif x < 0:
+            x, y = spec.width - 1, y - height
+        if not (0 <= y < spec.height) or not (0 <= x < spec.width):
+            return
+        self._clicked(x, y)
+        moved = self.canvas.selection
+        if moved:
+            self.scroll.ensureVisible(self.canvas.scaled(moved[0]),
+                                      self.canvas.scaled(moved[1]), 60, 60)
 
     def _box_for(self, kind, what):
         """The rectangle to outline for a selection, in page texels."""
@@ -1229,14 +1273,37 @@ def _render(page, cluts, font_clut=FONT_CLUT, states=None, kind=None):
 class _PageCanvas(PixelCanvas):
     """The page, with the region bands drawn over it."""
 
+    # One arrow key: (dx, dy), each -1, 0 or 1.
+    arrow = pyqtSignal(int, int)
+
+    _ARROWS = {
+        Qt.Key.Key_Left: (-1, 0),
+        Qt.Key.Key_Right: (1, 0),
+        Qt.Key.Key_Up: (0, -1),
+        Qt.Key.Key_Down: (0, 1),
+    }
+
     def __init__(self, parent=None):
         super().__init__(zoom=3, parent=parent)
+        # Arrow keys walk the selection, which needs the canvas to be
+        # able to hold focus. A grid of 4096 cells is miserable to cross
+        # by clicking, and stepping through neighbours is how you find
+        # the free ones a translation can take over.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.show_regions = True
         self.show_cells = True
         self.glyph_top = fontpage.GLYPH_TOP
         self.kind = None           # set by the view; which page is shown
         self.selection = None      # (x, y, w, h) in page texels
         self.clut_mark = None      # a palette's own words, while Show is held
+
+    def keyPressEvent(self, event):
+        step = self._ARROWS.get(event.key())
+        if step is None:
+            super().keyPressEvent(event)
+            return
+        self.arrow.emit(*step)
+        event.accept()
 
     def paint_overlays(self, painter, _area):
         scale = self.scaled
@@ -1389,6 +1456,15 @@ class _Detail(QWidget):
         self.zoom_label = QLabel("")
         self.zoom_label.setMinimumWidth(48)
 
+        self.grid_check = QCheckBox("Show grid")
+        self.grid_check.setChecked(True)
+        self.grid_check.setToolTip(
+            "Rule the zoomed selection into texels. Counting them is the "
+            "point of being zoomed in, but the lines sit over the art, so "
+            "they come off when you want to see the shape rather than "
+            "measure it.")
+        self.grid_check.toggled.connect(self._toggle_grid)
+
         self.note = QLabel("")
         self.note.setWordWrap(True)
         self.note.setStyleSheet("color: #c8a04a;")
@@ -1438,7 +1514,6 @@ class _Detail(QWidget):
         self.palette_label = QLabel("Palette:")
         self.letter_label = QLabel("Assigned letter:")
 
-        head.addWidget(self.title, 1)
         head.addWidget(self.palette_label)
         head.addWidget(self.clut_box, 1)
         head.addWidget(self.show_button)
@@ -1450,6 +1525,7 @@ class _Detail(QWidget):
         zoom_row.addWidget(self.zoom_in)
         zoom_row.addWidget(self.zoom_fit)
         zoom_row.addWidget(self.zoom_label)
+        zoom_row.addWidget(self.grid_check)
         zoom_row.addStretch(1)
         # Export/Import are added here by FontPageView. They act on the
         # selection, so they belong beside it rather than in the page's
@@ -1460,20 +1536,30 @@ class _Detail(QWidget):
         # up by the title: shape and meaning are the two halves of the
         # same edit, and this is the order they are done in - draw the
         # glyph, then say what it is.
+        # The title sits with the letter rather than up by the palette:
+        # "dialogue glyph 0x21" and "Assigned letter" are the same
+        # question asked twice - which code is this, and what does it
+        # spell - and they read as a pair.
+        self.title.setContentsMargins(8, 0, 8, 0)
+
         name_row = QHBoxLayout()
         name_row.setContentsMargins(8, 0, 8, 0)
         name_row.addWidget(self.letter_label)
         name_row.addWidget(self.char_edit)
         name_row.addStretch(1)
-        name_row.addWidget(self.undo_button)
-        name_row.addWidget(self.reset_button)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(8, 0, 8, 6)
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.paste_button)
         buttons.addStretch(1)
-        buttons.addWidget(self.save_button)
+        buttons.addWidget(self.undo_button)
+        buttons.addWidget(self.reset_button)
+
+        save_row = QHBoxLayout()
+        save_row.setContentsMargins(8, 0, 8, 6)
+        save_row.addStretch(1)
+        save_row.addWidget(self.save_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1481,10 +1567,12 @@ class _Detail(QWidget):
         layout.addLayout(head)
         layout.addLayout(zoom_row)
         layout.addWidget(self.scroll, 1)
+        layout.addWidget(self.title)
         layout.addLayout(name_row)
+        layout.addLayout(buttons)
         layout.addWidget(self.note)
         layout.addWidget(self.swatches)
-        layout.addLayout(buttons)
+        layout.addLayout(save_row)
 
     def set_palettes(self, cluts, current=None):
         """Fill the palette chooser. Without this it sat empty, which is
@@ -1535,7 +1623,7 @@ class _Detail(QWidget):
         What it wants is Export and Import, which stay."""
         for widget in (self.palette_label, self.clut_box, self.show_button,
                        self.swatches, self.letter_label, self.char_edit,
-                       self.copy_button, self.paste_button):
+                       self.copy_button, self.paste_button, self.grid_check):
             widget.setVisible(not on)
 
     def _rename(self):
@@ -1545,6 +1633,10 @@ class _Detail(QWidget):
 
     def _set_index(self, index):
         self.index = index
+
+    def _toggle_grid(self, on):
+        self.canvas.show_grid = on
+        self.canvas.update()
 
     def _zoom_by(self, direction):
         self.canvas.zoom_by(direction)
@@ -1631,6 +1723,7 @@ class _DetailCanvas(PixelCanvas):
 
     def __init__(self, parent=None):
         super().__init__(zoom=12, parent=parent)
+        self.show_grid = True
 
     def mousePressEvent(self, event):
         self._emit(event)
@@ -1666,7 +1759,7 @@ class _DetailCanvas(PixelCanvas):
             self.painted.emit(col, row)
 
     def paint_overlays(self, painter, _area):
-        if self.image is None or self.zoom < 6:
+        if self.image is None or self.zoom < 6 or not self.show_grid:
             return
         painter.setPen(QPen(QColor(255, 255, 255, 45), 1))
         for x in range(self.image.width() + 1):

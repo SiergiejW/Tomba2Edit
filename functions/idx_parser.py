@@ -547,6 +547,31 @@ def parse_idx_file(main_window, cd_folder):
     main_window.tree_view.setModel(model)
     main_window.tree_view.selectionModel().selectionChanged.connect(main_window.on_tree_selection_changed)
 
+    # Text files that are byte-identical copies of each other at
+    # different DAT addresses.
+    #
+    # Every cursed area on this disc has a purified counterpart holding
+    # the same text: 05/1B, 06/1C, 08/1E, 09/1F, 0A/20, 0B/21, 0C/22,
+    # which is 14 of the 30 text files. They are separate files, not one
+    # file two areas point at - address_locations covers that case and
+    # on this disc it never actually happens - so editing one leaves the
+    # other in the source language and half the game untranslated.
+    #
+    # Keyed on the content hash, so this says identical bytes and not
+    # merely "looks related": a pair that ever diverged would stop being
+    # listed here rather than quietly overwrite each other.
+    main_window.txtd_twins = {}
+    same = {}
+    for address in main_window.address_locations:
+        key = main_window.address_content.get(address)
+        if key:
+            same.setdefault(key, []).append(address)
+    for addresses in same.values():
+        if len(addresses) > 1:
+            for one in addresses:
+                main_window.txtd_twins[one] = sorted(
+                    other for other in addresses if other != one)
+
     # One row per address, built from the tree just finished above -
     # see its own docstring for why this is a sort rather than a
     # second parse.
