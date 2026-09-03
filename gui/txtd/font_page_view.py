@@ -168,6 +168,7 @@ class FontPageView(QWidget):
         self.history = []
         self.stroke = []
         self.original = None      # the page as the disc has it
+        self.clipboard = None     # texels copied from a glyph
         self.table = None         # the disc's character table
         # Where this build's dialogue grid starts. 40 on the US discs,
         # 66 on the German and Spanish ones - see regions().
@@ -248,6 +249,8 @@ class FontPageView(QWidget):
         self.detail.reset_wanted.connect(self.reset)
         self.detail.save_wanted.connect(self.save_page)
         self.detail.renamed.connect(self._rename_code)
+        self.detail.copy_wanted.connect(self.copy_selection)
+        self.detail.paste_wanted.connect(self.paste_selection)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -324,6 +327,48 @@ class FontPageView(QWidget):
         self.info.setText(
             f"Reset {describe(*self.selection)} - {touched} texel(s) put back"
             if touched else f"{describe(*self.selection)} was unchanged")
+
+    def copy_selection(self):
+        """Keep the selected glyph's texels, to paste elsewhere."""
+        box, _palette = self._selected_box()
+        if box is None or not self.page:
+            self.info.setText("Select a glyph to copy")
+            return
+        x, y, width, height = box
+        self.clipboard = [[self.page[y + row][x + col] for col in range(width)]
+                          for row in range(height)]
+        self.info.setText(
+            f"Copied {describe(*self.selection)} ({width}x{height})")
+
+    def paste_selection(self):
+        """Put the copied glyph into the selection.
+
+        Aligned to the top-left and clipped, not scaled: a 16-wide glyph
+        pasted into an 8-wide cell should lose its right half rather
+        than be squashed into something nobody drew."""
+        if not self.clipboard:
+            self.info.setText("Nothing copied yet")
+            return
+        box, _palette = self._selected_box()
+        if box is None or not self.page:
+            self.info.setText("Select where to paste")
+            return
+        x, y, width, height = box
+        self._end_stroke()
+        for row in range(min(height, len(self.clipboard))):
+            line = self.clipboard[row]
+            for col in range(min(width, len(line))):
+                was = self.page[y + row][x + col]
+                if was != line[col]:
+                    self.stroke.append((x + col, y + row, was))
+                    self.page[y + row][x + col] = line[col]
+        touched = len(self.stroke)
+        self._end_stroke("paste")
+        self._redraw()
+        self._refresh_detail()
+        self.info.setText(
+            f"Pasted into {describe(*self.selection)} - {touched} texel(s)"
+            if touched else "Pasted - nothing differed")
 
     def _rename_code(self, code, char):
         """Give a code a different character - see translation.Table."""
@@ -756,6 +801,8 @@ class _Detail(QWidget):
     save_wanted = pyqtSignal()
     reset_wanted = pyqtSignal()
     undo_wanted = pyqtSignal()
+    copy_wanted = pyqtSignal()
+    paste_wanted = pyqtSignal()
     renamed = pyqtSignal(object, str)      # code, the character it draws
 
     def __init__(self, parent=None):
@@ -798,6 +845,19 @@ class _Detail(QWidget):
             "the code.")
         self.char_edit.editingFinished.connect(self._rename)
 
+        self.copy_button = QPushButton("Copy")
+        self.copy_button.setToolTip(
+            "Take a copy of the selected glyph, to paste over another "
+            "one. Making an accented letter starts as the plain letter.")
+        self.copy_button.clicked.connect(self.copy_wanted)
+
+        self.paste_button = QPushButton("Paste")
+        self.paste_button.setToolTip(
+            "Put the copied glyph into the selection, from its top-left "
+            "corner. Anything past the edge is left off rather than "
+            "wrapping.")
+        self.paste_button.clicked.connect(self.paste_wanted)
+
         self.undo_button = QPushButton("Undo")
         self.undo_button.setToolTip("Put back the last texel painted.")
         self.undo_button.clicked.connect(self.undo_wanted)
@@ -822,11 +882,17 @@ class _Detail(QWidget):
         head.addWidget(QLabel("Palette:"))
         head.addWidget(self.clut_box, 1)
 
+        # The assigned letter sits with the drawing tools rather than
+        # up by the title: shape and meaning are the two halves of the
+        # same edit, and this is the order they are done in - draw the
+        # glyph, then say what it is.
         name_row = QHBoxLayout()
         name_row.setContentsMargins(8, 0, 8, 0)
-        name_row.addWidget(QLabel("Draws:"))
+        name_row.addWidget(QLabel("Assigned letter:"))
         name_row.addWidget(self.char_edit)
         name_row.addStretch(1)
+        name_row.addWidget(self.copy_button)
+        name_row.addWidget(self.paste_button)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(8, 0, 8, 6)
@@ -839,8 +905,8 @@ class _Detail(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.addLayout(head)
-        layout.addLayout(name_row)
         layout.addWidget(self.scroll, 1)
+        layout.addLayout(name_row)
         layout.addWidget(self.swatches)
         layout.addLayout(buttons)
 
