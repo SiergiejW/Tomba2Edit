@@ -479,11 +479,11 @@ TITLE_PALETTES = {
 # dragged those into the selection - which is the green that had no
 # business being there.
 DE_SPRITES = (
-    # Ereignis is ONE word in two halves that happen to meet exactly on
-    # a 64-pixel boundary: the runs are 97..159 and 160..224, touching
-    # at x160 with no gap. Split there it reads as two anonymous blocks,
-    # which is how it was catalogued before - so it is one region.
-    ("Ereignis (Event)", 56, 64, 96, 224),
+    # Ereignis is one word cut into a top half and a bottom half, the
+    # two kept side by side - the same trick Spanish plays with Guardar.
+    # Laid end to end it is a 128x8 smear; stacked it is the word.
+    ("Ereignis (Event)", [(56, 64, 96, 160, 0, 0),
+                          (56, 64, 160, 224, 0, 8)]),
     ("Laden (Load)", 128, 144, 200, 256),
     # THE BIG LETTERS ARE NOT SPRITES - they are grid cells, and this is
     # deliberately not a region.
@@ -520,11 +520,13 @@ DE_SPRITES = (
     # and on a 4-pixel half-grid rather than the 8 everything else uses,
     # which is why looking for it level with "100%" found nothing and it
     # read as missing from this build.
-    # Stored as "Objkt", 16 rows not 8. In game it reads "Objkte", and
-    # the run here ends at "jkt" with nothing after it - so the trailing
-    # "e" is not artwork on this page at all; the game appends it from
-    # an ordinary font cell. Nothing to carve out here for it.
-    ("Objkt (Items)", 216, 232, 200, 248),
+    # "Objkte" - and the trailing "e" is stored nowhere near the rest of
+    # it. The body is at y216; the "e" is two stacked halves up at y56,
+    # immediately left of Ereignis, 176 rows away from the word it
+    # belongs to. Assembled it matches the in-game text exactly.
+    ("Objkte (Items)", [(216, 232, 200, 248, 0, 0),
+                        (56, 64, 64, 80, 48, 0),
+                        (56, 64, 80, 96, 48, 8)]),
     # THE DOUBLE-WIDTH GLYPHS
     #
     # Every 16-pixel cell across both bands is filled, so these are the
