@@ -16,6 +16,22 @@ class MainBinParseError(Exception):
     pass
 
 
+# THIS POOL IS LATIN-1, NOT THE GAME'S OWN TABLE
+#
+# These are the memory-card and boot messages, which the console draws
+# with its own font rather than out of the font page - so a byte here
+# means what Latin-1 says it means, not what tombadict says. The German
+# and Spanish discs prove it both ways: 0xFC reads "ü" and gives
+# "uberpruft" -> "überprüft", while the game table calls 0xFC {$PAUSE};
+# 0xF1 reads "ñ" for "dañado" and 0xBF "¿" for "¿Continúas?".
+#
+# Only 0xA0-0xFF is taken as text. 0x80-0x9F is the C1 control block,
+# which is not printable in Latin-1 and does not appear inside real
+# strings, so it stays an escape rather than becoming an invisible
+# character an editor could not see or retype.
+_LATIN1_FIRST = 0xA0
+
+
 def decode_bytes(raw):
     """Raw entry bytes (no terminator) -> displayed text."""
     out = []
@@ -26,6 +42,8 @@ def decode_bytes(raw):
             out.append(chr(b))
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
+        elif b >= _LATIN1_FIRST:
+            out.append(chr(b))          # Latin-1 is code point == byte
         else:
             out.append(f"{{${b:02X}}}")
     return "".join(out)
@@ -137,12 +155,12 @@ def encode_bytes(text):
                 out.append(int(hex_part, 16))
                 i += 5
                 continue
-        if 0x20 <= ord(ch) < 0x7F:
+        if 0x20 <= ord(ch) < 0x7F or _LATIN1_FIRST <= ord(ch) <= 0xFF:
             out.append(ord(ch))
             i += 1
             continue
         raise MainBinParseError(
             "Can't encode character {!r} at position {} of text {!r}: "
-            "not plain ASCII and not a valid {{$XX}} byte escape.".format(ch, i, text)
+            "not Latin-1 and not a valid {{$XX}} byte escape.".format(ch, i, text)
         )
     return bytes(out)

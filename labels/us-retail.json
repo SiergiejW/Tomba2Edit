@@ -1,2997 +1,3855 @@
 {
- "name": "Tomba! 2: The Evil Swine Return (USA)",
- "build": "us-retail",
- "source": "TOMBAMAP_us.txt",
- "dat_size": 9537536,
- "serial": "SCUS-94454",
- "bins": {
-  "A00.BIN": "Town of the Fishermen",
-  "A01.BIN": "Large Mine Underground",
-  "A02.BIN": "Coal Mining Town",
-  "A03.BIN": "Trolley Minigame",
-  "A04.BIN": "Kujara Ranch Area",
-  "A05.BIN": "Kujara Ranch Summit",
-  "A06.BIN": "Donglin Forest",
-  "A07.BIN": "Circus Village",
-  "A08.BIN": "Water Temple",
-  "A09.BIN": "Question mark room",
-  "A0A.BIN": "Fire Pig Boss",
-  "A0B.BIN": "Ice Pig Boss",
-  "A0C.BIN": "Ghost Pig Boss",
-  "A0D.BIN": "Earth Pig Boss",
-  "A0E.BIN": "Water Pig Boss",
-  "A0F.BIN": "Last Pig Boss",
-  "A0G.BIN": "Tower of Courage",
-  "A0H.BIN": "Tower of Strength",
-  "A0I.BIN": "Tower of Wisdom",
-  "A0J.BIN": "Golden Tower",
-  "A0K.BIN": "Tiny Mouse's House & Minigame",
-  "A0L.BIN": "Outro",
-  "CRD.BIN": "Credits",
-  "DEMO.BIN": "Town of the Fishermen demo",
-  "GAME.BIN": "Data present in every save",
-  "OPN.BIN": "Skippable opening sequence, just before the first level",
-  "SOP.BIN": "Intro",
-  "START.BIN": "Calls for the game data stored in the CD folder"
- },
- "areas": {
-  "00": "Fonts",
-  "01": "System",
-  "02": "Main Title",
-  "03": "Intro Scene",
-  "04": "Town of the Fishermen",
-  "05": "Large Mine Underground",
-  "06": "Cursed Coal Mining Town",
-  "07": "Trolley Minigame",
-  "08": "Cursed Kujara Ranch Area",
-  "09": "Cursed Kujara Ranch Summit",
-  "0A": "Cursed Donglin Forest",
-  "0B": "Cursed Circus Village",
-  "0C": "Cursed Water Temple",
-  "0D": "Time Stopped",
-  "0E": "Flame Pig Boss Level",
-  "0F": "Ice Pig Boss",
-  "10": "Ghost Pig Boss Level",
-  "11": "Earth Pig Boss Level",
-  "12": "Water Pig Boss Level",
-  "13": "Last Pig Boss",
-  "14": "Tower of Courage Level",
-  "15": "Tower of Strength Level",
-  "16": "Tower of Wisdom Level",
-  "17": "Golden Tower",
-  "18": "Tiny Mouses Minigame",
-  "19": "Outro Scene Level",
-  "1B": "Purified Large Mine Underground",
-  "1E": "Purified Kujara Ranch Area",
-  "1F": "Purified Kujara Ranch Summit",
-  "20": "Purified Donglin Forest",
-  "21": "Purified Circus Village",
-  "22": "Purified Water Temple",
-  "24": "Large Mine Underground Uncursing Sequence",
-  "25": "Kujara Ranch Uncursing Sequence",
-  "26": "Donglin Forest Uncursing Sequence",
-  "27": "Circus Village Uncursing Sequence",
-  "28": "Water Temple Uncursing Sequence"
- },
- "entries": [
-  {
-   "content": "cf7e1d0bd854dfbb",
-   "start": "000000",
-   "end": "00288F",
-   "type": "SPRP",
-   "name": "Items and GUI Sprites"
-  },
-  {
-   "content": "665e60f81595194e",
-   "start": "002890",
-   "end": "006F0B",
-   "type": "SMST",
-   "name": "Weapon set chests AP box Models"
-  },
-  {
-   "content": "5d446de403dc8daf",
-   "start": "006F0C",
-   "end": "0081D3",
-   "type": "TXTD",
-   "name": "Tutorial and Locations Text"
-  },
-  {
-   "content": "1fd38727ee317f3c",
-   "start": "0081D4",
-   "end": "0091CB",
-   "type": "TXTD",
-   "name": "Inventory and Status Text"
-  },
-  {
-   "content": "2209c9ba91dd052f",
-   "start": "0091CC",
-   "end": "02125F",
-   "type": "ANMP",
-   "name": "Tomba Animation"
-  },
-  {
-   "content": "65f3ede816d01636",
-   "start": "021260",
-   "end": "023A9B",
-   "type": "SMST",
-   "name": "Baron Model"
-  },
-  {
-   "content": "2133f6606ceffb3b",
-   "start": "023A9C",
-   "end": "0247FF",
-   "type": "ANMP",
-   "name": "Baron Animation"
-  },
-  {
-   "content": "b17fab05dadcabd1",
-   "start": "024800",
-   "end": "026307",
-   "type": "SMST",
-   "name": "Zippo Model"
-  },
-  {
-   "content": "8ab56588ec9759d6",
-   "start": "026308",
-   "end": "028A67",
-   "type": "ANMP",
-   "name": "Zippo Animation"
-  },
-  {
-   "content": "9abf58d161c38f15",
-   "start": "028A68",
-   "end": "02B07B",
-   "type": "SMST",
-   "name": "Charles Model"
-  },
-  {
-   "content": "da657be8b7d50e55",
-   "start": "02B07C",
-   "end": "03141F",
-   "type": "MDAT",
-   "name": "Intro Scene Level"
-  },
-  {
-   "content": "867730c8e816b647",
-   "start": "031420",
-   "end": "035613",
-   "type": "SMST",
-   "name": "Intro Tabby Model"
-  },
-  {
-   "content": "195ef68aa3095ca7",
-   "start": "035614",
-   "end": "0364DB",
-   "type": "ANMP",
-   "name": "Intro Tabby Model"
-  },
-  {
-   "content": "7f5f490d0eaf8378",
-   "start": "0364DC",
-   "end": "0364EF",
-   "type": "____",
-   "name": "Intro Scene Sprites"
-  },
-  {
-   "content": "2c47464e681b8ad7",
-   "start": "0364F0",
-   "end": "037FFF",
-   "type": "BGMP",
-   "name": "Intro Scene Background"
-  },
-  {
-   "content": "927305dddbc9e3aa",
-   "start": "038000",
-   "end": "049DA3",
-   "type": "SMST",
-   "name": "Fishermens hut windmill waterplant Models"
-  },
-  {
-   "content": "0e0e8f712c9d69f0",
-   "start": "049DA4",
-   "end": "04AF73",
-   "type": "ANMP",
-   "name": "Ark Animation"
-  },
-  {
-   "content": "db4b69e25709192f",
-   "start": "04AF74",
-   "end": "04D3FB",
-   "type": "____",
-   "name": "Win Animation"
-  },
-  {
-   "content": "825bcd62dc891f03",
-   "start": "04D3FC",
-   "end": "053723",
-   "type": "SCLD",
-   "name": "Town of the Fishermen Collision"
-  },
-  {
-   "content": "25274ace35910b2d",
-   "start": "053724",
-   "end": "075FDB",
-   "type": "MDAT",
-   "name": "Town of the Fishermen Level"
-  },
-  {
-   "content": "f7a931738a15d541",
-   "start": "075FDC",
-   "end": "076A6B",
-   "type": "DRWB",
-   "name": "Town of the Fishermen Drawmap"
-  },
-  {
-   "content": "f25bb309ba0afca4",
-   "start": "076A6C",
-   "end": "0786FB",
-   "type": "SMST",
-   "name": "Seesaw Models"
-  },
-  {
-   "content": "3fd92c77a43cf18e",
-   "start": "0786FC",
-   "end": "078A07",
-   "type": "SPRT",
-   "name": "Town of the Fishermen Sprites"
-  },
-  {
-   "content": "0bdb32de01b3c10f",
-   "start": "078A08",
-   "end": "07B2EB",
-   "type": "TXTD",
-   "name": "Town of the Fishermen Text"
-  },
-  {
-   "content": "2ec95704ad314e4b",
-   "start": "07B2EC",
-   "end": "07F4EF",
-   "type": "SMST",
-   "name": "Koma Pig (Town of the Fishermen) Model"
-  },
-  {
-   "content": "8ec1a0cac52e131c",
-   "start": "07F4F0",
-   "end": "088447",
-   "type": "ANMP",
-   "name": "Koma Pig (Town of the Fishermen) Animation"
-  },
-  {
-   "content": "0e55060be9877a88",
-   "start": "088448",
-   "end": "08AA4B",
-   "type": "SMST",
-   "name": "Kainen Model"
-  },
-  {
-   "content": "45144f26f1bc513a",
-   "start": "08AA4C",
-   "end": "08C3AF",
-   "type": "ANMP",
-   "name": "Kainen Animation"
-  },
-  {
-   "content": "2cc97ec3296ec5ec",
-   "start": "08C3B0",
-   "end": "08E82F",
-   "type": "SMST",
-   "name": "Seagull Model"
-  },
-  {
-   "content": "0648305a7ee2028d",
-   "start": "08E830",
-   "end": "090417",
-   "type": "____",
-   "name": "Seagull Animation"
-  },
-  {
-   "content": "ebf0b626cc6bf3d3",
-   "start": "090418",
-   "end": "0996DF",
-   "type": "SMST",
-   "name": "Asset pack Fishermens Town Models"
-  },
-  {
-   "content": "57a78c4cf3b72ac7",
-   "start": "0996E0",
-   "end": "09B573",
-   "type": "SMST",
-   "name": "Water Pipe Models"
-  },
-  {
-   "content": "97927b07542e1d3a",
-   "start": "09B574",
-   "end": "09D207",
-   "type": "SMST",
-   "name": "Fisherman Model"
-  },
-  {
-   "content": "8aff9a43e0f8516e",
-   "start": "09D208",
-   "end": "09EF8F",
-   "type": "ANMP",
-   "name": "Fisherman Animation"
-  },
-  {
-   "content": "333bdbba20103134",
-   "start": "09EF90",
-   "end": "0A03E7",
-   "type": "BGMP",
-   "name": "Town of Fishermen Background"
-  },
-  {
-   "content": "d2894ae7b323ba1a",
-   "start": "0A4650",
-   "end": "0A541B",
-   "type": "SMST",
-   "name": "Magic Flower Model"
-  },
-  {
-   "content": "6ee8b7d035f4e18e",
-   "start": "0A541C",
-   "end": "0A566F",
-   "type": "ANMP",
-   "name": "Magic Flower Animation"
-  },
-  {
-   "content": "e4b291050f5579e9",
-   "start": "0A5670",
-   "end": "0A57FF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "3fa9b270a1f3d72d",
-   "start": "0A9A68",
-   "end": "0BF7DB",
-   "type": "MDAT",
-   "name": "Large Mine Underground Level"
-  },
-  {
-   "content": "18e13be9e2cf0e77",
-   "start": "0BF7DC",
-   "end": "0DB53F",
-   "type": "SMST",
-   "name": "Asset pack Cursed Large Mine Underground (roomsenemies) Models"
-  },
-  {
-   "content": "31e428c89f69247e",
-   "start": "0DB540",
-   "end": "0E22AF",
-   "type": "____",
-   "name": "Cursed Large Mine Underground Collision"
-  },
-  {
-   "content": "f4890eb841e3f427",
-   "start": "0E22B0",
-   "end": "0E5337",
-   "type": "TXTD",
-   "name": "Large Mine Underground Text"
-  },
-  {
-   "content": "234eba5fa57c04cd",
-   "start": "0E5338",
-   "end": "0E56C3",
-   "type": "____",
-   "name": "Cursed Large Mine Underground Sprites"
-  },
-  {
-   "content": "a79583d54ab65ddd",
-   "start": "0E56C4",
-   "end": "0E7E43",
-   "type": "____",
-   "name": "Sea Anemone Animation"
-  },
-  {
-   "content": "0155c86722e60d02",
-   "start": "0E7E44",
-   "end": "0E932B",
-   "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth closed) Model"
-  },
-  {
-   "content": "490dfd0ff7a03afc",
-   "start": "0E932C",
-   "end": "0EAA23",
-   "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth opened var 1) Model"
-  },
-  {
-   "content": "d9bdcc5796d45967",
-   "start": "0EAA24",
-   "end": "0EC71B",
-   "type": "SMST",
-   "name": "Pink Sea Anemone segments (mouth opened var 2) Model"
-  },
-  {
-   "content": "1159a3c89425cf6e",
-   "start": "0EC71C",
-   "end": "0EFB5B",
-   "type": "____",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "508be6178ce526fe",
-   "start": "0EFB5C",
-   "end": "0F1A63",
-   "type": "SMST",
-   "name": "Gran Model"
-  },
-  {
-   "content": "95f331323b7c1343",
-   "start": "0F1A64",
-   "end": "0F3473",
-   "type": "SMST",
-   "name": "Mole Model"
-  },
-  {
-   "content": "12dd5a3aa955a699",
-   "start": "0F3474",
-   "end": "0F5B37",
-   "type": "SMST",
-   "name": "Mining Town Miner 01 and 02 Model"
-  },
-  {
-   "content": "2bf8271f30be44de",
-   "start": "0F5B38",
-   "end": "0F75AB",
-   "type": "SMST",
-   "name": "Mining Town Miner 03 Model"
-  },
-  {
-   "content": "85ef91201cc72226",
-   "start": "0F75AC",
-   "end": "0F84DF",
-   "type": "SMST",
-   "name": "Hammers Pickaxe Shovel Knife Models"
-  },
-  {
-   "content": "cc8ed6d34828e9af",
-   "start": "0F84E0",
-   "end": "0FBE47",
-   "type": "SMST",
-   "name": "Koma Pig (Large Mine Underground) Model"
-  },
-  {
-   "content": "800903774e14fef7",
-   "start": "0FBE48",
-   "end": "0FED83",
-   "type": "____",
-   "name": "Koma Pig (Large Mine Underground) Animation"
-  },
-  {
-   "content": "7c2cfe392765d7bb",
-   "start": "0FED84",
-   "end": "1004F7",
-   "type": "____",
-   "name": "Tiny Mouse Animation"
-  },
-  {
-   "content": "f8312566b0c0270a",
-   "start": "101518",
-   "end": "1017FF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "da33dc6a00974377",
-   "start": "105A68",
-   "end": "127AFB",
-   "type": "SMST",
-   "name": "Asset pack Mining Town Models"
-  },
-  {
-   "content": "727e5f2d77c4cf1a",
-   "start": "127AFC",
-   "end": "13FA17",
-   "type": "MDAT",
-   "name": "Cursed Coal Mining Town Level"
-  },
-  {
-   "content": "9d2f21adfc6cb901",
-   "start": "13FA18",
-   "end": "145A27",
-   "type": "TXTD",
-   "name": "Coal Mining Town Text"
-  },
-  {
-   "content": "643113a84de7e6e8",
-   "start": "145A28",
-   "end": "14D903",
-   "type": "ANMP",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "5524774675e9cca5",
-   "start": "155A60",
-   "end": "157E53",
-   "type": "SMST",
-   "name": "Chef Model"
-  },
-  {
-   "content": "5b23dcd30616295d",
-   "start": "159D5C",
-   "end": "15BADF",
-   "type": "SMST",
-   "name": "Mining Town Mothers Son Model"
-  },
-  {
-   "content": "a0b1e8cfffcaaf4b",
-   "start": "15BAE0",
-   "end": "15D893",
-   "type": "SMST",
-   "name": "Mining Town Mother Model"
-  },
-  {
-   "content": "fc6afeeab85ee1fd",
-   "start": "15D894",
-   "end": "15F87F",
-   "type": "SMST",
-   "name": "Mining Town Mother Wounded"
-  },
-  {
-   "content": "973216a247328ca3",
-   "start": "1607B4",
-   "end": "160B7B",
-   "type": "____",
-   "name": "Cursed Coal Mining Town Sprites"
-  },
-  {
-   "content": "b9ad6e76bad5023a",
-   "start": "160B7C",
-   "end": "169D7B",
-   "type": "SMST",
-   "name": "Underground Machine Room Models"
-  },
-  {
-   "content": "c068a66c9af6326b",
-   "start": "169D7C",
-   "end": "16A2B7",
-   "type": "____",
-   "name": "Machine Animation"
-  },
-  {
-   "content": "9c6039e6c657f92a",
-   "start": "16A2B8",
-   "end": "16BFFF",
-   "type": "SMST",
-   "name": "Conveyor Belt Models"
-  },
-  {
-   "content": "2ae8be8e5f78617f",
-   "start": "16C000",
-   "end": "16CCEF",
-   "type": "SMST",
-   "name": "Trolley Model"
-  },
-  {
-   "content": "6d494dfffe96cf5c",
-   "start": "16CCF0",
-   "end": "1A55F7",
-   "type": "MDAT",
-   "name": "Trolley Minigame Level"
-  },
-  {
-   "content": "12e4031ec9a5d83f",
-   "start": "1A55F8",
-   "end": "1A5E9B",
-   "type": "____",
-   "name": "Tomba Trolley Animation"
-  },
-  {
-   "content": "9e4a58dd6f0839fd",
-   "start": "1A5E9C",
-   "end": "1A5FFF",
-   "type": "____",
-   "name": "Trolley Minigame Sprites"
-  },
-  {
-   "content": "c46b04701465521f",
-   "start": "1AA268",
-   "end": "1AB12F",
-   "type": "SMST",
-   "name": "Ice Crystal Models"
-  },
-  {
-   "content": "53cd8c43094c3e1f",
-   "start": "1AB130",
-   "end": "1B2E6F",
-   "type": "____",
-   "name": "Cursed Kujara Ranch Area Collision"
-  },
-  {
-   "content": "d43c744f7c8d6295",
-   "start": "1B2E70",
-   "end": "1CBF6F",
-   "type": "MDAT",
-   "name": "Cursed Kujara Ranch Area Level"
-  },
-  {
-   "content": "2466d76915fbbc11",
-   "start": "1CBF70",
-   "end": "1D0807",
-   "type": "MDAT",
-   "name": "Cursed Holy Tree Flight Level"
-  },
-  {
-   "content": "94c2d8a928197457",
-   "start": "1D0808",
-   "end": "1D3447",
-   "type": "TXTD",
-   "name": "Kujara Ranch Area Text"
-  },
-  {
-   "content": "3fb5b799b4e29eec",
-   "start": "1D3448",
-   "end": "1E5AC3",
-   "type": "SMST",
-   "name": "Asset pack Kujara Ranch Area Models"
-  },
-  {
-   "content": "6326c53dc95ee462",
-   "start": "1E5AC4",
-   "end": "1E80AF",
-   "type": "SMST",
-   "name": "Blue Kokka Bird Model"
-  },
-  {
-   "content": "e10ca805e858d0b6",
-   "start": "1E80B0",
-   "end": "1EA69B",
-   "type": "SMST",
-   "name": "Red Kokka Bird Model"
-  },
-  {
-   "content": "94be38e1942c82d1",
-   "start": "1EA69C",
-   "end": "1EC2C7",
-   "type": "____",
-   "name": "Red Kokka Bird Animation"
-  },
-  {
-   "content": "a23dfd08d9b18183",
-   "start": "1EC2C8",
-   "end": "1EEAD3",
-   "type": "SMST",
-   "name": "Giant Ice Pig Model"
-  },
-  {
-   "content": "7235fe5f17906a86",
-   "start": "1EEAD4",
-   "end": "1EF6B3",
-   "type": "____",
-   "name": "Giant Ice Pig Animation"
-  },
-  {
-   "content": "2488c6fff6595ecb",
-   "start": "1EF6B4",
-   "end": "1F2C53",
-   "type": "SMST",
-   "name": "Armadillo Model"
-  },
-  {
-   "content": "bde0c90cd8415bb3",
-   "start": "1F2C54",
-   "end": "1F3263",
-   "type": "____",
-   "name": "Armadillo Animation"
-  },
-  {
-   "content": "9dc884743d70d9a3",
-   "start": "1F3264",
-   "end": "1F7233",
-   "type": "____",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "c3d3ffdaf9839cab",
-   "start": "1F7234",
-   "end": "1F8DF7",
-   "type": "SMST",
-   "name": "Phams Daughter 01 Model"
-  },
-  {
-   "content": "8a3714abc4c46d28",
-   "start": "1F8DF8",
-   "end": "1FA80B",
-   "type": "SMST",
-   "name": "Phams Daughter 02 Model"
-  },
-  {
-   "content": "38c086b2dfee14b4",
-   "start": "1FA80C",
-   "end": "1FC137",
-   "type": "SMST",
-   "name": "Phams Daugther 03 Model"
-  },
-  {
-   "content": "246ed6fd61ec8d95",
-   "start": "1FC138",
-   "end": "1FE1C7",
-   "type": "SMST",
-   "name": "Leaf Traveller Model"
-  },
-  {
-   "content": "892012057e53ffaa",
-   "start": "1FE1C8",
-   "end": "2002FB",
-   "type": "SMST",
-   "name": "Kujara Ranch Man 01 Model"
-  },
-  {
-   "content": "ffa763fbe95c4779",
-   "start": "2002FC",
-   "end": "200523",
-   "type": "____",
-   "name": "Cursed Kujara Ranch Area Sprites"
-  },
-  {
-   "content": "3c8a0d2141c4248f",
-   "start": "202CA4",
-   "end": "20418B",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth closed) Model"
-  },
-  {
-   "content": "24a505904c02427c",
-   "start": "20418C",
-   "end": "205883",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 1) Model"
-  },
-  {
-   "content": "22676434bf673762",
-   "start": "205884",
-   "end": "20757B",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 2) Model"
-  },
-  {
-   "content": "1eb6067f192be6e9",
-   "start": "20757C",
-   "end": "209F03",
-   "type": "SMST",
-   "name": "Koma Pig (Kujara Ranch) Model"
-  },
-  {
-   "content": "ff1a32aaca492b40",
-   "start": "209F04",
-   "end": "20F217",
-   "type": "____",
-   "name": "Koma Pig (Kujara Ranch) Animation"
-  },
-  {
-   "content": "f20e6953ae2cf393",
-   "start": "20F218",
-   "end": "20F9CF",
-   "type": "SMST",
-   "name": "Kujara Bird Model"
-  },
-  {
-   "content": "132e6dca59661988",
-   "start": "20F9D0",
-   "end": "20FCD7",
-   "type": "____",
-   "name": "Kujara Bird Animation"
-  },
-  {
-   "content": "d88997c5b607e695",
-   "start": "21144C",
-   "end": "2129B3",
-   "type": "SMST",
-   "name": "Dwarf (brown) Model"
-  },
-  {
-   "content": "9d0b7249f7b19cb2",
-   "start": "2129B4",
-   "end": "212FD3",
-   "type": "____",
-   "name": "Dwarf (brown) Animation"
-  },
-  {
-   "content": "fb1c99085651a452",
-   "start": "212FD4",
-   "end": "2141F3",
-   "type": "SMST",
-   "name": "Dwarf (green) Model"
-  },
-  {
-   "content": "b1796c003c548c63",
-   "start": "2141F4",
-   "end": "2148FB",
-   "type": "____",
-   "name": "Dwarf (green) Animation"
-  },
-  {
-   "content": "ea2d071ebb039222",
-   "start": "2148FC",
-   "end": "214FFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "0dde133816d8ad86",
-   "start": "21A130",
-   "end": "2374CF",
-   "type": "SMST",
-   "name": "Asset pak- Kujara Ranch Summit Models"
-  },
-  {
-   "content": "e230eddcab310dc9",
-   "start": "2374D0",
-   "end": "24A35F",
-   "type": "MDAT",
-   "name": "Cursed Kujara Ranch Summit Level"
-  },
-  {
-   "content": "982bdf32abec2700",
-   "start": "24A360",
-   "end": "25371B",
-   "type": "MDAT",
-   "name": "Kujara Washing Minigame Level"
-  },
-  {
-   "content": "f54cf9392589e44d",
-   "start": "25371C",
-   "end": "2587BF",
-   "type": "TXTD",
-   "name": "Kujara Ranch Summit Text"
-  },
-  {
-   "content": "c88f83e89aad5a18",
-   "start": "2587C0",
-   "end": "25DA67",
-   "type": "____",
-   "name": "Cursed Kujara Ranch Summit Collision"
-  },
-  {
-   "content": "e2a9a646c5238429",
-   "start": "25DA68",
-   "end": "264C17",
-   "type": "____",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "7de4cddb9b0f7039",
-   "start": "264C18",
-   "end": "2667DB",
-   "type": "SMST",
-   "name": "Phams Daughter 01 Model"
-  },
-  {
-   "content": "62fa91c8db4357b8",
-   "start": "2667DC",
-   "end": "2681EF",
-   "type": "SMST",
-   "name": "Phams Daughter 02 Model"
-  },
-  {
-   "content": "5cbfc8191383d1e3",
-   "start": "2681F0",
-   "end": "269B1B",
-   "type": "SMST",
-   "name": "Phams Daughter 03 Model"
-  },
-  {
-   "content": "6c54394d1c00e436",
-   "start": "269B1C",
-   "end": "26BC4F",
-   "type": "SMST",
-   "name": "Kujara Ranch Man 01 Model"
-  },
-  {
-   "content": "7e070789d13742d0",
-   "start": "26BC50",
-   "end": "26DC03",
-   "type": "SMST",
-   "name": "Kujara Ranch Man (washing minigame) Model"
-  },
-  {
-   "content": "6c6551f37970829f",
-   "start": "26DC04",
-   "end": "26F05B",
-   "type": "BGMP",
-   "name": "Cursed Kujara Ranch Summit Background"
-  },
-  {
-   "content": "0a1088c7af85c178",
-   "start": "26F05C",
-   "end": "26F47B",
-   "type": "____",
-   "name": "Cursed Kujara Ranch Summit Sprites"
-  },
-  {
-   "content": "ba0534e5e56fa2a9",
-   "start": "26F47C",
-   "end": "271BCB",
-   "type": "SMST",
-   "name": "Toradako Enemy Model"
-  },
-  {
-   "content": "3e86040bbdc298d6",
-   "start": "271BCC",
-   "end": "272DD7",
-   "type": "____",
-   "name": "Toradako Animation"
-  },
-  {
-   "content": "a7f6779117bb3cb5",
-   "start": "272DD8",
-   "end": "2735C7",
-   "type": "SMST",
-   "name": "Kujara Bird (burned gray) Model"
-  },
-  {
-   "content": "318bb00b260655b2",
-   "start": "2735C8",
-   "end": "273D7F",
-   "type": "SMST",
-   "name": "Kujara Bird Model"
-  },
-  {
-   "content": "3158e4c242f51eed",
-   "start": "273D80",
-   "end": "27439F",
-   "type": "SMST",
-   "name": "Kujara Bird (shaved) Model"
-  },
-  {
-   "content": "0cec5d651d395c83",
-   "start": "2743A0",
-   "end": "274BB7",
-   "type": "SMST",
-   "name": "Kujara Bird (burned black) Model"
-  },
-  {
-   "content": "3eb82899297c0153",
-   "start": "274BB8",
-   "end": "2752F7",
-   "type": "SMST",
-   "name": "Kujara Bird (fat shaved) Model"
-  },
-  {
-   "content": "5778094a8213a4b1",
-   "start": "2752F8",
-   "end": "2756F7",
-   "type": "____",
-   "name": "Kujara Animation"
-  },
-  {
-   "content": "7ed9178a4802cfec",
-   "start": "2756F8",
-   "end": "277CFB",
-   "type": "SMST",
-   "name": "Kainen Model"
-  },
-  {
-   "content": "181812f775f4b061",
-   "start": "277CFC",
-   "end": "27A067",
-   "type": "SMST",
-   "name": "Kainen (swimming suit) Model"
-  },
-  {
-   "content": "4aa9b6cd71e87819",
-   "start": "27A068",
-   "end": "27B973",
-   "type": "____",
-   "name": "Tiny Mouse Animation"
-  },
-  {
-   "content": "a0706d1c76e83971",
-   "start": "27C994",
-   "end": "27CFFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "0f860e7b797387e7",
-   "start": "281268",
-   "end": "2ACE6B",
-   "type": "MDAT",
-   "name": "Cursed Donglin Forest Level"
-  },
-  {
-   "content": "5557bc72af696e35",
-   "start": "2ACE6C",
-   "end": "2AD8FB",
-   "type": "DRWB",
-   "name": "Donglin Forest Drawmap"
-  },
-  {
-   "content": "14cab588c16637a6",
-   "start": "2AD8FC",
-   "end": "2B7E73",
-   "type": "____",
-   "name": "Cursed Donglin Forest Collision"
-  },
-  {
-   "content": "0e5f35acb69879d4",
-   "start": "2B7E74",
-   "end": "2CD133",
-   "type": "SMST",
-   "name": "Asset pack Donglin Forest Models"
-  },
-  {
-   "content": "4fd6d4091bc46096",
-   "start": "2CD134",
-   "end": "2CE947",
-   "type": "SMST",
-   "name": "Trap Mechanisms Model"
-  },
-  {
-   "content": "e0ae698253f390c4",
-   "start": "2CE948",
-   "end": "2CECB7",
-   "type": "____",
-   "name": "Cursed Donglin Forest Sprites"
-  },
-  {
-   "content": "ce4de5292c8bea2c",
-   "start": "2CECB8",
-   "end": "2D2F53",
-   "type": "____",
-   "name": "Mizuno Animation"
-  },
-  {
-   "content": "93a60ab249d60c55",
-   "start": "2D2F54",
-   "end": "2D580F",
-   "type": "SMST",
-   "name": "Donglin Forest Inhabitant 01 and 02 Model"
-  },
-  {
-   "content": "c3ca56fc0b0f8e63",
-   "start": "2D5810",
-   "end": "2D9507",
-   "type": "TXTD",
-   "name": "Donglin Forest Text"
-  },
-  {
-   "content": "1b3de080c279dee0",
-   "start": "2D9508",
-   "end": "2D9CA7",
-   "type": "SMST",
-   "name": "Rock Crab Model"
-  },
-  {
-   "content": "c2f5660d91adfb39",
-   "start": "2D9CA8",
-   "end": "2D9D37",
-   "type": "____",
-   "name": "Rock Crab Animation"
-  },
-  {
-   "content": "3d9dac29d62f6fc6",
-   "start": "2D9D38",
-   "end": "2DADC7",
-   "type": "SMST",
-   "name": "Ghost Enemy Model"
-  },
-  {
-   "content": "6588f7fa032f2fca",
-   "start": "2DADC8",
-   "end": "2DB047",
-   "type": "____",
-   "name": "Ghost Enemy Animation"
-  },
-  {
-   "content": "17d61571b84874d6",
-   "start": "2DB048",
-   "end": "2DC9F3",
-   "type": "SMST",
-   "name": "Koma Pig (Donglin Forest) Model"
-  },
-  {
-   "content": "e50e62642c63d3a3",
-   "start": "2DC9F4",
-   "end": "2DCC0F",
-   "type": "____",
-   "name": "Koma Pig (Donglin Forest) Animation"
-  },
-  {
-   "content": "a14dbd8d582759dd",
-   "start": "2DCC10",
-   "end": "2DD647",
-   "type": "BGMP",
-   "name": "Cursed Donglin Forest Background"
-  },
-  {
-   "content": "aef02416db9d0e56",
-   "start": "2DD648",
-   "end": "2E0057",
-   "type": "SMST",
-   "name": "Banshee Model"
-  },
-  {
-   "content": "b1019b62ac52abfd",
-   "start": "2E0058",
-   "end": "2E3947",
-   "type": "____",
-   "name": "Banshee Animation"
-  },
-  {
-   "content": "a285acb311c1a42c",
-   "start": "2E3948",
-   "end": "2E796B",
-   "type": "SMST",
-   "name": "Ghost Guard Model"
-  },
-  {
-   "content": "3a31d45077fde4ed",
-   "start": "2E796C",
-   "end": "2E9CCF",
-   "type": "____",
-   "name": "Ghost Guard Animation"
-  },
-  {
-   "content": "00dc535b8b4a1757",
-   "start": "2E9CD0",
-   "end": "2E9EDB",
-   "type": "____",
-   "name": "Donglin Asset Animation"
-  },
-  {
-   "content": "776f935a8e8fb80b",
-   "start": "2EB650",
-   "end": "2EC323",
-   "type": "____",
-   "name": "Kainen Animation"
-  },
-  {
-   "content": "8098680fb1875b83",
-   "start": "2EC324",
-   "end": "2EC7FF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "e2d6ba6491d21fd9",
-   "start": "2F0A68",
-   "end": "30471B",
-   "type": "MDAT",
-   "name": "Cursed Circus Village Level"
-  },
-  {
-   "content": "fa22c91788841cf0",
-   "start": "30471C",
-   "end": "31BFCF",
-   "type": "SMST",
-   "name": "Asset pack Circus Village Models"
-  },
-  {
-   "content": "8090a8cf1b0cd08a",
-   "start": "31BFD0",
-   "end": "31D427",
-   "type": "BGMP",
-   "name": "Cursed Circus Village Background"
-  },
-  {
-   "content": "ea3341cf0f1978fe",
-   "start": "31D428",
-   "end": "31D6C7",
-   "type": "____",
-   "name": "Cursed Circus Village Sprites"
-  },
-  {
-   "content": "1b280eb2c97b27b8",
-   "start": "31E6E8",
-   "end": "3258E7",
-   "type": "____",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "551aaa1eeda6e5a0",
-   "start": "3258E8",
-   "end": "32941B",
-   "type": "SMST",
-   "name": "Fountain Statue Model"
-  },
-  {
-   "content": "4033a845f42ff8ce",
-   "start": "32941C",
-   "end": "32F9CF",
-   "type": "TXTD",
-   "name": "Circus Village Text"
-  },
-  {
-   "content": "c3b4f589bb07eb14",
-   "start": "32F9D0",
-   "end": "3320B7",
-   "type": "SMST",
-   "name": "Pig Elderwith Staff Model"
-  },
-  {
-   "content": "d8f705f4b192a268",
-   "start": "3320B8",
-   "end": "33435B",
-   "type": "SMST",
-   "name": "Cursed Villager 01 (man) Model"
-  },
-  {
-   "content": "ca1b8b9449b7cda2",
-   "start": "33435C",
-   "end": "33667F",
-   "type": "SMST",
-   "name": "Cursed Villager 02 (woman) Model"
-  },
-  {
-   "content": "76cc551a3cf7860d",
-   "start": "336680",
-   "end": "339093",
-   "type": "SMST",
-   "name": "Cursed Villager 03 (clown) Model"
-  },
-  {
-   "content": "72cccdc8bdc65a5a",
-   "start": "339094",
-   "end": "33B183",
-   "type": "SMST",
-   "name": "Visible Traveller Model"
-  },
-  {
-   "content": "65d8390f3e23cd1d",
-   "start": "33B184",
-   "end": "33CC93",
-   "type": "SMST",
-   "name": "Invisible Traveller Model"
-  },
-  {
-   "content": "eca5d5ddb9560453",
-   "start": "33CC94",
-   "end": "33EA17",
-   "type": "SMST",
-   "name": "Mining Town Mothers Son Model"
-  },
-  {
-   "content": "ba5e94bdb58e8c1e",
-   "start": "33EA18",
-   "end": "341933",
-   "type": "SMST",
-   "name": "Basket Woman Model"
-  },
-  {
-   "content": "dc8a2e808b88e35b",
-   "start": "341934",
-   "end": "3438EB",
-   "type": "SMST",
-   "name": "Flying Paon Model"
-  },
-  {
-   "content": "b24c613abb4d5176",
-   "start": "3438EC",
-   "end": "3450EF",
-   "type": "____",
-   "name": "Flying Paon Animation"
-  },
-  {
-   "content": "f9c69456d61c4d56",
-   "start": "3450F0",
-   "end": "3468C3",
-   "type": "SMST",
-   "name": "Parrot Model"
-  },
-  {
-   "content": "24ca1dc5be99cf69",
-   "start": "3468C4",
-   "end": "346B73",
-   "type": "____",
-   "name": "Parrot Animation"
-  },
-  {
-   "content": "00b2f9dcefa296ea",
-   "start": "346B74",
-   "end": "346F0F",
-   "type": "____",
-   "name": "Frying Pan"
-  },
-  {
-   "content": "84f362db85795859",
-   "start": "346F10",
-   "end": "34A2E3",
-   "type": "SMST",
-   "name": "Pigsuit Kid"
-  },
-  {
-   "content": "f25637ccec3ec52a",
-   "start": "34BA58",
-   "end": "34F177",
-   "type": "SMST",
-   "name": "Tiny Mouse Model"
-  },
-  {
-   "content": "7fde7376e4b45199",
-   "start": "34F178",
-   "end": "350F27",
-   "type": "SMST",
-   "name": "Yan of The Hidden Village Model"
-  },
-  {
-   "content": "374f95ff4c01a734",
-   "start": "350F28",
-   "end": "350FFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "c6f2f64c708eef3a",
-   "start": "355268",
-   "end": "35F00F",
-   "type": "____",
-   "name": "Water Temple Collision"
-  },
-  {
-   "content": "08388b020d0a79d6",
-   "start": "35F010",
-   "end": "364797",
-   "type": "TXTD",
-   "name": "Water Temple Text"
-  },
-  {
-   "content": "25e646815eb5dea1",
-   "start": "364798",
-   "end": "386BD3",
-   "type": "SMST",
-   "name": "Asset pack Water Temple Models"
-  },
-  {
-   "content": "30d88c841b47034a",
-   "start": "386BD4",
-   "end": "386D77",
-   "type": "____",
-   "name": "Cursed Water Temple Sprites"
-  },
-  {
-   "content": "3bfa9fc0e99881c4",
-   "start": "386D78",
-   "end": "3888BB",
-   "type": "SMST",
-   "name": "Mermaid 01 (with harp) Model"
-  },
-  {
-   "content": "8d66168df612aa46",
-   "start": "3888BC",
-   "end": "38A23B",
-   "type": "SMST",
-   "name": "Mermaid 02 Model"
-  },
-  {
-   "content": "53bb52f81f0f72ce",
-   "start": "38A23C",
-   "end": "38B963",
-   "type": "____",
-   "name": "Mermaid Animation"
-  },
-  {
-   "content": "3584b1f83fe7b4e9",
-   "start": "38B964",
-   "end": "38CE43",
-   "type": "SMST",
-   "name": "Flying Spiker Enemy Model"
-  },
-  {
-   "content": "9eab1c17f572fbd3",
-   "start": "38CE44",
-   "end": "38DB27",
-   "type": "____",
-   "name": "Flying Spiker Enemy Animation"
-  },
-  {
-   "content": "202a7732a5de403d",
-   "start": "38DB28",
-   "end": "392413",
-   "type": "SMST",
-   "name": "Crab Enemy Model"
-  },
-  {
-   "content": "bfe9951bfa32726c",
-   "start": "392414",
-   "end": "394C83",
-   "type": "____",
-   "name": "Crab Enemy Animation"
-  },
-  {
-   "content": "dbc56da6b265cf7f",
-   "start": "394C84",
-   "end": "3988BF",
-   "type": "SMST",
-   "name": "Koma Pig (Water Temple) Model"
-  },
-  {
-   "content": "6e96802519f95383",
-   "start": "3988C0",
-   "end": "39A9FB",
-   "type": "____",
-   "name": "Koma Pig (Water Temple) Animation"
-  },
-  {
-   "content": "5113524f50b1c929",
-   "start": "39A9FC",
-   "end": "39E4FF",
-   "type": "____",
-   "name": "NPC Animation"
-  },
-  {
-   "content": "6affc14b39bfd820",
-   "start": "39E500",
-   "end": "3A11F3",
-   "type": "SMST",
-   "name": "Starving Traveller Model"
-  },
-  {
-   "content": "4bd4cc36aba9145e",
-   "start": "3A11F4",
-   "end": "3A30B7",
-   "type": "SMST",
-   "name": "Water Temple man (Spiked Hair) Model"
-  },
-  {
-   "content": "fcd12d8e963c7da1",
-   "start": "3A30B8",
-   "end": "3A5483",
-   "type": "SMST",
-   "name": "Water Temple man (Blue beard) Model"
-  },
-  {
-   "content": "3992768ac1d28fc7",
-   "start": "3A5484",
-   "end": "3A82D7",
-   "type": "SMST",
-   "name": "Water Temple men (Brown hair and Blue hair) Model"
-  },
-  {
-   "content": "d28ca31ca961d68e",
-   "start": "3A92F8",
-   "end": "3AB5F3",
-   "type": "SMST",
-   "name": "The Giant Fish Model"
-  },
-  {
-   "content": "c6399f670d88f916",
-   "start": "3AB5F4",
-   "end": "3ABA53",
-   "type": "____",
-   "name": "The Giant Fish Animation"
-  },
-  {
-   "content": "d077815b3df52c8d",
-   "start": "3AD1C8",
-   "end": "3AEF57",
-   "type": "SMST",
-   "name": "Nishiki Bird Model"
-  },
-  {
-   "content": "ff5f775921d95d80",
-   "start": "3AEF58",
-   "end": "3AF8E7",
-   "type": "____",
-   "name": "Nishiki Bird Animation"
-  },
-  {
-   "content": "ea2279e9510e576e",
-   "start": "3AF8E8",
-   "end": "3AFFFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "462723730fe5117b",
-   "start": "3B4268",
-   "end": "3C5717",
-   "type": "MDAT",
-   "name": "unused Ranch Summit no vram Level"
-  },
-  {
-   "content": "42eb66c46321a6cc",
-   "start": "3C5718",
-   "end": "3C5C9B",
-   "type": "____",
-   "name": "unused Ranch Summit empty Collision"
-  },
-  {
-   "content": "392710816d9d36fa",
-   "start": "3C5C9C",
-   "end": "3D6583",
-   "type": "SMST",
-   "name": "Last room and Pig Statues Models"
-  },
-  {
-   "content": "8491bd77bffe9017",
-   "start": "3D6584",
-   "end": "3D6FFF",
-   "type": "TXTD",
-   "name": "Time Stopped Text"
-  },
-  {
-   "content": "f33449da8ac50493",
-   "start": "3DB268",
-   "end": "3E234B",
-   "type": "MDAT",
-   "name": "Flame Pig Boss Level"
-  },
-  {
-   "content": "807ca8a1150905fb",
-   "start": "3E234C",
-   "end": "3E3B8B",
-   "type": "____",
-   "name": "Flame Pig Boss Level Collision"
-  },
-  {
-   "content": "bc22cceb383b2b30",
-   "start": "3E3B8C",
-   "end": "3E5223",
-   "type": "BGMP",
-   "name": "Flame Pig Boss Background"
-  },
-  {
-   "content": "dcc827d8123d92ed",
-   "start": "3E5224",
-   "end": "3E841B",
-   "type": "SMST",
-   "name": "Asset pack Flame Pig Boss Models"
-  },
-  {
-   "content": "37033b65679c2580",
-   "start": "3E841C",
-   "end": "3EC437",
-   "type": "SMST",
-   "name": "Flame Pig Boss Model"
-  },
-  {
-   "content": "25b16044cb169d1e",
-   "start": "3EC438",
-   "end": "3EDF0F",
-   "type": "SCLD",
-   "name": "Flame Pig Boss Animation"
-  },
-  {
-   "content": "fa66f0f589eb9dea",
-   "start": "3EDF10",
-   "end": "3EED73",
-   "type": "TXTD",
-   "name": "Flame Pig Boss Text"
-  },
-  {
-   "content": "e048e656c11843c9",
-   "start": "3EED74",
-   "end": "3F08BF",
-   "type": "SMST",
-   "name": "Flame Pig Robe Model"
-  },
-  {
-   "content": "f100ac039d0d65d9",
-   "start": "3F08C0",
-   "end": "3F0FFF",
-   "type": "____",
-   "name": "Flame Pig Robe Animation"
-  },
-  {
-   "content": "0eaa9e2b6201bc71",
-   "start": "3F5268",
-   "end": "3FF717",
-   "type": "MDAT",
-   "name": "Ice Pig Boss Level"
-  },
-  {
-   "content": "38707bd244440dcc",
-   "start": "3FF718",
-   "end": "401A77",
-   "type": "____",
-   "name": "Ice Pig Boss Collision"
-  },
-  {
-   "content": "9bc97d7e4a412fc6",
-   "start": "401A78",
-   "end": "40310F",
-   "type": "BGMP",
-   "name": "Ice Pig Boss Background"
-  },
-  {
-   "content": "2e8ceedb6a9992a6",
-   "start": "403110",
-   "end": "409543",
-   "type": "SMST",
-   "name": "Asset pack Ice Pig Boss Models"
-  },
-  {
-   "content": "edec3b8ac406f977",
-   "start": "409544",
-   "end": "40D5D3",
-   "type": "SMST",
-   "name": "Ice Pig Boss Model"
-  },
-  {
-   "content": "20754c144683af09",
-   "start": "40D5D4",
-   "end": "40FA5B",
-   "type": "____",
-   "name": "Ice Pig Boss Animation"
-  },
-  {
-   "content": "e2053e8aef0c1f5a",
-   "start": "40FA5C",
-   "end": "410917",
-   "type": "TXTD",
-   "name": "Ice Pig Boss Text"
-  },
-  {
-   "content": "6cfb52dcc81abd62",
-   "start": "410918",
-   "end": "410C97",
-   "type": "____",
-   "name": "Ice Pig Boss Sprites"
-  },
-  {
-   "content": "c4ede3780abc6bb7",
-   "start": "410C98",
-   "end": "4127E3",
-   "type": "SMST",
-   "name": "Ice Pig Robe Model"
-  },
-  {
-   "content": "f15019aadacb8ee2",
-   "start": "4127E4",
-   "end": "41285F",
-   "type": "____",
-   "name": "Ice Pig Robe Animation"
-  },
-  {
-   "content": "be0e9a72b705b5c2",
-   "start": "412860",
-   "end": "4137FF",
-   "type": "SMST",
-   "name": "Ice Crytal Models"
-  },
-  {
-   "content": "0900df5c069688d0",
-   "start": "417A68",
-   "end": "421FC7",
-   "type": "MDAT",
-   "name": "Ghost Pig Boss Level"
-  },
-  {
-   "content": "90ad7b80aeb75d4b",
-   "start": "421FC8",
-   "end": "423807",
-   "type": "SCLD",
-   "name": "Ghost Pig Boss Collision"
-  },
-  {
-   "content": "46730b76321b39b6",
-   "start": "423808",
-   "end": "427C3B",
-   "type": "SMST",
-   "name": "Asset pack Ghost Pig Boss Models"
-  },
-  {
-   "content": "04d5efb908257d3d",
-   "start": "427C3C",
-   "end": "4292D3",
-   "type": "BGMP",
-   "name": "Ghost Pig Boss Background"
-  },
-  {
-   "content": "5a1bddc10616f1dc",
-   "start": "4292D4",
-   "end": "42E987",
-   "type": "SMST",
-   "name": "Ghost Pig Boss Model"
-  },
-  {
-   "content": "9b2f3501b6364a7e",
-   "start": "42E988",
-   "end": "431D33",
-   "type": "ANMP",
-   "name": "Ghost Pig Boss Animation"
-  },
-  {
-   "content": "0967dbe5814fd1d4",
-   "start": "431D34",
-   "end": "432BA7",
-   "type": "TXTD",
-   "name": "Ghost Pig Boss Text"
-  },
-  {
-   "content": "f94068b3d9c7af1e",
-   "start": "432BA8",
-   "end": "4346F3",
-   "type": "SMST",
-   "name": "Ghost Pig Robe Model"
-  },
-  {
-   "content": "f7f0af0b1719fb54",
-   "start": "434770",
-   "end": "4357FF",
-   "type": "SMST",
-   "name": "Ghost Enemy Model"
-  },
-  {
-   "content": "7279f758c09f3674",
-   "start": "435800",
-   "end": "435FFF",
-   "type": "UNKB",
-   "name": "Ghost Enemy Animation"
-  },
-  {
-   "content": "ad2ce6e2c1935e22",
-   "start": "43A268",
-   "end": "44679F",
-   "type": "MDAT",
-   "name": "Earth Pig Boss Level"
-  },
-  {
-   "content": "69c3acd0b75894ef",
-   "start": "4467A0",
-   "end": "4482E3",
-   "type": "____",
-   "name": "Earth Pig Boss Collision"
-  },
-  {
-   "content": "cff668dd8add91a5",
-   "start": "4482E4",
-   "end": "44C35F",
-   "type": "SMST",
-   "name": "Asset pack Earth Pig Boss Models"
-  },
-  {
-   "content": "3ebcd9d23ab82f8e",
-   "start": "44C360",
-   "end": "44D9F7",
-   "type": "BGMP",
-   "name": "Earth Pig Boss Background"
-  },
-  {
-   "content": "a752e590690e3456",
-   "start": "44D9F8",
-   "end": "4515AB",
-   "type": "SMST",
-   "name": "Earth Pig Boss Model"
-  },
-  {
-   "content": "0a8a3976a5aebf4a",
-   "start": "4515AC",
-   "end": "45A057",
-   "type": "____",
-   "name": "Earth Pig Boss Animation"
-  },
-  {
-   "content": "3016687623e783df",
-   "start": "45A058",
-   "end": "45AF7B",
-   "type": "TXTD",
-   "name": "Earth Pig Boss Text"
-  },
-  {
-   "content": "454338a6dc8094dc",
-   "start": "45AF7C",
-   "end": "45CAC7",
-   "type": "SMST",
-   "name": "Earth Pig Robe Model"
-  },
-  {
-   "content": "dc08a478ef109414",
-   "start": "45CAC8",
-   "end": "45CFFF",
-   "type": "____",
-   "name": "Earth Pig Robe Animation"
-  },
-  {
-   "content": "5054d79e2775bdd5",
-   "start": "461268",
-   "end": "4715B7",
-   "type": "MDAT",
-   "name": "Water Pig Boss Level"
-  },
-  {
-   "content": "a11caf688b2befa5",
-   "start": "4715B8",
-   "end": "472EE3",
-   "type": "____",
-   "name": "Water Pig Boss Collision"
-  },
-  {
-   "content": "c4b4a8ed320a3831",
-   "start": "472EE4",
-   "end": "47457B",
-   "type": "BGMP",
-   "name": "Water Pig Boss Background"
-  },
-  {
-   "content": "992683266f9bfcde",
-   "start": "47457C",
-   "end": "47745B",
-   "type": "SMST",
-   "name": "Asset pack Water Pig Boss Models"
-  },
-  {
-   "content": "3dc7c1ce2416942d",
-   "start": "47745C",
-   "end": "47BF4F",
-   "type": "SMST",
-   "name": "Water Pig Model"
-  },
-  {
-   "content": "9e3f6d284114d32b",
-   "start": "47BF50",
-   "end": "483FF7",
-   "type": "____",
-   "name": "Water Pig Animation"
-  },
-  {
-   "content": "6ff09117ec44ea1d",
-   "start": "483FF8",
-   "end": "484F33",
-   "type": "TXTD",
-   "name": "Water Pig Boss Text"
-  },
-  {
-   "content": "8b1e09407b8d9356",
-   "start": "484F34",
-   "end": "486A7F",
-   "type": "SMST",
-   "name": "Water Pig Robe Model"
-  },
-  {
-   "content": "69d58ce3c49860b7",
-   "start": "486A80",
-   "end": "486FFF",
-   "type": "____",
-   "name": "Water Pig Robe Animation"
-  },
-  {
-   "content": "5d9f9f6c87602c72",
-   "start": "48B268",
-   "end": "49583B",
-   "type": "MDAT",
-   "name": "Last Pig Boss Level"
-  },
-  {
-   "content": "be6277586fbd820e",
-   "start": "49583C",
-   "end": "4977A7",
-   "type": "____",
-   "name": "Last Pig Boss Collision"
-  },
-  {
-   "content": "3c80a7fbe87dbc91",
-   "start": "4977A8",
-   "end": "498E3F",
-   "type": "BGMP",
-   "name": "Last Pig Boss Background"
-  },
-  {
-   "content": "f0a35d6c29d6da39",
-   "start": "498E40",
-   "end": "49BFCB",
-   "type": "SMST",
-   "name": "Asset pack Last Pig Boss Models"
-  },
-  {
-   "content": "39837dd3e3f9e64e",
-   "start": "49BFCC",
-   "end": "4A5077",
-   "type": "SMST",
-   "name": "Last Pig Boss Model"
-  },
-  {
-   "content": "5c77cbc31fca4e9b",
-   "start": "4A5078",
-   "end": "4A74D3",
-   "type": "____",
-   "name": "Last Pig Boss Animation"
-  },
-  {
-   "content": "7e354258c6a2c5d9",
-   "start": "4A74D4",
-   "end": "4A7EAB",
-   "type": "TXTD",
-   "name": "Last Pig Boss Text"
-  },
-  {
-   "content": "ee1cf28c494c2bb2",
-   "start": "4A7EAC",
-   "end": "4ABA7F",
-   "type": "SMST",
-   "name": "Tabby Model"
-  },
-  {
-   "content": "eb9650c3c316508d",
-   "start": "4ABA80",
-   "end": "4AF653",
-   "type": "SMST",
-   "name": "Petrified Tabby Model"
-  },
-  {
-   "content": "a25889b851c06026",
-   "start": "4AF654",
-   "end": "4B0823",
-   "type": "____",
-   "name": "Tabby Animation"
-  },
-  {
-   "content": "230932c9f32212e2",
-   "start": "4B0824",
-   "end": "4B0FFF",
-   "type": "____",
-   "name": "Last Pig Boss Sprites"
-  },
-  {
-   "content": "a6181f7dc9788d30",
-   "start": "4B1000",
-   "end": "4B5F3F",
-   "type": "____",
-   "name": "Tower of Courage Collision"
-  },
-  {
-   "content": "ebf14ab76edfb577",
-   "start": "4B5F40",
-   "end": "4BC837",
-   "type": "MDAT",
-   "name": "Tower of Courage Level"
-  },
-  {
-   "content": "59cadd0f1e061498",
-   "start": "4BC838",
-   "end": "4BCE93",
-   "type": "SMST",
-   "name": "Door Models"
-  },
-  {
-   "content": "1aedc04a0f0d6839",
-   "start": "4BCE94",
-   "end": "4BCFFF",
-   "type": "SCLD",
-   "name": "Tower of Courage Text"
-  },
-  {
-   "content": "7b3ab2a89a238906",
-   "start": "4BD000",
-   "end": "4C1187",
-   "type": "____",
-   "name": "Tower of Strength Collision"
-  },
-  {
-   "content": "cfe985cdac94ba24",
-   "start": "4C1188",
-   "end": "4C787F",
-   "type": "MDAT",
-   "name": "Tower of Strength Level"
-  },
-  {
-   "content": "2dcb724f7032ed0c",
-   "start": "4C7880",
-   "end": "4C7D23",
-   "type": "SMST",
-   "name": "Asset pack Tower of Strength Models"
-  },
-  {
-   "content": "ee0d850701fcf856",
-   "start": "4C7D24",
-   "end": "4C7FFF",
-   "type": "____",
-   "name": "Tower of Strength Text"
-  },
-  {
-   "content": "3cdd1388838d85fe",
-   "start": "4C8000",
-   "end": "4CABAB",
-   "type": "____",
-   "name": "Tower of Wisdom Collision"
-  },
-  {
-   "content": "00c498987d62453c",
-   "start": "4CABAC",
-   "end": "4D130F",
-   "type": "MDAT",
-   "name": "Tower of Wisdom Level"
-  },
-  {
-   "content": "58a2abf121d3c40c",
-   "start": "4D1310",
-   "end": "4D1763",
-   "type": "SMST",
-   "name": "Asset pack Tower of Wisdom Models"
-  },
-  {
-   "content": "65338f9f0e8c1d18",
-   "start": "4D1764",
-   "end": "4D1FFF",
-   "type": "____",
-   "name": "Tower of Wisdom Text"
-  },
-  {
-   "content": "8cced66b92189efd",
-   "start": "4D6268",
-   "end": "4D9537",
-   "type": "____",
-   "name": "Golden Tower Collision"
-  },
-  {
-   "content": "dd2a20454d3b6ffd",
-   "start": "4D9538",
-   "end": "4E13C3",
-   "type": "MDAT",
-   "name": "Golden Tower Level"
-  },
-  {
-   "content": "a58323c74f6feeac",
-   "start": "4E13C4",
-   "end": "4E16CF",
-   "type": "SMST",
-   "name": "Asset pack Golden Tower Models"
-  },
-  {
-   "content": "cbf5d86e3e615505",
-   "start": "4E16D0",
-   "end": "4E17D3",
-   "type": "____",
-   "name": "Golden Tower Sprites"
-  },
-  {
-   "content": "5f869b0a19dbce6a",
-   "start": "4E17D4",
-   "end": "4E2133",
-   "type": "____",
-   "name": "Pig Elder Animation"
-  },
-  {
-   "content": "4ac7b97faaf55366",
-   "start": "4E2134",
-   "end": "4E481B",
-   "type": "SMST",
-   "name": "Pig Elder Model"
-  },
-  {
-   "content": "2d88cad686e2c4b1",
-   "start": "4E481C",
-   "end": "4E4FFF",
-   "type": "TXTD",
-   "name": "Golden Tower Text"
-  },
-  {
-   "content": "7617af3005f85d4c",
-   "start": "4E5000",
-   "end": "4E90D3",
-   "type": "SMST",
-   "name": "Tiny Mouse with different colored tails Model"
-  },
-  {
-   "content": "0b16ae77bdbb8f17",
-   "start": "4EA848",
-   "end": "4F1DC3",
-   "type": "SMST",
-   "name": "Tiny Mouses Room door Models"
-  },
-  {
-   "content": "a0db4a92c73c6b1b",
-   "start": "4F1DC4",
-   "end": "4F1E27",
-   "type": "____",
-   "name": "Tiny Mouses Minigame Sprites"
-  },
-  {
-   "content": "456c7f151d3eb3f9",
-   "start": "4F1E28",
-   "end": "504D07",
-   "type": "MDAT",
-   "name": "Tiny Mouses Minigame Level"
-  },
-  {
-   "content": "f7748689270ce24f",
-   "start": "504D08",
-   "end": "505FFF",
-   "type": "TXTD",
-   "name": "Tiny Mouses House Text"
-  },
-  {
-   "content": "68554ecf8db5afeb",
-   "start": "506000",
-   "end": "507AFF",
-   "type": "SMST",
-   "name": "Outro Zippo Model"
-  },
-  {
-   "content": "e50b348e79a6c475",
-   "start": "507B00",
-   "end": "508DB3",
-   "type": "____",
-   "name": "Outro Zippo Animation"
-  },
-  {
-   "content": "11083d8be2cad374",
-   "start": "508DB4",
-   "end": "5098C7",
-   "type": "TXTD",
-   "name": "Outro Scene Text"
-  },
-  {
-   "content": "e2d10a2f930faeba",
-   "start": "5098C8",
-   "end": "50AD1F",
-   "type": "BGMP",
-   "name": "Outro Scene Background"
-  },
-  {
-   "content": "4fa0af157b674a09",
-   "start": "50AD20",
-   "end": "518B3B",
-   "type": "MDAT",
-   "name": "Outro Scene Level"
-  },
-  {
-   "content": "242eef8288ee1c28",
-   "start": "518B3C",
-   "end": "525F9F",
-   "type": "SMST",
-   "name": "Wins boat Kainens ending chest Models"
-  },
-  {
-   "content": "0efe9a5b93f02925",
-   "start": "525FA0",
-   "end": "52608F",
-   "type": "____",
-   "name": "Outro Scene Sprites"
-  },
-  {
-   "content": "30a29258045a22e2",
-   "start": "526090",
-   "end": "52A083",
-   "type": "____",
-   "name": "?"
-  },
-  {
-   "content": "2b0915351fbfede4",
-   "start": "52A084",
-   "end": "52C2D3",
-   "type": "SMST",
-   "name": "Win Model"
-  },
-  {
-   "content": "38b3af5d18d86bc7",
-   "start": "52C2D4",
-   "end": "52DC7B",
-   "type": "SMST",
-   "name": "Ark Model"
-  },
-  {
-   "content": "770adf0341d8755e",
-   "start": "52DC7C",
-   "end": "534D33",
-   "type": "SMST",
-   "name": "Tabby Model"
-  },
-  {
-   "content": "f31237620815ffc8",
-   "start": "534D34",
-   "end": "536507",
-   "type": "SMST",
-   "name": "Parrot Model"
-  },
-  {
-   "content": "6dee430c57433ff0",
-   "start": "536508",
-   "end": "5387CB",
-   "type": "SMST",
-   "name": "Kainen Model"
-  },
-  {
-   "content": "50e56e3f5d7829b5",
-   "start": "5387CC",
-   "end": "53A877",
-   "type": "SMST",
-   "name": "Pham Model"
-  },
-  {
-   "content": "f2267281c773d565",
-   "start": "53A878",
-   "end": "53C43B",
-   "type": "SMST",
-   "name": "Phams Daughter 01 Model"
-  },
-  {
-   "content": "175a2a2c8d020bd4",
-   "start": "53C43C",
-   "end": "53DE4F",
-   "type": "SMST",
-   "name": "Phams Daughter 02 Model"
-  },
-  {
-   "content": "f13ad5cf812adf18",
-   "start": "53DE50",
-   "end": "53F77B",
-   "type": "SMST",
-   "name": "Phams daughter 03 Model"
-  },
-  {
-   "content": "1ce9e3f33f184c4f",
-   "start": "53F77C",
-   "end": "54118B",
-   "type": "SMST",
-   "name": "Mole Model"
-  },
-  {
-   "content": "d9abf25f700f4b02",
-   "start": "54118C",
-   "end": "5440A7",
-   "type": "SMST",
-   "name": "Basket Woman Model"
-  },
-  {
-   "content": "6bfa92b6a283f903",
-   "start": "5440A8",
-   "end": "545FAF",
-   "type": "SMST",
-   "name": "Gran Model"
-  },
-  {
-   "content": "660508c7128b053e",
-   "start": "545FB0",
-   "end": "54717F",
-   "type": "____",
-   "name": "?"
-  },
-  {
-   "content": "69d30235c6f06c57",
-   "start": "547430",
-   "end": "547F73",
-   "type": "____",
-   "name": "?"
-  },
-  {
-   "content": "7a23e8955c353c49",
-   "start": "547F74",
-   "end": "54839B",
-   "type": "____",
-   "name": "?"
-  },
-  {
-   "content": "ee0e2f6c70888abc",
-   "start": "54839C",
-   "end": "548A97",
-   "type": "____",
-   "name": "?"
-  },
-  {
-   "content": "ccb40fa58cebdf29",
-   "start": "54B19C",
-   "end": "54F637",
-   "type": "SMST",
-   "name": "Tuxedo Tomba (black) Model"
-  },
-  {
-   "content": "8c38174b7a1ecc04",
-   "start": "54F638",
-   "end": "553FFF",
-   "type": "SMST",
-   "name": "Tuxedo Tomba (red) Model"
-  },
-  {
-   "content": "5b3ee5d38154615e",
-   "start": "558268",
-   "end": "56DBF7",
-   "type": "MDAT",
-   "name": "Purified Large Mine Underground Level"
-  },
-  {
-   "content": "3f9848e0dfbeb9c8",
-   "start": "56DBF8",
-   "end": "56E687",
-   "type": "DRWB",
-   "name": "Purified Large Mine Underground Drawmap"
-  },
-  {
-   "content": "36ca9b022b7c769f",
-   "start": "56E688",
-   "end": "58A3EB",
-   "type": "SMST",
-   "name": "Asset pack Cursed Large Mine Underground (roomsenemies) Models"
-  },
-  {
-   "content": "7344b30daf761e31",
-   "start": "58A3EC",
-   "end": "594E3B",
-   "type": "____",
-   "name": "Purified Large Mine Underground Collision"
-  },
-  {
-   "content": "27f3baabb7fa8aac",
-   "start": "597EC4",
-   "end": "59824F",
-   "type": "____",
-   "name": "Purified Large Mine Underground Sprites"
-  },
-  {
-   "content": "5fe7ece92f1b6e5d",
-   "start": "5B078C",
-   "end": "5B703B",
-   "type": "MDAT",
-   "name": "Underground Tunnels Level"
-  },
-  {
-   "content": "3619a9801e512be6",
-   "start": "5B703C",
-   "end": "5BA2F3",
-   "type": "SMST",
-   "name": "Kainen with Staff Lit Model"
-  },
-  {
-   "content": "336f41397b4cb515",
-   "start": "5BA2F4",
-   "end": "5BB2DF",
-   "type": "____",
-   "name": "Kainen with Staff Animation"
-  },
-  {
-   "content": "4125867989c20d7e",
-   "start": "5BB2E0",
-   "end": "5BE597",
-   "type": "SMST",
-   "name": "Kainen with Staff Unlit Model"
-  },
-  {
-   "content": "04df466c3b049b37",
-   "start": "5BE598",
-   "end": "5BE7FF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "aae32f3e60a75d7d",
-   "start": "5BE800",
-   "end": "5D66D3",
-   "type": "MDAT",
-   "name": "Purified Coal Mining Town Level"
-  },
-  {
-   "content": "be01ef1247bb9fe5",
-   "start": "5DA93C",
-   "end": "5FC9CF",
-   "type": "SMST",
-   "name": "Asset pack Purified Coal Mining Town Models"
-  },
-  {
-   "content": "4805a346f0de0f18",
-   "start": "627270",
-   "end": "6287FF",
-   "type": "SMST",
-   "name": "Conveyor Belt Models"
-  },
-  {
-   "content": "a5f284b68d022a54",
-   "start": "62D930",
-   "end": "634CDB",
-   "type": "____",
-   "name": "Purified Kujara Ranch Area Collision"
-  },
-  {
-   "content": "50271e42be97d26f",
-   "start": "634CDC",
-   "end": "64DD9B",
-   "type": "MDAT",
-   "name": "Purified Kujara Ranch Area Level"
-  },
-  {
-   "content": "d57df294bf7c4ccf",
-   "start": "64DD9C",
-   "end": "652633",
-   "type": "MDAT",
-   "name": "Purified Holy Tree Flight Level"
-  },
-  {
-   "content": "983382ce056906be",
-   "start": "655274",
-   "end": "66795F",
-   "type": "SMST",
-   "name": "Asset pack - Purified Kujara Ranch Area Models"
-  },
-  {
-   "content": "1583ec91a78ff5c6",
-   "start": "669F4C",
-   "end": "66C537",
-   "type": "SMST",
-   "name": "Red Kokka Bird Model"
-  },
-  {
-   "content": "cd0a3c1f2361ed6f",
-   "start": "671550",
-   "end": "674AEF",
-   "type": "SMST",
-   "name": "Armadillo Enemy Model"
-  },
-  {
-   "content": "1ee289a6eb9c3488",
-   "start": "6790D0",
-   "end": "67AC93",
-   "type": "SMST",
-   "name": "Phams Daughter 01 Model"
-  },
-  {
-   "content": "fa6a289e4cce2aee",
-   "start": "67AC94",
-   "end": "67C6A7",
-   "type": "SMST",
-   "name": "Phams Daughter 02 Model"
-  },
-  {
-   "content": "61397ba644884313",
-   "start": "67C6A8",
-   "end": "67DFD3",
-   "type": "SMST",
-   "name": "Phams Daugther 03s Model"
-  },
-  {
-   "content": "f8c64b463e7be2cd",
-   "start": "67DFD4",
-   "end": "680063",
-   "type": "SMST",
-   "name": "Leaf Traveller Model"
-  },
-  {
-   "content": "580f35471f52e4f5",
-   "start": "680064",
-   "end": "681ECF",
-   "type": "SMST",
-   "name": "Kujara Ranch Man 02 Model Model"
-  },
-  {
-   "content": "2e65f934763dfd62",
-   "start": "681ED0",
-   "end": "6820F7",
-   "type": "____",
-   "name": "Purified Kujara Ranch Sprites"
-  },
-  {
-   "content": "b25cb541f52f4b2a",
-   "start": "684878",
-   "end": "685D5F",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth closed)"
-  },
-  {
-   "content": "3c9821519d55ae59",
-   "start": "685D60",
-   "end": "687457",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 1)"
-  },
-  {
-   "content": "0047526670de8987",
-   "start": "687458",
-   "end": "68914F",
-   "type": "SMST",
-   "name": "Blue Sea Anemone segments (mouth opened var 2)"
-  },
-  {
-   "content": "107c967fb8dc426c",
-   "start": "689150",
-   "end": "68BAD7",
-   "type": "SMST",
-   "name": "Koma Pig (Kujara Ranch) Model"
-  },
-  {
-   "content": "4996c633de51270e",
-   "start": "693020",
-   "end": "694587",
-   "type": "SMST",
-   "name": "Dwarf (brown)"
-  },
-  {
-   "content": "0ca82520e86df3ec",
-   "start": "694BA8",
-   "end": "695DC7",
-   "type": "SMST",
-   "name": "Dwarf (green)"
-  },
-  {
-   "content": "2a22e85d48c2515c",
-   "start": "6964D0",
-   "end": "697927",
-   "type": "BGMP",
-   "name": "Purified Kujara Ranch Area Background"
-  },
-  {
-   "content": "1f6c7c6f54279c10",
-   "start": "697928",
-   "end": "697FFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "541a24aebe050276",
-   "start": "69D130",
-   "end": "6BB5DB",
-   "type": "SMST",
-   "name": "Asset pack - Purified Kujara Ranch Summit"
-  },
-  {
-   "content": "b3d0ec453da834bc",
-   "start": "6BB5DC",
-   "end": "6CB6C7",
-   "type": "MDAT",
-   "name": "Purified Kujara Ranch Summit Level"
-  },
-  {
-   "content": "059ac4d6a5e0d690",
-   "start": "6CB6C8",
-   "end": "6D4A83",
-   "type": "MDAT",
-   "name": "Kujara Washing Minigame Level"
-  },
-  {
-   "content": "8dd415f8f293c13f",
-   "start": "6D9B28",
-   "end": "6DEDCF",
-   "type": "____",
-   "name": "Purified Kujara Ranch Summit Collision"
-  },
-  {
-   "content": "99b025c5c47353cb",
-   "start": "6E5F80",
-   "end": "6E7B43",
-   "type": "SMST",
-   "name": "Phams Daughter 01 Model"
-  },
-  {
-   "content": "059e61b9498ffde4",
-   "start": "6E7B44",
-   "end": "6E9557",
-   "type": "SMST",
-   "name": "Phams Daughter 02 Model"
-  },
-  {
-   "content": "2e60d9148610b71c",
-   "start": "6E9558",
-   "end": "6EAE83",
-   "type": "SMST",
-   "name": "Phams Daughter 03 Model"
-  },
-  {
-   "content": "9179dc69cb2b6c01",
-   "start": "6EAE84",
-   "end": "6ECCEF",
-   "type": "SMST",
-   "name": "Kujara Ranch Man 02 Model"
-  },
-  {
-   "content": "8faa7c2531df6065",
-   "start": "6ECCF0",
-   "end": "6EEA0F",
-   "type": "SMST",
-   "name": "Kujara Ranch Man (washing minigame) Model"
-  },
-  {
-   "content": "e0cd9a0c72ac122d",
-   "start": "6EEA10",
-   "end": "6EFE67",
-   "type": "BGMP",
-   "name": "Purified Kujara Ranch Summit Background"
-  },
-  {
-   "content": "af137889e18a4c9a",
-   "start": "6EFE68",
-   "end": "6F0287",
-   "type": "____",
-   "name": "Purified Kujara Ranch Summit Sprites"
-  },
-  {
-   "content": "86f0a024707bb5d7",
-   "start": "6F0288",
-   "end": "6F29D7",
-   "type": "SMST",
-   "name": "Toradako enemy"
-  },
-  {
-   "content": "24c50bba14f30e04",
-   "start": "6F3BE4",
-   "end": "6F43D3",
-   "type": "SMST",
-   "name": "Kujara Bird (burned gray)"
-  },
-  {
-   "content": "996cf550e5bd9b06",
-   "start": "6F43D4",
-   "end": "6F4B8B",
-   "type": "SMST",
-   "name": "Kujara Bird"
-  },
-  {
-   "content": "acda17978d89505b",
-   "start": "6F4B8C",
-   "end": "6F51AB",
-   "type": "SMST",
-   "name": "Kujara Bird (shaved)"
-  },
-  {
-   "content": "f83be000b9a8cf30",
-   "start": "6F51AC",
-   "end": "6F59C3",
-   "type": "SMST",
-   "name": "Kujara Bird (burned black)"
-  },
-  {
-   "content": "e5939ae7247d3749",
-   "start": "6F59C4",
-   "end": "6F6103",
-   "type": "SMST",
-   "name": "Kujara Bird (fat shaved)"
-  },
-  {
-   "content": "38d25a8ee7f53390",
-   "start": "6F6504",
-   "end": "6F8B07",
-   "type": "SMST",
-   "name": "Kainen Model"
-  },
-  {
-   "content": "797eeec58d83ff7d",
-   "start": "6F8B08",
-   "end": "6FAE73",
-   "type": "SMST",
-   "name": "Kainen (swimming suit) Model"
-  },
-  {
-   "content": "a806c649f2120b8c",
-   "start": "6FD7A0",
-   "end": "6FD7FF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "37580b31a59452d6",
-   "start": "701A68",
-   "end": "731B5F",
-   "type": "MDAT",
-   "name": "Purified Donglin Forest Level"
-  },
-  {
-   "content": "a05e725550ccb0b6",
-   "start": "73CB68",
-   "end": "752D23",
-   "type": "SMST",
-   "name": "Asset pack Purified Donglin Forest Models"
-  },
-  {
-   "content": "d1da59f81ae7961a",
-   "start": "752D24",
-   "end": "754537",
-   "type": "SMST",
-   "name": "Trap mechanisms Models"
-  },
-  {
-   "content": "cd2a7f319b9e0e0a",
-   "start": "754538",
-   "end": "7548A7",
-   "type": "____",
-   "name": "Purified Donglin Forest Sprites"
-  },
-  {
-   "content": "5ce378bb37312621",
-   "start": "7614F0",
-   "end": "761F27",
-   "type": "BGMP",
-   "name": "Purified Donglin Forest Background"
-  },
-  {
-   "content": "1b53feec805b4bf3",
-   "start": "769BA8",
-   "end": "769FFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "4a772b1505fa2eaa",
-   "start": "79AC28",
-   "end": "79AEB3",
-   "type": "SPRT",
-   "name": "Cursed Circus Village Sprites"
-  },
-  {
-   "content": "33997d38ded24317",
-   "start": "7AF8A4",
-   "end": "7B24A7",
-   "type": "SMST",
-   "name": "Purified Villager 01 (man) Model"
-  },
-  {
-   "content": "860dcb805635d8a2",
-   "start": "7B24A8",
-   "end": "7B4C43",
-   "type": "SMST",
-   "name": "Purified Villager 02 (woman) Model"
-  },
-  {
-   "content": "a89260cad95782e5",
-   "start": "7B4C44",
-   "end": "7B7E33",
-   "type": "SMST",
-   "name": "Purified Clown Model"
-  },
-  {
-   "content": "71f210265693f7c9",
-   "start": "7CFCC8",
-   "end": "7CFFFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "0ad99ea47cedb569",
-   "start": "82E8E8",
-   "end": "82EFFF",
-   "type": "____",
-   "name": ""
-  },
-  {
-   "content": "23d40929855a29ac",
-   "start": "82F000",
-   "end": "832F2B",
-   "type": "SMST",
-   "name": "Tomba Model"
-  },
-  {
-   "content": "98b171f58f4e0c1a",
-   "start": "833000",
-   "end": "837FD3",
-   "type": "SMST",
-   "name": "Squirrel Suit Tomba Model"
-  },
-  {
-   "content": "95b74bba1d205999",
-   "start": "838000",
-   "end": "83C117",
-   "type": "SMST",
-   "name": "Wingsuit Tomba Model"
-  },
-  {
-   "content": "f098f7cc6db7159a",
-   "start": "83C800",
-   "end": "841057",
-   "type": "SMST",
-   "name": "Pigsuit Tomba Model"
-  },
-  {
-   "content": "1eaa644b9e74bf30",
-   "start": "841800",
-   "end": "84604B",
-   "type": "SMST",
-   "name": "Fire Pig Robe Tomba Model"
-  },
-  {
-   "content": "d8edc810e071fce9",
-   "start": "846800",
-   "end": "84B04B",
-   "type": "SMST",
-   "name": "Ice Pig Robe Tomba Model"
-  },
-  {
-   "content": "acf6ad7996046322",
-   "start": "84B800",
-   "end": "85004B",
-   "type": "SMST",
-   "name": "Ghost Pig Robe Tomba Model"
-  },
-  {
-   "content": "c731935bba29dc41",
-   "start": "850800",
-   "end": "85504B",
-   "type": "SMST",
-   "name": "Earth Pig Robe Tomba Model"
-  },
-  {
-   "content": "e16d16ecd338b132",
-   "start": "855800",
-   "end": "85A04B",
-   "type": "SMST",
-   "name": "Water Pig Robe Tomba Model"
-  },
-  {
-   "content": "0fdc8ec7085e2f7a",
-   "start": "85A800",
-   "end": "85E433",
-   "type": "SMST",
-   "name": "Invisible Tomba Model"
-  },
-  {
-   "content": "3567ce26a021f799",
-   "start": "85E800",
-   "end": "863057",
-   "type": "SMST",
-   "name": "Water Pig Suit Tomba Model"
-  },
-  {
-   "content": "9ef55c69acc077a2",
-   "start": "869800",
-   "end": "86B1A7",
-   "type": "SMST",
-   "name": "Ark Model"
-  },
-  {
-   "content": "4f7cf3f62f2dc490",
-   "start": "86B800",
-   "end": "86DA4F",
-   "type": "SMST",
-   "name": "Win Model"
-  },
-  {
-   "content": "4feb92b07a28fccf",
-   "start": "86E000",
-   "end": "8700EF",
-   "type": "SMST",
-   "name": "Thirsty Traveller Model"
-  },
-  {
-   "content": "0e688f1a7f5094e4",
-   "start": "873000",
-   "end": "8753CF",
-   "type": "SMST",
-   "name": "Santa Model"
-  },
-  {
-   "content": "ba1f049d935a29a0",
-   "start": "875800",
-   "end": "877833",
-   "type": "SMST",
-   "name": "Pham Outside clothes Model"
-  },
-  {
-   "content": "97f31736a1e8918a",
-   "start": "87A800",
-   "end": "87C8AB",
-   "type": "SMST",
-   "name": "Pham Yellow suit Model"
-  },
-  {
-   "content": "9d1cf4f5f6a6fcc7",
-   "start": "87D000",
-   "end": "87F0EF",
-   "type": "SMST",
-   "name": "Oil-Smeared Traveller Model"
-  },
-  {
-   "content": "4acd601090a5df3c",
-   "start": "87F800",
-   "end": "8819AF",
-   "type": "SMST",
-   "name": "Collector Model"
-  },
-  {
-   "content": "5f86f87a9b7f5986",
-   "start": "882000",
-   "end": "884033",
-   "type": "SMST",
-   "name": "Pham Blue Suit Model"
-  },
-  {
-   "content": "945e441ebaae2039",
-   "start": "884800",
-   "end": "886A8B",
-   "type": "SMST",
-   "name": "Sculptor Model"
-  },
-  {
-   "content": "12e0d2aaaa607726",
-   "start": "887000",
-   "end": "8890EF",
-   "type": "SMST",
-   "name": "Oil-Smeared Traveller Model"
-  },
-  {
-   "content": "348c7364a93b3014",
-   "start": "889800",
-   "end": "88B423",
-   "type": "SMST",
-   "name": "Collector Model"
-  },
-  {
-   "content": "ae3f151709134add",
-   "start": "88B800",
-   "end": "88D8AB",
-   "type": "SMST",
-   "name": "Pham Yellow suit Model"
-  },
-  {
-   "content": "13c5fa287ffa523a",
-   "start": "88E000",
-   "end": "890063",
-   "type": "SMST",
-   "name": "Sculptor Model"
-  },
-  {
-   "content": "cf7084e30e139d3e",
-   "start": "890800",
-   "end": "89293B",
-   "type": "SMST",
-   "name": "Painter Model"
-  },
-  {
-   "content": "d0612476aaecb649",
-   "start": "893000",
-   "end": "895603",
-   "type": "SMST",
-   "name": "Kainen Model"
-  },
-  {
-   "content": "6122175a61d74691",
-   "start": "895800",
-   "end": "8976D3",
-   "type": "SMST",
-   "name": "Mizuno the Witch Model"
-  },
-  {
-   "content": "a42cf0ab4ba39fe4",
-   "start": "897800",
-   "end": "8998EF",
-   "type": "SMST",
-   "name": "Laughing Traveller Model"
-  },
-  {
-   "content": "7b2fd7a2b0abed0f",
-   "start": "8A5800",
-   "end": "8A72A3",
-   "type": "SMST",
-   "name": "100 Year Old Man Model"
-  },
-  {
-   "content": "bc6bb4444038453a",
-   "start": "8AA000",
-   "end": "8ABD17",
-   "type": "SMST",
-   "name": "Mermaid Model"
-  },
-  {
-   "content": "4dcbec67640e66dc",
-   "start": "8AC000",
-   "end": "8BBE5B",
-   "type": "MDAT",
-   "name": "Cursed Water Temple 1 Level"
-  },
-  {
-   "content": "ccd09a2703d9eec9",
-   "start": "8BC000",
-   "end": "8C9CE3",
-   "type": "MDAT",
-   "name": "Cursed Water Temple 2 Level"
-  },
-  {
-   "content": "dcc545ca02661723",
-   "start": "8CA000",
-   "end": "8D73D7",
-   "type": "MDAT",
-   "name": "Cursed Water Temple 3 Level"
-  },
-  {
-   "content": "8f46689662c5905d",
-   "start": "8D7800",
-   "end": "8DD99F",
-   "type": "MDAT",
-   "name": "Cursed Water Temple 4 Level"
-  },
-  {
-   "content": "166545bdd634a852",
-   "start": "8E6800",
-   "end": "8F665B",
-   "type": "MDAT",
-   "name": "Purified Water Temple 1 Level"
-  },
-  {
-   "content": "d4bbbf00beb17682",
-   "start": "8F6800",
-   "end": "9044E3",
-   "type": "MDAT",
-   "name": "Purified Water Temple 2 Level"
-  },
-  {
-   "content": "ed5268d9dd1827b3",
-   "start": "904800",
-   "end": "911BD7",
-   "type": "MDAT",
-   "name": "Purified Water Temple 3 Level"
-  },
-  {
-   "content": "c13996faa57ddf49",
-   "start": "912000",
-   "end": "91819F",
-   "type": "MDAT",
-   "name": "Purified Water Temple 4 Level"
-  }
- ]
+  "name": "Tomba! 2: The Evil Swine Return (USA)",
+  "build": "us-retail",
+  "source": "TOMBAMAP_us.txt",
+  "dat_size": 9537536,
+  "serial": "SCUS-94454",
+  "bins": {
+    "A00.BIN": "Town of the Fishermen",
+    "A01.BIN": "Large Mine Underground",
+    "A02.BIN": "Coal Mining Town",
+    "A03.BIN": "Trolley Minigame",
+    "A04.BIN": "Kujara Ranch Area",
+    "A05.BIN": "Kujara Ranch Summit",
+    "A06.BIN": "Donglin Forest",
+    "A07.BIN": "Circus Village",
+    "A08.BIN": "Water Temple",
+    "A09.BIN": "Question mark room",
+    "A0A.BIN": "Fire Pig Boss",
+    "A0B.BIN": "Ice Pig Boss",
+    "A0C.BIN": "Ghost Pig Boss",
+    "A0D.BIN": "Earth Pig Boss",
+    "A0E.BIN": "Water Pig Boss",
+    "A0F.BIN": "Last Pig Boss",
+    "A0G.BIN": "Tower of Courage",
+    "A0H.BIN": "Tower of Strength",
+    "A0I.BIN": "Tower of Wisdom",
+    "A0J.BIN": "Golden Tower",
+    "A0K.BIN": "Tiny Mouse's House & Minigame",
+    "A0L.BIN": "Outro",
+    "CRD.BIN": "Credits",
+    "DEMO.BIN": "Town of the Fishermen demo",
+    "GAME.BIN": "Data present in every save",
+    "OPN.BIN": "Skippable opening sequence, just before the first level",
+    "SOP.BIN": "Intro",
+    "START.BIN": "Calls for the game data stored in the CD folder"
+  },
+  "areas": {
+    "00": "Fonts",
+    "01": "System",
+    "02": "Main Title",
+    "03": "Intro Scene",
+    "04": "Town of the Fishermen",
+    "05": "Large Mine Underground",
+    "06": "Cursed Coal Mining Town",
+    "07": "Trolley Minigame",
+    "08": "Cursed Kujara Ranch Area",
+    "09": "Cursed Kujara Ranch Summit",
+    "0A": "Cursed Donglin Forest",
+    "0B": "Cursed Circus Village",
+    "0C": "Cursed Water Temple",
+    "0D": "Time Stopped",
+    "0E": "Flame Pig Boss Level",
+    "0F": "Ice Pig Boss",
+    "10": "Ghost Pig Boss Level",
+    "11": "Earth Pig Boss Level",
+    "12": "Water Pig Boss Level",
+    "13": "Last Pig Boss",
+    "14": "Tower of Courage Level",
+    "15": "Tower of Strength Level",
+    "16": "Tower of Wisdom Level",
+    "17": "Golden Tower",
+    "18": "Tiny Mouses Minigame",
+    "19": "Outro Scene Level",
+    "1B": "Purified Large Mine Underground",
+    "1E": "Purified Kujara Ranch Area",
+    "1F": "Purified Kujara Ranch Summit",
+    "20": "Purified Donglin Forest",
+    "21": "Purified Circus Village",
+    "22": "Purified Water Temple",
+    "24": "Large Mine Underground Uncursing Sequence",
+    "25": "Kujara Ranch Uncursing Sequence",
+    "26": "Donglin Forest Uncursing Sequence",
+    "27": "Circus Village Uncursing Sequence",
+    "28": "Water Temple Uncursing Sequence"
+  },
+  "slots": {
+    "00:0": "23d40929855a29ac",
+    "00:1": "98b171f58f4e0c1a",
+    "00:2": "95b74bba1d205999",
+    "00:3": "f098f7cc6db7159a",
+    "00:4": "1eaa644b9e74bf30",
+    "00:5": "d8edc810e071fce9",
+    "00:6": "acf6ad7996046322",
+    "00:7": "c731935bba29dc41",
+    "00:8": "e16d16ecd338b132",
+    "00:9": "0fdc8ec7085e2f7a",
+    "00:10": "3567ce26a021f799",
+    "00:11": "9abf58d161c38f15",
+    "00:12": "f25637ccec3ec52a",
+    "01:0": "23d40929855a29ac",
+    "01:1": "98b171f58f4e0c1a",
+    "01:2": "95b74bba1d205999",
+    "01:3": "f098f7cc6db7159a",
+    "01:4": "1eaa644b9e74bf30",
+    "01:5": "d8edc810e071fce9",
+    "01:6": "acf6ad7996046322",
+    "01:7": "c731935bba29dc41",
+    "01:8": "e16d16ecd338b132",
+    "01:9": "0fdc8ec7085e2f7a",
+    "01:10": "3567ce26a021f799",
+    "01:11": "9abf58d161c38f15",
+    "01:12": "f25637ccec3ec52a",
+    "02:0": "23d40929855a29ac",
+    "02:1": "98b171f58f4e0c1a",
+    "02:2": "95b74bba1d205999",
+    "02:3": "f098f7cc6db7159a",
+    "02:4": "1eaa644b9e74bf30",
+    "02:5": "d8edc810e071fce9",
+    "02:6": "acf6ad7996046322",
+    "02:7": "c731935bba29dc41",
+    "02:8": "e16d16ecd338b132",
+    "02:9": "0fdc8ec7085e2f7a",
+    "02:10": "3567ce26a021f799",
+    "02:11": "9abf58d161c38f15",
+    "02:12": "f25637ccec3ec52a",
+    "03:0": "23d40929855a29ac",
+    "03:1": "98b171f58f4e0c1a",
+    "03:2": "95b74bba1d205999",
+    "03:3": "f098f7cc6db7159a",
+    "03:4": "1eaa644b9e74bf30",
+    "03:5": "d8edc810e071fce9",
+    "03:6": "acf6ad7996046322",
+    "03:7": "c731935bba29dc41",
+    "03:8": "e16d16ecd338b132",
+    "03:9": "0fdc8ec7085e2f7a",
+    "03:10": "3567ce26a021f799",
+    "03:11": "9abf58d161c38f15",
+    "03:12": "f25637ccec3ec52a",
+    "04:0": "23d40929855a29ac",
+    "04:1": "98b171f58f4e0c1a",
+    "04:2": "95b74bba1d205999",
+    "04:3": "f098f7cc6db7159a",
+    "04:4": "1eaa644b9e74bf30",
+    "04:5": "d8edc810e071fce9",
+    "04:6": "acf6ad7996046322",
+    "04:7": "c731935bba29dc41",
+    "04:8": "e16d16ecd338b132",
+    "04:9": "0fdc8ec7085e2f7a",
+    "04:10": "3567ce26a021f799",
+    "04:11": "9abf58d161c38f15",
+    "04:12": "f25637ccec3ec52a",
+    "04:13": "9ef55c69acc077a2",
+    "04:14": "4f7cf3f62f2dc490",
+    "04:15": "ebf0b626cc6bf3d3",
+    "04:16": "57a78c4cf3b72ac7",
+    "04:17": "97927b07542e1d3a",
+    "04:18": "8aff9a43e0f8516e",
+    "04:19": "333bdbba20103134",
+    "04:20": "b17fab05dadcabd1",
+    "04:21": "8ab56588ec9759d6",
+    "04:22": "d2894ae7b323ba1a",
+    "04:23": "6ee8b7d035f4e18e",
+    "04:24": "e4b291050f5579e9",
+    "05:0": "23d40929855a29ac",
+    "05:1": "98b171f58f4e0c1a",
+    "05:2": "95b74bba1d205999",
+    "05:3": "f098f7cc6db7159a",
+    "05:4": "1eaa644b9e74bf30",
+    "05:5": "d8edc810e071fce9",
+    "05:6": "acf6ad7996046322",
+    "05:7": "c731935bba29dc41",
+    "05:8": "e16d16ecd338b132",
+    "05:9": "0fdc8ec7085e2f7a",
+    "05:10": "3567ce26a021f799",
+    "05:11": "9abf58d161c38f15",
+    "05:12": "f25637ccec3ec52a",
+    "05:13": "4feb92b07a28fccf",
+    "05:14": "12dd5a3aa955a699",
+    "05:15": "2bf8271f30be44de",
+    "05:16": "85ef91201cc72226",
+    "05:17": "cc8ed6d34828e9af",
+    "05:18": "800903774e14fef7",
+    "05:19": "7c2cfe392765d7bb",
+    "05:20": "d2894ae7b323ba1a",
+    "05:21": "6ee8b7d035f4e18e",
+    "05:22": "f8312566b0c0270a",
+    "06:0": "23d40929855a29ac",
+    "06:1": "98b171f58f4e0c1a",
+    "06:2": "95b74bba1d205999",
+    "06:3": "f098f7cc6db7159a",
+    "06:4": "1eaa644b9e74bf30",
+    "06:5": "d8edc810e071fce9",
+    "06:6": "acf6ad7996046322",
+    "06:7": "c731935bba29dc41",
+    "06:8": "e16d16ecd338b132",
+    "06:9": "0fdc8ec7085e2f7a",
+    "06:10": "3567ce26a021f799",
+    "06:11": "9abf58d161c38f15",
+    "06:12": "f25637ccec3ec52a",
+    "06:13": "a0b1e8cfffcaaf4b",
+    "06:14": "fc6afeeab85ee1fd",
+    "06:15": "85ef91201cc72226",
+    "06:16": "973216a247328ca3",
+    "06:17": "b9ad6e76bad5023a",
+    "06:18": "c068a66c9af6326b",
+    "06:19": "9c6039e6c657f92a",
+    "07:0": "23d40929855a29ac",
+    "07:1": "98b171f58f4e0c1a",
+    "07:2": "95b74bba1d205999",
+    "07:3": "f098f7cc6db7159a",
+    "07:4": "1eaa644b9e74bf30",
+    "07:5": "d8edc810e071fce9",
+    "07:6": "acf6ad7996046322",
+    "07:7": "c731935bba29dc41",
+    "07:8": "e16d16ecd338b132",
+    "07:9": "0fdc8ec7085e2f7a",
+    "07:10": "3567ce26a021f799",
+    "07:11": "9abf58d161c38f15",
+    "07:12": "f25637ccec3ec52a",
+    "08:0": "23d40929855a29ac",
+    "08:1": "98b171f58f4e0c1a",
+    "08:2": "95b74bba1d205999",
+    "08:3": "f098f7cc6db7159a",
+    "08:4": "1eaa644b9e74bf30",
+    "08:5": "d8edc810e071fce9",
+    "08:6": "acf6ad7996046322",
+    "08:7": "c731935bba29dc41",
+    "08:8": "e16d16ecd338b132",
+    "08:9": "0fdc8ec7085e2f7a",
+    "08:10": "3567ce26a021f799",
+    "08:11": "9abf58d161c38f15",
+    "08:12": "f25637ccec3ec52a",
+    "08:13": "0e688f1a7f5094e4",
+    "08:14": "ba1f049d935a29a0",
+    "08:15": "9dc884743d70d9a3",
+    "08:16": "c3d3ffdaf9839cab",
+    "08:17": "8a3714abc4c46d28",
+    "08:18": "38c086b2dfee14b4",
+    "08:19": "246ed6fd61ec8d95",
+    "08:20": "892012057e53ffaa",
+    "08:21": "ffa763fbe95c4779",
+    "08:22": "a79583d54ab65ddd",
+    "08:23": "3c8a0d2141c4248f",
+    "08:24": "24a505904c02427c",
+    "08:25": "22676434bf673762",
+    "08:26": "1eb6067f192be6e9",
+    "08:27": "ff1a32aaca492b40",
+    "08:28": "f20e6953ae2cf393",
+    "08:29": "132e6dca59661988",
+    "08:30": "7c2cfe392765d7bb",
+    "08:31": "d88997c5b607e695",
+    "08:32": "9d0b7249f7b19cb2",
+    "08:33": "fb1c99085651a452",
+    "08:34": "b1796c003c548c63",
+    "08:35": "ea2d071ebb039222",
+    "09:0": "23d40929855a29ac",
+    "09:1": "98b171f58f4e0c1a",
+    "09:2": "95b74bba1d205999",
+    "09:3": "f098f7cc6db7159a",
+    "09:4": "1eaa644b9e74bf30",
+    "09:5": "d8edc810e071fce9",
+    "09:6": "acf6ad7996046322",
+    "09:7": "c731935bba29dc41",
+    "09:8": "e16d16ecd338b132",
+    "09:9": "0fdc8ec7085e2f7a",
+    "09:10": "3567ce26a021f799",
+    "09:11": "9abf58d161c38f15",
+    "09:12": "f25637ccec3ec52a",
+    "09:13": "9d1cf4f5f6a6fcc7",
+    "09:14": "4acd601090a5df3c",
+    "09:15": "5f86f87a9b7f5986",
+    "09:16": "945e441ebaae2039",
+    "09:17": "3e86040bbdc298d6",
+    "09:18": "a7f6779117bb3cb5",
+    "09:19": "318bb00b260655b2",
+    "09:20": "3158e4c242f51eed",
+    "09:21": "0cec5d651d395c83",
+    "09:22": "3eb82899297c0153",
+    "09:23": "5778094a8213a4b1",
+    "09:24": "7ed9178a4802cfec",
+    "09:25": "181812f775f4b061",
+    "09:26": "4aa9b6cd71e87819",
+    "09:27": "d2894ae7b323ba1a",
+    "09:28": "6ee8b7d035f4e18e",
+    "09:29": "a0706d1c76e83971",
+    "0A:0": "23d40929855a29ac",
+    "0A:1": "98b171f58f4e0c1a",
+    "0A:2": "95b74bba1d205999",
+    "0A:3": "f098f7cc6db7159a",
+    "0A:4": "1eaa644b9e74bf30",
+    "0A:5": "d8edc810e071fce9",
+    "0A:6": "acf6ad7996046322",
+    "0A:7": "c731935bba29dc41",
+    "0A:8": "e16d16ecd338b132",
+    "0A:9": "0fdc8ec7085e2f7a",
+    "0A:10": "3567ce26a021f799",
+    "0A:11": "9abf58d161c38f15",
+    "0A:12": "f25637ccec3ec52a",
+    "0A:13": "cf7084e30e139d3e",
+    "0A:14": "d0612476aaecb649",
+    "0A:15": "6122175a61d74691",
+    "0A:16": "a42cf0ab4ba39fe4",
+    "0A:17": "a14dbd8d582759dd",
+    "0A:18": "aef02416db9d0e56",
+    "0A:19": "b1019b62ac52abfd",
+    "0A:20": "a285acb311c1a42c",
+    "0A:21": "3a31d45077fde4ed",
+    "0A:22": "00dc535b8b4a1757",
+    "0A:23": "7c2cfe392765d7bb",
+    "0A:24": "776f935a8e8fb80b",
+    "0A:25": "8098680fb1875b83",
+    "0B:0": "23d40929855a29ac",
+    "0B:1": "98b171f58f4e0c1a",
+    "0B:2": "95b74bba1d205999",
+    "0B:3": "f098f7cc6db7159a",
+    "0B:4": "1eaa644b9e74bf30",
+    "0B:5": "d8edc810e071fce9",
+    "0B:6": "acf6ad7996046322",
+    "0B:7": "c731935bba29dc41",
+    "0B:8": "e16d16ecd338b132",
+    "0B:9": "0fdc8ec7085e2f7a",
+    "0B:10": "3567ce26a021f799",
+    "0B:11": "9abf58d161c38f15",
+    "0B:12": "f25637ccec3ec52a",
+    "0B:13": "ca1b8b9449b7cda2",
+    "0B:14": "76cc551a3cf7860d",
+    "0B:15": "72cccdc8bdc65a5a",
+    "0B:16": "65d8390f3e23cd1d",
+    "0B:17": "eca5d5ddb9560453",
+    "0B:18": "ba5e94bdb58e8c1e",
+    "0B:19": "dc8a2e808b88e35b",
+    "0B:20": "b24c613abb4d5176",
+    "0B:21": "f9c69456d61c4d56",
+    "0B:22": "24ca1dc5be99cf69",
+    "0B:23": "00b2f9dcefa296ea",
+    "0B:24": "84f362db85795859",
+    "0B:25": "7c2cfe392765d7bb",
+    "0B:26": "f25637ccec3ec52a",
+    "0B:27": "7fde7376e4b45199",
+    "0B:28": "374f95ff4c01a734",
+    "0C:0": "23d40929855a29ac",
+    "0C:1": "98b171f58f4e0c1a",
+    "0C:2": "95b74bba1d205999",
+    "0C:3": "f098f7cc6db7159a",
+    "0C:4": "1eaa644b9e74bf30",
+    "0C:5": "d8edc810e071fce9",
+    "0C:6": "acf6ad7996046322",
+    "0C:7": "c731935bba29dc41",
+    "0C:8": "e16d16ecd338b132",
+    "0C:9": "0fdc8ec7085e2f7a",
+    "0C:10": "3567ce26a021f799",
+    "0C:11": "9abf58d161c38f15",
+    "0C:12": "f25637ccec3ec52a",
+    "0C:13": "d077815b3df52c8d",
+    "0C:14": "7b2fd7a2b0abed0f",
+    "0C:15": "fcd12d8e963c7da1",
+    "0C:16": "bc6bb4444038453a",
+    "0C:17": "4dcbec67640e66dc",
+    "0C:18": "ccd09a2703d9eec9",
+    "0C:19": "dcc545ca02661723",
+    "0C:20": "8f46689662c5905d",
+    "0C:21": "6ee8b7d035f4e18e",
+    "0C:22": "d28ca31ca961d68e",
+    "0C:23": "c6399f670d88f916",
+    "0C:24": "7c2cfe392765d7bb",
+    "0C:25": "d077815b3df52c8d",
+    "0C:26": "ff5f775921d95d80",
+    "0C:28": "ea2279e9510e576e",
+    "0D:0": "23d40929855a29ac",
+    "0D:1": "98b171f58f4e0c1a",
+    "0D:2": "95b74bba1d205999",
+    "0D:3": "f098f7cc6db7159a",
+    "0D:4": "1eaa644b9e74bf30",
+    "0D:5": "d8edc810e071fce9",
+    "0D:6": "acf6ad7996046322",
+    "0D:7": "c731935bba29dc41",
+    "0D:8": "e16d16ecd338b132",
+    "0D:9": "0fdc8ec7085e2f7a",
+    "0D:10": "3567ce26a021f799",
+    "0D:11": "9abf58d161c38f15",
+    "0D:12": "f25637ccec3ec52a",
+    "0E:0": "23d40929855a29ac",
+    "0E:1": "98b171f58f4e0c1a",
+    "0E:2": "95b74bba1d205999",
+    "0E:3": "f098f7cc6db7159a",
+    "0E:4": "1eaa644b9e74bf30",
+    "0E:5": "d8edc810e071fce9",
+    "0E:6": "acf6ad7996046322",
+    "0E:7": "c731935bba29dc41",
+    "0E:8": "e16d16ecd338b132",
+    "0E:9": "0fdc8ec7085e2f7a",
+    "0E:10": "3567ce26a021f799",
+    "0E:11": "9abf58d161c38f15",
+    "0E:12": "f25637ccec3ec52a",
+    "0F:0": "23d40929855a29ac",
+    "0F:1": "98b171f58f4e0c1a",
+    "0F:2": "95b74bba1d205999",
+    "0F:3": "f098f7cc6db7159a",
+    "0F:4": "1eaa644b9e74bf30",
+    "0F:5": "d8edc810e071fce9",
+    "0F:6": "acf6ad7996046322",
+    "0F:7": "c731935bba29dc41",
+    "0F:8": "e16d16ecd338b132",
+    "0F:9": "0fdc8ec7085e2f7a",
+    "0F:10": "3567ce26a021f799",
+    "0F:11": "9abf58d161c38f15",
+    "0F:12": "f25637ccec3ec52a",
+    "10:0": "23d40929855a29ac",
+    "10:1": "98b171f58f4e0c1a",
+    "10:2": "95b74bba1d205999",
+    "10:3": "f098f7cc6db7159a",
+    "10:4": "1eaa644b9e74bf30",
+    "10:5": "d8edc810e071fce9",
+    "10:6": "acf6ad7996046322",
+    "10:7": "c731935bba29dc41",
+    "10:8": "e16d16ecd338b132",
+    "10:9": "0fdc8ec7085e2f7a",
+    "10:10": "3567ce26a021f799",
+    "10:11": "9abf58d161c38f15",
+    "10:12": "f25637ccec3ec52a",
+    "11:0": "23d40929855a29ac",
+    "11:1": "98b171f58f4e0c1a",
+    "11:2": "95b74bba1d205999",
+    "11:3": "f098f7cc6db7159a",
+    "11:4": "1eaa644b9e74bf30",
+    "11:5": "d8edc810e071fce9",
+    "11:6": "acf6ad7996046322",
+    "11:7": "c731935bba29dc41",
+    "11:8": "e16d16ecd338b132",
+    "11:9": "0fdc8ec7085e2f7a",
+    "11:10": "3567ce26a021f799",
+    "11:11": "9abf58d161c38f15",
+    "11:12": "f25637ccec3ec52a",
+    "12:0": "23d40929855a29ac",
+    "12:1": "98b171f58f4e0c1a",
+    "12:2": "95b74bba1d205999",
+    "12:3": "f098f7cc6db7159a",
+    "12:4": "1eaa644b9e74bf30",
+    "12:5": "d8edc810e071fce9",
+    "12:6": "acf6ad7996046322",
+    "12:7": "c731935bba29dc41",
+    "12:8": "e16d16ecd338b132",
+    "12:9": "0fdc8ec7085e2f7a",
+    "12:10": "3567ce26a021f799",
+    "12:11": "9abf58d161c38f15",
+    "12:12": "f25637ccec3ec52a",
+    "13:0": "23d40929855a29ac",
+    "13:1": "98b171f58f4e0c1a",
+    "13:2": "95b74bba1d205999",
+    "13:3": "f098f7cc6db7159a",
+    "13:4": "1eaa644b9e74bf30",
+    "13:5": "d8edc810e071fce9",
+    "13:6": "acf6ad7996046322",
+    "13:7": "c731935bba29dc41",
+    "13:8": "e16d16ecd338b132",
+    "13:9": "0fdc8ec7085e2f7a",
+    "13:10": "3567ce26a021f799",
+    "13:11": "9abf58d161c38f15",
+    "13:12": "f25637ccec3ec52a",
+    "14:0": "23d40929855a29ac",
+    "14:1": "98b171f58f4e0c1a",
+    "14:2": "95b74bba1d205999",
+    "14:3": "f098f7cc6db7159a",
+    "14:4": "1eaa644b9e74bf30",
+    "14:5": "d8edc810e071fce9",
+    "14:6": "acf6ad7996046322",
+    "14:7": "c731935bba29dc41",
+    "14:8": "e16d16ecd338b132",
+    "14:9": "0fdc8ec7085e2f7a",
+    "14:10": "3567ce26a021f799",
+    "14:11": "9abf58d161c38f15",
+    "14:12": "f25637ccec3ec52a",
+    "15:0": "23d40929855a29ac",
+    "15:1": "98b171f58f4e0c1a",
+    "15:2": "95b74bba1d205999",
+    "15:3": "f098f7cc6db7159a",
+    "15:4": "1eaa644b9e74bf30",
+    "15:5": "d8edc810e071fce9",
+    "15:6": "acf6ad7996046322",
+    "15:7": "c731935bba29dc41",
+    "15:8": "e16d16ecd338b132",
+    "15:9": "0fdc8ec7085e2f7a",
+    "15:10": "3567ce26a021f799",
+    "15:11": "9abf58d161c38f15",
+    "15:12": "f25637ccec3ec52a",
+    "16:0": "23d40929855a29ac",
+    "16:1": "98b171f58f4e0c1a",
+    "16:2": "95b74bba1d205999",
+    "16:3": "f098f7cc6db7159a",
+    "16:4": "1eaa644b9e74bf30",
+    "16:5": "d8edc810e071fce9",
+    "16:6": "acf6ad7996046322",
+    "16:7": "c731935bba29dc41",
+    "16:8": "e16d16ecd338b132",
+    "16:9": "0fdc8ec7085e2f7a",
+    "16:10": "3567ce26a021f799",
+    "16:11": "9abf58d161c38f15",
+    "16:12": "f25637ccec3ec52a",
+    "17:0": "23d40929855a29ac",
+    "17:1": "98b171f58f4e0c1a",
+    "17:2": "95b74bba1d205999",
+    "17:3": "f098f7cc6db7159a",
+    "17:4": "1eaa644b9e74bf30",
+    "17:5": "d8edc810e071fce9",
+    "17:6": "acf6ad7996046322",
+    "17:7": "c731935bba29dc41",
+    "17:8": "e16d16ecd338b132",
+    "17:9": "0fdc8ec7085e2f7a",
+    "17:10": "3567ce26a021f799",
+    "17:11": "9abf58d161c38f15",
+    "17:12": "f25637ccec3ec52a",
+    "18:0": "23d40929855a29ac",
+    "18:1": "98b171f58f4e0c1a",
+    "18:2": "95b74bba1d205999",
+    "18:3": "f098f7cc6db7159a",
+    "18:4": "1eaa644b9e74bf30",
+    "18:5": "d8edc810e071fce9",
+    "18:6": "acf6ad7996046322",
+    "18:7": "c731935bba29dc41",
+    "18:8": "e16d16ecd338b132",
+    "18:9": "0fdc8ec7085e2f7a",
+    "18:10": "3567ce26a021f799",
+    "18:11": "9abf58d161c38f15",
+    "18:12": "f25637ccec3ec52a",
+    "19:0": "23d40929855a29ac",
+    "19:1": "98b171f58f4e0c1a",
+    "19:2": "95b74bba1d205999",
+    "19:3": "f098f7cc6db7159a",
+    "19:4": "1eaa644b9e74bf30",
+    "19:5": "d8edc810e071fce9",
+    "19:6": "acf6ad7996046322",
+    "19:7": "c731935bba29dc41",
+    "19:8": "e16d16ecd338b132",
+    "19:9": "0fdc8ec7085e2f7a",
+    "19:10": "3567ce26a021f799",
+    "19:11": "9abf58d161c38f15",
+    "19:12": "f25637ccec3ec52a",
+    "19:13": "50e56e3f5d7829b5",
+    "19:14": "f2267281c773d565",
+    "19:15": "175a2a2c8d020bd4",
+    "19:16": "f13ad5cf812adf18",
+    "19:17": "1ce9e3f33f184c4f",
+    "19:18": "d9abf25f700f4b02",
+    "19:19": "6bfa92b6a283f903",
+    "19:20": "660508c7128b053e",
+    "19:21": "24ca1dc5be99cf69",
+    "19:22": "69d30235c6f06c57",
+    "19:23": "7a23e8955c353c49",
+    "19:24": "ee0e2f6c70888abc",
+    "19:25": "0efe9a5b93f02925",
+    "19:26": "9abf58d161c38f15",
+    "19:27": "ccb40fa58cebdf29",
+    "19:28": "8c38174b7a1ecc04",
+    "1A:0": "23d40929855a29ac",
+    "1A:1": "98b171f58f4e0c1a",
+    "1A:2": "95b74bba1d205999",
+    "1A:3": "f098f7cc6db7159a",
+    "1A:4": "1eaa644b9e74bf30",
+    "1A:5": "d8edc810e071fce9",
+    "1A:6": "acf6ad7996046322",
+    "1A:7": "c731935bba29dc41",
+    "1A:8": "e16d16ecd338b132",
+    "1A:9": "0fdc8ec7085e2f7a",
+    "1A:10": "3567ce26a021f799",
+    "1A:11": "9abf58d161c38f15",
+    "1A:12": "f25637ccec3ec52a",
+    "1B:0": "23d40929855a29ac",
+    "1B:1": "98b171f58f4e0c1a",
+    "1B:2": "95b74bba1d205999",
+    "1B:3": "f098f7cc6db7159a",
+    "1B:4": "1eaa644b9e74bf30",
+    "1B:5": "d8edc810e071fce9",
+    "1B:6": "acf6ad7996046322",
+    "1B:7": "c731935bba29dc41",
+    "1B:8": "e16d16ecd338b132",
+    "1B:9": "0fdc8ec7085e2f7a",
+    "1B:10": "3567ce26a021f799",
+    "1B:11": "9abf58d161c38f15",
+    "1B:12": "f25637ccec3ec52a",
+    "1B:13": "4feb92b07a28fccf",
+    "1B:15": "12dd5a3aa955a699",
+    "1B:16": "2bf8271f30be44de",
+    "1B:17": "85ef91201cc72226",
+    "1B:18": "cc8ed6d34828e9af",
+    "1B:19": "800903774e14fef7",
+    "1B:20": "7c2cfe392765d7bb",
+    "1B:21": "d2894ae7b323ba1a",
+    "1B:22": "6ee8b7d035f4e18e",
+    "1B:23": "5fe7ece92f1b6e5d",
+    "1B:24": "3619a9801e512be6",
+    "1B:25": "336f41397b4cb515",
+    "1B:26": "4125867989c20d7e",
+    "1B:27": "04df466c3b049b37",
+    "1C:0": "23d40929855a29ac",
+    "1C:1": "98b171f58f4e0c1a",
+    "1C:2": "95b74bba1d205999",
+    "1C:3": "f098f7cc6db7159a",
+    "1C:4": "1eaa644b9e74bf30",
+    "1C:5": "d8edc810e071fce9",
+    "1C:6": "acf6ad7996046322",
+    "1C:7": "c731935bba29dc41",
+    "1C:8": "e16d16ecd338b132",
+    "1C:9": "0fdc8ec7085e2f7a",
+    "1C:10": "3567ce26a021f799",
+    "1C:11": "9abf58d161c38f15",
+    "1C:12": "f25637ccec3ec52a",
+    "1C:13": "a0b1e8cfffcaaf4b",
+    "1C:14": "fc6afeeab85ee1fd",
+    "1C:15": "85ef91201cc72226",
+    "1C:16": "973216a247328ca3",
+    "1C:17": "b9ad6e76bad5023a",
+    "1C:18": "c068a66c9af6326b",
+    "1C:19": "4805a346f0de0f18",
+    "1D:0": "23d40929855a29ac",
+    "1D:1": "98b171f58f4e0c1a",
+    "1D:2": "95b74bba1d205999",
+    "1D:3": "f098f7cc6db7159a",
+    "1D:4": "1eaa644b9e74bf30",
+    "1D:5": "d8edc810e071fce9",
+    "1D:6": "acf6ad7996046322",
+    "1D:7": "c731935bba29dc41",
+    "1D:8": "e16d16ecd338b132",
+    "1D:9": "0fdc8ec7085e2f7a",
+    "1D:10": "3567ce26a021f799",
+    "1D:11": "9abf58d161c38f15",
+    "1D:12": "f25637ccec3ec52a",
+    "1E:0": "23d40929855a29ac",
+    "1E:1": "98b171f58f4e0c1a",
+    "1E:2": "95b74bba1d205999",
+    "1E:3": "f098f7cc6db7159a",
+    "1E:4": "1eaa644b9e74bf30",
+    "1E:5": "d8edc810e071fce9",
+    "1E:6": "acf6ad7996046322",
+    "1E:7": "c731935bba29dc41",
+    "1E:8": "e16d16ecd338b132",
+    "1E:9": "0fdc8ec7085e2f7a",
+    "1E:10": "3567ce26a021f799",
+    "1E:11": "9abf58d161c38f15",
+    "1E:12": "f25637ccec3ec52a",
+    "1E:13": "0e688f1a7f5094e4",
+    "1E:14": "97f31736a1e8918a",
+    "1E:15": "9dc884743d70d9a3",
+    "1E:16": "1ee289a6eb9c3488",
+    "1E:17": "fa6a289e4cce2aee",
+    "1E:18": "61397ba644884313",
+    "1E:19": "f8c64b463e7be2cd",
+    "1E:20": "580f35471f52e4f5",
+    "1E:21": "2e65f934763dfd62",
+    "1E:22": "a79583d54ab65ddd",
+    "1E:23": "b25cb541f52f4b2a",
+    "1E:24": "3c9821519d55ae59",
+    "1E:25": "0047526670de8987",
+    "1E:26": "107c967fb8dc426c",
+    "1E:27": "ff1a32aaca492b40",
+    "1E:28": "f20e6953ae2cf393",
+    "1E:29": "132e6dca59661988",
+    "1E:30": "7c2cfe392765d7bb",
+    "1E:31": "4996c633de51270e",
+    "1E:32": "9d0b7249f7b19cb2",
+    "1E:33": "0ca82520e86df3ec",
+    "1E:34": "b1796c003c548c63",
+    "1E:35": "2a22e85d48c2515c",
+    "1E:36": "1f6c7c6f54279c10",
+    "1F:0": "23d40929855a29ac",
+    "1F:1": "98b171f58f4e0c1a",
+    "1F:2": "95b74bba1d205999",
+    "1F:3": "f098f7cc6db7159a",
+    "1F:4": "1eaa644b9e74bf30",
+    "1F:5": "d8edc810e071fce9",
+    "1F:6": "acf6ad7996046322",
+    "1F:7": "c731935bba29dc41",
+    "1F:8": "e16d16ecd338b132",
+    "1F:9": "0fdc8ec7085e2f7a",
+    "1F:10": "3567ce26a021f799",
+    "1F:11": "9abf58d161c38f15",
+    "1F:12": "f25637ccec3ec52a",
+    "1F:13": "12e0d2aaaa607726",
+    "1F:14": "348c7364a93b3014",
+    "1F:15": "ae3f151709134add",
+    "1F:16": "13c5fa287ffa523a",
+    "1F:17": "3e86040bbdc298d6",
+    "1F:18": "24c50bba14f30e04",
+    "1F:19": "996cf550e5bd9b06",
+    "1F:20": "acda17978d89505b",
+    "1F:21": "f83be000b9a8cf30",
+    "1F:22": "e5939ae7247d3749",
+    "1F:23": "5778094a8213a4b1",
+    "1F:24": "38d25a8ee7f53390",
+    "1F:25": "797eeec58d83ff7d",
+    "1F:26": "4aa9b6cd71e87819",
+    "1F:27": "d2894ae7b323ba1a",
+    "1F:28": "6ee8b7d035f4e18e",
+    "1F:29": "a806c649f2120b8c",
+    "20:0": "23d40929855a29ac",
+    "20:1": "98b171f58f4e0c1a",
+    "20:2": "95b74bba1d205999",
+    "20:3": "f098f7cc6db7159a",
+    "20:4": "1eaa644b9e74bf30",
+    "20:5": "d8edc810e071fce9",
+    "20:6": "acf6ad7996046322",
+    "20:7": "c731935bba29dc41",
+    "20:8": "e16d16ecd338b132",
+    "20:9": "0fdc8ec7085e2f7a",
+    "20:10": "3567ce26a021f799",
+    "20:11": "9abf58d161c38f15",
+    "20:12": "f25637ccec3ec52a",
+    "20:13": "cf7084e30e139d3e",
+    "20:14": "d0612476aaecb649",
+    "20:15": "6122175a61d74691",
+    "20:16": "a42cf0ab4ba39fe4",
+    "20:17": "5ce378bb37312621",
+    "20:18": "aef02416db9d0e56",
+    "20:19": "b1019b62ac52abfd",
+    "20:22": "00dc535b8b4a1757",
+    "20:23": "7c2cfe392765d7bb",
+    "20:25": "1b53feec805b4bf3",
+    "21:0": "23d40929855a29ac",
+    "21:1": "98b171f58f4e0c1a",
+    "21:2": "95b74bba1d205999",
+    "21:3": "f098f7cc6db7159a",
+    "21:4": "1eaa644b9e74bf30",
+    "21:5": "d8edc810e071fce9",
+    "21:6": "acf6ad7996046322",
+    "21:7": "c731935bba29dc41",
+    "21:8": "e16d16ecd338b132",
+    "21:9": "0fdc8ec7085e2f7a",
+    "21:10": "3567ce26a021f799",
+    "21:11": "9abf58d161c38f15",
+    "21:12": "f25637ccec3ec52a",
+    "21:13": "860dcb805635d8a2",
+    "21:14": "a89260cad95782e5",
+    "21:15": "72cccdc8bdc65a5a",
+    "21:16": "65d8390f3e23cd1d",
+    "21:17": "eca5d5ddb9560453",
+    "21:18": "ba5e94bdb58e8c1e",
+    "21:19": "dc8a2e808b88e35b",
+    "21:20": "b24c613abb4d5176",
+    "21:21": "f9c69456d61c4d56",
+    "21:22": "24ca1dc5be99cf69",
+    "21:23": "00b2f9dcefa296ea",
+    "21:24": "84f362db85795859",
+    "21:25": "7c2cfe392765d7bb",
+    "21:26": "f25637ccec3ec52a",
+    "21:27": "7fde7376e4b45199",
+    "21:28": "71f210265693f7c9",
+    "22:0": "23d40929855a29ac",
+    "22:1": "98b171f58f4e0c1a",
+    "22:2": "95b74bba1d205999",
+    "22:3": "f098f7cc6db7159a",
+    "22:4": "1eaa644b9e74bf30",
+    "22:5": "d8edc810e071fce9",
+    "22:6": "acf6ad7996046322",
+    "22:7": "c731935bba29dc41",
+    "22:8": "e16d16ecd338b132",
+    "22:9": "0fdc8ec7085e2f7a",
+    "22:10": "3567ce26a021f799",
+    "22:11": "9abf58d161c38f15",
+    "22:12": "f25637ccec3ec52a",
+    "22:13": "d077815b3df52c8d",
+    "22:14": "7b2fd7a2b0abed0f",
+    "22:15": "fcd12d8e963c7da1",
+    "22:16": "bc6bb4444038453a",
+    "22:17": "166545bdd634a852",
+    "22:18": "d4bbbf00beb17682",
+    "22:19": "ed5268d9dd1827b3",
+    "22:20": "c13996faa57ddf49",
+    "22:21": "6ee8b7d035f4e18e",
+    "22:22": "d28ca31ca961d68e",
+    "22:23": "c6399f670d88f916",
+    "22:24": "7c2cfe392765d7bb",
+    "22:25": "d077815b3df52c8d",
+    "22:26": "ff5f775921d95d80",
+    "22:28": "0ad99ea47cedb569",
+    "23:0": "23d40929855a29ac",
+    "23:1": "98b171f58f4e0c1a",
+    "23:2": "95b74bba1d205999",
+    "23:3": "f098f7cc6db7159a",
+    "23:4": "1eaa644b9e74bf30",
+    "23:5": "d8edc810e071fce9",
+    "23:6": "acf6ad7996046322",
+    "23:7": "c731935bba29dc41",
+    "23:8": "e16d16ecd338b132",
+    "23:9": "0fdc8ec7085e2f7a",
+    "23:10": "3567ce26a021f799",
+    "23:11": "9abf58d161c38f15",
+    "23:12": "f25637ccec3ec52a",
+    "24:0": "23d40929855a29ac",
+    "24:1": "98b171f58f4e0c1a",
+    "24:2": "95b74bba1d205999",
+    "24:3": "f098f7cc6db7159a",
+    "24:4": "1eaa644b9e74bf30",
+    "24:5": "d8edc810e071fce9",
+    "24:6": "acf6ad7996046322",
+    "24:7": "c731935bba29dc41",
+    "24:8": "e16d16ecd338b132",
+    "24:9": "0fdc8ec7085e2f7a",
+    "24:10": "3567ce26a021f799",
+    "24:11": "9abf58d161c38f15",
+    "24:12": "f25637ccec3ec52a",
+    "25:0": "23d40929855a29ac",
+    "25:1": "98b171f58f4e0c1a",
+    "25:2": "95b74bba1d205999",
+    "25:3": "f098f7cc6db7159a",
+    "25:4": "1eaa644b9e74bf30",
+    "25:5": "d8edc810e071fce9",
+    "25:6": "acf6ad7996046322",
+    "25:7": "c731935bba29dc41",
+    "25:8": "e16d16ecd338b132",
+    "25:9": "0fdc8ec7085e2f7a",
+    "25:10": "3567ce26a021f799",
+    "25:11": "9abf58d161c38f15",
+    "25:12": "f25637ccec3ec52a",
+    "26:0": "23d40929855a29ac",
+    "26:1": "98b171f58f4e0c1a",
+    "26:2": "95b74bba1d205999",
+    "26:3": "f098f7cc6db7159a",
+    "26:4": "1eaa644b9e74bf30",
+    "26:5": "d8edc810e071fce9",
+    "26:6": "acf6ad7996046322",
+    "26:7": "c731935bba29dc41",
+    "26:8": "e16d16ecd338b132",
+    "26:9": "0fdc8ec7085e2f7a",
+    "26:10": "3567ce26a021f799",
+    "26:11": "9abf58d161c38f15",
+    "26:12": "f25637ccec3ec52a",
+    "27:0": "23d40929855a29ac",
+    "27:1": "98b171f58f4e0c1a",
+    "27:2": "95b74bba1d205999",
+    "27:3": "f098f7cc6db7159a",
+    "27:4": "1eaa644b9e74bf30",
+    "27:5": "d8edc810e071fce9",
+    "27:6": "acf6ad7996046322",
+    "27:7": "c731935bba29dc41",
+    "27:8": "e16d16ecd338b132",
+    "27:9": "0fdc8ec7085e2f7a",
+    "27:10": "3567ce26a021f799",
+    "27:11": "9abf58d161c38f15",
+    "27:12": "f25637ccec3ec52a",
+    "28:0": "23d40929855a29ac",
+    "28:1": "98b171f58f4e0c1a",
+    "28:2": "95b74bba1d205999",
+    "28:3": "f098f7cc6db7159a",
+    "28:4": "1eaa644b9e74bf30",
+    "28:5": "d8edc810e071fce9",
+    "28:6": "acf6ad7996046322",
+    "28:7": "c731935bba29dc41",
+    "28:8": "e16d16ecd338b132",
+    "28:9": "0fdc8ec7085e2f7a",
+    "28:10": "3567ce26a021f799",
+    "28:11": "9abf58d161c38f15",
+    "28:12": "f25637ccec3ec52a",
+    "29:0": "23d40929855a29ac",
+    "29:1": "98b171f58f4e0c1a",
+    "29:2": "95b74bba1d205999",
+    "29:3": "f098f7cc6db7159a",
+    "29:4": "1eaa644b9e74bf30",
+    "29:5": "d8edc810e071fce9",
+    "29:6": "acf6ad7996046322",
+    "29:7": "c731935bba29dc41",
+    "29:8": "e16d16ecd338b132",
+    "29:9": "0fdc8ec7085e2f7a",
+    "29:10": "3567ce26a021f799",
+    "29:11": "9abf58d161c38f15",
+    "29:12": "f25637ccec3ec52a",
+    "2A:0": "23d40929855a29ac",
+    "2A:1": "98b171f58f4e0c1a",
+    "2A:2": "95b74bba1d205999",
+    "2A:3": "f098f7cc6db7159a",
+    "2A:4": "1eaa644b9e74bf30",
+    "2A:5": "d8edc810e071fce9",
+    "2A:6": "acf6ad7996046322",
+    "2A:7": "c731935bba29dc41",
+    "2A:8": "e16d16ecd338b132",
+    "2A:9": "0fdc8ec7085e2f7a",
+    "2A:10": "3567ce26a021f799",
+    "2A:11": "9abf58d161c38f15",
+    "2A:12": "f25637ccec3ec52a",
+    "2B:0": "23d40929855a29ac",
+    "2B:1": "98b171f58f4e0c1a",
+    "2B:2": "95b74bba1d205999",
+    "2B:3": "f098f7cc6db7159a",
+    "2B:4": "1eaa644b9e74bf30",
+    "2B:5": "d8edc810e071fce9",
+    "2B:6": "acf6ad7996046322",
+    "2B:7": "c731935bba29dc41",
+    "2B:8": "e16d16ecd338b132",
+    "2B:9": "0fdc8ec7085e2f7a",
+    "2B:10": "3567ce26a021f799",
+    "2B:11": "9abf58d161c38f15",
+    "2B:12": "f25637ccec3ec52a",
+    "2C:0": "23d40929855a29ac",
+    "2C:1": "98b171f58f4e0c1a",
+    "2C:2": "95b74bba1d205999",
+    "2C:3": "f098f7cc6db7159a",
+    "2C:4": "1eaa644b9e74bf30",
+    "2C:5": "d8edc810e071fce9",
+    "2C:6": "acf6ad7996046322",
+    "2C:7": "c731935bba29dc41",
+    "2C:8": "e16d16ecd338b132",
+    "2C:9": "0fdc8ec7085e2f7a",
+    "2C:10": "3567ce26a021f799",
+    "2C:11": "9abf58d161c38f15",
+    "2C:12": "f25637ccec3ec52a",
+    "2D:0": "23d40929855a29ac",
+    "2D:1": "98b171f58f4e0c1a",
+    "2D:2": "95b74bba1d205999",
+    "2D:3": "f098f7cc6db7159a",
+    "2D:4": "1eaa644b9e74bf30",
+    "2D:5": "d8edc810e071fce9",
+    "2D:6": "acf6ad7996046322",
+    "2D:7": "c731935bba29dc41",
+    "2D:8": "e16d16ecd338b132",
+    "2D:9": "0fdc8ec7085e2f7a",
+    "2D:10": "3567ce26a021f799",
+    "2D:11": "9abf58d161c38f15",
+    "2D:12": "f25637ccec3ec52a",
+    "2E:0": "23d40929855a29ac",
+    "2E:1": "98b171f58f4e0c1a",
+    "2E:2": "95b74bba1d205999",
+    "2E:3": "f098f7cc6db7159a",
+    "2E:4": "1eaa644b9e74bf30",
+    "2E:5": "d8edc810e071fce9",
+    "2E:6": "acf6ad7996046322",
+    "2E:7": "c731935bba29dc41",
+    "2E:8": "e16d16ecd338b132",
+    "2E:9": "0fdc8ec7085e2f7a",
+    "2E:10": "3567ce26a021f799",
+    "2E:11": "9abf58d161c38f15",
+    "2E:12": "f25637ccec3ec52a",
+    "2F:0": "23d40929855a29ac",
+    "2F:1": "98b171f58f4e0c1a",
+    "2F:2": "95b74bba1d205999",
+    "2F:3": "f098f7cc6db7159a",
+    "2F:4": "1eaa644b9e74bf30",
+    "2F:5": "d8edc810e071fce9",
+    "2F:6": "acf6ad7996046322",
+    "2F:7": "c731935bba29dc41",
+    "2F:8": "e16d16ecd338b132",
+    "2F:9": "0fdc8ec7085e2f7a",
+    "2F:10": "3567ce26a021f799",
+    "2F:11": "9abf58d161c38f15",
+    "2F:12": "f25637ccec3ec52a"
+  },
+  "entries": [
+    {
+      "content": "cf7e1d0bd854dfbb",
+      "start": "000000",
+      "end": "00288F",
+      "type": "SPRP",
+      "name": "Items and GUI Sprites"
+    },
+    {
+      "content": "665e60f81595194e",
+      "start": "002890",
+      "end": "006F0B",
+      "type": "SMST",
+      "name": "Weapon set chests AP box Models"
+    },
+    {
+      "content": "5d446de403dc8daf",
+      "start": "006F0C",
+      "end": "0081D3",
+      "type": "TXTD",
+      "name": "Tutorial and Locations Text"
+    },
+    {
+      "content": "1fd38727ee317f3c",
+      "start": "0081D4",
+      "end": "0091CB",
+      "type": "TXTD",
+      "name": "Inventory and Status Text"
+    },
+    {
+      "content": "2209c9ba91dd052f",
+      "start": "0091CC",
+      "end": "02125F",
+      "type": "ANMP",
+      "name": "Tomba Animation"
+    },
+    {
+      "content": "65f3ede816d01636",
+      "start": "021260",
+      "end": "023A9B",
+      "type": "SMST",
+      "name": "Baron Model"
+    },
+    {
+      "content": "2133f6606ceffb3b",
+      "start": "023A9C",
+      "end": "0247FF",
+      "type": "ANMP",
+      "name": "Baron Animation"
+    },
+    {
+      "content": "b17fab05dadcabd1",
+      "start": "024800",
+      "end": "026307",
+      "type": "SMST",
+      "name": "Zippo Model"
+    },
+    {
+      "content": "8ab56588ec9759d6",
+      "start": "026308",
+      "end": "028A67",
+      "type": "ANMP",
+      "name": "Zippo Animation"
+    },
+    {
+      "content": "9abf58d161c38f15",
+      "start": "028A68",
+      "end": "02B07B",
+      "type": "SMST",
+      "name": "Charles Model"
+    },
+    {
+      "content": "da657be8b7d50e55",
+      "start": "02B07C",
+      "end": "03141F",
+      "type": "MDAT",
+      "name": "Intro Scene Level"
+    },
+    {
+      "content": "867730c8e816b647",
+      "start": "031420",
+      "end": "035613",
+      "type": "SMST",
+      "name": "Intro Tabby Model"
+    },
+    {
+      "content": "195ef68aa3095ca7",
+      "start": "035614",
+      "end": "0364DB",
+      "type": "ANMP",
+      "name": "Intro Tabby Model"
+    },
+    {
+      "content": "7f5f490d0eaf8378",
+      "start": "0364DC",
+      "end": "0364EF",
+      "type": "____",
+      "name": "Intro Scene Sprites"
+    },
+    {
+      "content": "2c47464e681b8ad7",
+      "start": "0364F0",
+      "end": "037FFF",
+      "type": "BGMP",
+      "name": "Intro Scene Background"
+    },
+    {
+      "content": "927305dddbc9e3aa",
+      "start": "038000",
+      "end": "049DA3",
+      "type": "SMST",
+      "name": "Fishermens hut windmill waterplant Models"
+    },
+    {
+      "content": "0e0e8f712c9d69f0",
+      "start": "049DA4",
+      "end": "04AF73",
+      "type": "ANMP",
+      "name": "Ark Animation"
+    },
+    {
+      "content": "db4b69e25709192f",
+      "start": "04AF74",
+      "end": "04D3FB",
+      "type": "____",
+      "name": "Win Animation"
+    },
+    {
+      "content": "825bcd62dc891f03",
+      "start": "04D3FC",
+      "end": "053723",
+      "type": "SCLD",
+      "name": "Town of the Fishermen Collision"
+    },
+    {
+      "content": "25274ace35910b2d",
+      "start": "053724",
+      "end": "075FDB",
+      "type": "MDAT",
+      "name": "Town of the Fishermen Level"
+    },
+    {
+      "content": "f7a931738a15d541",
+      "start": "075FDC",
+      "end": "076A6B",
+      "type": "DRWB",
+      "name": "Town of the Fishermen Drawmap"
+    },
+    {
+      "content": "f25bb309ba0afca4",
+      "start": "076A6C",
+      "end": "0786FB",
+      "type": "SMST",
+      "name": "Seesaw Models"
+    },
+    {
+      "content": "3fd92c77a43cf18e",
+      "start": "0786FC",
+      "end": "078A07",
+      "type": "SPRT",
+      "name": "Town of the Fishermen Sprites"
+    },
+    {
+      "content": "0bdb32de01b3c10f",
+      "start": "078A08",
+      "end": "07B2EB",
+      "type": "TXTD",
+      "name": "Town of the Fishermen Text"
+    },
+    {
+      "content": "2ec95704ad314e4b",
+      "start": "07B2EC",
+      "end": "07F4EF",
+      "type": "SMST",
+      "name": "Koma Pig (Town of the Fishermen) Model"
+    },
+    {
+      "content": "8ec1a0cac52e131c",
+      "start": "07F4F0",
+      "end": "088447",
+      "type": "ANMP",
+      "name": "Koma Pig (Town of the Fishermen) Animation"
+    },
+    {
+      "content": "0e55060be9877a88",
+      "start": "088448",
+      "end": "08AA4B",
+      "type": "SMST",
+      "name": "Kainen Model"
+    },
+    {
+      "content": "45144f26f1bc513a",
+      "start": "08AA4C",
+      "end": "08C3AF",
+      "type": "ANMP",
+      "name": "Kainen Animation"
+    },
+    {
+      "content": "2cc97ec3296ec5ec",
+      "start": "08C3B0",
+      "end": "08E82F",
+      "type": "SMST",
+      "name": "Seagull Model"
+    },
+    {
+      "content": "0648305a7ee2028d",
+      "start": "08E830",
+      "end": "090417",
+      "type": "____",
+      "name": "Seagull Animation"
+    },
+    {
+      "content": "ebf0b626cc6bf3d3",
+      "start": "090418",
+      "end": "0996DF",
+      "type": "SMST",
+      "name": "Asset pack Fishermens Town Models"
+    },
+    {
+      "content": "57a78c4cf3b72ac7",
+      "start": "0996E0",
+      "end": "09B573",
+      "type": "SMST",
+      "name": "Water Pipe Models"
+    },
+    {
+      "content": "97927b07542e1d3a",
+      "start": "09B574",
+      "end": "09D207",
+      "type": "SMST",
+      "name": "Fisherman Model"
+    },
+    {
+      "content": "8aff9a43e0f8516e",
+      "start": "09D208",
+      "end": "09EF8F",
+      "type": "ANMP",
+      "name": "Fisherman Animation"
+    },
+    {
+      "content": "333bdbba20103134",
+      "start": "09EF90",
+      "end": "0A03E7",
+      "type": "BGMP",
+      "name": "Town of Fishermen Background"
+    },
+    {
+      "content": "d2894ae7b323ba1a",
+      "start": "0A4650",
+      "end": "0A541B",
+      "type": "SMST",
+      "name": "Magic Flower Model"
+    },
+    {
+      "content": "6ee8b7d035f4e18e",
+      "start": "0A541C",
+      "end": "0A566F",
+      "type": "ANMP",
+      "name": "Magic Flower Animation"
+    },
+    {
+      "content": "e4b291050f5579e9",
+      "start": "0A5670",
+      "end": "0A57FF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "3fa9b270a1f3d72d",
+      "start": "0A9A68",
+      "end": "0BF7DB",
+      "type": "MDAT",
+      "name": "Large Mine Underground Level"
+    },
+    {
+      "content": "18e13be9e2cf0e77",
+      "start": "0BF7DC",
+      "end": "0DB53F",
+      "type": "SMST",
+      "name": "Asset pack Cursed Large Mine Underground (roomsenemies) Models"
+    },
+    {
+      "content": "31e428c89f69247e",
+      "start": "0DB540",
+      "end": "0E22AF",
+      "type": "____",
+      "name": "Cursed Large Mine Underground Collision"
+    },
+    {
+      "content": "f4890eb841e3f427",
+      "start": "0E22B0",
+      "end": "0E5337",
+      "type": "TXTD",
+      "name": "Large Mine Underground Text"
+    },
+    {
+      "content": "234eba5fa57c04cd",
+      "start": "0E5338",
+      "end": "0E56C3",
+      "type": "____",
+      "name": "Cursed Large Mine Underground Sprites"
+    },
+    {
+      "content": "a79583d54ab65ddd",
+      "start": "0E56C4",
+      "end": "0E7E43",
+      "type": "____",
+      "name": "Sea Anemone Animation"
+    },
+    {
+      "content": "0155c86722e60d02",
+      "start": "0E7E44",
+      "end": "0E932B",
+      "type": "SMST",
+      "name": "Pink Sea Anemone segments (mouth closed) Model"
+    },
+    {
+      "content": "490dfd0ff7a03afc",
+      "start": "0E932C",
+      "end": "0EAA23",
+      "type": "SMST",
+      "name": "Pink Sea Anemone segments (mouth opened var 1) Model"
+    },
+    {
+      "content": "d9bdcc5796d45967",
+      "start": "0EAA24",
+      "end": "0EC71B",
+      "type": "SMST",
+      "name": "Pink Sea Anemone segments (mouth opened var 2) Model"
+    },
+    {
+      "content": "1159a3c89425cf6e",
+      "start": "0EC71C",
+      "end": "0EFB5B",
+      "type": "____",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "508be6178ce526fe",
+      "start": "0EFB5C",
+      "end": "0F1A63",
+      "type": "SMST",
+      "name": "Gran Model"
+    },
+    {
+      "content": "95f331323b7c1343",
+      "start": "0F1A64",
+      "end": "0F3473",
+      "type": "SMST",
+      "name": "Mole Model"
+    },
+    {
+      "content": "12dd5a3aa955a699",
+      "start": "0F3474",
+      "end": "0F5B37",
+      "type": "SMST",
+      "name": "Mining Town Miner 01 and 02 Model"
+    },
+    {
+      "content": "2bf8271f30be44de",
+      "start": "0F5B38",
+      "end": "0F75AB",
+      "type": "SMST",
+      "name": "Mining Town Miner 03 Model"
+    },
+    {
+      "content": "85ef91201cc72226",
+      "start": "0F75AC",
+      "end": "0F84DF",
+      "type": "SMST",
+      "name": "Hammers Pickaxe Shovel Knife Models"
+    },
+    {
+      "content": "cc8ed6d34828e9af",
+      "start": "0F84E0",
+      "end": "0FBE47",
+      "type": "SMST",
+      "name": "Koma Pig (Large Mine Underground) Model"
+    },
+    {
+      "content": "800903774e14fef7",
+      "start": "0FBE48",
+      "end": "0FED83",
+      "type": "____",
+      "name": "Koma Pig (Large Mine Underground) Animation"
+    },
+    {
+      "content": "7c2cfe392765d7bb",
+      "start": "0FED84",
+      "end": "1004F7",
+      "type": "____",
+      "name": "Tiny Mouse Animation"
+    },
+    {
+      "content": "f8312566b0c0270a",
+      "start": "101518",
+      "end": "1017FF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "da33dc6a00974377",
+      "start": "105A68",
+      "end": "127AFB",
+      "type": "SMST",
+      "name": "Asset pack Mining Town Models"
+    },
+    {
+      "content": "727e5f2d77c4cf1a",
+      "start": "127AFC",
+      "end": "13FA17",
+      "type": "MDAT",
+      "name": "Cursed Coal Mining Town Level"
+    },
+    {
+      "content": "9d2f21adfc6cb901",
+      "start": "13FA18",
+      "end": "145A27",
+      "type": "TXTD",
+      "name": "Coal Mining Town Text"
+    },
+    {
+      "content": "643113a84de7e6e8",
+      "start": "145A28",
+      "end": "14D903",
+      "type": "ANMP",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "5524774675e9cca5",
+      "start": "155A60",
+      "end": "157E53",
+      "type": "SMST",
+      "name": "Chef Model"
+    },
+    {
+      "content": "5b23dcd30616295d",
+      "start": "159D5C",
+      "end": "15BADF",
+      "type": "SMST",
+      "name": "Mining Town Mothers Son Model"
+    },
+    {
+      "content": "a0b1e8cfffcaaf4b",
+      "start": "15BAE0",
+      "end": "15D893",
+      "type": "SMST",
+      "name": "Mining Town Mother Model"
+    },
+    {
+      "content": "fc6afeeab85ee1fd",
+      "start": "15D894",
+      "end": "15F87F",
+      "type": "SMST",
+      "name": "Mining Town Mother Wounded"
+    },
+    {
+      "content": "973216a247328ca3",
+      "start": "1607B4",
+      "end": "160B7B",
+      "type": "____",
+      "name": "Cursed Coal Mining Town Sprites"
+    },
+    {
+      "content": "b9ad6e76bad5023a",
+      "start": "160B7C",
+      "end": "169D7B",
+      "type": "SMST",
+      "name": "Underground Machine Room Models"
+    },
+    {
+      "content": "c068a66c9af6326b",
+      "start": "169D7C",
+      "end": "16A2B7",
+      "type": "____",
+      "name": "Machine Animation"
+    },
+    {
+      "content": "9c6039e6c657f92a",
+      "start": "16A2B8",
+      "end": "16BFFF",
+      "type": "SMST",
+      "name": "Conveyor Belt Models"
+    },
+    {
+      "content": "2ae8be8e5f78617f",
+      "start": "16C000",
+      "end": "16CCEF",
+      "type": "SMST",
+      "name": "Trolley Model"
+    },
+    {
+      "content": "6d494dfffe96cf5c",
+      "start": "16CCF0",
+      "end": "1A55F7",
+      "type": "MDAT",
+      "name": "Trolley Minigame Level"
+    },
+    {
+      "content": "12e4031ec9a5d83f",
+      "start": "1A55F8",
+      "end": "1A5E9B",
+      "type": "____",
+      "name": "Tomba Trolley Animation"
+    },
+    {
+      "content": "9e4a58dd6f0839fd",
+      "start": "1A5E9C",
+      "end": "1A5FFF",
+      "type": "____",
+      "name": "Trolley Minigame Sprites"
+    },
+    {
+      "content": "c46b04701465521f",
+      "start": "1AA268",
+      "end": "1AB12F",
+      "type": "SMST",
+      "name": "Ice Crystal Models"
+    },
+    {
+      "content": "53cd8c43094c3e1f",
+      "start": "1AB130",
+      "end": "1B2E6F",
+      "type": "____",
+      "name": "Cursed Kujara Ranch Area Collision"
+    },
+    {
+      "content": "d43c744f7c8d6295",
+      "start": "1B2E70",
+      "end": "1CBF6F",
+      "type": "MDAT",
+      "name": "Cursed Kujara Ranch Area Level"
+    },
+    {
+      "content": "2466d76915fbbc11",
+      "start": "1CBF70",
+      "end": "1D0807",
+      "type": "MDAT",
+      "name": "Cursed Holy Tree Flight Level"
+    },
+    {
+      "content": "94c2d8a928197457",
+      "start": "1D0808",
+      "end": "1D3447",
+      "type": "TXTD",
+      "name": "Kujara Ranch Area Text"
+    },
+    {
+      "content": "3fb5b799b4e29eec",
+      "start": "1D3448",
+      "end": "1E5AC3",
+      "type": "SMST",
+      "name": "Asset pack Kujara Ranch Area Models"
+    },
+    {
+      "content": "6326c53dc95ee462",
+      "start": "1E5AC4",
+      "end": "1E80AF",
+      "type": "SMST",
+      "name": "Blue Kokka Bird Model"
+    },
+    {
+      "content": "e10ca805e858d0b6",
+      "start": "1E80B0",
+      "end": "1EA69B",
+      "type": "SMST",
+      "name": "Red Kokka Bird Model"
+    },
+    {
+      "content": "94be38e1942c82d1",
+      "start": "1EA69C",
+      "end": "1EC2C7",
+      "type": "____",
+      "name": "Red Kokka Bird Animation"
+    },
+    {
+      "content": "a23dfd08d9b18183",
+      "start": "1EC2C8",
+      "end": "1EEAD3",
+      "type": "SMST",
+      "name": "Giant Ice Pig Model"
+    },
+    {
+      "content": "7235fe5f17906a86",
+      "start": "1EEAD4",
+      "end": "1EF6B3",
+      "type": "____",
+      "name": "Giant Ice Pig Animation"
+    },
+    {
+      "content": "2488c6fff6595ecb",
+      "start": "1EF6B4",
+      "end": "1F2C53",
+      "type": "SMST",
+      "name": "Armadillo Model"
+    },
+    {
+      "content": "bde0c90cd8415bb3",
+      "start": "1F2C54",
+      "end": "1F3263",
+      "type": "____",
+      "name": "Armadillo Animation"
+    },
+    {
+      "content": "9dc884743d70d9a3",
+      "start": "1F3264",
+      "end": "1F7233",
+      "type": "____",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "c3d3ffdaf9839cab",
+      "start": "1F7234",
+      "end": "1F8DF7",
+      "type": "SMST",
+      "name": "Phams Daughter 01 Model"
+    },
+    {
+      "content": "8a3714abc4c46d28",
+      "start": "1F8DF8",
+      "end": "1FA80B",
+      "type": "SMST",
+      "name": "Phams Daughter 02 Model"
+    },
+    {
+      "content": "38c086b2dfee14b4",
+      "start": "1FA80C",
+      "end": "1FC137",
+      "type": "SMST",
+      "name": "Phams Daugther 03 Model"
+    },
+    {
+      "content": "246ed6fd61ec8d95",
+      "start": "1FC138",
+      "end": "1FE1C7",
+      "type": "SMST",
+      "name": "Leaf Traveller Model"
+    },
+    {
+      "content": "892012057e53ffaa",
+      "start": "1FE1C8",
+      "end": "2002FB",
+      "type": "SMST",
+      "name": "Kujara Ranch Man 01 Model"
+    },
+    {
+      "content": "ffa763fbe95c4779",
+      "start": "2002FC",
+      "end": "200523",
+      "type": "____",
+      "name": "Cursed Kujara Ranch Area Sprites"
+    },
+    {
+      "content": "3c8a0d2141c4248f",
+      "start": "202CA4",
+      "end": "20418B",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth closed) Model"
+    },
+    {
+      "content": "24a505904c02427c",
+      "start": "20418C",
+      "end": "205883",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth opened var 1) Model"
+    },
+    {
+      "content": "22676434bf673762",
+      "start": "205884",
+      "end": "20757B",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth opened var 2) Model"
+    },
+    {
+      "content": "1eb6067f192be6e9",
+      "start": "20757C",
+      "end": "209F03",
+      "type": "SMST",
+      "name": "Koma Pig (Kujara Ranch) Model"
+    },
+    {
+      "content": "ff1a32aaca492b40",
+      "start": "209F04",
+      "end": "20F217",
+      "type": "____",
+      "name": "Koma Pig (Kujara Ranch) Animation"
+    },
+    {
+      "content": "f20e6953ae2cf393",
+      "start": "20F218",
+      "end": "20F9CF",
+      "type": "SMST",
+      "name": "Kujara Bird Model"
+    },
+    {
+      "content": "132e6dca59661988",
+      "start": "20F9D0",
+      "end": "20FCD7",
+      "type": "____",
+      "name": "Kujara Bird Animation"
+    },
+    {
+      "content": "d88997c5b607e695",
+      "start": "21144C",
+      "end": "2129B3",
+      "type": "SMST",
+      "name": "Dwarf (brown) Model"
+    },
+    {
+      "content": "9d0b7249f7b19cb2",
+      "start": "2129B4",
+      "end": "212FD3",
+      "type": "____",
+      "name": "Dwarf (brown) Animation"
+    },
+    {
+      "content": "fb1c99085651a452",
+      "start": "212FD4",
+      "end": "2141F3",
+      "type": "SMST",
+      "name": "Dwarf (green) Model"
+    },
+    {
+      "content": "b1796c003c548c63",
+      "start": "2141F4",
+      "end": "2148FB",
+      "type": "____",
+      "name": "Dwarf (green) Animation"
+    },
+    {
+      "content": "ea2d071ebb039222",
+      "start": "2148FC",
+      "end": "214FFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "0dde133816d8ad86",
+      "start": "21A130",
+      "end": "2374CF",
+      "type": "SMST",
+      "name": "Asset pak- Kujara Ranch Summit Models"
+    },
+    {
+      "content": "e230eddcab310dc9",
+      "start": "2374D0",
+      "end": "24A35F",
+      "type": "MDAT",
+      "name": "Cursed Kujara Ranch Summit Level"
+    },
+    {
+      "content": "982bdf32abec2700",
+      "start": "24A360",
+      "end": "25371B",
+      "type": "MDAT",
+      "name": "Kujara Washing Minigame Level"
+    },
+    {
+      "content": "f54cf9392589e44d",
+      "start": "25371C",
+      "end": "2587BF",
+      "type": "TXTD",
+      "name": "Kujara Ranch Summit Text"
+    },
+    {
+      "content": "c88f83e89aad5a18",
+      "start": "2587C0",
+      "end": "25DA67",
+      "type": "____",
+      "name": "Cursed Kujara Ranch Summit Collision"
+    },
+    {
+      "content": "e2a9a646c5238429",
+      "start": "25DA68",
+      "end": "264C17",
+      "type": "____",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "7de4cddb9b0f7039",
+      "start": "264C18",
+      "end": "2667DB",
+      "type": "SMST",
+      "name": "Phams Daughter 01 Model"
+    },
+    {
+      "content": "62fa91c8db4357b8",
+      "start": "2667DC",
+      "end": "2681EF",
+      "type": "SMST",
+      "name": "Phams Daughter 02 Model"
+    },
+    {
+      "content": "5cbfc8191383d1e3",
+      "start": "2681F0",
+      "end": "269B1B",
+      "type": "SMST",
+      "name": "Phams Daughter 03 Model"
+    },
+    {
+      "content": "6c54394d1c00e436",
+      "start": "269B1C",
+      "end": "26BC4F",
+      "type": "SMST",
+      "name": "Kujara Ranch Man 01 Model"
+    },
+    {
+      "content": "7e070789d13742d0",
+      "start": "26BC50",
+      "end": "26DC03",
+      "type": "SMST",
+      "name": "Kujara Ranch Man (washing minigame) Model"
+    },
+    {
+      "content": "6c6551f37970829f",
+      "start": "26DC04",
+      "end": "26F05B",
+      "type": "BGMP",
+      "name": "Cursed Kujara Ranch Summit Background"
+    },
+    {
+      "content": "0a1088c7af85c178",
+      "start": "26F05C",
+      "end": "26F47B",
+      "type": "____",
+      "name": "Cursed Kujara Ranch Summit Sprites"
+    },
+    {
+      "content": "ba0534e5e56fa2a9",
+      "start": "26F47C",
+      "end": "271BCB",
+      "type": "SMST",
+      "name": "Toradako Enemy Model"
+    },
+    {
+      "content": "3e86040bbdc298d6",
+      "start": "271BCC",
+      "end": "272DD7",
+      "type": "____",
+      "name": "Toradako Animation"
+    },
+    {
+      "content": "a7f6779117bb3cb5",
+      "start": "272DD8",
+      "end": "2735C7",
+      "type": "SMST",
+      "name": "Kujara Bird (burned gray) Model"
+    },
+    {
+      "content": "318bb00b260655b2",
+      "start": "2735C8",
+      "end": "273D7F",
+      "type": "SMST",
+      "name": "Kujara Bird Model"
+    },
+    {
+      "content": "3158e4c242f51eed",
+      "start": "273D80",
+      "end": "27439F",
+      "type": "SMST",
+      "name": "Kujara Bird (shaved) Model"
+    },
+    {
+      "content": "0cec5d651d395c83",
+      "start": "2743A0",
+      "end": "274BB7",
+      "type": "SMST",
+      "name": "Kujara Bird (burned black) Model"
+    },
+    {
+      "content": "3eb82899297c0153",
+      "start": "274BB8",
+      "end": "2752F7",
+      "type": "SMST",
+      "name": "Kujara Bird (fat shaved) Model"
+    },
+    {
+      "content": "5778094a8213a4b1",
+      "start": "2752F8",
+      "end": "2756F7",
+      "type": "____",
+      "name": "Kujara Animation"
+    },
+    {
+      "content": "7ed9178a4802cfec",
+      "start": "2756F8",
+      "end": "277CFB",
+      "type": "SMST",
+      "name": "Kainen Model"
+    },
+    {
+      "content": "181812f775f4b061",
+      "start": "277CFC",
+      "end": "27A067",
+      "type": "SMST",
+      "name": "Kainen (swimming suit) Model"
+    },
+    {
+      "content": "4aa9b6cd71e87819",
+      "start": "27A068",
+      "end": "27B973",
+      "type": "____",
+      "name": "Tiny Mouse Animation"
+    },
+    {
+      "content": "a0706d1c76e83971",
+      "start": "27C994",
+      "end": "27CFFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "0f860e7b797387e7",
+      "start": "281268",
+      "end": "2ACE6B",
+      "type": "MDAT",
+      "name": "Cursed Donglin Forest Level"
+    },
+    {
+      "content": "5557bc72af696e35",
+      "start": "2ACE6C",
+      "end": "2AD8FB",
+      "type": "DRWB",
+      "name": "Donglin Forest Drawmap"
+    },
+    {
+      "content": "14cab588c16637a6",
+      "start": "2AD8FC",
+      "end": "2B7E73",
+      "type": "____",
+      "name": "Cursed Donglin Forest Collision"
+    },
+    {
+      "content": "0e5f35acb69879d4",
+      "start": "2B7E74",
+      "end": "2CD133",
+      "type": "SMST",
+      "name": "Asset pack Donglin Forest Models"
+    },
+    {
+      "content": "4fd6d4091bc46096",
+      "start": "2CD134",
+      "end": "2CE947",
+      "type": "SMST",
+      "name": "Trap Mechanisms Model"
+    },
+    {
+      "content": "e0ae698253f390c4",
+      "start": "2CE948",
+      "end": "2CECB7",
+      "type": "____",
+      "name": "Cursed Donglin Forest Sprites"
+    },
+    {
+      "content": "ce4de5292c8bea2c",
+      "start": "2CECB8",
+      "end": "2D2F53",
+      "type": "____",
+      "name": "Mizuno Animation"
+    },
+    {
+      "content": "93a60ab249d60c55",
+      "start": "2D2F54",
+      "end": "2D580F",
+      "type": "SMST",
+      "name": "Donglin Forest Inhabitant 01 and 02 Model"
+    },
+    {
+      "content": "c3ca56fc0b0f8e63",
+      "start": "2D5810",
+      "end": "2D9507",
+      "type": "TXTD",
+      "name": "Donglin Forest Text"
+    },
+    {
+      "content": "1b3de080c279dee0",
+      "start": "2D9508",
+      "end": "2D9CA7",
+      "type": "SMST",
+      "name": "Rock Crab Model"
+    },
+    {
+      "content": "c2f5660d91adfb39",
+      "start": "2D9CA8",
+      "end": "2D9D37",
+      "type": "____",
+      "name": "Rock Crab Animation"
+    },
+    {
+      "content": "3d9dac29d62f6fc6",
+      "start": "2D9D38",
+      "end": "2DADC7",
+      "type": "SMST",
+      "name": "Ghost Enemy Model"
+    },
+    {
+      "content": "6588f7fa032f2fca",
+      "start": "2DADC8",
+      "end": "2DB047",
+      "type": "____",
+      "name": "Ghost Enemy Animation"
+    },
+    {
+      "content": "17d61571b84874d6",
+      "start": "2DB048",
+      "end": "2DC9F3",
+      "type": "SMST",
+      "name": "Koma Pig (Donglin Forest) Model"
+    },
+    {
+      "content": "e50e62642c63d3a3",
+      "start": "2DC9F4",
+      "end": "2DCC0F",
+      "type": "____",
+      "name": "Koma Pig (Donglin Forest) Animation"
+    },
+    {
+      "content": "a14dbd8d582759dd",
+      "start": "2DCC10",
+      "end": "2DD647",
+      "type": "BGMP",
+      "name": "Cursed Donglin Forest Background"
+    },
+    {
+      "content": "aef02416db9d0e56",
+      "start": "2DD648",
+      "end": "2E0057",
+      "type": "SMST",
+      "name": "Banshee Model"
+    },
+    {
+      "content": "b1019b62ac52abfd",
+      "start": "2E0058",
+      "end": "2E3947",
+      "type": "____",
+      "name": "Banshee Animation"
+    },
+    {
+      "content": "a285acb311c1a42c",
+      "start": "2E3948",
+      "end": "2E796B",
+      "type": "SMST",
+      "name": "Ghost Guard Model"
+    },
+    {
+      "content": "3a31d45077fde4ed",
+      "start": "2E796C",
+      "end": "2E9CCF",
+      "type": "____",
+      "name": "Ghost Guard Animation"
+    },
+    {
+      "content": "00dc535b8b4a1757",
+      "start": "2E9CD0",
+      "end": "2E9EDB",
+      "type": "____",
+      "name": "Donglin Asset Animation"
+    },
+    {
+      "content": "776f935a8e8fb80b",
+      "start": "2EB650",
+      "end": "2EC323",
+      "type": "____",
+      "name": "Kainen Animation"
+    },
+    {
+      "content": "8098680fb1875b83",
+      "start": "2EC324",
+      "end": "2EC7FF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "e2d6ba6491d21fd9",
+      "start": "2F0A68",
+      "end": "30471B",
+      "type": "MDAT",
+      "name": "Cursed Circus Village Level"
+    },
+    {
+      "content": "fa22c91788841cf0",
+      "start": "30471C",
+      "end": "31BFCF",
+      "type": "SMST",
+      "name": "Asset pack Circus Village Models"
+    },
+    {
+      "content": "8090a8cf1b0cd08a",
+      "start": "31BFD0",
+      "end": "31D427",
+      "type": "BGMP",
+      "name": "Cursed Circus Village Background"
+    },
+    {
+      "content": "ea3341cf0f1978fe",
+      "start": "31D428",
+      "end": "31D6C7",
+      "type": "____",
+      "name": "Cursed Circus Village Sprites"
+    },
+    {
+      "content": "1b280eb2c97b27b8",
+      "start": "31E6E8",
+      "end": "3258E7",
+      "type": "____",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "551aaa1eeda6e5a0",
+      "start": "3258E8",
+      "end": "32941B",
+      "type": "SMST",
+      "name": "Fountain Statue Model"
+    },
+    {
+      "content": "4033a845f42ff8ce",
+      "start": "32941C",
+      "end": "32F9CF",
+      "type": "TXTD",
+      "name": "Circus Village Text"
+    },
+    {
+      "content": "c3b4f589bb07eb14",
+      "start": "32F9D0",
+      "end": "3320B7",
+      "type": "SMST",
+      "name": "Pig Elderwith Staff Model"
+    },
+    {
+      "content": "d8f705f4b192a268",
+      "start": "3320B8",
+      "end": "33435B",
+      "type": "SMST",
+      "name": "Cursed Villager 01 (man) Model"
+    },
+    {
+      "content": "ca1b8b9449b7cda2",
+      "start": "33435C",
+      "end": "33667F",
+      "type": "SMST",
+      "name": "Cursed Villager 02 (woman) Model"
+    },
+    {
+      "content": "76cc551a3cf7860d",
+      "start": "336680",
+      "end": "339093",
+      "type": "SMST",
+      "name": "Cursed Villager 03 (clown) Model"
+    },
+    {
+      "content": "72cccdc8bdc65a5a",
+      "start": "339094",
+      "end": "33B183",
+      "type": "SMST",
+      "name": "Visible Traveller Model"
+    },
+    {
+      "content": "65d8390f3e23cd1d",
+      "start": "33B184",
+      "end": "33CC93",
+      "type": "SMST",
+      "name": "Invisible Traveller Model"
+    },
+    {
+      "content": "eca5d5ddb9560453",
+      "start": "33CC94",
+      "end": "33EA17",
+      "type": "SMST",
+      "name": "Mining Town Mothers Son Model"
+    },
+    {
+      "content": "ba5e94bdb58e8c1e",
+      "start": "33EA18",
+      "end": "341933",
+      "type": "SMST",
+      "name": "Basket Woman Model"
+    },
+    {
+      "content": "dc8a2e808b88e35b",
+      "start": "341934",
+      "end": "3438EB",
+      "type": "SMST",
+      "name": "Flying Paon Model"
+    },
+    {
+      "content": "b24c613abb4d5176",
+      "start": "3438EC",
+      "end": "3450EF",
+      "type": "____",
+      "name": "Flying Paon Animation"
+    },
+    {
+      "content": "f9c69456d61c4d56",
+      "start": "3450F0",
+      "end": "3468C3",
+      "type": "SMST",
+      "name": "Parrot Model"
+    },
+    {
+      "content": "24ca1dc5be99cf69",
+      "start": "3468C4",
+      "end": "346B73",
+      "type": "____",
+      "name": "Parrot Animation"
+    },
+    {
+      "content": "00b2f9dcefa296ea",
+      "start": "346B74",
+      "end": "346F0F",
+      "type": "____",
+      "name": "Frying Pan"
+    },
+    {
+      "content": "84f362db85795859",
+      "start": "346F10",
+      "end": "34A2E3",
+      "type": "SMST",
+      "name": "Pigsuit Kid"
+    },
+    {
+      "content": "f25637ccec3ec52a",
+      "start": "34BA58",
+      "end": "34F177",
+      "type": "SMST",
+      "name": "Tiny Mouse Model"
+    },
+    {
+      "content": "7fde7376e4b45199",
+      "start": "34F178",
+      "end": "350F27",
+      "type": "SMST",
+      "name": "Yan of The Hidden Village Model"
+    },
+    {
+      "content": "374f95ff4c01a734",
+      "start": "350F28",
+      "end": "350FFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "c6f2f64c708eef3a",
+      "start": "355268",
+      "end": "35F00F",
+      "type": "____",
+      "name": "Water Temple Collision"
+    },
+    {
+      "content": "08388b020d0a79d6",
+      "start": "35F010",
+      "end": "364797",
+      "type": "TXTD",
+      "name": "Water Temple Text"
+    },
+    {
+      "content": "25e646815eb5dea1",
+      "start": "364798",
+      "end": "386BD3",
+      "type": "SMST",
+      "name": "Asset pack Water Temple Models"
+    },
+    {
+      "content": "30d88c841b47034a",
+      "start": "386BD4",
+      "end": "386D77",
+      "type": "____",
+      "name": "Cursed Water Temple Sprites"
+    },
+    {
+      "content": "3bfa9fc0e99881c4",
+      "start": "386D78",
+      "end": "3888BB",
+      "type": "SMST",
+      "name": "Mermaid 01 (with harp) Model"
+    },
+    {
+      "content": "8d66168df612aa46",
+      "start": "3888BC",
+      "end": "38A23B",
+      "type": "SMST",
+      "name": "Mermaid 02 Model"
+    },
+    {
+      "content": "53bb52f81f0f72ce",
+      "start": "38A23C",
+      "end": "38B963",
+      "type": "____",
+      "name": "Mermaid Animation"
+    },
+    {
+      "content": "3584b1f83fe7b4e9",
+      "start": "38B964",
+      "end": "38CE43",
+      "type": "SMST",
+      "name": "Flying Spiker Enemy Model"
+    },
+    {
+      "content": "9eab1c17f572fbd3",
+      "start": "38CE44",
+      "end": "38DB27",
+      "type": "____",
+      "name": "Flying Spiker Enemy Animation"
+    },
+    {
+      "content": "202a7732a5de403d",
+      "start": "38DB28",
+      "end": "392413",
+      "type": "SMST",
+      "name": "Crab Enemy Model"
+    },
+    {
+      "content": "bfe9951bfa32726c",
+      "start": "392414",
+      "end": "394C83",
+      "type": "____",
+      "name": "Crab Enemy Animation"
+    },
+    {
+      "content": "dbc56da6b265cf7f",
+      "start": "394C84",
+      "end": "3988BF",
+      "type": "SMST",
+      "name": "Koma Pig (Water Temple) Model"
+    },
+    {
+      "content": "6e96802519f95383",
+      "start": "3988C0",
+      "end": "39A9FB",
+      "type": "____",
+      "name": "Koma Pig (Water Temple) Animation"
+    },
+    {
+      "content": "5113524f50b1c929",
+      "start": "39A9FC",
+      "end": "39E4FF",
+      "type": "____",
+      "name": "NPC Animation"
+    },
+    {
+      "content": "6affc14b39bfd820",
+      "start": "39E500",
+      "end": "3A11F3",
+      "type": "SMST",
+      "name": "Starving Traveller Model"
+    },
+    {
+      "content": "4bd4cc36aba9145e",
+      "start": "3A11F4",
+      "end": "3A30B7",
+      "type": "SMST",
+      "name": "Water Temple man (Spiked Hair) Model"
+    },
+    {
+      "content": "fcd12d8e963c7da1",
+      "start": "3A30B8",
+      "end": "3A5483",
+      "type": "SMST",
+      "name": "Water Temple man (Blue beard) Model"
+    },
+    {
+      "content": "3992768ac1d28fc7",
+      "start": "3A5484",
+      "end": "3A82D7",
+      "type": "SMST",
+      "name": "Water Temple men (Brown hair and Blue hair) Model"
+    },
+    {
+      "content": "d28ca31ca961d68e",
+      "start": "3A92F8",
+      "end": "3AB5F3",
+      "type": "SMST",
+      "name": "The Giant Fish Model"
+    },
+    {
+      "content": "c6399f670d88f916",
+      "start": "3AB5F4",
+      "end": "3ABA53",
+      "type": "____",
+      "name": "The Giant Fish Animation"
+    },
+    {
+      "content": "d077815b3df52c8d",
+      "start": "3AD1C8",
+      "end": "3AEF57",
+      "type": "SMST",
+      "name": "Nishiki Bird Model"
+    },
+    {
+      "content": "ff5f775921d95d80",
+      "start": "3AEF58",
+      "end": "3AF8E7",
+      "type": "____",
+      "name": "Nishiki Bird Animation"
+    },
+    {
+      "content": "ea2279e9510e576e",
+      "start": "3AF8E8",
+      "end": "3AFFFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "462723730fe5117b",
+      "start": "3B4268",
+      "end": "3C5717",
+      "type": "MDAT",
+      "name": "unused Ranch Summit no vram Level"
+    },
+    {
+      "content": "42eb66c46321a6cc",
+      "start": "3C5718",
+      "end": "3C5C9B",
+      "type": "____",
+      "name": "unused Ranch Summit empty Collision"
+    },
+    {
+      "content": "392710816d9d36fa",
+      "start": "3C5C9C",
+      "end": "3D6583",
+      "type": "SMST",
+      "name": "Last room and Pig Statues Models"
+    },
+    {
+      "content": "8491bd77bffe9017",
+      "start": "3D6584",
+      "end": "3D6FFF",
+      "type": "TXTD",
+      "name": "Time Stopped Text"
+    },
+    {
+      "content": "f33449da8ac50493",
+      "start": "3DB268",
+      "end": "3E234B",
+      "type": "MDAT",
+      "name": "Flame Pig Boss Level"
+    },
+    {
+      "content": "807ca8a1150905fb",
+      "start": "3E234C",
+      "end": "3E3B8B",
+      "type": "____",
+      "name": "Flame Pig Boss Level Collision"
+    },
+    {
+      "content": "bc22cceb383b2b30",
+      "start": "3E3B8C",
+      "end": "3E5223",
+      "type": "BGMP",
+      "name": "Flame Pig Boss Background"
+    },
+    {
+      "content": "dcc827d8123d92ed",
+      "start": "3E5224",
+      "end": "3E841B",
+      "type": "SMST",
+      "name": "Asset pack Flame Pig Boss Models"
+    },
+    {
+      "content": "37033b65679c2580",
+      "start": "3E841C",
+      "end": "3EC437",
+      "type": "SMST",
+      "name": "Flame Pig Boss Model"
+    },
+    {
+      "content": "25b16044cb169d1e",
+      "start": "3EC438",
+      "end": "3EDF0F",
+      "type": "SCLD",
+      "name": "Flame Pig Boss Animation"
+    },
+    {
+      "content": "fa66f0f589eb9dea",
+      "start": "3EDF10",
+      "end": "3EED73",
+      "type": "TXTD",
+      "name": "Flame Pig Boss Text"
+    },
+    {
+      "content": "e048e656c11843c9",
+      "start": "3EED74",
+      "end": "3F08BF",
+      "type": "SMST",
+      "name": "Flame Pig Robe Model"
+    },
+    {
+      "content": "f100ac039d0d65d9",
+      "start": "3F08C0",
+      "end": "3F0FFF",
+      "type": "____",
+      "name": "Flame Pig Robe Animation"
+    },
+    {
+      "content": "0eaa9e2b6201bc71",
+      "start": "3F5268",
+      "end": "3FF717",
+      "type": "MDAT",
+      "name": "Ice Pig Boss Level"
+    },
+    {
+      "content": "38707bd244440dcc",
+      "start": "3FF718",
+      "end": "401A77",
+      "type": "____",
+      "name": "Ice Pig Boss Collision"
+    },
+    {
+      "content": "9bc97d7e4a412fc6",
+      "start": "401A78",
+      "end": "40310F",
+      "type": "BGMP",
+      "name": "Ice Pig Boss Background"
+    },
+    {
+      "content": "2e8ceedb6a9992a6",
+      "start": "403110",
+      "end": "409543",
+      "type": "SMST",
+      "name": "Asset pack Ice Pig Boss Models"
+    },
+    {
+      "content": "edec3b8ac406f977",
+      "start": "409544",
+      "end": "40D5D3",
+      "type": "SMST",
+      "name": "Ice Pig Boss Model"
+    },
+    {
+      "content": "20754c144683af09",
+      "start": "40D5D4",
+      "end": "40FA5B",
+      "type": "____",
+      "name": "Ice Pig Boss Animation"
+    },
+    {
+      "content": "e2053e8aef0c1f5a",
+      "start": "40FA5C",
+      "end": "410917",
+      "type": "TXTD",
+      "name": "Ice Pig Boss Text"
+    },
+    {
+      "content": "6cfb52dcc81abd62",
+      "start": "410918",
+      "end": "410C97",
+      "type": "____",
+      "name": "Ice Pig Boss Sprites"
+    },
+    {
+      "content": "c4ede3780abc6bb7",
+      "start": "410C98",
+      "end": "4127E3",
+      "type": "SMST",
+      "name": "Ice Pig Robe Model"
+    },
+    {
+      "content": "f15019aadacb8ee2",
+      "start": "4127E4",
+      "end": "41285F",
+      "type": "____",
+      "name": "Ice Pig Robe Animation"
+    },
+    {
+      "content": "be0e9a72b705b5c2",
+      "start": "412860",
+      "end": "4137FF",
+      "type": "SMST",
+      "name": "Ice Crytal Models"
+    },
+    {
+      "content": "0900df5c069688d0",
+      "start": "417A68",
+      "end": "421FC7",
+      "type": "MDAT",
+      "name": "Ghost Pig Boss Level"
+    },
+    {
+      "content": "90ad7b80aeb75d4b",
+      "start": "421FC8",
+      "end": "423807",
+      "type": "SCLD",
+      "name": "Ghost Pig Boss Collision"
+    },
+    {
+      "content": "46730b76321b39b6",
+      "start": "423808",
+      "end": "427C3B",
+      "type": "SMST",
+      "name": "Asset pack Ghost Pig Boss Models"
+    },
+    {
+      "content": "04d5efb908257d3d",
+      "start": "427C3C",
+      "end": "4292D3",
+      "type": "BGMP",
+      "name": "Ghost Pig Boss Background"
+    },
+    {
+      "content": "5a1bddc10616f1dc",
+      "start": "4292D4",
+      "end": "42E987",
+      "type": "SMST",
+      "name": "Ghost Pig Boss Model"
+    },
+    {
+      "content": "9b2f3501b6364a7e",
+      "start": "42E988",
+      "end": "431D33",
+      "type": "ANMP",
+      "name": "Ghost Pig Boss Animation"
+    },
+    {
+      "content": "0967dbe5814fd1d4",
+      "start": "431D34",
+      "end": "432BA7",
+      "type": "TXTD",
+      "name": "Ghost Pig Boss Text"
+    },
+    {
+      "content": "f94068b3d9c7af1e",
+      "start": "432BA8",
+      "end": "4346F3",
+      "type": "SMST",
+      "name": "Ghost Pig Robe Model"
+    },
+    {
+      "content": "f7f0af0b1719fb54",
+      "start": "434770",
+      "end": "4357FF",
+      "type": "SMST",
+      "name": "Ghost Enemy Model"
+    },
+    {
+      "content": "7279f758c09f3674",
+      "start": "435800",
+      "end": "435FFF",
+      "type": "UNKB",
+      "name": "Ghost Enemy Animation"
+    },
+    {
+      "content": "ad2ce6e2c1935e22",
+      "start": "43A268",
+      "end": "44679F",
+      "type": "MDAT",
+      "name": "Earth Pig Boss Level"
+    },
+    {
+      "content": "69c3acd0b75894ef",
+      "start": "4467A0",
+      "end": "4482E3",
+      "type": "____",
+      "name": "Earth Pig Boss Collision"
+    },
+    {
+      "content": "cff668dd8add91a5",
+      "start": "4482E4",
+      "end": "44C35F",
+      "type": "SMST",
+      "name": "Asset pack Earth Pig Boss Models"
+    },
+    {
+      "content": "3ebcd9d23ab82f8e",
+      "start": "44C360",
+      "end": "44D9F7",
+      "type": "BGMP",
+      "name": "Earth Pig Boss Background"
+    },
+    {
+      "content": "a752e590690e3456",
+      "start": "44D9F8",
+      "end": "4515AB",
+      "type": "SMST",
+      "name": "Earth Pig Boss Model"
+    },
+    {
+      "content": "0a8a3976a5aebf4a",
+      "start": "4515AC",
+      "end": "45A057",
+      "type": "____",
+      "name": "Earth Pig Boss Animation"
+    },
+    {
+      "content": "3016687623e783df",
+      "start": "45A058",
+      "end": "45AF7B",
+      "type": "TXTD",
+      "name": "Earth Pig Boss Text"
+    },
+    {
+      "content": "454338a6dc8094dc",
+      "start": "45AF7C",
+      "end": "45CAC7",
+      "type": "SMST",
+      "name": "Earth Pig Robe Model"
+    },
+    {
+      "content": "dc08a478ef109414",
+      "start": "45CAC8",
+      "end": "45CFFF",
+      "type": "____",
+      "name": "Earth Pig Robe Animation"
+    },
+    {
+      "content": "5054d79e2775bdd5",
+      "start": "461268",
+      "end": "4715B7",
+      "type": "MDAT",
+      "name": "Water Pig Boss Level"
+    },
+    {
+      "content": "a11caf688b2befa5",
+      "start": "4715B8",
+      "end": "472EE3",
+      "type": "____",
+      "name": "Water Pig Boss Collision"
+    },
+    {
+      "content": "c4b4a8ed320a3831",
+      "start": "472EE4",
+      "end": "47457B",
+      "type": "BGMP",
+      "name": "Water Pig Boss Background"
+    },
+    {
+      "content": "992683266f9bfcde",
+      "start": "47457C",
+      "end": "47745B",
+      "type": "SMST",
+      "name": "Asset pack Water Pig Boss Models"
+    },
+    {
+      "content": "3dc7c1ce2416942d",
+      "start": "47745C",
+      "end": "47BF4F",
+      "type": "SMST",
+      "name": "Water Pig Model"
+    },
+    {
+      "content": "9e3f6d284114d32b",
+      "start": "47BF50",
+      "end": "483FF7",
+      "type": "____",
+      "name": "Water Pig Animation"
+    },
+    {
+      "content": "6ff09117ec44ea1d",
+      "start": "483FF8",
+      "end": "484F33",
+      "type": "TXTD",
+      "name": "Water Pig Boss Text"
+    },
+    {
+      "content": "8b1e09407b8d9356",
+      "start": "484F34",
+      "end": "486A7F",
+      "type": "SMST",
+      "name": "Water Pig Robe Model"
+    },
+    {
+      "content": "69d58ce3c49860b7",
+      "start": "486A80",
+      "end": "486FFF",
+      "type": "____",
+      "name": "Water Pig Robe Animation"
+    },
+    {
+      "content": "5d9f9f6c87602c72",
+      "start": "48B268",
+      "end": "49583B",
+      "type": "MDAT",
+      "name": "Last Pig Boss Level"
+    },
+    {
+      "content": "be6277586fbd820e",
+      "start": "49583C",
+      "end": "4977A7",
+      "type": "____",
+      "name": "Last Pig Boss Collision"
+    },
+    {
+      "content": "3c80a7fbe87dbc91",
+      "start": "4977A8",
+      "end": "498E3F",
+      "type": "BGMP",
+      "name": "Last Pig Boss Background"
+    },
+    {
+      "content": "f0a35d6c29d6da39",
+      "start": "498E40",
+      "end": "49BFCB",
+      "type": "SMST",
+      "name": "Asset pack Last Pig Boss Models"
+    },
+    {
+      "content": "39837dd3e3f9e64e",
+      "start": "49BFCC",
+      "end": "4A5077",
+      "type": "SMST",
+      "name": "Last Pig Boss Model"
+    },
+    {
+      "content": "5c77cbc31fca4e9b",
+      "start": "4A5078",
+      "end": "4A74D3",
+      "type": "____",
+      "name": "Last Pig Boss Animation"
+    },
+    {
+      "content": "7e354258c6a2c5d9",
+      "start": "4A74D4",
+      "end": "4A7EAB",
+      "type": "TXTD",
+      "name": "Last Pig Boss Text"
+    },
+    {
+      "content": "ee1cf28c494c2bb2",
+      "start": "4A7EAC",
+      "end": "4ABA7F",
+      "type": "SMST",
+      "name": "Tabby Model"
+    },
+    {
+      "content": "eb9650c3c316508d",
+      "start": "4ABA80",
+      "end": "4AF653",
+      "type": "SMST",
+      "name": "Petrified Tabby Model"
+    },
+    {
+      "content": "a25889b851c06026",
+      "start": "4AF654",
+      "end": "4B0823",
+      "type": "____",
+      "name": "Tabby Animation"
+    },
+    {
+      "content": "230932c9f32212e2",
+      "start": "4B0824",
+      "end": "4B0FFF",
+      "type": "____",
+      "name": "Last Pig Boss Sprites"
+    },
+    {
+      "content": "a6181f7dc9788d30",
+      "start": "4B1000",
+      "end": "4B5F3F",
+      "type": "____",
+      "name": "Tower of Courage Collision"
+    },
+    {
+      "content": "ebf14ab76edfb577",
+      "start": "4B5F40",
+      "end": "4BC837",
+      "type": "MDAT",
+      "name": "Tower of Courage Level"
+    },
+    {
+      "content": "59cadd0f1e061498",
+      "start": "4BC838",
+      "end": "4BCE93",
+      "type": "SMST",
+      "name": "Door Models"
+    },
+    {
+      "content": "1aedc04a0f0d6839",
+      "start": "4BCE94",
+      "end": "4BCFFF",
+      "type": "SCLD",
+      "name": "Tower of Courage Text"
+    },
+    {
+      "content": "7b3ab2a89a238906",
+      "start": "4BD000",
+      "end": "4C1187",
+      "type": "____",
+      "name": "Tower of Strength Collision"
+    },
+    {
+      "content": "cfe985cdac94ba24",
+      "start": "4C1188",
+      "end": "4C787F",
+      "type": "MDAT",
+      "name": "Tower of Strength Level"
+    },
+    {
+      "content": "2dcb724f7032ed0c",
+      "start": "4C7880",
+      "end": "4C7D23",
+      "type": "SMST",
+      "name": "Asset pack Tower of Strength Models"
+    },
+    {
+      "content": "ee0d850701fcf856",
+      "start": "4C7D24",
+      "end": "4C7FFF",
+      "type": "____",
+      "name": "Tower of Strength Text"
+    },
+    {
+      "content": "3cdd1388838d85fe",
+      "start": "4C8000",
+      "end": "4CABAB",
+      "type": "____",
+      "name": "Tower of Wisdom Collision"
+    },
+    {
+      "content": "00c498987d62453c",
+      "start": "4CABAC",
+      "end": "4D130F",
+      "type": "MDAT",
+      "name": "Tower of Wisdom Level"
+    },
+    {
+      "content": "58a2abf121d3c40c",
+      "start": "4D1310",
+      "end": "4D1763",
+      "type": "SMST",
+      "name": "Asset pack Tower of Wisdom Models"
+    },
+    {
+      "content": "65338f9f0e8c1d18",
+      "start": "4D1764",
+      "end": "4D1FFF",
+      "type": "____",
+      "name": "Tower of Wisdom Text"
+    },
+    {
+      "content": "8cced66b92189efd",
+      "start": "4D6268",
+      "end": "4D9537",
+      "type": "____",
+      "name": "Golden Tower Collision"
+    },
+    {
+      "content": "dd2a20454d3b6ffd",
+      "start": "4D9538",
+      "end": "4E13C3",
+      "type": "MDAT",
+      "name": "Golden Tower Level"
+    },
+    {
+      "content": "a58323c74f6feeac",
+      "start": "4E13C4",
+      "end": "4E16CF",
+      "type": "SMST",
+      "name": "Asset pack Golden Tower Models"
+    },
+    {
+      "content": "cbf5d86e3e615505",
+      "start": "4E16D0",
+      "end": "4E17D3",
+      "type": "____",
+      "name": "Golden Tower Sprites"
+    },
+    {
+      "content": "5f869b0a19dbce6a",
+      "start": "4E17D4",
+      "end": "4E2133",
+      "type": "____",
+      "name": "Pig Elder Animation"
+    },
+    {
+      "content": "4ac7b97faaf55366",
+      "start": "4E2134",
+      "end": "4E481B",
+      "type": "SMST",
+      "name": "Pig Elder Model"
+    },
+    {
+      "content": "2d88cad686e2c4b1",
+      "start": "4E481C",
+      "end": "4E4FFF",
+      "type": "TXTD",
+      "name": "Golden Tower Text"
+    },
+    {
+      "content": "7617af3005f85d4c",
+      "start": "4E5000",
+      "end": "4E90D3",
+      "type": "SMST",
+      "name": "Tiny Mouse with different colored tails Model"
+    },
+    {
+      "content": "0b16ae77bdbb8f17",
+      "start": "4EA848",
+      "end": "4F1DC3",
+      "type": "SMST",
+      "name": "Tiny Mouses Room door Models"
+    },
+    {
+      "content": "a0db4a92c73c6b1b",
+      "start": "4F1DC4",
+      "end": "4F1E27",
+      "type": "____",
+      "name": "Tiny Mouses Minigame Sprites"
+    },
+    {
+      "content": "456c7f151d3eb3f9",
+      "start": "4F1E28",
+      "end": "504D07",
+      "type": "MDAT",
+      "name": "Tiny Mouses Minigame Level"
+    },
+    {
+      "content": "f7748689270ce24f",
+      "start": "504D08",
+      "end": "505FFF",
+      "type": "TXTD",
+      "name": "Tiny Mouses House Text"
+    },
+    {
+      "content": "68554ecf8db5afeb",
+      "start": "506000",
+      "end": "507AFF",
+      "type": "SMST",
+      "name": "Outro Zippo Model"
+    },
+    {
+      "content": "e50b348e79a6c475",
+      "start": "507B00",
+      "end": "508DB3",
+      "type": "____",
+      "name": "Outro Zippo Animation"
+    },
+    {
+      "content": "11083d8be2cad374",
+      "start": "508DB4",
+      "end": "5098C7",
+      "type": "TXTD",
+      "name": "Outro Scene Text"
+    },
+    {
+      "content": "e2d10a2f930faeba",
+      "start": "5098C8",
+      "end": "50AD1F",
+      "type": "BGMP",
+      "name": "Outro Scene Background"
+    },
+    {
+      "content": "4fa0af157b674a09",
+      "start": "50AD20",
+      "end": "518B3B",
+      "type": "MDAT",
+      "name": "Outro Scene Level"
+    },
+    {
+      "content": "242eef8288ee1c28",
+      "start": "518B3C",
+      "end": "525F9F",
+      "type": "SMST",
+      "name": "Wins boat Kainens ending chest Models"
+    },
+    {
+      "content": "0efe9a5b93f02925",
+      "start": "525FA0",
+      "end": "52608F",
+      "type": "____",
+      "name": "Outro Scene Sprites"
+    },
+    {
+      "content": "30a29258045a22e2",
+      "start": "526090",
+      "end": "52A083",
+      "type": "____",
+      "name": "?"
+    },
+    {
+      "content": "2b0915351fbfede4",
+      "start": "52A084",
+      "end": "52C2D3",
+      "type": "SMST",
+      "name": "Win Model"
+    },
+    {
+      "content": "38b3af5d18d86bc7",
+      "start": "52C2D4",
+      "end": "52DC7B",
+      "type": "SMST",
+      "name": "Ark Model"
+    },
+    {
+      "content": "770adf0341d8755e",
+      "start": "52DC7C",
+      "end": "534D33",
+      "type": "SMST",
+      "name": "Tabby Model"
+    },
+    {
+      "content": "f31237620815ffc8",
+      "start": "534D34",
+      "end": "536507",
+      "type": "SMST",
+      "name": "Parrot Model"
+    },
+    {
+      "content": "6dee430c57433ff0",
+      "start": "536508",
+      "end": "5387CB",
+      "type": "SMST",
+      "name": "Kainen Model"
+    },
+    {
+      "content": "50e56e3f5d7829b5",
+      "start": "5387CC",
+      "end": "53A877",
+      "type": "SMST",
+      "name": "Pham Model"
+    },
+    {
+      "content": "f2267281c773d565",
+      "start": "53A878",
+      "end": "53C43B",
+      "type": "SMST",
+      "name": "Phams Daughter 01 Model"
+    },
+    {
+      "content": "175a2a2c8d020bd4",
+      "start": "53C43C",
+      "end": "53DE4F",
+      "type": "SMST",
+      "name": "Phams Daughter 02 Model"
+    },
+    {
+      "content": "f13ad5cf812adf18",
+      "start": "53DE50",
+      "end": "53F77B",
+      "type": "SMST",
+      "name": "Phams daughter 03 Model"
+    },
+    {
+      "content": "1ce9e3f33f184c4f",
+      "start": "53F77C",
+      "end": "54118B",
+      "type": "SMST",
+      "name": "Mole Model"
+    },
+    {
+      "content": "d9abf25f700f4b02",
+      "start": "54118C",
+      "end": "5440A7",
+      "type": "SMST",
+      "name": "Basket Woman Model"
+    },
+    {
+      "content": "6bfa92b6a283f903",
+      "start": "5440A8",
+      "end": "545FAF",
+      "type": "SMST",
+      "name": "Gran Model"
+    },
+    {
+      "content": "660508c7128b053e",
+      "start": "545FB0",
+      "end": "54717F",
+      "type": "____",
+      "name": "?"
+    },
+    {
+      "content": "69d30235c6f06c57",
+      "start": "547430",
+      "end": "547F73",
+      "type": "____",
+      "name": "?"
+    },
+    {
+      "content": "7a23e8955c353c49",
+      "start": "547F74",
+      "end": "54839B",
+      "type": "____",
+      "name": "?"
+    },
+    {
+      "content": "ee0e2f6c70888abc",
+      "start": "54839C",
+      "end": "548A97",
+      "type": "____",
+      "name": "?"
+    },
+    {
+      "content": "ccb40fa58cebdf29",
+      "start": "54B19C",
+      "end": "54F637",
+      "type": "SMST",
+      "name": "Tuxedo Tomba (black) Model"
+    },
+    {
+      "content": "8c38174b7a1ecc04",
+      "start": "54F638",
+      "end": "553FFF",
+      "type": "SMST",
+      "name": "Tuxedo Tomba (red) Model"
+    },
+    {
+      "content": "5b3ee5d38154615e",
+      "start": "558268",
+      "end": "56DBF7",
+      "type": "MDAT",
+      "name": "Purified Large Mine Underground Level"
+    },
+    {
+      "content": "3f9848e0dfbeb9c8",
+      "start": "56DBF8",
+      "end": "56E687",
+      "type": "DRWB",
+      "name": "Purified Large Mine Underground Drawmap"
+    },
+    {
+      "content": "36ca9b022b7c769f",
+      "start": "56E688",
+      "end": "58A3EB",
+      "type": "SMST",
+      "name": "Asset pack Cursed Large Mine Underground (roomsenemies) Models"
+    },
+    {
+      "content": "7344b30daf761e31",
+      "start": "58A3EC",
+      "end": "594E3B",
+      "type": "____",
+      "name": "Purified Large Mine Underground Collision"
+    },
+    {
+      "content": "27f3baabb7fa8aac",
+      "start": "597EC4",
+      "end": "59824F",
+      "type": "____",
+      "name": "Purified Large Mine Underground Sprites"
+    },
+    {
+      "content": "5fe7ece92f1b6e5d",
+      "start": "5B078C",
+      "end": "5B703B",
+      "type": "MDAT",
+      "name": "Underground Tunnels Level"
+    },
+    {
+      "content": "3619a9801e512be6",
+      "start": "5B703C",
+      "end": "5BA2F3",
+      "type": "SMST",
+      "name": "Kainen with Staff Lit Model"
+    },
+    {
+      "content": "336f41397b4cb515",
+      "start": "5BA2F4",
+      "end": "5BB2DF",
+      "type": "____",
+      "name": "Kainen with Staff Animation"
+    },
+    {
+      "content": "4125867989c20d7e",
+      "start": "5BB2E0",
+      "end": "5BE597",
+      "type": "SMST",
+      "name": "Kainen with Staff Unlit Model"
+    },
+    {
+      "content": "04df466c3b049b37",
+      "start": "5BE598",
+      "end": "5BE7FF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "aae32f3e60a75d7d",
+      "start": "5BE800",
+      "end": "5D66D3",
+      "type": "MDAT",
+      "name": "Purified Coal Mining Town Level"
+    },
+    {
+      "content": "be01ef1247bb9fe5",
+      "start": "5DA93C",
+      "end": "5FC9CF",
+      "type": "SMST",
+      "name": "Asset pack Purified Coal Mining Town Models"
+    },
+    {
+      "content": "4805a346f0de0f18",
+      "start": "627270",
+      "end": "6287FF",
+      "type": "SMST",
+      "name": "Conveyor Belt Models"
+    },
+    {
+      "content": "a5f284b68d022a54",
+      "start": "62D930",
+      "end": "634CDB",
+      "type": "____",
+      "name": "Purified Kujara Ranch Area Collision"
+    },
+    {
+      "content": "50271e42be97d26f",
+      "start": "634CDC",
+      "end": "64DD9B",
+      "type": "MDAT",
+      "name": "Purified Kujara Ranch Area Level"
+    },
+    {
+      "content": "d57df294bf7c4ccf",
+      "start": "64DD9C",
+      "end": "652633",
+      "type": "MDAT",
+      "name": "Purified Holy Tree Flight Level"
+    },
+    {
+      "content": "983382ce056906be",
+      "start": "655274",
+      "end": "66795F",
+      "type": "SMST",
+      "name": "Asset pack - Purified Kujara Ranch Area Models"
+    },
+    {
+      "content": "1583ec91a78ff5c6",
+      "start": "669F4C",
+      "end": "66C537",
+      "type": "SMST",
+      "name": "Red Kokka Bird Model"
+    },
+    {
+      "content": "cd0a3c1f2361ed6f",
+      "start": "671550",
+      "end": "674AEF",
+      "type": "SMST",
+      "name": "Armadillo Enemy Model"
+    },
+    {
+      "content": "1ee289a6eb9c3488",
+      "start": "6790D0",
+      "end": "67AC93",
+      "type": "SMST",
+      "name": "Phams Daughter 01 Model"
+    },
+    {
+      "content": "fa6a289e4cce2aee",
+      "start": "67AC94",
+      "end": "67C6A7",
+      "type": "SMST",
+      "name": "Phams Daughter 02 Model"
+    },
+    {
+      "content": "61397ba644884313",
+      "start": "67C6A8",
+      "end": "67DFD3",
+      "type": "SMST",
+      "name": "Phams Daugther 03s Model"
+    },
+    {
+      "content": "f8c64b463e7be2cd",
+      "start": "67DFD4",
+      "end": "680063",
+      "type": "SMST",
+      "name": "Leaf Traveller Model"
+    },
+    {
+      "content": "580f35471f52e4f5",
+      "start": "680064",
+      "end": "681ECF",
+      "type": "SMST",
+      "name": "Kujara Ranch Man 02 Model Model"
+    },
+    {
+      "content": "2e65f934763dfd62",
+      "start": "681ED0",
+      "end": "6820F7",
+      "type": "____",
+      "name": "Purified Kujara Ranch Sprites"
+    },
+    {
+      "content": "b25cb541f52f4b2a",
+      "start": "684878",
+      "end": "685D5F",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth closed)"
+    },
+    {
+      "content": "3c9821519d55ae59",
+      "start": "685D60",
+      "end": "687457",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth opened var 1)"
+    },
+    {
+      "content": "0047526670de8987",
+      "start": "687458",
+      "end": "68914F",
+      "type": "SMST",
+      "name": "Blue Sea Anemone segments (mouth opened var 2)"
+    },
+    {
+      "content": "107c967fb8dc426c",
+      "start": "689150",
+      "end": "68BAD7",
+      "type": "SMST",
+      "name": "Koma Pig (Kujara Ranch) Model"
+    },
+    {
+      "content": "4996c633de51270e",
+      "start": "693020",
+      "end": "694587",
+      "type": "SMST",
+      "name": "Dwarf (brown)"
+    },
+    {
+      "content": "0ca82520e86df3ec",
+      "start": "694BA8",
+      "end": "695DC7",
+      "type": "SMST",
+      "name": "Dwarf (green)"
+    },
+    {
+      "content": "2a22e85d48c2515c",
+      "start": "6964D0",
+      "end": "697927",
+      "type": "BGMP",
+      "name": "Purified Kujara Ranch Area Background"
+    },
+    {
+      "content": "1f6c7c6f54279c10",
+      "start": "697928",
+      "end": "697FFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "541a24aebe050276",
+      "start": "69D130",
+      "end": "6BB5DB",
+      "type": "SMST",
+      "name": "Asset pack - Purified Kujara Ranch Summit"
+    },
+    {
+      "content": "b3d0ec453da834bc",
+      "start": "6BB5DC",
+      "end": "6CB6C7",
+      "type": "MDAT",
+      "name": "Purified Kujara Ranch Summit Level"
+    },
+    {
+      "content": "059ac4d6a5e0d690",
+      "start": "6CB6C8",
+      "end": "6D4A83",
+      "type": "MDAT",
+      "name": "Kujara Washing Minigame Level"
+    },
+    {
+      "content": "8dd415f8f293c13f",
+      "start": "6D9B28",
+      "end": "6DEDCF",
+      "type": "____",
+      "name": "Purified Kujara Ranch Summit Collision"
+    },
+    {
+      "content": "99b025c5c47353cb",
+      "start": "6E5F80",
+      "end": "6E7B43",
+      "type": "SMST",
+      "name": "Phams Daughter 01 Model"
+    },
+    {
+      "content": "059e61b9498ffde4",
+      "start": "6E7B44",
+      "end": "6E9557",
+      "type": "SMST",
+      "name": "Phams Daughter 02 Model"
+    },
+    {
+      "content": "2e60d9148610b71c",
+      "start": "6E9558",
+      "end": "6EAE83",
+      "type": "SMST",
+      "name": "Phams Daughter 03 Model"
+    },
+    {
+      "content": "9179dc69cb2b6c01",
+      "start": "6EAE84",
+      "end": "6ECCEF",
+      "type": "SMST",
+      "name": "Kujara Ranch Man 02 Model"
+    },
+    {
+      "content": "8faa7c2531df6065",
+      "start": "6ECCF0",
+      "end": "6EEA0F",
+      "type": "SMST",
+      "name": "Kujara Ranch Man (washing minigame) Model"
+    },
+    {
+      "content": "e0cd9a0c72ac122d",
+      "start": "6EEA10",
+      "end": "6EFE67",
+      "type": "BGMP",
+      "name": "Purified Kujara Ranch Summit Background"
+    },
+    {
+      "content": "af137889e18a4c9a",
+      "start": "6EFE68",
+      "end": "6F0287",
+      "type": "____",
+      "name": "Purified Kujara Ranch Summit Sprites"
+    },
+    {
+      "content": "86f0a024707bb5d7",
+      "start": "6F0288",
+      "end": "6F29D7",
+      "type": "SMST",
+      "name": "Toradako enemy"
+    },
+    {
+      "content": "24c50bba14f30e04",
+      "start": "6F3BE4",
+      "end": "6F43D3",
+      "type": "SMST",
+      "name": "Kujara Bird (burned gray)"
+    },
+    {
+      "content": "996cf550e5bd9b06",
+      "start": "6F43D4",
+      "end": "6F4B8B",
+      "type": "SMST",
+      "name": "Kujara Bird"
+    },
+    {
+      "content": "acda17978d89505b",
+      "start": "6F4B8C",
+      "end": "6F51AB",
+      "type": "SMST",
+      "name": "Kujara Bird (shaved)"
+    },
+    {
+      "content": "f83be000b9a8cf30",
+      "start": "6F51AC",
+      "end": "6F59C3",
+      "type": "SMST",
+      "name": "Kujara Bird (burned black)"
+    },
+    {
+      "content": "e5939ae7247d3749",
+      "start": "6F59C4",
+      "end": "6F6103",
+      "type": "SMST",
+      "name": "Kujara Bird (fat shaved)"
+    },
+    {
+      "content": "38d25a8ee7f53390",
+      "start": "6F6504",
+      "end": "6F8B07",
+      "type": "SMST",
+      "name": "Kainen Model"
+    },
+    {
+      "content": "797eeec58d83ff7d",
+      "start": "6F8B08",
+      "end": "6FAE73",
+      "type": "SMST",
+      "name": "Kainen (swimming suit) Model"
+    },
+    {
+      "content": "a806c649f2120b8c",
+      "start": "6FD7A0",
+      "end": "6FD7FF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "37580b31a59452d6",
+      "start": "701A68",
+      "end": "731B5F",
+      "type": "MDAT",
+      "name": "Purified Donglin Forest Level"
+    },
+    {
+      "content": "a05e725550ccb0b6",
+      "start": "73CB68",
+      "end": "752D23",
+      "type": "SMST",
+      "name": "Asset pack Purified Donglin Forest Models"
+    },
+    {
+      "content": "d1da59f81ae7961a",
+      "start": "752D24",
+      "end": "754537",
+      "type": "SMST",
+      "name": "Trap mechanisms Models"
+    },
+    {
+      "content": "cd2a7f319b9e0e0a",
+      "start": "754538",
+      "end": "7548A7",
+      "type": "____",
+      "name": "Purified Donglin Forest Sprites"
+    },
+    {
+      "content": "5ce378bb37312621",
+      "start": "7614F0",
+      "end": "761F27",
+      "type": "BGMP",
+      "name": "Purified Donglin Forest Background"
+    },
+    {
+      "content": "1b53feec805b4bf3",
+      "start": "769BA8",
+      "end": "769FFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "4a772b1505fa2eaa",
+      "start": "79AC28",
+      "end": "79AEB3",
+      "type": "SPRT",
+      "name": "Cursed Circus Village Sprites"
+    },
+    {
+      "content": "33997d38ded24317",
+      "start": "7AF8A4",
+      "end": "7B24A7",
+      "type": "SMST",
+      "name": "Purified Villager 01 (man) Model"
+    },
+    {
+      "content": "860dcb805635d8a2",
+      "start": "7B24A8",
+      "end": "7B4C43",
+      "type": "SMST",
+      "name": "Purified Villager 02 (woman) Model"
+    },
+    {
+      "content": "a89260cad95782e5",
+      "start": "7B4C44",
+      "end": "7B7E33",
+      "type": "SMST",
+      "name": "Purified Clown Model"
+    },
+    {
+      "content": "71f210265693f7c9",
+      "start": "7CFCC8",
+      "end": "7CFFFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "0ad99ea47cedb569",
+      "start": "82E8E8",
+      "end": "82EFFF",
+      "type": "____",
+      "name": ""
+    },
+    {
+      "content": "23d40929855a29ac",
+      "start": "82F000",
+      "end": "832F2B",
+      "type": "SMST",
+      "name": "Tomba Model"
+    },
+    {
+      "content": "98b171f58f4e0c1a",
+      "start": "833000",
+      "end": "837FD3",
+      "type": "SMST",
+      "name": "Squirrel Suit Tomba Model"
+    },
+    {
+      "content": "95b74bba1d205999",
+      "start": "838000",
+      "end": "83C117",
+      "type": "SMST",
+      "name": "Wingsuit Tomba Model"
+    },
+    {
+      "content": "f098f7cc6db7159a",
+      "start": "83C800",
+      "end": "841057",
+      "type": "SMST",
+      "name": "Pigsuit Tomba Model"
+    },
+    {
+      "content": "1eaa644b9e74bf30",
+      "start": "841800",
+      "end": "84604B",
+      "type": "SMST",
+      "name": "Fire Pig Robe Tomba Model"
+    },
+    {
+      "content": "d8edc810e071fce9",
+      "start": "846800",
+      "end": "84B04B",
+      "type": "SMST",
+      "name": "Ice Pig Robe Tomba Model"
+    },
+    {
+      "content": "acf6ad7996046322",
+      "start": "84B800",
+      "end": "85004B",
+      "type": "SMST",
+      "name": "Ghost Pig Robe Tomba Model"
+    },
+    {
+      "content": "c731935bba29dc41",
+      "start": "850800",
+      "end": "85504B",
+      "type": "SMST",
+      "name": "Earth Pig Robe Tomba Model"
+    },
+    {
+      "content": "e16d16ecd338b132",
+      "start": "855800",
+      "end": "85A04B",
+      "type": "SMST",
+      "name": "Water Pig Robe Tomba Model"
+    },
+    {
+      "content": "0fdc8ec7085e2f7a",
+      "start": "85A800",
+      "end": "85E433",
+      "type": "SMST",
+      "name": "Invisible Tomba Model"
+    },
+    {
+      "content": "3567ce26a021f799",
+      "start": "85E800",
+      "end": "863057",
+      "type": "SMST",
+      "name": "Water Pig Suit Tomba Model"
+    },
+    {
+      "content": "9ef55c69acc077a2",
+      "start": "869800",
+      "end": "86B1A7",
+      "type": "SMST",
+      "name": "Ark Model"
+    },
+    {
+      "content": "4f7cf3f62f2dc490",
+      "start": "86B800",
+      "end": "86DA4F",
+      "type": "SMST",
+      "name": "Win Model"
+    },
+    {
+      "content": "4feb92b07a28fccf",
+      "start": "86E000",
+      "end": "8700EF",
+      "type": "SMST",
+      "name": "Thirsty Traveller Model"
+    },
+    {
+      "content": "0e688f1a7f5094e4",
+      "start": "873000",
+      "end": "8753CF",
+      "type": "SMST",
+      "name": "Santa Model"
+    },
+    {
+      "content": "ba1f049d935a29a0",
+      "start": "875800",
+      "end": "877833",
+      "type": "SMST",
+      "name": "Pham Outside clothes Model"
+    },
+    {
+      "content": "97f31736a1e8918a",
+      "start": "87A800",
+      "end": "87C8AB",
+      "type": "SMST",
+      "name": "Pham Yellow suit Model"
+    },
+    {
+      "content": "9d1cf4f5f6a6fcc7",
+      "start": "87D000",
+      "end": "87F0EF",
+      "type": "SMST",
+      "name": "Oil-Smeared Traveller Model"
+    },
+    {
+      "content": "4acd601090a5df3c",
+      "start": "87F800",
+      "end": "8819AF",
+      "type": "SMST",
+      "name": "Collector Model"
+    },
+    {
+      "content": "5f86f87a9b7f5986",
+      "start": "882000",
+      "end": "884033",
+      "type": "SMST",
+      "name": "Pham Blue Suit Model"
+    },
+    {
+      "content": "945e441ebaae2039",
+      "start": "884800",
+      "end": "886A8B",
+      "type": "SMST",
+      "name": "Sculptor Model"
+    },
+    {
+      "content": "12e0d2aaaa607726",
+      "start": "887000",
+      "end": "8890EF",
+      "type": "SMST",
+      "name": "Oil-Smeared Traveller Model"
+    },
+    {
+      "content": "348c7364a93b3014",
+      "start": "889800",
+      "end": "88B423",
+      "type": "SMST",
+      "name": "Collector Model"
+    },
+    {
+      "content": "ae3f151709134add",
+      "start": "88B800",
+      "end": "88D8AB",
+      "type": "SMST",
+      "name": "Pham Yellow suit Model"
+    },
+    {
+      "content": "13c5fa287ffa523a",
+      "start": "88E000",
+      "end": "890063",
+      "type": "SMST",
+      "name": "Sculptor Model"
+    },
+    {
+      "content": "cf7084e30e139d3e",
+      "start": "890800",
+      "end": "89293B",
+      "type": "SMST",
+      "name": "Painter Model"
+    },
+    {
+      "content": "d0612476aaecb649",
+      "start": "893000",
+      "end": "895603",
+      "type": "SMST",
+      "name": "Kainen Model"
+    },
+    {
+      "content": "6122175a61d74691",
+      "start": "895800",
+      "end": "8976D3",
+      "type": "SMST",
+      "name": "Mizuno the Witch Model"
+    },
+    {
+      "content": "a42cf0ab4ba39fe4",
+      "start": "897800",
+      "end": "8998EF",
+      "type": "SMST",
+      "name": "Laughing Traveller Model"
+    },
+    {
+      "content": "7b2fd7a2b0abed0f",
+      "start": "8A5800",
+      "end": "8A72A3",
+      "type": "SMST",
+      "name": "100 Year Old Man Model"
+    },
+    {
+      "content": "bc6bb4444038453a",
+      "start": "8AA000",
+      "end": "8ABD17",
+      "type": "SMST",
+      "name": "Mermaid Model"
+    },
+    {
+      "content": "4dcbec67640e66dc",
+      "start": "8AC000",
+      "end": "8BBE5B",
+      "type": "MDAT",
+      "name": "Cursed Water Temple 1 Level"
+    },
+    {
+      "content": "ccd09a2703d9eec9",
+      "start": "8BC000",
+      "end": "8C9CE3",
+      "type": "MDAT",
+      "name": "Cursed Water Temple 2 Level"
+    },
+    {
+      "content": "dcc545ca02661723",
+      "start": "8CA000",
+      "end": "8D73D7",
+      "type": "MDAT",
+      "name": "Cursed Water Temple 3 Level"
+    },
+    {
+      "content": "8f46689662c5905d",
+      "start": "8D7800",
+      "end": "8DD99F",
+      "type": "MDAT",
+      "name": "Cursed Water Temple 4 Level"
+    },
+    {
+      "content": "166545bdd634a852",
+      "start": "8E6800",
+      "end": "8F665B",
+      "type": "MDAT",
+      "name": "Purified Water Temple 1 Level"
+    },
+    {
+      "content": "d4bbbf00beb17682",
+      "start": "8F6800",
+      "end": "9044E3",
+      "type": "MDAT",
+      "name": "Purified Water Temple 2 Level"
+    },
+    {
+      "content": "ed5268d9dd1827b3",
+      "start": "904800",
+      "end": "911BD7",
+      "type": "MDAT",
+      "name": "Purified Water Temple 3 Level"
+    },
+    {
+      "content": "c13996faa57ddf49",
+      "start": "912000",
+      "end": "91819F",
+      "type": "MDAT",
+      "name": "Purified Water Temple 4 Level"
+    }
+  ]
 }

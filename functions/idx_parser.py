@@ -113,6 +113,15 @@ def _relabel_file_item(main_window, child, label_set):
         return False
     stem, filetype, _address, detail, content = data
     label = label_set.get(content) if label_set else None
+    by_position = False
+    if label is None and label_set:
+        # The bytes do not match anything, but the slot might - a
+        # translated or PAL-retimed file is still the same asset. See
+        # LabelSet.by_slot().
+        where = child.data(Qt.ItemDataRole.UserRole + 2)
+        if where:
+            label = label_set.by_slot(where[0], where[1])
+            by_position = label is not None
     name = label.name if label else ""
     shown = filetype
     tooltip = detail
@@ -127,6 +136,9 @@ def _relabel_file_item(main_window, child, label_set):
                 tooltip += f"\nlabels file calls this {label.kind}"
     elif label_set:
         tooltip += "\nnot in the labels file"
+    if by_position:
+        tooltip += ("\nnamed by its slot, not its bytes - this build's copy "
+                    "differs from the one the labels were written against")
     child.setText(f"{stem} {name}.{shown}" if name else f"{stem}.{shown}")
     child.setIcon(_type_icon(main_window, shown, child.icon()))
     child.setToolTip(tooltip)

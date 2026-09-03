@@ -45,9 +45,9 @@ def regions(glyph_top=fontpage.GLYPH_TOP):
     return (
         ("system font 8x8", fontpage.SYSTEM_TOP, glyph_top,
          QColor(90, 170, 255, 190)),
-        ("dialogue font 8x16", glyph_top, 168,
+        ("dialogue font 8x16", glyph_top, glyph_top + 128,
          QColor(120, 220, 120, 190)),
-        ("menu artwork", 168, fontpage.CLUT_TOP,
+        ("menu artwork", glyph_top + 128, fontpage.CLUT_TOP,
          QColor(240, 170, 60, 190)),
         ("palettes", fontpage.CLUT_TOP, fontpage.PAGE_H,
          QColor(230, 110, 110, 190)),
@@ -225,6 +225,15 @@ FONT_CLUT = (240, 3)
 # the cell named by the code and the one after it. Treating them as
 # single cells - which is what a plain grid does - lets a click land on
 # half a glyph and an export cut one down the middle.
+# The dialogue grid is always 8 rows of 16, one row per 32 codes, which
+# is the whole 256-code space. Where it STARTS moves between builds, so
+# where it ends has to move with it: hard-coded at the US page's 168,
+# a European grid lost its last row and a half - codes 0xE0-0xFF, which
+# is where Spanish keeps its inverted marks, so the glyphs for a
+# language's own punctuation were unreachable.
+GRID_ROWS = 8
+GRID_HEIGHT = GRID_ROWS * 16
+
 DOUBLE_FIRST = 0xA0
 # Through to the end of the row, not to 0xD5. The run does not stop
 # where the kana do: the dialogue frame fills the rest of that grid row
@@ -386,9 +395,22 @@ TITLE_PALETTES = {
 # dragged those into the selection - which is the green that had no
 # business being there.
 DE_SPRITES = (
-    ("Ereignis (Event)", 56, 64, 96, 160),
-    ("unnamed word, y56 x160", 56, 64, 160, 224),
+    # Ereignis is ONE word in two halves that happen to meet exactly on
+    # a 64-pixel boundary: the runs are 97..159 and 160..224, touching
+    # at x160 with no gap. Split there it reads as two anonymous blocks,
+    # which is how it was catalogued before - so it is one region.
+    ("Ereignis (Event)", 56, 64, 96, 224),
     ("Laden (Load)", 128, 144, 200, 256),
+    # THE BIG LETTERS ARE NOT SPRITES - they are grid cells, and this is
+    # deliberately not a region.
+    #
+    # y144..160 is grid row 5, codes 0xA0-0xBF, and it holds
+    # AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPs - the accented capitals. y160..176
+    # is row 6, codes 0xC0-0xDF, the matching lowercase. Boxing either
+    # off as one sprite would replace 32 individually selectable letters
+    # with a single block, and those letters are exactly what a
+    # translation edits one at a time. They are already fully editable
+    # through the grid - click any one and it names its own code.
     # One word per cell. They touch at x176, so a gap-tolerant scan
     # merged Hilfe and Speichern into one block; a scan that allows no
     # gap at all separates them and lands on 8-pixel columns anyway.
@@ -410,7 +432,23 @@ DE_SPRITES = (
     ("digit 9", 224, 240, 136, 152),
     ("digit 0", 224, 240, 152, 168),
     ("100%", 224, 240, 168, 200),
-    ("Objekt (Items)", 224, 240, 200, 248),
+    # Objekt sits a row HIGHER than the health digits - y216, not y224 -
+    # and on a 4-pixel half-grid rather than the 8 everything else uses,
+    # which is why looking for it level with "100%" found nothing and it
+    # read as missing from this build.
+    ("Objekt (Items)", 216, 228, 200, 248),
+    # THE DOUBLE-WIDTH GLYPHS
+    #
+    # Every 16-pixel cell across both bands is filled, so these are the
+    # double-width rows - the circle, the big square and the rest. This
+    # build does have them; they are simply not where the US page keeps
+    # them, and they are not the accented letters, which are single
+    # width and live in the grid above.
+    ("double glyphs (upper)", 193, 206, 0, 226),
+    ("double glyphs (lower)", 207, 222, 0, 176),
+    # The dialogue border, which is on this page after all - just not at
+    # the US page's 187/211/235 three-piece run.
+    ("text border", 208, 214, 187, 254),
 )
 SP_SPRITES = (
     ("unnamed word, y56 x64", 56, 64, 64, 128),
@@ -1217,7 +1255,7 @@ class FontPageView(QWidget):
             # The system font is the dialogue grid at half height.
             code = (y // fontpage.SYSTEM_H) * fontpage.GLYPH_COLS + x // fontpage.GLYPH_W
             return ("system", code)
-        if y < 168:
+        if y < self.glyph_top + GRID_HEIGHT:
             row = (y - self.glyph_top) // fontpage.GLYPH_H
             code = row * fontpage.GLYPH_COLS + x // fontpage.GLYPH_W
             return ("glyph", first_of(code, self.build))
@@ -1795,7 +1833,7 @@ class _PageCanvas(PixelCanvas):
                         painter.drawRect(scale(x), scale(y),
                                          scale(fontpage.GLYPH_W),
                                          scale(fontpage.SYSTEM_H))
-                for row in range((168 - self.glyph_top) // fontpage.GLYPH_H):
+                for row in range(GRID_ROWS):
                     y = self.glyph_top + row * fontpage.GLYPH_H
                     col = 0
                     while col < fontpage.GLYPH_COLS:

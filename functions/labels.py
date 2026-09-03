@@ -117,9 +117,30 @@ class LabelSet:
     entries: dict = field(default_factory=dict)  # content hash -> Label
     areas: dict = field(default_factory=dict)    # chunk index -> area name
     bins: dict = field(default_factory=dict)     # BIN filename -> what it is
+    # (chunk index, file index) -> content hash, for the build this set
+    # was written against. See by_slot().
+    slots: dict = field(default_factory=dict)
 
     def __len__(self):
         return len(self.entries)
+
+    def by_slot(self, chunk_index, file_index):
+        """The Label for the file in this slot, or None.
+
+        A localised disc holds the same assets in the same order, but
+        not the same bytes: its text is translated, and PAL retimes some
+        animations, so those files hash differently and a content-keyed
+        lookup misses them - 45 of them on the German and Spanish discs,
+        including every single text file.
+
+        Position finds them anyway. Every area holds the same file types
+        in the same order on all three retail discs, so the file in slot
+        N of area X is the same asset whatever language it speaks. This
+        is the fallback, never the first choice: content is what
+        identifies a file, and position only says which file to look at
+        when the bytes have legitimately changed."""
+        content = self.slots.get((chunk_index, file_index))
+        return self.entries.get(content) if content else None
 
     def area_name(self, chunk_index):
         return self.areas.get(chunk_index, "")
@@ -235,7 +256,20 @@ def load(path):
         entries=entries,
         areas=_expand_areas(raw.get("areas") or {}, path),
         bins={str(k).upper(): str(v) for k, v in (raw.get("bins") or {}).items()},
+        slots=_expand_slots(raw.get("slots") or {}),
     )
+
+
+def _expand_slots(raw):
+    """The "slots" table - "AREA:INDEX" (hex:decimal) to content hash."""
+    out = {}
+    for key, value in raw.items():
+        try:
+            chunk, index = str(key).split(":")
+            out[(int(chunk, 16), int(index))] = str(value)
+        except (ValueError, AttributeError):
+            continue
+    return out
 
 
 def _expand_areas(raw, path):
@@ -429,6 +463,8 @@ def save(label_set, path, keep_existing=True):
         "serial": label_set.serial or document.get("serial", ""),
         "source": label_set.source or document.get("source", ""),
         "dat_size": label_set.dat_size or document.get("dat_size", 0),
+        "slots": {f"{c:02X}:{i}": h
+                  for (c, i), h in sorted(label_set.slots.items())},
         "areas": {f"{index:02X}": name
                   for index, name in sorted(label_set.areas.items())},
         "bins": dict(sorted(label_set.bins.items())),
