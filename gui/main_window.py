@@ -1210,8 +1210,16 @@ class MainWindow(QMainWindow):
             # first place.
             self.on_tree_selection_changed()
 
-    def _tab_changed(self, index):
-        """Fill the Translation tab the first time it is opened."""
+    def _tab_changed(self, index=None):
+        """Fill the Translation tab the first time it is looked at.
+
+        Called both when the tab is switched to and when a disc finishes
+        opening, because either can be the moment it first has something
+        to show - switching to it before opening a disc used to leave it
+        empty for good, since the switch was the only thing listened
+        for."""
+        if index is None:
+            index = self.main_tabs.currentIndex()
         if self.main_tabs.widget(index) is not self.translation_tab:
             return
         if self._translation_loaded or not self.dat_file:
@@ -1764,6 +1772,9 @@ class MainWindow(QMainWindow):
         self.voice_panel.set_image(iso_path)
         self.music_panel.set_image(iso_path)
         self.sfx_panel.set_image(iso_path)
+        # If Translation is already the tab in front, it has been
+        # waiting for a disc rather than for a click.
+        self._tab_changed()
 
     def open_folder_dialog(self):
         """Open an already-extracted CD folder directly, no ISO needed.

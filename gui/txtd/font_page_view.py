@@ -870,6 +870,7 @@ class _Detail(QWidget):
         self.canvas.checker_light = CHECKER_LIGHT
         self.canvas.checker_dark = CHECKER_DARK
         self.canvas.painted.connect(self._paint_at)
+        self.canvas.picked.connect(self._pick_at)
         self.canvas.stroke_ended.connect(self.stroke_ended)
 
         self.scroll = QScrollArea()
@@ -1018,6 +1019,17 @@ class _Detail(QWidget):
     def _set_index(self, index):
         self.index = index
 
+    def _pick_at(self, col, row):
+        """Take the palette index under the cursor as the brush."""
+        if not self.page or not self.box:
+            return
+        x, y, width, height = self.box
+        if not (0 <= col < width and 0 <= row < height):
+            return
+        self.index = self.page[y + row][x + col]
+        self.swatches.index = self.index
+        self.swatches.update()
+
     def _paint_at(self, col, row, erasing=False):
         """Put a palette index into one texel of the page."""
         if not self.page or not self.box:
@@ -1055,7 +1067,8 @@ class _DetailCanvas(PixelCanvas):
     """The zoomed selection. Dragging paints; a grid keeps the texels
     countable, which is the whole point of being zoomed in."""
 
-    painted = pyqtSignal(int, int, bool)     # col, row, erasing
+    painted = pyqtSignal(int, int)          # col, row
+    picked = pyqtSignal(int, int)          # col, row - take its colour
     stroke_ended = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -1077,18 +1090,22 @@ class _DetailCanvas(PixelCanvas):
             self._emit(event)
 
     def _emit(self, event):
-        """Left paints the chosen index, right paints 0.
+        """Left paints the chosen index; right takes the one under the
+        cursor.
 
-        Index 0 is the page's "draw nothing", so the right button is
-        the eraser without needing to reach for a swatch - which is
-        what most of hand-editing a glyph actually is."""
+        Picking beats erasing as the right button's job because it can
+        do both: the transparent index is a swatch like any other, so
+        right-clicking a hole in the glyph selects it and the left
+        button then erases. An eraser cannot pick."""
         if self.image is None or self.zoom <= 0:
             return
         buttons = event.buttons() or event.button()
-        erasing = bool(buttons & Qt.MouseButton.RightButton)
         pos = event.position() if hasattr(event, "position") else event.pos()
-        self.painted.emit(int(pos.x() // self.zoom),
-                          int(pos.y() // self.zoom), erasing)
+        col, row = int(pos.x() // self.zoom), int(pos.y() // self.zoom)
+        if buttons & Qt.MouseButton.RightButton:
+            self.picked.emit(col, row)
+        else:
+            self.painted.emit(col, row)
 
     def paint_overlays(self, painter, _area):
         if self.image is None or self.zoom < 6:
@@ -1118,7 +1135,9 @@ class _Swatches(QWidget):
         self.index = 1
         self.setFixedHeight(self.SIZE + 8)
         self.setToolTip("What the brush paints. 0 is transparent - the "
-                        "page's way of drawing nothing - so it erases.")
+                        "page's way of drawing nothing - so picking it "
+                        "makes the brush an eraser. Right-clicking the "
+                        "glyph takes the colour under the cursor.")
 
     def set_palette(self, palette):
         self.palette = palette
