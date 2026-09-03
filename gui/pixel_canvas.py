@@ -63,6 +63,12 @@ class PixelCanvas(QWidget):
         super().__init__(parent)
         self.image = None
         self.zoom = zoom
+        # Per-view, because what reads as "nothing" depends on what is
+        # drawn over it: pale art wants a darker ground than the light
+        # default, and the font page is nearly all light pixels.
+        self.checker_light = CHECKER_LIGHT
+        self.checker_dark = CHECKER_DARK
+        self.checker_size = CHECKER_SIZE
         self._drag_from = None
         self._scroll_from = None
         self._dragged = False
@@ -137,15 +143,22 @@ class PixelCanvas(QWidget):
         widget pixels - skip anything outside it."""
 
     def _paint_checker(self, painter, area):
-        painter.fillRect(area, CHECKER_LIGHT)
+        """The nothing behind a transparent pixel.
+
+        Drawn in widget pixels rather than image ones, so its squares
+        neither line up with the texels nor grow when the view is zoomed
+        in - which is what keeps it reading as "there is nothing here"
+        instead of as part of the picture."""
+        light, dark, size = self.checker_light, self.checker_dark, self.checker_size
+        painter.fillRect(area, light)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(CHECKER_DARK)
-        first_x = (area.left() // CHECKER_SIZE) * CHECKER_SIZE
-        first_y = (area.top() // CHECKER_SIZE) * CHECKER_SIZE
-        for y in range(first_y, area.bottom() + 1, CHECKER_SIZE):
-            for x in range(first_x, area.right() + 1, CHECKER_SIZE):
-                if ((x // CHECKER_SIZE) + (y // CHECKER_SIZE)) % 2:
-                    painter.drawRect(x, y, CHECKER_SIZE, CHECKER_SIZE)
+        painter.setBrush(dark)
+        first_x = (area.left() // size) * size
+        first_y = (area.top() // size) * size
+        for y in range(first_y, area.bottom() + 1, size):
+            for x in range(first_x, area.right() + 1, size):
+                if ((x // size) + (y // size)) % 2:
+                    painter.drawRect(x, y, size, size)
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
     # --- mouse ---

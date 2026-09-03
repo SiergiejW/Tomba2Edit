@@ -112,20 +112,17 @@ SPRITE_CLUTS = {
     "health digits and +": (241, 3),
 }
 
-# What index 0 is drawn as. The page's "draw nothing" has to look like
-# nothing rather than like a colour, or an edited glyph cannot be told
-# from one drawn in black - so it is a checker rather than a fill. Dark,
-# because the game draws this text over dark scenery and a pale backdrop
-# loses the highlights.
-BACKDROP = (16, 16, 20, 255)
-BACKDROP_ALT = (26, 26, 32, 255)
-CHECKER = 4                    # squares, in page texels
-
-
-def _backdrop(x, y):
-    """The checker colour behind a transparent texel."""
-    return (BACKDROP if ((x // CHECKER) + (y // CHECKER)) % 2 == 0
-            else BACKDROP_ALT)
+# The ground a transparent texel is seen against. Left to the canvas to
+# paint rather than written into the image: drawn into the pixels it
+# would line up with them and scale with the zoom, which makes it look
+# like part of the glyph instead of like nothing.
+#
+# Darker than the canvas default, because the font is nearly all light
+# pixels and a pale ground swallows them - but nowhere near black, or an
+# erased texel cannot be told from one drawn in the page's darkest
+# colour, which is the mistake worth avoiding here.
+CHECKER_LIGHT = QColor(104, 104, 112)
+CHECKER_DARK = QColor(88, 88, 96)
 
 # The two fonts. Every dialogue capture - the NPC box, Zippo and Tomba's,
 # the controls menu, the intro text - matches this one to within a mean
@@ -176,6 +173,8 @@ class FontPageView(QWidget):
         self.selection = None     # ("glyph", code) | ("sprite", name)
 
         self.canvas = _PageCanvas()
+        self.canvas.checker_light = CHECKER_LIGHT
+        self.canvas.checker_dark = CHECKER_DARK
         self.canvas.clicked.connect(self._clicked)
 
         self.scroll = QScrollArea()
@@ -251,6 +250,7 @@ class FontPageView(QWidget):
         self.detail.renamed.connect(self._rename_code)
         self.detail.copy_wanted.connect(self.copy_selection)
         self.detail.paste_wanted.connect(self.paste_selection)
+        self.detail.palette_chosen.connect(self._palette_for_selection)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -328,6 +328,21 @@ class FontPageView(QWidget):
             f"Reset {describe(*self.selection)} - {touched} texel(s) put back"
             if touched else f"{describe(*self.selection)} was unchanged")
 
+    def _palette_for_selection(self, key):
+        """Draw this part with the palette just picked.
+
+        For a sprite it is remembered, so the page shows it that way
+        too - the menu words are one artwork in four colours and the
+        page cannot know which one is meant without being told."""
+        if not self.selection:
+            return
+        kind, what = self.selection
+        if kind == "sprite":
+            self.states[what] = tuple(key)
+            self._redraw()
+            self.info.setText(f"{what} drawn with palette "
+                              f"{key[0]}/{key[1]}")
+
     def copy_selection(self):
         """Keep the selected glyph's texels, to paste elsewhere."""
         box, _palette = self._selected_box()
@@ -395,12 +410,31 @@ class FontPageView(QWidget):
                                        describe(kind, what),
                                        *self._meaning(kind, what))
 
+    def _palette_key(self, kind, what):
+        """Which palette this part is currently drawn with."""
+        if kind == "sprite":
+            return self.states.get(what) or SPRITE_CLUTS.get(what) or self._font_key()
+        return self._font_key()
+
     def _meaning(self, kind, what):
-        """(code, character) for a glyph selection, or (None, "")."""
+        """(code, character, note) for a glyph selection.
+
+        The note is for a cell whose blank letter would otherwise read
+        as "free". The button icons are the case that matters: they draw
+        something the game very much still needs, and nothing about an
+        empty letter field says so."""
         if kind not in ("glyph", "system") or what is None:
-            return None, ""
+            return None, "", ""
         letters = self.table.letters() if self.table else {}
-        return what, letters.get(what, "")
+        char = letters.get(what, "")
+        note = ""
+        if kind == "glyph" and not char:
+            icon = ICON_CELLS.get(what) or ICON_CELLS.get(what - 1)
+            if icon:
+                note = (f"Draws the button icon that {icon} prints. No "
+                        "text reaches this cell as a letter, so it has no "
+                        "assigned letter - but the artwork is still used.")
+        return what, char, note
 
     def _detail_edited(self):
         """A texel was painted on the right - redraw the page."""
@@ -476,6 +510,7 @@ class FontPageView(QWidget):
         self.canvas.update()
         box, palette = self._selected_box()
         if box:
+            self.detail.set_palettes(self.cluts, self._palette_key(kind, what))
             self.detail.show_selection(self.page, box, palette,
                                        describe(kind, what),
                                        *self._meaning(kind, what))
@@ -657,6 +692,23 @@ def _nearest(colour, palette):
     return at
 
 
+# The US page draws the four button icons in cells 0xA0-0xA7, two cells
+# to an icon because they are 16 wide against the grid's 8. No US string
+# reaches them as letters: text asks for them through a control, and the
+# byte a control encodes to is not a cell number - {$CIRCLE} is 0xCD.
+#
+# So these cells have no assigned letter and never will, which looks
+# exactly like a free cell unless something says otherwise. They are the
+# last cells a translation should claim, since the artwork is still
+# needed; hence the note.
+ICON_CELLS = {
+    0xA0: "{$CIRCLE} (0xCD)",
+    0xA2: "{$CROSS} (0xCE)",
+    0xA4: "{$TRIANGLE} (0xCF)",
+    0xA6: "{$SQUARE} (0xD0)",
+}
+
+
 def glyph_cells(code):
     """How many 8-pixel cells this code is drawn across - see
     DOUBLE_FIRST."""
@@ -705,6 +757,7 @@ def _render(page, cluts, font_clut=FONT_CLUT, states=None):
     font_pal, by_key = _palette_map(cluts, font_clut, states)
     width, height = fontpage.PAGE_W, fontpage.PAGE_H
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
+    image.fill(0)          # transparent; the canvas paints the ground
 
     # Which palette covers each artwork box.
     boxes = []
@@ -727,8 +780,6 @@ def _render(page, cluts, font_clut=FONT_CLUT, states=None):
                 image.setPixelColor(x, y, QColor(value, value, value, 255))
             elif entry[3]:
                 image.setPixelColor(x, y, QColor(*entry))
-            else:
-                image.setPixelColor(x, y, QColor(*_backdrop(x, y)))
     return image
 
 
@@ -803,6 +854,7 @@ class _Detail(QWidget):
     undo_wanted = pyqtSignal()
     copy_wanted = pyqtSignal()
     paste_wanted = pyqtSignal()
+    palette_chosen = pyqtSignal(object)    # (row, slot) picked for this part
     renamed = pyqtSignal(object, str)      # code, the character it draws
 
     def __init__(self, parent=None):
@@ -811,9 +863,12 @@ class _Detail(QWidget):
         self.box = None                    # (x, y, w, h) in page texels
         self.palette = None
         self.code = None                   # the glyph code, when it is one
+        self.cluts = []
         self.index = 1                     # what the brush paints
 
         self.canvas = _DetailCanvas()
+        self.canvas.checker_light = CHECKER_LIGHT
+        self.canvas.checker_dark = CHECKER_DARK
         self.canvas.painted.connect(self._paint_at)
         self.canvas.stroke_ended.connect(self.stroke_ended)
 
@@ -826,8 +881,9 @@ class _Detail(QWidget):
         self.clut_box = QComboBox()
         self.clut_box.setToolTip(
             "Which palette to read the selection through. The menu words "
-            "are one artwork in four colours - this is how to see which "
-            "one you are editing.")
+            "are one artwork in four colours - this is how to see, and "
+            "set, which one you are editing.")
+        self.clut_box.currentIndexChanged.connect(self._palette_changed)
         self.swatches = _Swatches()
         self.swatches.picked.connect(self._set_index)
 
@@ -844,6 +900,10 @@ class _Detail(QWidget):
             "the disc spends on a symbol it never prints. Empty releases "
             "the code.")
         self.char_edit.editingFinished.connect(self._rename)
+
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: #c8a04a;")
 
         self.copy_button = QPushButton("Copy")
         self.copy_button.setToolTip(
@@ -907,13 +967,42 @@ class _Detail(QWidget):
         layout.addLayout(head)
         layout.addWidget(self.scroll, 1)
         layout.addLayout(name_row)
+        layout.addWidget(self.note)
         layout.addWidget(self.swatches)
         layout.addLayout(buttons)
 
-    def show_selection(self, page, box, palette, title, code=None, char=""):
+    def set_palettes(self, cluts, current=None):
+        """Fill the palette chooser. Without this it sat empty, which is
+        why it never did anything."""
+        self.cluts = list(cluts or ())
+        self.clut_box.blockSignals(True)
+        self.clut_box.clear()
+        at = 0
+        for i, (row, slot, _pal) in enumerate(self.cluts):
+            if current is not None and (row, slot) == tuple(current):
+                at = i
+            self.clut_box.addItem(f"row {row} slot {slot}", (row, slot))
+        self.clut_box.setCurrentIndex(at)
+        self.clut_box.blockSignals(False)
+
+    def _palette_changed(self, index):
+        key = self.clut_box.itemData(index)
+        if key is None:
+            return
+        for row, slot, pal in self.cluts:
+            if (row, slot) == tuple(key):
+                self.palette = pal
+                self.swatches.set_palette(pal)
+                self._redraw()
+                break
+        self.palette_chosen.emit(tuple(key))
+
+    def show_selection(self, page, box, palette, title, code=None, char="",
+                       note=""):
         self.page, self.box, self.palette = page, box, palette
         self.code = code
         self.title.setText(title)
+        self.note.setText(note)
         self.swatches.set_palette(palette)
         self.char_edit.blockSignals(True)
         self.char_edit.setText(char)
@@ -950,14 +1039,13 @@ class _Detail(QWidget):
             return
         x, y, width, height = self.box
         image = QImage(width, height, QImage.Format.Format_RGBA8888)
+        image.fill(0)      # transparent; the canvas paints the ground
         for row in range(height):
             for col in range(width):
                 entry = (self.palette[self.page[y + row][x + col]]
                          if self.palette else None)
                 if entry and entry[3]:
                     image.setPixelColor(col, row, QColor(*entry))
-                else:
-                    image.setPixelColor(col, row, QColor(*_backdrop(col, row)))
         self.canvas.set_image(image)
         self.canvas.set_zoom(fit_zoom((width, height),
                                       self.scroll.viewport().size(), 24))
