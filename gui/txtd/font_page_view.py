@@ -30,6 +30,90 @@ from functions import fontpage
 from gui.txtd import dicts, translation
 from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
 
+
+# SPRITES THAT ARE IN MORE THAN ONE PIECE
+#
+# A word is not always stored in one rectangle. The Spanish page ran out
+# of room and split some of its menu words up: "Estado" is drawn as
+# "Estad" in one place and a lone "o" in another, and "Cargar" is in
+# three pieces, the last of them a letter cut in half with the halves
+# kept apart.
+#
+# So a sprite entry is either
+#     (name, top, bottom, left, right)              one rectangle
+#     (name, [(top, bottom, left, right), ...])     several, in reading
+#                                                   order
+# and everything below asks pieces_of() rather than unpacking five
+# values. The pieces are assembled left to right, top aligned, into one
+# image - the word as it reads rather than as it is stored - so it can
+# be looked at, drawn on, exported and imported as the single thing a
+# translation treats it as.
+
+
+def pieces_of(entry):
+    """Every rectangle a sprite entry covers, as [(t, b, l, r), ...]."""
+    return [q[:4] for q in placed_pieces(entry)]
+
+
+def placed_pieces(entry):
+    """The pieces as (t, b, l, r, dx, dy) - where each one sits in the
+    page, and where it goes in the assembled word.
+
+    A piece may carry its own (dx, dy); without one the pieces are laid
+    left to right, top aligned, which is what a word merely split down
+    the middle needs. The placement matters because these are not all
+    the same shape of split:
+
+        Estado    "Estad" and "o" side by side
+        Guardar   the TOP half of the word and the BOTTOM half, stored
+                  next to each other but stacked to read
+        Cargar    the left half whole, and the right half itself cut
+                  into an upper and a lower piece
+
+    Stacking Guardar is what removes the "green" - its two halves are
+    eight rows each, and padding one out to sixteen reaches into the
+    glyph row above instead of using the other half."""
+    raw = entry[1] if len(entry) == 2 else [tuple(entry[1:])]
+    out = []
+    at = 0
+    for piece in raw:
+        piece = tuple(piece)
+        if len(piece) >= 6:
+            out.append(piece[:6])
+        else:
+            t, b, l, r = piece
+            out.append((t, b, l, r, at, 0))
+            at += r - l
+    return out
+
+
+def double_cells(top, bottom, left, right, label):
+    """One entry per 16-pixel cell across a double-width glyph row.
+
+    The row is a row of separate glyphs - a circle, a big square, the
+    arrows, the card suits - not one picture, so it is offered one cell
+    at a time. As a single region it selected as one blob and could not
+    be edited a glyph at a time, which is the only way anyone edits it."""
+    out = []
+    for i, x in enumerate(range(left, right, 16)):
+        end = min(x + 16, right)
+        if end - x < 8:
+            break
+        out.append((f"{label} {i + 1}", top, bottom, x, end))
+    return tuple(out)
+
+
+def name_of(entry):
+    """A sprite entry's name, whichever form it takes."""
+    return entry[0]
+
+
+def assembled_size(placed):
+    """The (width, height) the placed pieces cover."""
+    return (max((dx + (r - l) for _t, _b, l, r, dx, _dy in placed), default=0),
+            max((dy + (b - t) for t, b, _l, _r, _dx, dy in placed), default=0))
+
+
 # What lives where, in page rows. The names are the ones the module
 # docstring of functions/fontpage.py uses.
 def regions(glyph_top=fontpage.GLYPH_TOP):
@@ -436,7 +520,11 @@ DE_SPRITES = (
     # and on a 4-pixel half-grid rather than the 8 everything else uses,
     # which is why looking for it level with "100%" found nothing and it
     # read as missing from this build.
-    ("Objekt (Items)", 216, 228, 200, 248),
+    # Stored as "Objkt", 16 rows not 8. In game it reads "Objkte", and
+    # the run here ends at "jkt" with nothing after it - so the trailing
+    # "e" is not artwork on this page at all; the game appends it from
+    # an ordinary font cell. Nothing to carve out here for it.
+    ("Objkt (Items)", 216, 232, 200, 248),
     # THE DOUBLE-WIDTH GLYPHS
     #
     # Every 16-pixel cell across both bands is filled, so these are the
@@ -444,19 +532,53 @@ DE_SPRITES = (
     # build does have them; they are simply not where the US page keeps
     # them, and they are not the accented letters, which are single
     # width and live in the grid above.
-    ("double glyphs (upper)", 193, 206, 0, 226),
-    ("double glyphs (lower)", 207, 222, 0, 176),
+    *double_cells(192, 208, 0, 224, "double glyph"),
+    *double_cells(208, 224, 0, 176, "double glyph row 2 -"),
     # The dialogue border, which is on this page after all - just not at
     # the US page's 187/211/235 three-piece run.
-    ("text border", 208, 214, 187, 254),
+    # THE DIALOGUE BORDER IS THE SAME THREE PIECES AS THE US PAGE
+    #
+    # Measured here it is 187..205, 211..229 and 235..253 - three
+    # 18-wide pieces at a 24-pixel pitch, which is exactly
+    # fontpage.FRAME_PIECES. It was never missing from these builds,
+    # only moved: the US page keeps it at y136, these keep it at y208.
+    ("frame shallow top", 208, 216, 184, 208),
+    ("frame sides", 208, 216, 208, 232),
+    ("frame deep top", 208, 216, 232, 256),
 )
 SP_SPRITES = (
-    ("unnamed word, y56 x64", 56, 64, 64, 128),
-    ("unnamed word, y56 x128", 56, 64, 128, 192),
-    ("Cargar (Load)", 128, 144, 200, 256),
-    ("Estado (Status)", 176, 192, 64, 136),
-    ("Ayuda (Help)", 176, 192, 136, 208),
-    ("Guardar (Save)", 176, 192, 208, 256),
+    # Two whole words, not two halves of one: the left cell reads
+    # "Cargar" and the right "Guardar", and they are the system copies
+    # the memory-card screens use - the menu's own Cargar is the
+    # scattered one further down.
+    # Two system rows, not one: these words are about twelve rows tall
+    # and straddle the boundary at y56, so a single 8-row cell cuts
+    # their tops off. The upper rows also carry the tail of the glyph
+    # row above - that is genuinely what is stored there, and taking
+    # only half a word to avoid it is the worse trade.
+    # Guardar is ONE word cut into a top half and a bottom half, the two
+    # kept side by side. Stacked back up it reads whole - and that is
+    # also why padding one half out to full height picked up the glyph
+    # row above instead: the other half was the missing piece.
+    ("Guardar (Save)", [(56, 64, 64, 128, 0, 0),
+                        (56, 64, 128, 192, 0, 8)]),
+    ("Ayuda (Help)", 128, 144, 200, 256),
+    ("Objetos (Items)", 176, 192, 64, 136),
+    ("Sucesos (Event)", 176, 192, 136, 208),
+    # SCATTERED WORDS
+    #
+    # Spanish is longer than English and ran out of room, so two of its
+    # menu words are not stored in one piece. "Estado" is "Estad" at the
+    # end of the y176 row and a lone "o" parked further down; "Cargar"
+    # is in three, the last of them a letter cut in half with the halves
+    # kept in different places. Assembled left to right they read as the
+    # words - which is how they are shown, drawn on and exported.
+    ("Estado (Status)", [(176, 192, 208, 256), (216, 232, 200, 216)]),
+    # Cargar in three: the left half whole, and the right half itself
+    # cut into an upper and a lower piece kept apart.
+    ("Cargar (Load)", [(216, 232, 216, 256, 0, 0),
+                       (232, 240, 200, 216, 40, 0),
+                       (232, 240, 216, 232, 40, 8)]),
     ("+", 224, 240, 0, 16),
     ("digit 1", 224, 240, 16, 24),
     ("digit 2", 224, 240, 24, 40),
@@ -469,17 +591,44 @@ SP_SPRITES = (
     ("digit 9", 224, 240, 136, 152),
     ("digit 0", 224, 240, 152, 168),
     ("100%", 224, 240, 168, 200),
-    ("Objeto (Items)", 224, 240, 200, 256),
+    *double_cells(192, 208, 0, 224, "double glyph"),
+    *double_cells(208, 224, 0, 176, "double glyph row 2 -"),
+    # THE DIALOGUE BORDER IS THE SAME THREE PIECES AS THE US PAGE
+    #
+    # Measured here it is 187..205, 211..229 and 235..253 - three
+    # 18-wide pieces at a 24-pixel pitch, which is exactly
+    # fontpage.FRAME_PIECES. It was never missing from these builds,
+    # only moved: the US page keeps it at y136, these keep it at y208.
+    ("frame shallow top", 208, 216, 184, 208),
+    ("frame sides", 208, 216, 208, 232),
+    ("frame deep top", 208, 216, 232, 256),
 )
 # The menu words take the same four high-half palettes on every build -
 # 240/1 through 243/1 - so which one each European word uses has not
 # been captured from the game. They open on the blue one, as the US
 # words did before their colours were confirmed.
+# Palettes that are not the menu-word blue. The double-width glyph rows
+# and the dialogue border are drawn from their own, which is why they
+# came out miscoloured while they shared the menu default.
+# Matched on the start of the name, so the icon rows keep their palette
+# however many cells they are split into.
+_EURO_CLUT_OVERRIDES = {
+    "double glyph": (242, 2),
+    "frame shallow top": (246, 2),
+    "frame sides": (246, 2),
+    "frame deep top": (246, 2),
+}
+
+
 def _euro_cluts(sprites):
     """Blue for the menu words, the health palette for the health row."""
     out = {}
-    for name, top, _b, _l, _r in sprites:
-        out[name] = (241, 2) if top == 224 else (242, 1)
+    for entry in sprites:
+        name = name_of(entry)
+        top = pieces_of(entry)[0][0]
+        override = next((v for k, v in _EURO_CLUT_OVERRIDES.items()
+                         if name.startswith(k)), None)
+        out[name] = override or ((241, 2) if top == 224 else (242, 1))
     return out
 
 
@@ -553,8 +702,9 @@ class PageKind:
 
     def sprites_in_row(self, y, build=None):
         """Is there anything 4bpp on this row of the page?"""
-        return any(top <= y < bottom for _n, top, bottom, _l, _r
-                   in self.sprites_for(build or dicts.DEFAULT_BUILD))
+        return any(top <= y < bottom
+                   for entry in self.sprites_for(build or dicts.DEFAULT_BUILD)
+                   for top, bottom, _l, _r in pieces_of(entry))
 
     def deep_palette(self, cluts):
         """The 8bpp palette: every slot of deep_row, end to end."""
@@ -1109,7 +1259,8 @@ class FontPageView(QWidget):
             self.detail.show_selection(self.page, box, palette,
                                        describe(kind, what, self.build),
                                        *self._meaning(kind, what),
-                                       deep=(kind == "deep"))
+                                       deep=(kind == "deep"),
+                                       pieces=self.selected_pieces())
 
     def _palette_key(self, kind, what):
         """Which palette this part is currently drawn with."""
@@ -1240,9 +1391,10 @@ class FontPageView(QWidget):
         palette rows. Named rather than numbered where the page has a
         name for it."""
         spec = self.kind.spec
-        for name, top, bottom, left, right in self.kind.sprites_for(self.build):
-            if top <= y < bottom and left <= x < right:
-                return ("sprite", name)
+        for entry in self.kind.sprites_for(self.build):
+            for top, bottom, left, right in pieces_of(entry):
+                if top <= y < bottom and left <= x < right:
+                    return ("sprite", name_of(entry))
         deep = self.kind.deep_at(x, y)
         if deep:
             return ("deep", deep)
@@ -1272,7 +1424,8 @@ class FontPageView(QWidget):
             self.detail.show_selection(self.page, box, palette,
                                        describe(kind, what, self.build),
                                        *self._meaning(kind, what),
-                                       deep=(kind == "deep"))
+                                       deep=(kind == "deep"),
+                                       pieces=self.selected_pieces())
         self.selected.emit(kind, what)
         self.info.setText(f"({x}, {y})  {describe(kind, what, self.build)}")
         if box:
@@ -1324,9 +1477,19 @@ class FontPageView(QWidget):
         if kind == "deep":
             return self.kind.deep_box(what)
         if kind == "sprite":
-            for name, top, bottom, left, right in self.kind.sprites_for(self.build):
-                if name == what:
-                    return (left, top, right - left, bottom - top)
+            for entry in self.kind.sprites_for(self.build):
+                if name_of(entry) != what:
+                    continue
+                placed = placed_pieces(entry)
+                if len(placed) > 1:
+                    # A scattered word is edited as the word, so the
+                    # selection is the assembled image, not one of the
+                    # places it happens to be stored.
+                    width, height = assembled_size(placed)
+                    top, _b, left, _r, _dx, _dy = placed[0]
+                    return (left, top, width, height)
+                top, bottom, left, right, _dx, _dy = placed[0]
+                return (left, top, right - left, bottom - top)
         if kind == "glyph" and what is not None:
             row, col = divmod(what, fontpage.GLYPH_COLS)
             return (col * fontpage.GLYPH_W,
@@ -1338,6 +1501,26 @@ class FontPageView(QWidget):
             return (col * fontpage.GLYPH_W, row * fontpage.SYSTEM_H,
                     fontpage.GLYPH_W, fontpage.SYSTEM_H)
         return None
+
+    def selected_pieces(self):
+        """The pieces of the current selection, in reading order.
+
+        One entry for an ordinary sprite or glyph; several for a word
+        the page stores in scattered fragments. The editing pane lays
+        them out side by side, so what is drawn on and exported is the
+        word rather than the storage."""
+        if not self.selection:
+            return []
+        kind, what = self.selection
+        if kind == "sprite":
+            for entry in self.kind.sprites_for(self.build):
+                if name_of(entry) == what:
+                    return placed_pieces(entry)
+        box = self._box_for(kind, what)
+        if box is None:
+            return []
+        x, y, width, height = box
+        return [(y, y + height, x, x + width, 0, 0)]
 
     def _selected_box(self):
         """The selection as (x, y, w, h) and the palette it is drawn
@@ -1378,6 +1561,30 @@ class FontPageView(QWidget):
             return
         image = QImage(width, height, QImage.Format.Format_RGBA8888)
         image.fill(0)
+        placed = self.selected_pieces()
+        if len(placed) > 1:
+            # A scattered word goes out ASSEMBLED - as the word reads,
+            # not as the page happens to store it. That is the thing
+            # worth editing, and import puts it back the way it came,
+            # so the split is this tool's problem rather than the
+            # translator's.
+            for top, bottom, left, right, dx, dy in placed:
+                for row in range(bottom - top):
+                    line = self.page[top + row]
+                    for col in range(right - left):
+                        entry = (palette[line[left + col]]
+                                 if palette else None)
+                        if entry and entry[3]:
+                            image.setPixelColor(dx + col, dy + row,
+                                                QColor(*entry))
+            if not image.save(path):
+                QMessageBox.critical(self, "Export failed",
+                                     f"Couldn't write {path}")
+                return
+            self.info.setText(
+                f"Wrote {width}x{height} to {path} - assembled from "
+                f"{len(placed)} pieces")
+            return
         if kind == "deep":
             # One pixel per byte, so what comes out is the picture at the
             # size it is drawn rather than at the width of its VRAM.
@@ -1442,6 +1649,26 @@ class FontPageView(QWidget):
                                  Qt.TransformationMode.FastTransformation)
         image = image.convertToFormat(QImage.Format.Format_RGBA8888)
         self._end_stroke()
+        placed = self.selected_pieces()
+        if len(placed) > 1:
+            # Split back along the same placement it was assembled by,
+            # so a word edited as one image lands in every scattered
+            # piece it is really made of.
+            for top, bottom, left, right, dx, dy in placed:
+                for row in range(bottom - top):
+                    for col in range(right - left):
+                        px, py = left + col, top + row
+                        self.stroke.append((px, py, self.page[py][px]))
+                        self.page[py][px] = _nearest(
+                            image.pixelColor(dx + col, dy + row), palette)
+            touched = len(self.stroke)
+            self._end_stroke("import")
+            self._redraw()
+            self._refresh_detail()
+            self.info.setText(
+                f"Imported {width}x{height} back into {len(placed)} "
+                f"pieces - {touched} texel(s), press Save")
+            return
         for row in range(height):
             for col in range(width):
                 self.stroke.append((x + col, y + row,
@@ -1737,9 +1964,11 @@ def _render(page, cluts, font_clut=FONT_CLUT, states=None, kind=None,
 
     # Which palette covers each artwork box.
     boxes = []
-    for name, top, bottom, left, right in kind.sprites_for(build):
+    for entry in kind.sprites_for(build):
+        name = name_of(entry)
         key = states.get(name, kind.cluts_for(build).get(name, font_clut))
-        boxes.append((top, bottom, left, right, by_key.get(key)))
+        for top, bottom, left, right in pieces_of(entry):
+            boxes.append((top, bottom, left, right, by_key.get(key)))
 
     # The 8bpp pictures first: two texels make one pixel, read through
     # the wide palette. Drawn one pixel per column, so the picture comes
@@ -1845,9 +2074,10 @@ class _PageCanvas(PixelCanvas):
                                          scale(fontpage.GLYPH_H))
                         col += cells
             painter.setPen(QPen(QColor(240, 170, 60, 150), 1))
-            for _name, top, bottom, left, right in kind.sprites_for(build):
-                painter.drawRect(scale(left), scale(top),
-                                 scale(right - left), scale(bottom - top))
+            for entry in kind.sprites_for(build):
+                for top, bottom, left, right in pieces_of(entry):
+                    painter.drawRect(scale(left), scale(top),
+                                     scale(right - left), scale(bottom - top))
         # Where the palette in use lives, while Show is held or just
         # after one is picked. Set but never drawn until now, which is
         # why pressing Show appeared to do nothing at all.
@@ -1904,6 +2134,7 @@ class _Detail(QWidget):
         self.palette = None
         self.code = None                   # the glyph code, when it is one
         self.cluts = []
+        self.pieces = []                   # scattered sprites: see above
         self.deep = False                  # is the selection 8bpp?
         self.index = 1                     # what the brush paints
         # Whether the zoom is still following the selection. Once it has
@@ -2121,8 +2352,12 @@ class _Detail(QWidget):
         self.palette_chosen.emit(tuple(key))
 
     def show_selection(self, page, box, palette, title, code=None, char="",
-                       note="", deep=False):
+                       note="", deep=False, pieces=None):
         self.page, self.box, self.palette = page, box, palette
+        # More than one piece means a word the page stores scattered -
+        # see pieces_of(). It is shown, drawn on and exported as one
+        # assembled strip.
+        self.pieces = list(pieces or [])
         self.code = code
         self.deep = deep
         self._picture_mode(deep)
@@ -2182,9 +2417,47 @@ class _Detail(QWidget):
         self._fitted = True
         self.zoom_label.setText(zoom_label(self.canvas.zoom))
 
+    def _redraw_assembled(self):
+        """Draw the pieces where their placement puts them."""
+        width, height = assembled_size(self.pieces)
+        image = QImage(width, height, QImage.Format.Format_RGBA8888)
+        image.fill(0)
+        for top, bottom, left, right, dx, dy in self.pieces:
+            for row in range(bottom - top):
+                line = self.page[top + row]
+                for col in range(right - left):
+                    entry = (self.palette[line[left + col]]
+                             if self.palette else None)
+                    if entry and entry[3]:
+                        image.setPixelColor(dx + col, dy + row, QColor(*entry))
+        self.canvas.set_image(image)
+        if self._fitted:
+            self.canvas.set_zoom(fit_zoom((width, height),
+                                          self.scroll.viewport().size(), 24))
+        self.zoom_label.setText(zoom_label(self.canvas.zoom))
+
+    def _page_at(self, col, row):
+        """Where an assembled (col, row) lands in the page, or None.
+
+        The exact inverse of the placement _redraw_assembled draws, so
+        painting on the assembled word reaches the right texel of the
+        right piece however scattered they are."""
+        for top, bottom, left, right, dx, dy in self.pieces:
+            if dx <= col < dx + (right - left) and \
+                    dy <= row < dy + (bottom - top):
+                return left + (col - dx), top + (row - dy)
+        return None
+
     def _pick_at(self, col, row):
         """Take the palette index under the cursor as the brush."""
         if not self.page or not self.box or self.deep:
+            return
+        if len(self.pieces) > 1:
+            where = self._page_at(col, row)
+            if where is not None:
+                self.index = self.page[where[1]][where[0]]
+                self.swatches.index = self.index
+                self.swatches.update()
             return
         x, y, width, height = self.box
         if not (0 <= col < width and 0 <= row < height):
@@ -2196,6 +2469,19 @@ class _Detail(QWidget):
     def _paint_at(self, col, row, erasing=False):
         """Put a palette index into one texel of the page."""
         if not self.page or not self.box or self.deep:
+            return
+        if len(self.pieces) > 1:
+            where = self._page_at(col, row)
+            if where is None:
+                return
+            px, py = where
+            want = 0 if erasing else self.index
+            if self.page[py][px] == want:
+                return
+            self.edited.emit(px, py, self.page[py][px])
+            self.page[py][px] = want
+            self._redraw()
+            self.changed.emit()
             return
         x, y, width, height = self.box
         if not (0 <= col < width and 0 <= row < height):
@@ -2213,6 +2499,9 @@ class _Detail(QWidget):
             self.canvas.clear()
             return
         x, y, width, height = self.box
+        if len(self.pieces) > 1:
+            self._redraw_assembled()
+            return
         image = QImage(width, height, QImage.Format.Format_RGBA8888)
         image.fill(0)      # transparent; the canvas paints the ground
         if self.deep:
