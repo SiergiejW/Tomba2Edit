@@ -68,9 +68,12 @@ class BinsViewer(QWidget):
 
         self.tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
 
-    def set_font_source(self, cd_folder):
-        """Point the SOP preview at the open disc's font page."""
-        self.sop_viewer.preview.set_source(cd_folder)
+    def set_font_source(self, cd_folder, glyph_top=None):
+        """Point the SOP preview at the open disc's font page.
+
+        glyph_top says where that build's dialogue grid starts - see
+        MainWindow.preview_glyph_top()."""
+        self.sop_viewer.preview.set_source(cd_folder, glyph_top)
 
     def load_overlays(self, overlays, sop_path, descriptions=None):
         """overlays: [{"name": str, "size": int}, ...] as found on the

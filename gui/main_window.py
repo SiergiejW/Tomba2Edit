@@ -1218,6 +1218,19 @@ class MainWindow(QMainWindow):
         self.load_translation_tab(cd_folder)
         self.main_tabs.setCurrentWidget(self.translation_tab)
 
+    def preview_glyph_top(self):
+        """Which page row this disc's dialogue grid starts at.
+
+        The previews draw a string by looking each character up in the
+        table and copying that cell out of the font page, so they need
+        to know where the grid begins. Left to default it is 40 - the US
+        row - and on a European disc, whose grid starts at 64, every
+        cell comes out 24 rows high: the preview draws the symbol and
+        system-font rows instead of the letters, which looks like the
+        font is simply wrong rather than like an offset."""
+        from gui.txtd import dicts
+        return dicts.glyph_top(getattr(self, "build", dicts.DEFAULT_BUILD))
+
     def _edited_img(self):
         """The working TOMBA2.IMG, if the font page has been written to
         it, else None. See font_page_dirty."""
@@ -1799,7 +1812,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.mainexe_viewer.preview.set_source(
-                os.path.dirname(self.dat_file) if self.dat_file else None)
+                os.path.dirname(self.dat_file) if self.dat_file else None,
+                self.preview_glyph_top())
             self.mainexe_viewer.load_exe(exe_path)
         except MainBinEditError as e:
             self.mainexe_viewer.clear_cache()
@@ -1818,7 +1832,8 @@ class MainWindow(QMainWindow):
         so what each one is comes from the open labels file's "bins"
         section, if it has one."""
         self.bins_viewer.set_font_source(
-            os.path.dirname(self.dat_file) if self.dat_file else None)
+            os.path.dirname(self.dat_file) if self.dat_file else None,
+            self.preview_glyph_top())
         self.bins_viewer.load_overlays(
             overlays, sop_path,
             self.labels.bins if self.labels else None)
@@ -2409,7 +2424,8 @@ class MainWindow(QMainWindow):
                                     else:
                                         txtd_chunk_index, txtd_file_index = (0, 0)
                                     self.txtd_viewer.preview.set_source(
-                                        os.path.dirname(self.dat_file))
+                                        os.path.dirname(self.dat_file),
+                                        self.preview_glyph_top())
                                     self.txtd_viewer.load_txtd_data(
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
@@ -2437,7 +2453,8 @@ class MainWindow(QMainWindow):
                                     else:
                                         txt2_chunk_index, txt2_file_index = (0, 0)
                                     self.txt2_viewer.preview.set_source(
-                                        os.path.dirname(self.dat_file))
+                                        os.path.dirname(self.dat_file),
+                                        self.preview_glyph_top())
                                     self.txt2_viewer.load_txt2_data(
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txt2_chunk_index, file_index=txt2_file_index, id_val=id,
