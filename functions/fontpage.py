@@ -76,6 +76,46 @@ for _i in range(16):
 _PALETTE += [0] * (768 - len(_PALETTE))
 
 
+class PageSpec:
+    """One 4bpp page in the IMG, and where its chunk lands in VRAM.
+
+    The font page is not the only one a translation has to touch. The
+    title screen's menu - New Game, Load Game, Options, Start Game - is
+    artwork in chunk 2, not glyphs, so it cannot be reached through the
+    font page at all, and a build that leaves it in English is not
+    translated. The two pages differ only in geometry and in where their
+    palettes sit, so the reading and writing below is shared and this
+    says which one is meant.
+
+    `clut_top` is a row within the page, not a VRAM row: chunk 2 keeps
+    its palettes in a shard of their own further down VRAM, which lands
+    at the bottom of the page rect the same way chunk 0's do.
+    """
+
+    def __init__(self, chunk, x, y, width, height, clut_top, name):
+        self.chunk = chunk
+        self.x = x                  # in 4bpp texels
+        self.y = y
+        self.width = width
+        self.height = height
+        self.clut_top = clut_top
+        self.name = name
+
+    def __repr__(self):
+        return "PageSpec(%r, chunk %d)" % (self.name, self.chunk)
+
+
+# The two pages worth editing. FONTS is what every existing caller
+# means, so it stays the default everywhere.
+FONTS = PageSpec(FONT_CHUNK, PAGE_X, PAGE_Y, PAGE_W, PAGE_H, CLUT_TOP,
+                 "Fonts")
+# Chunk 2, AREA_02. The art is 1024x240 at VRAM y256 and the palettes
+# are a shard of their own, 1024x5 at y507 - room for 80, though only
+# five hold anything. Taking the page down to y512 puts those palettes
+# at rows 251-255 of it, which is the same shape as the font page.
+TITLE = PageSpec(2, 2560, 256, 1024, 256, 251, "Main Title")
+
+
 class FontPageError(ValueError):
     """Raised when a page can't be read or written."""
 
@@ -88,44 +128,47 @@ def _chunk_bounds(cd_folder, chunk=FONT_CHUNK):
     return img_start, img_end
 
 
-def _shards_covering_page(shards):
-    """Which shards of the chunk fall inside the font page, with where
-    each one lands in it.
+def _shards_covering_page(shards, spec=None):
+    """Which shards of the chunk fall inside the page, with where each
+    one lands in it.
 
     Shard x and width are in 16-bit words; at 4bpp a word is four
     texels."""
+    spec = spec or FONTS
     out = []
     for i, (x, y, w, h, packed) in enumerate(shards):
         tx = x * 4
         tw = w * 4
-        if tx + tw <= PAGE_X or tx >= PAGE_X + PAGE_W:
+        if tx + tw <= spec.x or tx >= spec.x + spec.width:
             continue
-        if y + h <= PAGE_Y or y >= PAGE_Y + PAGE_H:
+        if y + h <= spec.y or y >= spec.y + spec.height:
             continue
-        out.append((i, (x, y, w, h, packed), tx - PAGE_X, y - PAGE_Y, tw, h))
+        out.append((i, (x, y, w, h, packed), tx - spec.x, y - spec.y, tw, h))
     return out
 
 
-def read_page(cd_folder):
-    """The font page as a 256x256 list of rows of 4-bit indices."""
-    img_start, img_end = _chunk_bounds(cd_folder)
+def read_page(cd_folder, spec=None):
+    """A page as a list of rows of 4-bit indices."""
+    spec = spec or FONTS
+    img_start, img_end = _chunk_bounds(cd_folder, spec.chunk)
     with open(os.path.join(cd_folder, "TOMBA2.IMG"), "rb") as img:
         img.seek(img_start)
         data = img.read(img_end - img_start)
     shards, pos = read_chunk_header(data)
 
-    page = [[0] * PAGE_W for _ in range(PAGE_H)]
+    page = [[0] * spec.width for _ in range(spec.height)]
     offsets = {}
     at = pos
     for i, (x, y, w, h, packed) in enumerate(shards):
         offsets[i] = at
         at += packed
 
-    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(shards):
+    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(
+            shards, spec):
         pixels = decompress(data, offsets[i], packed, w)
         stride = w * 2
         for row in range(th):
-            if not 0 <= py + row < PAGE_H:
+            if not 0 <= py + row < spec.height:
                 continue
             base = row * stride
             for byte in range(stride):
@@ -134,24 +177,35 @@ def read_page(cd_folder):
                 value = pixels[base + byte]
                 for half in range(2):
                     col = px + byte * 2 + half
-                    if 0 <= col < PAGE_W:
+                    if 0 <= col < spec.width:
                         page[py + row][col] = (value >> (4 * half)) & 0x0F
     return page
 
 
-def read_cluts(cd_folder):
+def read_cluts(cd_folder, spec=None):
     """The palettes stored in the page, as lists of 16 (r, g, b, a).
 
     They are 16-bit words rather than 4-bit texels, so they are read
     from VRAM directly. PSX colour is RGB555 with the top bit marking
     semi-transparency; 0 is transparent."""
-    page = read_page(cd_folder)
+    spec = spec or FONTS
+    return read_cluts_from(read_page(cd_folder, spec), spec)
+
+
+def read_cluts_from(page, spec=None):
+    """The palettes of a page already in hand.
+
+    Editing one - which replacing an 8bpp picture does, since its
+    palette lives in the page like everything else - has to re-read them
+    without going back to the disc, or the view keeps drawing through
+    the colours that were just written over."""
+    spec = spec or FONTS
     out = []
-    for row in range(CLUT_TOP, PAGE_H):
+    for row in range(spec.clut_top, spec.height):
         words = []
         line = page[row]
         # Four texels make one 16-bit word, low nibble first.
-        for w in range(PAGE_W // 4):
+        for w in range(spec.width // 4):
             i = w * 4
             words.append(line[i] | (line[i + 1] << 4)
                          | (line[i + 2] << 8) | (line[i + 3] << 12))
@@ -217,7 +271,7 @@ def import_png(cd_folder, path):
                       what=os.path.basename(path))
 
 
-def write_page(cd_folder, page, what="the page"):
+def write_page(cd_folder, page, what="the page", spec=None):
     """Write a page back into the IMG. `page` is 256 rows of 4-bit
     indices, or one flat sequence of PAGE_W * PAGE_H of them.
 
@@ -228,16 +282,17 @@ def write_page(cd_folder, page, what="the page"):
         page = [v for row in page for v in row]
     else:
         page = list(page)
-    if len(page) != PAGE_W * PAGE_H:
+    spec = spec or FONTS
+    if len(page) != spec.width * spec.height:
         raise FontPageError(
-            f"{what} has {len(page)} pixels; a page is "
-            f"{PAGE_W * PAGE_H}.")
+            f"{what} has {len(page)} pixels; {spec.name} is "
+            f"{spec.width * spec.height}.")
     if max(page) > 15:
         raise FontPageError(
             f"{what} uses index {max(page)}; the page is 4bpp, so only "
             "0-15 exist.")
 
-    img_start, img_end = _chunk_bounds(cd_folder)
+    img_start, img_end = _chunk_bounds(cd_folder, spec.chunk)
     img_path = os.path.join(cd_folder, "TOMBA2.IMG")
     with open(img_path, "rb") as img:
         img.seek(img_start)
@@ -251,11 +306,12 @@ def write_page(cd_folder, page, what="the page"):
         at += packed
 
     rebuilt = {}
-    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(shards):
+    for i, (x, y, w, h, packed), px, py, tw, th in _shards_covering_page(
+            shards, spec):
         pixels = bytearray(decompress(data, offsets[i], packed, w))
         stride = w * 2
         for row in range(th):
-            if not 0 <= py + row < PAGE_H:
+            if not 0 <= py + row < spec.height:
                 continue
             base = row * stride
             for byte in range(stride):
@@ -264,10 +320,12 @@ def write_page(cd_folder, page, what="the page"):
                 lo_col = px + byte * 2
                 hi_col = lo_col + 1
                 value = pixels[base + byte]
-                if 0 <= lo_col < PAGE_W:
-                    value = (value & 0xF0) | page[(py + row) * PAGE_W + lo_col]
-                if 0 <= hi_col < PAGE_W:
-                    value = (value & 0x0F) | (page[(py + row) * PAGE_W + hi_col] << 4)
+                if 0 <= lo_col < spec.width:
+                    value = ((value & 0xF0)
+                             | page[(py + row) * spec.width + lo_col])
+                if 0 <= hi_col < spec.width:
+                    value = ((value & 0x0F)
+                             | (page[(py + row) * spec.width + hi_col] << 4))
                 pixels[base + byte] = value
         packed_new = compress(bytes(pixels), w)
         if len(packed_new) > packed:
