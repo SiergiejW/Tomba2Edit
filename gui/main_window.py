@@ -37,6 +37,7 @@ from functions import fontpage
 from functions import codeuse
 from functions import voice
 from gui.txtd.font_editor import FontEditor
+from gui.txtd.font_page_view import FontPageView
 from gui.txtd.voice_panel import VoicePanel
 from gui.music_panel import MusicPanel
 from gui.sfx_panel import SfxPanel
@@ -175,6 +176,25 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.music_panel, "Music")
         self.sfx_panel = SfxPanel()
         self.main_tabs.addTab(self.sfx_panel, "SFX")
+
+        # Translation: the font page whole, and the glyph editor beside
+        # it. Both work on chunk 0 of TOMBA2.IMG - see
+        # functions/fontpage.py - so they belong on one screen rather
+        # than in a window opened from a menu.
+        self.translation_tab = QSplitter(Qt.Orientation.Horizontal)
+        self.font_page_view = FontPageView()
+        self.font_editor = FontEditor()
+        self.translation_tab.addWidget(self.font_page_view)
+        self.translation_tab.addWidget(self.font_editor)
+        self.translation_tab.setStretchFactor(0, 1)
+        self.translation_tab.setStretchFactor(1, 1)
+        self.main_tabs.addTab(self.translation_tab, "Translation")
+        # Loaded when the tab is first looked at rather than when a disc
+        # opens: working out which codes the disc's own text uses means
+        # reading every text file, which takes about a minute, and most
+        # sessions never go near this tab.
+        self._translation_loaded = False
+        self.main_tabs.currentChanged.connect(self._tab_changed)
         self.setCentralWidget(self.main_tabs)
 
         # A tab whose player is actually making sound gets a note added
@@ -1164,20 +1184,37 @@ class MainWindow(QMainWindow):
         return None
 
     def open_font_editor(self):
-        """Open the window where glyphs are drawn and codes are named.
+        """Show the Translation tab, loading the page if it has not been.
 
-        The codes the disc's own text uses are measured from the text
-        files themselves rather than assumed, so the window can say which
-        cells a translation is free to take. The window does that
-        measuring itself, in the background, since it takes a while."""
+        The editor lives in a tab now rather than a window of its own,
+        so the menu item brings that tab forward. The codes the disc's
+        own text uses are measured from the text files rather than
+        assumed, so the editor can say which cells a translation is free
+        to take; that measuring happens in the background because it
+        takes a while."""
         cd_folder = self._font_page_folder()
         if cd_folder is None:
             return
-        if getattr(self, "font_editor", None) is None:
-            self.font_editor = FontEditor()
+        self.load_translation_tab(cd_folder)
+        self.main_tabs.setCurrentWidget(self.translation_tab)
+
+    def _tab_changed(self, index):
+        """Fill the Translation tab the first time it is opened."""
+        if self.main_tabs.widget(index) is not self.translation_tab:
+            return
+        if self._translation_loaded or not self.dat_file:
+            return
+        self.load_translation_tab()
+
+    def load_translation_tab(self, cd_folder=None):
+        """Point both halves of the Translation tab at the open disc."""
+        if cd_folder is None:
+            cd_folder = self._font_page_folder()
+        if cd_folder is None:
+            return
+        self.font_page_view.set_source(cd_folder)
         self.font_editor.set_source(cd_folder, self.dat_file)
-        self.font_editor.show()
-        self.font_editor.raise_()
+        self._translation_loaded = True
 
     def export_font_page(self):
         """Write the font/menu page out as an indexed PNG.
@@ -1643,6 +1680,9 @@ class MainWindow(QMainWindow):
         `iso_only` is the File > Open ISO route. The toolbar's opener
         asks for a BIN first, because that is the one that carries the
         voice track; an ISO cannot."""
+        # A different disc has a different font page, so the Translation
+        # tab has to read it again next time it is looked at.
+        self._translation_loaded = False
         if iso_only:
             title = "Select a Tomba! 2 ISO"
             filters = "Disc image (*.iso *.img);;All files (*)"
