@@ -69,9 +69,9 @@ SPEED_RANGE = 50.0
 
 # Shown in the corner of every 3D view. Here so the two views can't
 # describe the same controls differently.
-CONTROLS_HINT = ("Left-click: toggle freecam\n"
-                 "WASD: move | Q/E: up/down\n"
-                 "Shift: fast | Scroll: speed/zoom")
+CONTROLS_HINT = ("Right-drag: look around\n"
+                 "Hold right + WASD: move | Q/E: up/down\n"
+                 "Shift: fast | Scroll: zoom, speed while looking")
 
 
 def scene_of(points):
@@ -115,8 +115,11 @@ class CameraControls:
         self.widget.setMouseTracking(True)
         self.widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # Camera mode
+        # Whether the right button is down and the view is being looked
+        # around. Held, not toggled: the left button belongs to whatever
+        # the view has to select.
         self.camera_mode = False
+        self._restore_pos = None
 
         # Key states
         self.keys_pressed = {
@@ -243,16 +246,44 @@ class CameraControls:
             self.camera_z -= forward_z * step
         self.widget.update()
 
+    def begin_look(self):
+        """Take the mouse for looking around: hide the pointer and warp
+        it to the middle, which is where every move is measured from."""
+        if self.camera_mode:
+            return
+        self.camera_mode = True
+        # Where to put the pointer back when the button comes up. It is
+        # warped to the middle on every move while looking, so it has to
+        # be remembered here rather than read back later.
+        self._restore_pos = QCursor.pos()
+        self.display_center = [self.widget.width() // 2,
+                               self.widget.height() // 2]
+        self.widget.setCursor(QCursor(Qt.CursorShape.BlankCursor))
+        QCursor.setPos(self.widget.mapToGlobal(QPoint(*self.display_center)))
+
+    def end_look(self):
+        """Give the mouse back, where it was picked up."""
+        if not self.camera_mode:
+            return
+        self.camera_mode = False
+        self.widget.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        if self._restore_pos is not None:
+            QCursor.setPos(self._restore_pos)
+            self._restore_pos = None
+
     def mousePressEvent(self, event):
-        """Toggle camera mode"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.camera_mode = not self.camera_mode
-            if self.camera_mode:
-                self.widget.setCursor(QCursor(Qt.CursorShape.BlankCursor))
-                QCursor.setPos(self.widget.mapToGlobal(QPoint(*self.display_center)))
-            else:
-                self.widget.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        """The right button looks around, for as long as it is held.
+
+        The left button is not touched here. A view with something to
+        select uses it for that - see MDATViewer.mousePressEvent - and a
+        view with nothing to select ignores it."""
+        if event.button() == Qt.MouseButton.RightButton:
+            self.begin_look()
         self.last_pos = event.pos()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.end_look()
 
     def mouseMoveEvent(self, event):
         """Handle mouse movement"""
@@ -266,16 +297,9 @@ class CameraControls:
                                                  self.camera_angle_v + dy * self.mouse_sensitivity))
 
             QCursor.setPos(self.widget.mapToGlobal(QPoint(*self.display_center)))
-        else:
-            dx = event.pos().x() - self.last_pos.x()
-            dy = event.pos().y() - self.last_pos.y()
-
-            if event.buttons() & Qt.MouseButton.LeftButton:
-                self.camera_angle_h += dx
-                self.camera_angle_v = max(-89.0, min(89.0, self.camera_angle_v + dy))
+            self.widget.update()
 
         self.last_pos = event.pos()
-        self.widget.update()
 
     def keyPressEvent(self, event):
         """Handle key presses"""
@@ -291,10 +315,10 @@ class CameraControls:
 class CameraEventMixin:
     """Hands a widget's mouse and key events to its `camera_controls`.
 
-    Inherited by both 3D views ahead of QOpenGLWidget, so neither has to
-    repeat these five forwarding methods - and so a change to how the
-    camera is driven lands in both at once. The widget only has to set
-    self.camera_controls before any event can arrive, which for a
+    Inherited by every 3D view ahead of QOpenGLWidget, so none of them
+    has to repeat these forwarding methods - and so a change to how the
+    camera is driven lands in all of them at once. The widget only has
+    to set self.camera_controls before any event can arrive, which for a
     QOpenGLWidget means in __init__."""
 
     def wheelEvent(self, event):
@@ -302,6 +326,15 @@ class CameraEventMixin:
 
     def mousePressEvent(self, event):
         self.camera_controls.mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.camera_controls.mouseReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        # Alt-tabbing away with the button down would otherwise leave
+        # the pointer hidden and the view still turning.
+        self.camera_controls.end_look()
+        super().focusOutEvent(event)
 
     def mouseMoveEvent(self, event):
         self.camera_controls.mouseMoveEvent(event)

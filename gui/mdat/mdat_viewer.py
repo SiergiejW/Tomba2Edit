@@ -36,10 +36,6 @@ OUTLINE_WIDTH = 2.0
 POLYGON_OUTLINE = (1.0, 0.92, 0.15)
 ENTRY_OUTLINE = (0.80, 0.50, 0.05)
 
-# How near a click has to land, in pixels, to still count as a click and
-# not a camera drag.
-CLICK_SLOP = 4
-
 
 class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     # (entry index or None, polygon index or None) whenever the
@@ -198,7 +194,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 font-size: 11px;
             }
         """)
-        self.controls_label.setText(CONTROLS_HINT)
+        self.controls_label.setText("Left-click: select polygon\n" + CONTROLS_HINT)
         self.controls_label.raise_()
 
         # Layout
@@ -479,7 +475,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         tvec = near - a
         u = np.einsum("ij,ij->i", tvec, pvec) * inv
         qvec = np.cross(tvec, edge1)
-        v = np.einsum("ij,ij->i", direction, qvec) * inv
+        v = np.einsum("j,ij->i", direction, qvec) * inv
         t = np.einsum("ij,ij->i", edge2, qvec) * inv
         hit = live & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6) & (t > 1e-6)
         if not hit.any():
@@ -500,11 +496,10 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self._face_polygon = lookup
 
     def mousePressEvent(self, event):
-        # Ctrl+click picks. Plain left-click is already the camera's own
-        # mouse-look toggle (see functions/camera_controls.py), so this
-        # takes a modifier rather than the button.
-        if (event.button() == Qt.MouseButton.LeftButton
-                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+        # Left-click picks. The camera is on the right button (see
+        # functions/camera_controls.py), so the left one is free for it.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             point = event.position().toPoint()
             self.select(polygon=self.pick(point.x(), point.y()))
             return
