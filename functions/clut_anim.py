@@ -200,17 +200,20 @@ def _table_at(data, base, offset):
 
 
 def _shape_runs(data):
-    """Runs of >= ANCHOR_RECORDS record-shaped rows, base not yet known."""
+    """[(offset, [shape, ...]), ...] for every run of at least
+    ANCHOR_RECORDS record-shaped rows, base not yet known."""
     runs, at = [], 0
     while at + RECORD_SIZE <= len(data):
-        if _record_shape(data, at) is None:
+        shape = _record_shape(data, at)
+        if shape is None:
             at += 4
             continue
-        end = at
-        while _record_shape(data, end) is not None:
+        run, end = [], at
+        while (shape := _record_shape(data, end)) is not None:
+            run.append(shape)
             end += RECORD_SIZE
-        if (end - at) // RECORD_SIZE >= ANCHOR_RECORDS:
-            runs.append(at)
+        if len(run) >= ANCHOR_RECORDS:
+            runs.append((at, run))
         at = end
     return runs
 
@@ -223,24 +226,27 @@ def overlay_base(data):
     the table itself, so the table's own address is the last array's
     start plus its length - and the address minus the offset the table
     was found at is where the file begins. Trying each possible length
-    for that last array gives a handful of candidate bases, and only the
-    true one makes every script in the run parse."""
+    for that last array gives a few hundred candidate bases; the one to
+    keep is whichever makes the most of the run parse as records, which
+    for a real table is all of it.
+
+    Every candidate is tried rather than the first that works, because a
+    wrong base can still get three records past the checks - A0F.BIN has
+    one 0x60 low that does - and it never gets the whole run."""
     best = None
-    for offset in _shape_runs(data):
-        run = [_record_shape(data, offset + i * RECORD_SIZE)
-               for i in range((len(data) - offset) // RECORD_SIZE)]
-        run = [r for r in run if r is not None]
+    for offset, run in _shape_runs(data):
         last_frames = run[-1][1]
         for count in range(1, 512):
             base = last_frames + count * PALETTE_BYTES - offset
             if not 0 <= run[0][0] - base < len(data):
                 continue
-            found = _table_at(data, base, offset)
-            if len(found) < len(run):
+            score = len(_table_at(data, base, offset))
+            if score < ANCHOR_RECORDS:
                 continue
-            if best is None or len(found) > best[1]:
-                best = (base, len(found))
-            break
+            if best is None or score > best[1]:
+                best = (base, score)
+            if score == len(run):
+                break
     return best[0] if best else None
 
 
@@ -271,12 +277,17 @@ def find_animations(data, base=None):
 
 
 def load_animations(overlay_path, base=None):
-    """find_animations() for a path, with the base taken from a sibling
-    overlay when this one can't say where it loads."""
+    """find_animations() for a path.
+
+    The base comes from the whole BIN folder rather than from this file
+    alone - see folder_base(). That covers the overlays holding only one
+    or two animations, which have no run long enough to work it out
+    themselves, and it outvotes a single file that works out the wrong
+    one."""
     with open(overlay_path, "rb") as f:
         data = f.read()
     if base is None:
-        base = overlay_base(data) or folder_base(os.path.dirname(overlay_path))
+        base = folder_base(os.path.dirname(overlay_path)) or overlay_base(data)
     return find_animations(data, base)
 
 
@@ -284,15 +295,20 @@ _folder_bases = {}
 
 
 def folder_base(folder):
-    """Where the overlays in `folder` load, read off whichever one can
-    say. They all load at the same address - the 10 retail overlays that
-    can say agree on 0x80108F9C - so one answer covers the folder.
+    """Where the overlays in `folder` load, by majority vote of the ones
+    that can say.
 
-    Cached: this reads several hundred KB to answer, and the answer is
+    Every overlay on a disc loads at the same address - all 11 retail
+    ones with a table long enough to pin it down agree on 0x80108F9C, as
+    does the ram_base gui/bins/sop_editor.py carries for SOP.BIN - so
+    one answer covers the folder, and a file that disagrees with the
+    rest is wrong rather than special.
+
+    Cached: this reads the whole BIN folder to answer, and the answer is
     the same for every area on the disc."""
     if folder in _folder_bases:
         return _folder_bases[folder]
-    base = None
+    votes = {}
     try:
         names = sorted(n for n in os.listdir(folder) if n.upper().endswith(".BIN"))
     except OSError:
@@ -300,10 +316,11 @@ def folder_base(folder):
     for name in names:
         try:
             with open(os.path.join(folder, name), "rb") as f:
-                base = overlay_base(f.read())
+                found = overlay_base(f.read())
         except OSError:
             continue
-        if base is not None:
-            break
+        if found is not None:
+            votes[found] = votes.get(found, 0) + 1
+    base = max(votes, key=votes.get) if votes else None
     _folder_bases[folder] = base
     return base

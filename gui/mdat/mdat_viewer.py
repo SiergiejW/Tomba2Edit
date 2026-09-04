@@ -1,6 +1,8 @@
 # mdat_viewer.py
+import os
+
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -11,7 +13,7 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-from functions import gltf_export
+from functions import clut_anim, gltf_export
 from gui.origin_axes import OriginAxes
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
@@ -27,6 +29,17 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
+
+# How many of the game's animation ticks to play per second. The routine
+# that walks the tables counts calls, and how often it is called is in
+# code functions/clut_anim.py has not followed - so this is the PSX's
+# own field rate, which is what a per-frame handler runs at, and not
+# something the files say. It is the one number here that is a guess:
+# everything else about these animations is read off the disc and checked
+# against savestates.
+TICK_HZ = 60
+
+
 class MDATViewer(CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +80,19 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.clut_tri_tex = None
         self.clut_map = {}  # address -> GL texture ID
         self.clut_index_groups = {}  # address -> list of indices
+        self.clut_transparency = {}  # address -> whether its faces blend
+
+        # Animated palettes - see functions/clut_anim.py. Only the ones
+        # this room's faces actually point at are kept.
+        self.clut_animations = {}   # VRAM address -> ClutAnimation
+        self.anim_tick = 0
+        self.anim_shown = {}        # VRAM address -> frame last uploaded
+        # Whether animation should start on its own when a room that has
+        # some is opened. Turned off by unticking the toolbar button, so
+        # a deliberately still view stays still from room to room.
+        self.animate_wanted = True
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self._advance_animation)
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.toolbar.setStyleSheet("""
@@ -107,6 +133,24 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.collision_action.setChecked(False)
         self.collision_action.toggled.connect(self.toggle_collision)
         self.toolbar.addAction(self.collision_action)
+
+        # Animated palettes - off, and disabled, until an area whose
+        # overlay carries some has been opened.
+        self.animate_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
+            "Animate", self)
+        self.animate_action.setCheckable(True)
+        self.animate_action.setEnabled(False)
+        self.animate_action.setToolTip(
+            "Play this room's animated palettes - the flowing water, the "
+            "waterfalls, the fires. The artwork does not move: the game "
+            "swaps a new 16-colour palette into VRAM each frame and every "
+            "face using it changes together.\n\n"
+            f"Played at {TICK_HZ} ticks a second, which is what a per-frame "
+            "handler runs at on the PSX. The step lengths come from the "
+            "area's overlay; the rate they are counted at does not.")
+        self.animate_action.toggled.connect(self.toggle_animation)
+        self.toolbar.addAction(self.animate_action)
 
         frame_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "Frame Level", self)
         frame_action.setToolTip("Put the whole room back in shot")
@@ -316,20 +360,27 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
     solid; blending the lot made them ghosts. The water pig is the
     exception that proves it - 89% of its entries DO set STP, and it is
     meant to look like water."""
-        clut = []
         # Direct linear address usage (NO x, y calculation here!)
         addr = clut_address  # linear address directly!
-        #print(f"\n[NEW SCRIPT] CLUT at VRAM address 0x{clut_address:06X}:")
-        line = "  "
+        raw = bytes(self.vram_raw_bytes[addr:addr + 32])
+        return self.palette_texture(raw, transparent)
+
+    @staticmethod
+    def palette_texture(raw, transparent=False):
+        """32 raw VRAM bytes as the 16 RGBA entries the shader samples.
+
+        Split out of extract_clut_from_vram() above, which still reads
+        the bytes out of VRAM and hands them here: an animated palette's
+        bytes come from the area's overlay instead (see
+        functions/clut_anim.py) and have to be turned into a texture the
+        same way, STP bit and all."""
+        clut = []
         for i in range(16):
-            read_addr = addr + i * 2
-            if read_addr + 1 >= len(self.vram_raw_bytes):
-                b0, b1 = 0, 0
+            at = i * 2
+            if at + 1 >= len(raw):
+                word = 0
             else:
-                b0 = self.vram_raw_bytes[read_addr]
-                b1 = self.vram_raw_bytes[read_addr + 1]
-            word = b0 | (b1 << 8)
-            #print(f"    Bytes @ {read_addr:06X}: {b0:02X} {b1:02X} -> Word: ({word:04X})")
+                word = raw[at] | (raw[at + 1] << 8)
             R = (word & 0x1F) * 8
             G = ((word >> 5) & 0x1F) * 8
             B = ((word >> 10) & 0x1F) * 8
@@ -382,6 +433,121 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
         GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
         return tex_id
+
+    @staticmethod
+    def _replace_clut(tex_id, clut_array):
+        """Rewrite a palette texture's 16 entries where they stand.
+
+        The draw calls are already grouped and bound by palette (see
+        prepare_buffers), so an animation only ever has to change what
+        one of those textures holds - no buffer is rebuilt and nothing
+        is regrouped to make the water move."""
+        GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+        GL.glTexSubImage1D(GL.GL_TEXTURE_1D, 0, 0, 16, GL.GL_RGBA,
+                           GL.GL_UNSIGNED_BYTE, clut_array)
+
+    def load_clut_animations(self, overlay_path):
+        """Bind this room's animated palettes, out of the area's
+        overlay. Returns how many were bound.
+
+        Call this AFTER load_mdat_data(): an overlay's table covers the
+        whole area, sprites and backgrounds included, and only the
+        animations whose CLUT this room's own faces point at are kept -
+        which needs the model's palette groups to already exist. AREA_04
+        keeps 13 and the room uses 7 of them, on 631 of the 5,522
+        triangles it draws.
+
+        Safe to call with None, or with a path that has no table: an
+        area with no overlay, or a disc opened somewhere without a BIN
+        folder, simply gets no animation."""
+        self.stop_animation()
+        self.clut_animations = {}
+        self.anim_tick = 0
+        found = []
+        if overlay_path and os.path.exists(overlay_path):
+            try:
+                _base, found = clut_anim.load_animations(overlay_path)
+            except Exception as e:
+                print(f"Could not read palette animations from "
+                      f"{os.path.basename(overlay_path)}: {e}")
+        # Where two records drive the same CLUT - which happens, and the
+        # game runs both - the last one written is the one on screen.
+        for animation in found:
+            if animation.address in self.clut_map:
+                self.clut_animations[animation.address] = animation
+
+        self.animate_action.setEnabled(bool(self.clut_animations))
+        if self.clut_animations and self.animate_wanted:
+            if self.animate_action.isChecked():
+                self.start_animation()
+            else:
+                self.animate_action.setChecked(True)   # starts it
+        self._update_stats_label()
+        return len(self.clut_animations)
+
+    def toggle_animation(self, checked):
+        # Remembered so that opening the next room keeps playing, or
+        # keeps still, whichever this one was left on.
+        self.animate_wanted = checked
+        if checked and self.clut_animations:
+            self.start_animation()
+        else:
+            self.stop_animation()
+
+    def start_animation(self):
+        self._apply_animation(force=True)
+        self.anim_timer.start(max(1000 // TICK_HZ, 1))
+
+    def stop_animation(self):
+        """Stop, and put back whatever the area's own VRAM holds - the
+        one frame of each animation that was already on screen before
+        any of this."""
+        self.anim_timer.stop()
+        if not self.anim_shown:
+            return
+        shown, self.anim_shown = self.anim_shown, {}
+        if not self.isValid():
+            return
+        self.makeCurrent()
+        for address in shown:
+            tex_id = self.clut_map.get(address)
+            if tex_id is not None:
+                self._replace_clut(tex_id, self.extract_clut_from_vram(
+                    address, self.clut_transparency.get(address, False)))
+        self._update_stats_label()
+        self.update()
+
+    def _advance_animation(self):
+        self.anim_tick += 1
+        self._apply_animation()
+
+    def _apply_animation(self, force=False):
+        """Upload the palettes that have moved on to a new frame.
+
+        Most ticks change nothing - the shortest step on the disc holds
+        for two ticks and the longest for twenty - so the frame each
+        palette is showing is remembered and only the ones that actually
+        moved are touched."""
+        if not self.clut_animations or not self.isValid():
+            return
+        self.makeCurrent()
+        changed = False
+        for address, animation in self.clut_animations.items():
+            tex_id = self.clut_map.get(address)
+            if tex_id is None:
+                continue
+            frame = animation.frame_at(self.anim_tick)
+            if not force and self.anim_shown.get(address) == frame:
+                continue
+            self.anim_shown[address] = frame
+            self._replace_clut(tex_id, self.palette_texture(
+                animation.frames[frame],
+                self.clut_transparency.get(address, False)))
+            changed = True
+        if changed:
+            self._update_stats_label()
+            self.update()
+
     def load_mdat_data(self, dat_file_path, dat_start, offset):
         clut_quad = np.random.randint(0, 256, (16, 4), dtype=np.uint8)  # RGBA
         clut_tri = np.random.randint(0, 256, (16, 4), dtype=np.uint8)
@@ -408,6 +574,13 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             return
 
         try:
+            # A new room means new palette textures, so anything bound
+            # to the old ones has to go; load_clut_animations() rebinds
+            # once the groups below exist.
+            self.stop_animation()
+            self.clut_animations = {}
+            self.animate_action.setEnabled(False)
+
             self.clut_map = {}
             self.clut_index_groups = {}
 
@@ -610,9 +783,15 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         tri_count = self.model_data.get('tri_count', 0) if self.model_data else 0
         quad_count = self.model_data.get('quad_count', 0) if self.model_data else 0
         cam = self.camera_controls
-        self.stats_label.setText(
-            f"Tris: {tri_count}  Quads: {quad_count}\n" + cam.status_text()
-        )
+        line = f"Tris: {tri_count}  Quads: {quad_count}"
+        if self.clut_animations:
+            drawn = sum(len(self.clut_index_groups.get(a, ())) // 3
+                        for a in self.clut_animations)
+            line += (f"  Animated: {len(self.clut_animations)} palette(s), "
+                     f"{drawn} tri(s)")
+            if self.anim_timer.isActive():
+                line += f"  tick {self.anim_tick}"
+        self.stats_label.setText(line + "\n" + cam.status_text())
         self.stats_label.adjustSize()
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
 

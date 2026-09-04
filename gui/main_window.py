@@ -2524,6 +2524,15 @@ class MainWindow(QMainWindow):
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
 
+                                # The room's animated palettes, which are
+                                # in the area's overlay rather than in the
+                                # DAT - see functions/clut_anim.py. After
+                                # the model, which is what says which of
+                                # the area's animations this room uses.
+                                self.mdat_viewer.load_clut_animations(
+                                    self.overlay_for_area(chunk_index)
+                                    if chunk_index is not None else None)
+
                                 # The drawmap at the head of this same
                                 # entry - never fatal, since the 3D view
                                 # stands on its own if it won't parse.
