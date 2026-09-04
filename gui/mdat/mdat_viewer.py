@@ -32,12 +32,11 @@ from PyQt6.QtWidgets import (
 
 # How many of the game's animation ticks to play per second. The routine
 # that walks the tables counts calls, and how often it is called is in
-# code functions/clut_anim.py has not followed - so this is the PSX's
-# own field rate, which is what a per-frame handler runs at, and not
-# something the files say. It is the one number here that is a guess:
-# everything else about these animations is read off the disc and checked
-# against savestates.
-TICK_HZ = 60
+# code functions/clut_anim.py has not followed, so nothing on the disc
+# says what this should be - it is set by eye against the game. It is
+# the one number here that is a guess: how long each step of an
+# animation holds, in ticks, is read off the area's overlay.
+TICK_HZ = 15
 
 
 class MDATViewer(CameraEventMixin, QOpenGLWidget):
@@ -146,9 +145,10 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             "waterfalls, the fires. The artwork does not move: the game "
             "swaps a new 16-colour palette into VRAM each frame and every "
             "face using it changes together.\n\n"
-            f"Played at {TICK_HZ} ticks a second, which is what a per-frame "
-            "handler runs at on the PSX. The step lengths come from the "
-            "area's overlay; the rate they are counted at does not.")
+            f"Played at {TICK_HZ} ticks a second. How long each step "
+            "holds, in ticks, comes from the area's overlay; the rate "
+            "those ticks are counted at is not on the disc, and is set "
+            "here by eye against the game.")
         self.animate_action.toggled.connect(self.toggle_animation)
         self.toolbar.addAction(self.animate_action)
 

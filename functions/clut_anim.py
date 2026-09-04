@@ -4,7 +4,7 @@ A room's artwork does not move. What moves is the palette a polygon
 draws through: once per frame the game copies a fresh 16-colour CLUT
 over the one sitting in VRAM, and every face pointing at that CLUT
 changes colour together. AREA_04's harbour is the clearest case - 631 of
-its 5,522 faces, 11%, are painted this way.
+the 5,522 triangles its MDAT draws, 11%, are painted this way.
 
 WHERE IT LIVES
 
