@@ -470,12 +470,26 @@ class MDATPanel(QWidget):
                 runs.append([state, 0])
             runs[-1][1] += 1
 
-        frames = []
+        # A run can come out looking exactly like the one before it - the
+        # lava's sheet holds each of its frames twice - and PIL drops a
+        # repeated frame while keeping its neighbour's duration, which
+        # plays those parts of the loop at double speed. Merging them
+        # here keeps the timing right and leaves PIL nothing to drop.
+        patches = []
         for (palette_frame, uv_frame), ticks in runs:
             du, dv = self._uv_offset(polygon, uv_frame)
             rgb = self._page_rgb(polygon, palette_frame)
             patch = np.take(np.take(rgb, np.arange(v0 + dv, v1 + dv) % PAGE, axis=0),
                             np.arange(u0 + du, u1 + du) % PAGE, axis=1)
+            if patches and np.array_equal(patches[-1][0], patch):
+                patches[-1][1] += ticks
+            else:
+                patches.append([patch, ticks])
+        if len(patches) > 1 and np.array_equal(patches[0][0], patches[-1][0]):
+            patches[0][1] += patches.pop()[1]
+
+        frames = []
+        for patch, ticks in patches:
             image = Image.fromarray(patch, "RGB")
             frames.append((image.resize((image.width * GIF_SCALE,
                                          image.height * GIF_SCALE), Image.NEAREST),
