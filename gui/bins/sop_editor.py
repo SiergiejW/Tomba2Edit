@@ -57,6 +57,27 @@ BUILDS = {
         "flow_region_end": 0x1EC,
         "ref_table": (0x43B4, 0x441C),
     },
+    # Everything here is read off the file itself. ram_base is the one
+    # value that makes all 27 reference slots land exactly on a line
+    # start; ref_table is the only run of RAM pointers into the file,
+    # and it is 27 slots wide on every build; flow_region_end is where
+    # the MIPS prologue (27 bd ff e0) starts, the same way it is on the
+    # Latin builds.
+    #
+    # blank_reserve is 0 because this build has no blank slot to point
+    # anywhere: its pause is a real line holding one ideographic space,
+    # so every slot resolves to a line and no guaranteed-zero byte has
+    # to be kept back. It also has no room to keep one - fourteen lines
+    # fill the pool to the byte.
+    "jp": {
+        "label": "Japanese",
+        "file_size": 18732,
+        "prefix_sha256": "c10ab4a129742f44400a6612f74ce8402bc42dffc9ab3b1e95afdc158ee2ef82",
+        "ram_base": 0x8010A750,
+        "flow_region_end": 0x1BC,
+        "ref_table": (0x47B4, 0x481C),
+        "blank_reserve": 0,
+    },
 }
 
 
@@ -168,10 +189,11 @@ def compute_pool_state(entries, build, edits=None):
     text. Doesn't touch disk; safe to call on every keystroke.
 
     Capacity is one byte less than the raw flowable span: repacking
-    always reserves exactly one guaranteed-zero byte for the shared
-    "blank" pause reference (see module docstring) - without it,
-    nothing left in the pool would still decode to an empty string for
-    that reference to point at.
+    reserves one guaranteed-zero byte for the shared "blank" pause
+    reference (see module docstring) - without it, nothing left in the
+    pool would still decode to an empty string for that reference to
+    point at. A build whose table has no blank slot needs no such byte
+    and says so with blank_reserve.
 
     Returns {"used", "capacity", "free", "errors": {offset: message}}.
     `free` goes negative on overflow rather than raising."""
@@ -187,7 +209,7 @@ def compute_pool_state(entries, build, edits=None):
         except MainBinParseError as ex:
             errors[e["offset"]] = str(ex)
     raw_capacity = (entries[-1]["offset"] if entries else build["flow_region_end"]) - TEXT_REGION_START
-    capacity = raw_capacity - 1  # reserved for the shared blank reference
+    capacity = raw_capacity - build.get("blank_reserve", 1)
     return {"used": used, "capacity": capacity, "free": capacity - used, "errors": errors}
 
 
@@ -228,7 +250,7 @@ def repack_pool(sop_path, entries, edits, output_path):
     flowable = [e for e in entries if _is_flowable(e["offset"], entries)]
     flow_end_usable = entries[-1]["offset"] if len(entries) > len(flowable) else build["flow_region_end"]
     raw_capacity = flow_end_usable - TEXT_REGION_START
-    capacity = raw_capacity - 1  # reserved for the shared blank reference
+    capacity = raw_capacity - build.get("blank_reserve", 1)
 
     new_pool = bytearray()
     new_offset_of = {}

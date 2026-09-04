@@ -121,7 +121,11 @@ class MainExeViewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=False, style="notice")
+        # console_font: the pool is what the console draws, not the game
+        # (see gui/mainbin/mainbin_parser) - which on the Japanese disc
+        # means a font of the console's own rather than the page's.
+        self.preview = FontPreview(big=False, style="notice",
+                                   console_font=True)
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)

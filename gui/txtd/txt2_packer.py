@@ -8,7 +8,9 @@ interleaved as discovered) to preserve correct data structures.
 
 import struct
 
-from gui.txtd.txtd_packer import encode_text, TxtdPackError, _align_up, MHSIZE, ALIGN, _REVERSE_LETTERS
+from gui.txtd.txtd_packer import (
+    encode_text, pointer_shift, TxtdPackError, _align_up, MHSIZE, ALIGN,
+    _REVERSE_LETTERS)
 
 # Marker used for a table entry whose pointer resolves outside
 # this file's own bytes.
@@ -75,6 +77,7 @@ def pack_txt2(txt2_data):
             f"entry_amount={entry_amount}) - both must fit in 16 bits."
         )
 
+    shift = pointer_shift()
     entry_table = bytearray()
     pool_blob = bytearray()
 
@@ -111,7 +114,7 @@ def pack_txt2(txt2_data):
                 pool_blob += encoded[:split_idx]
                 encoded = encoded[split_idx:]
 
-        adr = len(pool_blob)
+        adr = len(pool_blob) >> shift
         if adr > 0xFFFF:
             raise Txt2PackError("Text overflowed 64KB in this TXT2 block's text pool.")
 
@@ -142,7 +145,17 @@ def pack_txt2_flat(txt2_data):
     Packs flat-pointer TXT2 blocks (Model ID = 3).
     Ensures safe offset bounds and suffix reuse without generating
     out-of-bounds mapping crashes.
+
+    Nothing calls this - id 3 is packed by pack_txt2_simple - so its
+    pointer arithmetic has never been put in front of the Japanese
+    disc's unit-counting pointers. It refuses that disc rather than
+    write a file whose every pointer is twice where it should be.
     """
+    if pointer_shift():
+        raise Txt2PackError(
+            "pack_txt2_flat has no Japanese path - id 3 is packed by "
+            "pack_txt2_simple, which does.")
+
     entries = txt2_data.get("entries", [])
 
     split = 0
@@ -374,6 +387,7 @@ def pack_txt2_simple(txt2_data):
     """
     entries = txt2_data.get("entries", [])
     text_list = entries
+    shift = pointer_shift()
 
     text_head_sz = len(text_list) * 2 + 0x10
     while text_head_sz % 0x10 != 0:
@@ -384,9 +398,11 @@ def pack_txt2_simple(txt2_data):
     text_offset = 0
 
     for i, entry in enumerate(text_list):
-        offset_list.append(text_offset)
+        offset_list.append(text_offset >> shift)
         try:
-            encoded = encode_text(entry["text"])
+            # TXT2 is the page's own 8x8 alphabet rather than Shift-JIS,
+            # on the disc where those are two different things.
+            encoded = encode_text(entry["text"], cells=True)
         except TxtdPackError as e:
             raise Txt2PackError(str(e)) from e
         if i == len(text_list) - 1:
@@ -408,8 +424,11 @@ def pack_txt2_simple(txt2_data):
     while len(text_header) % 0x10 != 0:
         text_header += b"\xFF\xFF"
 
+    # The last message's terminator is dropped and made up for by the
+    # padding below - one byte, or one whole unit on the disc where a
+    # byte is half of one.
     if text_block:
-        del text_block[-1]
+        del text_block[-(1 << shift):]
 
     while len(text_block) % 8 != 0:
         text_block += b"\xFF"

@@ -32,8 +32,21 @@ class MainBinParseError(Exception):
 _LATIN1_FIRST = 0xA0
 
 
+def _japanese():
+    """Whether the disc open right now is the Japanese one.
+
+    Its pool is Shift-JIS rather than Latin-1, and starts 0x94 further
+    in than every Latin build's - which heuristic_pool_bounds finds on
+    its own once the entries decode as text instead of as escapes."""
+    from gui.txtd import dicts
+    return dicts.japanese_disc()
+
+
 def decode_bytes(raw):
     """Raw entry bytes (no terminator) -> displayed text."""
+    if _japanese():
+        from gui.txtd import jptext
+        return jptext.decode_pool(raw)
     out = []
     for b in raw:
         if b == 0x0A:
@@ -140,6 +153,12 @@ def encode_bytes(text):
     Displayed text -> raw bytes, inverse of decode_bytes(). Raises
     MainBinParseError instead of silently producing wrong bytes.
     """
+    if _japanese():
+        from gui.txtd import jptext
+        try:
+            return jptext.encode_pool(text)
+        except jptext.JapaneseTextError as exc:
+            raise MainBinParseError(str(exc)) from exc
     out = bytearray()
     i = 0
     n = len(text)

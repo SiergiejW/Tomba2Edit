@@ -365,8 +365,27 @@ def _detect_sprt(data):
 
 def _text_run(data, at, limit=120):
     """How much of the run at `at` decodes as the game's own character
-    set, up to its 0xFF terminator. 1.0 is text, and a pointer table
-    read as text comes out nowhere near it."""
+    set, up to its terminator. 1.0 is text, and a pointer table read as
+    text comes out nowhere near it.
+
+    The Japanese disc is read as the units it stores rather than as
+    bytes (see gui/txtd/jptext) - through the byte table its text scores
+    near zero, which left every JP file that merely has a TXTD-shaped
+    header being called one, text or not."""
+    from gui.txtd import dicts
+
+    if dicts.japanese_disc():
+        from gui.txtd import jptext
+
+        known = seen = 0
+        for i in range(at, min(at + limit * 2, len(data) - 1), 2):
+            unit = data[i] | (data[i + 1] << 8)
+            if unit == jptext.TERMINATOR:
+                break
+            seen += 1
+            known += jptext.is_char(unit) or unit in jptext.controls
+        return known / seen if seen else 0.0
+
     from gui.txtd.tombadict import letters
 
     known = seen = 0
@@ -376,6 +395,13 @@ def _text_run(data, at, limit=120):
         seen += 1
         known += data[i] in letters
     return known / seen if seen else 0.0
+
+
+def _pointer_shift():
+    """How far an entry pointer is shifted to reach a byte offset - one
+    on the Japanese disc, where a pointer counts units."""
+    from gui.txtd import dicts, jptext
+    return jptext.PTR_SHIFT if dicts.japanese_disc() else 0
 
 
 def _table_reads(data, flat):
@@ -392,6 +418,7 @@ def _table_reads(data, flat):
     entry_root = root * step + 0x10
     if not count or entry_root > len(data):
         return 0.0, 0
+    shift = _pointer_shift()
     good = tried = 0
     for i in range(count):
         at = 0x10 + i * step
@@ -401,10 +428,75 @@ def _table_reads(data, flat):
         if pointer == 0xFFFF:
             break
         tried += 1
-        target = entry_root + pointer
+        target = entry_root + (pointer << shift)
         if target < len(data) and _text_run(data, target) > 0.85:
             good += 1
     return (good / tried if tried else 0.0), tried
+
+
+def _subtable_at(data, at):
+    """Whether a TXTD sub-table header sits here - its root counting its
+    own table's slots, the same self-consistency the file header has."""
+    if at < 0 or at + 0x10 > len(data):
+        return False
+    root, count = struct.unpack_from("<HH", data, at)
+    return bool(count) and count < 500 and (root << 2) == _align(count * 4, 0x10)
+
+
+def _flat_units_land_after_terminators(data, root, amount):
+    """How much of a flat table reads as unit-counting pointers into a
+    pool of messages - a pointer that is not the first should land just
+    past a terminator. Returns (fraction, pointers tried)."""
+    entry_root = root * 2 + 0x10
+    good = tried = 0
+    for i in range(amount):
+        at = 0x10 + i * 2
+        if at + 2 > len(data):
+            break
+        pointer = struct.unpack_from("<H", data, at)[0]
+        if pointer == 0xFFFF:
+            break
+        target = entry_root + (pointer << 1)
+        if target + 2 > len(data):
+            break
+        tried += 1
+        if (target == entry_root
+                or struct.unpack_from("<H", data, target - 2)[0] == 0xFFFF):
+            good += 1
+    return (good / tried if tried else 0.0), tried
+
+
+def _detect_txtd_jp(data, root, amount):
+    """Which of the three shapes a Japanese file is.
+
+    Not by reading its text. TXT2 there is cell numbers into the font
+    page (see gui/txtd/jptext), and a cell number and a table pointer
+    look exactly alike, so scoring a run cannot tell a TXT2's text from
+    a table - the file that holds the item notices was called a TXTD on
+    that basis, and walked as one produced 5 KB of escapes.
+
+    Structure can tell them apart. A master reaching a sub-table header
+    is a TXTD; one reaching Shift-JIS is a TXT1; and a flat table whose
+    pointers, counted in units, all land just past a terminator is a
+    TXT2. Nothing that is none of the three is claimed at all."""
+    first = struct.unpack_from("<H", data, 0x10)[0]
+    if _subtable_at(data, (root << 2) + 0x10 + (first << 2)):
+        return Match("TXTD", STRONG,
+                     f"{amount} master headers, each into its own sub-table")
+
+    paired, paired_tried = _table_reads(data, flat=False)
+    if paired > 0.85:
+        return Match("TXT1", STRONG,
+                     f"{paired_tried} messages, paired 4-byte table "
+                     f"({paired:.0%} reach Shift-JIS)")
+
+    flat, flat_tried = _flat_units_land_after_terminators(data, root, amount)
+    if flat_tried and flat > 0.9:
+        return Match("TXT2", STRONG,
+                     f"{flat_tried} messages, flat 2-byte pointer table "
+                     f"({flat:.0%} land on a message start)")
+
+    _need(False, "no master reaches a sub-table, Shift-JIS or a message pool")
 
 
 def _detect_txtd(data):
@@ -427,6 +519,10 @@ def _detect_txtd(data):
           f"{expected + 0x10:#x}")
     _need(0x10 + expected <= len(data),
           f"{amount} master headers don't fit in {len(data):#x} bytes")
+
+    from gui.txtd import dicts
+    if dicts.japanese_disc():
+        return _detect_txtd_jp(data, root, amount)
 
     first = struct.unpack_from("<H", data, 0x10)[0]
     if _text_run(data, (root << 2) + 0x10 + (first << 2)) <= 0.85:

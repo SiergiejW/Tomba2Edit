@@ -5,6 +5,10 @@ from gui.txtd.tombadict import letters as l
 
 MHSIZE = 0x10
 
+# How much of the file to hand the Japanese codec for one message; it
+# stops at the terminator, so this is only an upper bound.
+JP_WINDOW = 0x2000
+
 _HEX_ESCAPE_RE = re.compile(r"\{\$[0-9A-Fa-f]{2}\}")
 
 
@@ -36,7 +40,22 @@ def preview(DAT, datstart, size=None, id_val=None):
     Confirmed against a real English TXT2 sample and an independent fan
     translation's source (github.com/jywjyw/tomba2-hack), which rebuilds
     this table the same flat way.
+
+    The Japanese disc holds both of these as 16-bit units rather than
+    bytes, and holds them in two different alphabets: TXT1 is Shift-JIS
+    and TXT2 is cell numbers into the page's own 8x8 kana font, which is
+    the same split the Latin builds have between the 8x16 font and the
+    8x8 one. Its pointers count units. See gui/txtd/jptext.
     """
+    from gui.txtd import dicts
+
+    japanese = dicts.japanese_disc()
+    cells = japanese and id_val == 3
+    ptr_shift = 1 if japanese else 0
+    if japanese:
+        from gui.txtd import jptext
+        jp_decode = jptext.decode_cells if cells else jptext.decode
+
     def getB(number=1):
         return int.from_bytes(rom.read(number), byteorder='little')
 
@@ -51,6 +70,18 @@ def preview(DAT, datstart, size=None, id_val=None):
         if file_end is not None and real >= file_end:
             rom.seek(real)
             return "{$OOB}"
+        if japanese:
+            rom.seek(real)
+            room = JP_WINDOW if file_end is None else min(JP_WINDOW,
+                                                          file_end - real)
+            window = rom.read(max(room, 0))
+            text, end = jp_decode(window, 0)
+            # Leave the handle where the byte path would leave it - the
+            # caller takes rom.tell() as this message's end.
+            rom.seek(real + end)
+            if window[end - 2:end] != b"\xFF\xFF":
+                text += "{$OOB}" if file_end is not None else "{$EOF}"
+            return text
         textout = ""
         rom.seek(real)
         n = -1
@@ -81,9 +112,16 @@ def preview(DAT, datstart, size=None, id_val=None):
             rom.seek(datstart)
 
             def decode_bytes(raw):
+                if japanese:
+                    return jp_decode(raw, 0)[0]
                 return "".join(l.get(byte, "{{${:02X}}}".format(byte)) for byte in raw)
 
             def scan_fragments(start, end):
+                # A fragment runs to its own terminator - one 0xFF byte,
+                # or one 0xFFFF unit on the Japanese disc, where reading
+                # a unit at a time is also what keeps the scan aligned.
+                step = 2 if japanese else 1
+                terminator = b"\xFF\xFF" if japanese else b"\xFF"
                 scan_end = end if file_end is None else min(end, file_end)
                 rom.seek(start)
                 pos = start
@@ -94,16 +132,16 @@ def preview(DAT, datstart, size=None, id_val=None):
                     while True:
                         if file_end is not None and pos >= file_end:
                             break  # this file's own bytes stop here - same hard stop as true physical EOF
-                        chunk = rom.read(1)
-                        if not chunk:
+                        chunk = rom.read(step)
+                        if len(chunk) < step:
                             break  # true physical EOF - the only other hard stop
-                        frag.append(chunk[0])
-                        pos += 1
-                        if chunk[0] == 0xFF:
+                        frag += chunk
+                        pos += step
+                        if chunk == terminator:
                             break
                     if not frag:
                         break  # nothing left to read - stop the scan
-                    if frag == b"\xFF":
+                    if frag == terminator:
                         continue
                     overflow_end = pos if pos > end else None
                     out.append((frag_start, bytes(frag), overflow_end))
@@ -204,7 +242,7 @@ def preview(DAT, datstart, size=None, id_val=None):
                         })
                         continue
 
-                    real = entry_root + ptr
+                    real = entry_root + (ptr << ptr_shift)
                     print(f"\t{i}: ptr=0x{ptr:04X} (at 0x{real:X})")
                     text_content = getText(real)
                     real_end = rom.tell()
@@ -253,7 +291,7 @@ def preview(DAT, datstart, size=None, id_val=None):
                     ptr = entry_headers[b]["adr"]
                     who = entry_headers[b]["extra"]
                     is_sentinel = (ptr == 0xFFFF and who == 0xFFFF)
-                    real = entry_root + ptr
+                    real = entry_root + (ptr << ptr_shift)
                     text_content = prepareText(ptr, who, real)
 
                     real_end = rom.tell()
@@ -312,16 +350,18 @@ def preview(DAT, datstart, size=None, id_val=None):
                 )
                 lower_bound = datstart + MHSIZE
                 if zero_adr_entry is not None and entry_root > lower_bound:
-                    rom.seek(entry_root - 1)
-                    prev_byte = rom.read(1)
-                    if prev_byte and prev_byte[0] != 0xFF:
-                        pos = entry_root - 1
+                    step = 2 if japanese else 1
+                    terminator = b"\xFF\xFF" if japanese else b"\xFF"
+                    rom.seek(entry_root - step)
+                    prev_byte = rom.read(step)
+                    if len(prev_byte) == step and prev_byte != terminator:
+                        pos = entry_root - step
                         while pos > lower_bound:
-                            rom.seek(pos - 1)
-                            b = rom.read(1)
-                            if not b or b[0] == 0xFF:
+                            rom.seek(pos - step)
+                            b = rom.read(step)
+                            if len(b) < step or b == terminator:
                                 break
-                            pos -= 1
+                            pos -= step
                         if pos < entry_root:
                             rom.seek(pos)
                             lead_raw = rom.read(entry_root - pos)
@@ -369,7 +409,8 @@ def preview(DAT, datstart, size=None, id_val=None):
                 real_table_entries = [e for e in entries if not e["is_gap"] and e.get("adr") is not None]
                 n = min(VERB_SUFFIX_COUNT, len(leading_gap_entries), len(real_table_entries))
                 for k in range(n):
-                    gap_offset = leading_gap_entries[k]["_sort_key"] - table_region_end
+                    gap_offset = ((leading_gap_entries[k]["_sort_key"]
+                                   - table_region_end) >> ptr_shift)
                     if real_table_entries[k]["adr"] == gap_offset:
                         verb_suffix_count = k + 1
                     else:

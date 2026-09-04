@@ -634,8 +634,58 @@ def _euro_cluts(sprites):
     return out
 
 
+# THE OTHER PAL DISCS
+#
+# English PAL, French and Italian lay the page out exactly as the German
+# and Spanish ones do - same grid row, same accent block, same artwork
+# bands, same double-glyph rows and border. Only the words differ, and
+# they differ in width, so each gets its own boxes for the menu words
+# and shares everything else.
+#
+# Each of these was read off its own page, snapped to the 8-pixel
+# column grid, and checked to contain its art.
+_PAL_SHARED = tuple(e for e in DE_SPRITES
+                    if name_of(e).startswith(("double glyph", "frame",
+                                              "digit", "+", "100%")))
+
+EU_SPRITES = (
+    # The English PAL disc keeps "Save" flat - its two halves are the
+    # left and right of the word, already side by side, unlike the
+    # German and Italian ones which are stacked.
+    ("Save", 56, 64, 64, 112),
+    ("Help", 128, 144, 200, 248),
+    ("Items", 176, 192, 64, 120),
+    ("Event", 176, 192, 120, 184),
+    ("Status", 176, 192, 184, 248),
+    ("Load", 216, 232, 200, 248),
+) + _PAL_SHARED
+
+FR_SPRITES = (
+    # "Faits" is stacked, the same trick German plays with Ereignis.
+    ("Faits (Events)", [(56, 64, 104, 152, 0, 0),
+                        (56, 64, 152, 200, 0, 8)]),
+    ("Etat (Status)", 128, 144, 200, 248),
+    ("Objets (Items)", 176, 192, 64, 128),
+    ("Charger (Load)", 176, 192, 128, 192),
+    ("Sauvegarde (Save)", 176, 192, 192, 248),
+    ("Aide (Help)", 216, 232, 200, 248),
+) + _PAL_SHARED
+
+IT_SPRITES = (
+    ("Salva (Save)", [(56, 64, 64, 120, 0, 0),
+                      (56, 64, 120, 176, 0, 8)]),
+    ("Carica (Load)", 128, 144, 200, 256),
+    ("Oggetti (Items)", 176, 192, 64, 128),
+    ("Eventi (Events)", 176, 192, 128, 192),
+    ("Stato (Status)", 176, 192, 192, 248),
+    ("Aiuto (Help)", 216, 232, 200, 256),
+) + _PAL_SHARED
+
 DE_CLUTS = _euro_cluts(DE_SPRITES)
 SP_CLUTS = _euro_cluts(SP_SPRITES)
+EU_CLUTS = _euro_cluts(EU_SPRITES)
+FR_CLUTS = _euro_cluts(FR_SPRITES)
+IT_CLUTS = _euro_cluts(IT_SPRITES)
 
 
 class PageKind:
@@ -739,8 +789,17 @@ def _title_bands(_glyph_top):
 FONT_PAGE = PageKind(
     "AREA_00 Fonts", fontpage.FONTS, SPRITES, SPRITE_CLUTS, FONT_CLUT, True,
     regions,
-    by_build={"de-retail": DE_SPRITES, "sp-retail": SP_SPRITES},
-    cluts_by_build={"de-retail": DE_CLUTS, "sp-retail": SP_CLUTS})
+    by_build={"de-retail": DE_SPRITES, "sp-retail": SP_SPRITES,
+              "eu-retail": EU_SPRITES, "fr-retail": FR_SPRITES,
+              "it-retail": IT_SPRITES,
+              # Japanese shares none of this - its page is laid out
+              # differently and has not been mapped. An empty table
+              # shows the page with no sprite boxes on it, which is
+              # honest; US boxes over a Japanese page would not be.
+              "jp-retail": ()},
+    cluts_by_build={"de-retail": DE_CLUTS, "sp-retail": SP_CLUTS,
+                    "eu-retail": EU_CLUTS, "fr-retail": FR_CLUTS,
+                    "it-retail": IT_CLUTS, "jp-retail": {}})
 DE_TITLE_CLUTS = {_s[0]: TITLE_CLUT for _s in DE_TITLE_SPRITES}
 SP_TITLE_CLUTS = {_s[0]: TITLE_CLUT for _s in SP_TITLE_SPRITES}
 
@@ -748,7 +807,8 @@ TITLE_PAGE = PageKind("AREA_02 Main Title", fontpage.TITLE, TITLE_SPRITES,
                       TITLE_CLUTS, TITLE_CLUT, False, _title_bands,
                       TITLE_PALETTES, TITLE_DEEP, TITLE_DEEP_ROW,
                       by_build={"de-retail": DE_TITLE_SPRITES,
-                                "sp-retail": SP_TITLE_SPRITES},
+                                "sp-retail": SP_TITLE_SPRITES,
+                                "jp-retail": ()},
                       cluts_by_build={"de-retail": DE_TITLE_CLUTS,
                                       "sp-retail": SP_TITLE_CLUTS})
 PAGE_KINDS = (FONT_PAGE, TITLE_PAGE)

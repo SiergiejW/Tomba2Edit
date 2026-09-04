@@ -100,6 +100,23 @@ _ANIM_FAMILY = frozenset(("ANMP", "TANP", "BETP", "ALFD", "ALFP",
                           "MDAP", "TAND", "MDAD"))
 
 
+def _slots_are_comparable(main_window):
+    """Does slot N of area X mean the same thing as on the labelled disc?
+
+    On the Latin discs, yes: US, German, Spanish, English PAL, French
+    and Italian all hold 1,310 files with an identical sequence of types
+    in every one of their 48 areas, so a file's position identifies it
+    even when its bytes have been translated.
+
+    On the Japanese disc, no. Its area contents differ, and naming its
+    files by position hands them the names of whatever the US disc keeps
+    in the same slot - a text file coming out as "Water Pig Robe Tomba
+    Model" is the kind of wrong that is worse than no name at all."""
+    from gui.txtd import dicts
+    build = getattr(main_window, "build", dicts.DEFAULT_BUILD)
+    return build not in dicts.JAPANESE_BUILDS
+
+
 def _relabel_file_item(main_window, child, label_set):
     """Rewrite one file row's text/icon/tooltip from the labels file.
     Returns True if the row has a name (in `label_set` or not is what
@@ -114,7 +131,7 @@ def _relabel_file_item(main_window, child, label_set):
     stem, filetype, _address, detail, content = data
     label = label_set.get(content) if label_set else None
     by_position = False
-    if label is None and label_set:
+    if label is None and label_set and _slots_are_comparable(main_window):
         # The bytes do not match anything, but the slot might - a
         # translated or PAL-retimed file is still the same asset. See
         # LabelSet.by_slot().

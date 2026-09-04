@@ -48,6 +48,15 @@ FRAME_PIECE_H = 16
 FRAME_PIECES = (11, 35, 59)      # x offsets from FRAME_X
 FRAME_CLUT = (255, 2)            # row, slot
 
+# The Japanese page's box, which is not those pieces at all - see
+# read_jp_frame(). Nine cells of the system font's own grid, three to a
+# row, making one upright 24x24 nine-slice.
+JP_FRAME_CELL = 0x117
+JP_FRAME_ACROSS = 3
+JP_FRAME_SIDE = 24
+JP_FRAME_BORDER = 6              # left and right, three of them blank
+JP_FRAME_EDGE_H = 8              # rows in the top and bottom edges
+
 # The system font, and where the CLUTs sit. Rows are page rows.
 SYSTEM_TOP = 0
 SYSTEM_H = 8
@@ -387,6 +396,36 @@ def glyph_row(page, row, top=GLYPH_TOP):
     """One whole row of the grid, for use as a reference."""
     y = top + row * GLYPH_H
     return tuple(tuple(page[y + i]) for i in range(GLYPH_H))
+
+
+def read_jp_frame(cd_folder, clut=FRAME_CLUT):
+    """The Japanese page's box, as one 24x24 image of (r, g, b, a) rows.
+
+    Not the Latin page's three upside-down 18x16 pieces: it is a plain
+    nine-slice, the right way up, living in nine cells of the system
+    font's own grid at 0x117..0x11F, three cells to a row. Six pixels of
+    border either side (three of them blank), eight rows of edge top and
+    bottom, and an interior that runs a gradient down the middle eight
+    the same way the Latin one does."""
+    page = read_page(cd_folder)
+    palette = None
+    for row, slot, pal in read_cluts(cd_folder):
+        if (row, slot) == clut:
+            palette = pal
+            break
+    if palette is None:
+        return []
+    out = []
+    for y in range(JP_FRAME_SIDE):
+        cell_row, iy = divmod(y, SYSTEM_H)
+        line = []
+        for x in range(JP_FRAME_SIDE):
+            cell_col, ix = divmod(x, GLYPH_W)
+            code = JP_FRAME_CELL + cell_row * JP_FRAME_ACROSS + cell_col
+            cy, cx = divmod(code, GLYPH_COLS)
+            line.append(palette[page[cy * SYSTEM_H + iy][cx * GLYPH_W + ix]])
+        out.append(line)
+    return out
 
 
 def read_frame(cd_folder, clut=FRAME_CLUT):

@@ -54,6 +54,14 @@ _LATIN = {
     "us-demo": {},
     "de-retail": ACCENT_BLOCK,
     "sp-retail": ACCENT_BLOCK,
+    # The rest of the PAL family lays its page out identically and
+    # carries the same accented block; only the words differ. The
+    # English PAL disc has the block too and simply uses little of it.
+    "eu-retail": ACCENT_BLOCK,
+    "fr-retail": ACCENT_BLOCK,
+    "it-retail": ACCENT_BLOCK,
+    # Japanese gets no Latin table - see JAPANESE_BUILDS.
+    "jp-retail": {},
 }
 
 # Where each build's grid starts in its font page, found by matching the
@@ -74,7 +82,60 @@ GLYPH_TOP = {
     # box two rows low, which is what showed on the capitals.
     "de-retail": 64,
     "sp-retail": 64,
+    # The other PAL discs are the same page in another language.
+    "eu-retail": 64,
+    "fr-retail": 64,
+    "it-retail": 64,
+    # Japanese pushes the grid down again, to make room for twelve rows
+    # of 8x8 kana above it.
+    "jp-retail": 96,
 }
+
+
+# JAPANESE IS NOT A LATIN BUILD WITH OTHER LETTERS IN IT
+#
+#   its page   rows 0..96 are an 8x8 system font of hiragana, katakana
+#              and ASCII; the 8x16 grid below that is Latin, and there
+#              are no kanji anywhere on the page
+#   its glyphs come from the console, not the disc. The Japanese BIOS
+#              carries a 16x15 JIS X 0208 font and the game expands a
+#              glyph out of it per character - see functions/biosfont.
+#              926 of the 927 characters the disc's text uses are drawn
+#              from it; the odd one out is the ideographic space.
+#   its text   is one 16-bit little-endian unit a character, holding a
+#              Shift-JIS code lead byte high, with controls below 0x100
+#              and at 0xFF00 and up. Read byte-for-byte through a
+#              256-entry table, the way every Latin build is read, a
+#              Japanese file comes out mostly escapes; read as
+#              byte-order Shift-JIS pairs it comes out as run-on
+#              Japanese, which is close enough to look right and is not.
+#   its pointers count units rather than bytes, in the entry tables
+#              only - the master table is still << 2.
+#
+# So a {code: character} table cannot describe it. gui/txtd/jptext is
+# its codec; the build is listed here so its page can still be shown
+# with the grid in the right place.
+#
+# A Japanese demo disc detects as jp-retail, since detect() reads the
+# page and the demo's page is the same one.
+JAPANESE_BUILDS = frozenset({"jp-retail"})
+
+
+def is_japanese(build):
+    """Whether this build's text is Japanese - which decides the codec,
+    the pointer scale and where the glyphs come from."""
+    return build in JAPANESE_BUILDS
+
+
+def japanese_disc():
+    """The same question about the disc that is open right now.
+
+    Asked here rather than threaded through every reader: which build is
+    open is already global state (translation.use_build, called once when
+    a disc is opened), and a reader that has to be told would mean every
+    caller of it learning about builds to read a file."""
+    from gui.txtd import translation
+    return is_japanese(translation.build())
 
 # Cells the US page fills with button icons and the European pages with
 # accented capitals. Only the European builds take the accent block, so
@@ -108,31 +169,55 @@ def glyph_top(build=DEFAULT_BUILD):
 # Words only one language's executable has, used to tell the European
 # discs apart. Both carry the same font page layout, so the page cannot
 # say which language it is - the strings can.
+# A word that appears in exactly one build's MAIN.EXE, checked against
+# all seven discs. "Options"/"Continue"/"Messages" are no use - the US,
+# English-PAL and French discs all carry them - so the French disc is
+# named by "Sauve" instead.
+# What the Latin system font (rows 0-31) weighs, in inked texels. The
+# US, German, Spanish, English PAL, French and Italian pages all give
+# exactly this; the Japanese one gives 4,481.
+_LATIN_SYSTEM_INK = 3947
+
 _LANGUAGE_MARKS = (
-    ("de-retail", b"Speichern"),
-    ("sp-retail", b"Guardar"),
-    ("us-retail", b"Save Error!"),
+    ("de-retail", b"Optionen"),
+    ("sp-retail", b"Opciones"),
+    ("it-retail", b"Opzioni"),
+    ("fr-retail", b"Sauve"),
+    ("us-retail", b"Quit game"),
 )
 
 
 def detect(page, exe=b""):
     """Which build a disc is, read off the disc itself.
 
-    Two signals, both measured, neither of them a filename:
+    Three signals, all measured, none of them a filename:
 
-    The US page keeps rows 224-239 empty; the European ones fill them
-    with artwork. That is a difference of 0 inked texels against about
-    1,600, so it separates the layouts outright rather than by a
-    threshold anyone has to tune.
+    Rows 0-31 hold the system font, and every Latin disc - US, German,
+    Spanish, English PAL, French, Italian - draws exactly the same one:
+    3,947 inked texels, the same number on all six. The Japanese disc
+    puts hiragana and katakana there instead and comes to 4,481. That
+    separates Japanese from the rest before anything else is asked.
 
-    Which European language it is cannot come from the page, because
-    German and Spanish lay theirs out identically. It comes from a word
-    that only one executable contains.
+    Rows 224-239 are empty on the US page and carry artwork on the PAL
+    ones - 0 texels against roughly 1,500 to 1,800 - which separates the
+    two Latin layouts outright rather than by a tuned threshold.
 
-    Returns (build id, why), the reason being worth showing: a detector
-    that silently picks the wrong layout is worse than one that says
-    what it saw.
+    Which PAL language it is cannot come from the page, because they all
+    lay it out identically. It comes from a word only one executable
+    contains.
+
+    Returns (build id, why). The reason is worth having: a detector that
+    silently picks the wrong layout is worse than one that says what it
+    saw.
     """
+    kana = sum(1 for y in range(0, 32)
+               for x in range(len(page[y])) if page[y][x])
+    if kana > _LATIN_SYSTEM_INK + 200:
+        return "jp-retail", (
+            f"rows 0-31 carry {kana} texels where every Latin disc "
+            f"carries {_LATIN_SYSTEM_INK} - this is the Japanese page, "
+            "whose system font is kana")
+
     below = sum(1 for y in range(224, 240)
                 for x in range(len(page[y])) if page[y][x])
     language = None
@@ -140,19 +225,23 @@ def detect(page, exe=b""):
         if mark and exe and mark in exe:
             language = build
             break
+
     if below == 0:
         return (language if language and language.startswith("us")
                 else DEFAULT_BUILD), (
-            f"rows 224-239 are empty, which is the US layout"
-            + (f", and MAIN.EXE agrees" if language == "us-retail" else ""))
+            "rows 224-239 are empty, which is the US layout"
+            + (", and MAIN.EXE agrees" if language == "us-retail" else ""))
     if language and not language.startswith("us"):
         return language, (
             f"rows 224-239 carry {below} texels of artwork, which is the "
-            f"European layout, and MAIN.EXE names it")
-    return "de-retail", (
+            "PAL layout, and MAIN.EXE names the language")
+    # PAL layout, but no language word matched. The English PAL disc is
+    # the one that carries none of them, so it is the better guess than
+    # picking a language at random.
+    return "eu-retail", (
         f"rows 224-239 carry {below} texels of artwork, so this is the "
-        "European layout, but MAIN.EXE did not say which language - "
-        "guessing German, which shares the layout")
+        "PAL layout; MAIN.EXE named no language, which is what the "
+        "English PAL disc looks like")
 
 
 def derive(page, reference_page, reference_table, top=None, reference_top=40):

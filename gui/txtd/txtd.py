@@ -3,7 +3,18 @@ import struct
 
 MHSIZE = 0x10
 
+# How much of the file to hand the Japanese codec for one message. It
+# stops at the terminator, so this is only an upper bound on how long a
+# message can be - the longest on the disc is a little over 400 bytes.
+JP_WINDOW = 0x2000
+
+
 def preview(DAT, datstart):
+    from gui.txtd import dicts
+    japanese = dicts.japanese_disc()
+    if japanese:
+        from gui.txtd import jptext
+
     def getB(number=1):
         return int.from_bytes(rom.read(number), byteorder='little')
 
@@ -15,6 +26,10 @@ def preview(DAT, datstart):
             return getText(real)
 
     def getText(real):
+        if japanese:
+            rom.seek(real)
+            text, _end = jptext.decode(rom.read(JP_WINDOW), 0)
+            return text
         textout = ""
         rom.seek(real)
         n = -1
@@ -80,7 +95,10 @@ def preview(DAT, datstart):
                 entries = []
                 # Processing each entry text
                 for text in entry_headers:
-                    real = entry_root + entry_headers[text]["adr"]
+                    # An entry pointer counts units on the Japanese disc
+                    # and bytes everywhere else - see gui/txtd/jptext.
+                    real = entry_root + (entry_headers[text]["adr"]
+                                         << (1 if japanese else 0))
                     ptr = entry_headers[text]["adr"]
                     who = entry_headers[text]["extra"]
                     text_content = prepareText(ptr, who, real)

@@ -100,13 +100,38 @@ def _align_up(n, align=ALIGN):
     return (n + align - 1) // align * align
 
 
-def encode_text(text):
+def pointer_shift():
+    """How far to shift a byte offset to get the pointer that names it.
+
+    Zero everywhere but the Japanese disc, whose entry pointers count
+    16-bit units - see gui/txtd/jptext. The master table is not affected:
+    its pointers are << 2 on every build."""
+    from gui.txtd import dicts, jptext
+    return jptext.PTR_SHIFT if dicts.japanese_disc() else 0
+
+
+def encode_text(text, cells=False):
     """
     Turn a decoded text string (as shown/edited in the TXTD viewer)
-    back into raw TXTD bytes, INCLUDING the terminating 0xFF byte.
+    back into raw TXTD bytes, INCLUDING the terminator.
     Raises TxtdPackError instead of guessing if something can't be
     encoded, so a silent, subtly-corrupt export can't happen.
+
+    `cells` picks the Japanese disc's other alphabet - TXT2 is cell
+    numbers into the 8x8 page rather than Shift-JIS (see
+    gui/txtd/jptext). It means nothing on a Latin build, where both
+    alphabets are the one byte table.
     """
+    from gui.txtd import dicts
+
+    if dicts.japanese_disc():
+        from gui.txtd import jptext
+        try:
+            return (jptext.encode_cells(text) if cells
+                    else jptext.encode(text))
+        except jptext.JapaneseTextError as exc:
+            raise TxtdPackError(str(exc)) from exc
+
     out = bytearray()
     i = 0
     n = len(text)
@@ -178,6 +203,7 @@ def pack_txtd(txtd_data):
         )
 
     master_amount = len(masters)
+    shift = pointer_shift()
 
     # Top-level header: master_root must land on a 16-byte boundary
     # relative to the very start of the blob (offset 0).
@@ -213,7 +239,7 @@ def pack_txtd(txtd_data):
                 entry_table += struct.pack("<HH", 0xFFFF, 0xFFFF)
                 continue
 
-            adr = len(text_blob)
+            adr = len(text_blob) >> shift
             if adr > 0xFFFF:
                 raise TxtdPackError(
                     "Text for master_adr={} overflowed 64KB in a single "
