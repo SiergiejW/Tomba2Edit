@@ -34,6 +34,7 @@ from functions.camera_controls import (
     CameraEventMixin, scene_of,
 )
 from functions.format_detect import FormatError
+from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from functions import gltf_export
 from gui.smst.smst_parser import load_smst
@@ -65,7 +66,23 @@ QUARTER = 3     # B + F/4
 WEIGHTS = {HALF: 0.5, ADD: 1.0, SUBTRACT: 1.0, QUARTER: 0.25}
 
 
-class SMSTViewer(CameraEventMixin, QOpenGLWidget):
+def _runs_text(numbers, limit=6):
+    """[72, 73, 74, 75, 76, 77] as "72-77" - part numbers for the stats
+    line, where an asset pack's animated water is a run of neighbours
+    and listing them one by one fills the overlay."""
+    runs = []
+    for n in numbers:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    text = [f"{a}" if a == b else f"{a}-{b}" for a, b in runs[:limit]]
+    if len(runs) > limit:
+        text.append("...")
+    return ", ".join(text) or "-"
+
+
+class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
@@ -94,6 +111,10 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         # for and uploaded from _sync_gl() at the top of paintGL.
         self._arrays = None                 # (positions, colors, texcoords, indices)
         self._clut_arrays = {}              # CLUT address -> 16x4 uint8
+        self._clut_transparency = {}        # CLUT address -> whether it blends
+        # Palettes whose 16 entries have changed since the last paint -
+        # what an animation leaves behind, flushed by _sync_gl.
+        self._cluts_dirty = set()
         self._geometry_dirty = False
         # Only the vertex positions changed - see refresh_positions. A
         # pose is the common case by far and it touches nothing else,
@@ -135,6 +156,12 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         # The world origin, drawn over the model - see gui/origin_axes.py.
         self.show_origin = False
         self.origin_axes = OriginAxes()
+
+        # Animated palettes - see gui/clut_animation.py. An asset pack
+        # animates the same way its area's room does, and out of the
+        # same table: parts 72-77 of AREA_04's Fishermen's Town pack are
+        # its water.
+        self.init_clut_animation()
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -198,6 +225,7 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
             "all stacked before a skeleton stands them up.")
         self.origin_action.toggled.connect(self.toggle_origin)
         self.toolbar.addAction(self.origin_action)
+        self.toolbar.addAction(self.make_animate_action())
 
         # Kept as an attribute so a view that embeds this one can take
         # it away: the ANMP viewer offers its own export, which writes
@@ -370,7 +398,13 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         context yet when a file is picked in the tree."""
         self.draw_ranges = []
         self._arrays = None
+        # A new model means new palette textures, so anything bound to
+        # the old ones has to go; load_clut_animations() rebinds once
+        # the groups below exist.
+        self.clear_clut_animations()
         self._clut_arrays = {}
+        self._clut_transparency = {}
+        self._cluts_dirty = set()
         if not self.model_data or not self.model_data.get("vertices"):
             return
 
@@ -397,6 +431,7 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
                                len(face_indices), transparent, blend))
                 indices.extend(face_indices)
                 if clut not in self._clut_arrays:
+                    self._clut_transparency[clut] = transparent
                     self._clut_arrays[clut] = self._clut_from_vram(clut, transparent)
 
         self.draw_ranges = ranges
@@ -429,6 +464,23 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
                                    GL.GL_NEAREST)
                 GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER,
                                    GL.GL_NEAREST)
+
+        if self._cluts_dirty:
+            # An animation moved a palette on a frame. Nothing but the
+            # texture's 16 entries changes - the draw calls are already
+            # grouped and bound by palette - so this rewrites them where
+            # they stand. Skipped when the geometry is being rebuilt
+            # below, which uploads every palette afresh anyway.
+            if not self._geometry_dirty:
+                for address in self._cluts_dirty:
+                    tex_id = self.clut_map.get(address)
+                    array = self._clut_arrays.get(address)
+                    if tex_id is None or array is None:
+                        continue
+                    GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                    GL.glTexSubImage1D(GL.GL_TEXTURE_1D, 0, 0, 16, GL.GL_RGBA,
+                                       GL.GL_UNSIGNED_BYTE, array)
+            self._cluts_dirty = set()
 
         if self._positions_dirty and not self._geometry_dirty:
             # The cheap path: same mesh, moved.
@@ -496,13 +548,23 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
     solid; blending the lot made them ghosts. The water pig is the
     exception that proves it - 89% of its entries DO set STP, and it is
     meant to look like water."""
+        return self._clut_from_bytes(
+            bytes(self.vram_raw_bytes[address:address + 32]), transparent)
+
+    @staticmethod
+    def _clut_from_bytes(raw, transparent=False):
+        """32 raw BGR555 bytes as the 16 RGBA entries the shader
+        samples. Split out of _clut_from_vram above because an animated
+        palette's bytes come from the area's overlay rather than from
+        VRAM (see functions/clut_anim.py) and have to be read the same
+        way, STP bit and all."""
         clut = []
         for i in range(16):
-            at = address + i * 2
-            if at + 1 >= len(self.vram_raw_bytes):
+            at = i * 2
+            if at + 1 >= len(raw):
                 word = 0
             else:
-                word = self.vram_raw_bytes[at] | (self.vram_raw_bytes[at + 1] << 8)
+                word = raw[at] | (raw[at + 1] << 8)
             r = (word & 0x1F) * 8
             g = ((word >> 5) & 0x1F) * 8
             b = ((word >> 10) & 0x1F) * 8
@@ -524,6 +586,30 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
         GL.glTexParameteri(GL.GL_TEXTURE_1D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
         return tex_id
+
+    # --- animated palettes -------------------------------------------
+
+    def animated_clut_addresses(self):
+        """ClutAnimationMixin's hook - every palette this model draws
+        through. The groups are built by prepare_buffers()."""
+        return self._clut_arrays.keys()
+
+    def apply_clut_palettes(self, palettes):
+        """ClutAnimationMixin's hook - put palettes on screen.
+
+        Written to the CPU-side arrays and left for _sync_gl, the way
+        everything else in this view is: a file can be picked in the
+        tree long before Qt has given the widget a context, so nothing
+        here touches GL outside a paint."""
+        for address, raw in palettes:
+            if address not in self._clut_arrays:
+                continue
+            transparent = self._clut_transparency.get(address, False)
+            self._clut_arrays[address] = (
+                self._clut_from_bytes(raw, transparent) if raw is not None
+                else self._clut_from_vram(address, transparent))
+            self._cluts_dirty.add(address)
+        self.update()
 
     # --- what's on screen --------------------------------------------
 
@@ -713,11 +799,15 @@ class SMSTViewer(CameraEventMixin, QOpenGLWidget):
         cam = self.camera_controls
         parts = len(self.groups)
         shown = parts - len(self.hidden_groups)
-        self.stats_label.setText(
-            f"Parts: {shown}/{parts}  Tris: {model.get('tri_count', 0) if model else 0}"
-            f"  Quads: {model.get('quad_count', 0) if model else 0}\n"
-            + cam.status_text()
-        )
+        line = (f"Parts: {shown}/{parts}  "
+                f"Tris: {model.get('tri_count', 0) if model else 0}  "
+                f"Quads: {model.get('quad_count', 0) if model else 0}")
+        if self.clut_animations:
+            animated = sorted({group for group, clut, _o, _c, _t, _b
+                               in self.draw_ranges if clut in self.clut_animations})
+            line += (f"  Animated: {len(self.clut_animations)} palette(s) on "
+                     f"part(s) {_runs_text(animated)}")
+        self.stats_label.setText(line + "\n" + cam.status_text())
         self._place_labels()
 
     def paintGL(self):

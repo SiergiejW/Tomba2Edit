@@ -1,8 +1,6 @@
 # mdat_viewer.py
-import os
-
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -13,7 +11,8 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-from functions import clut_anim, gltf_export
+from functions import gltf_export
+from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
@@ -30,16 +29,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
 
-# How many of the game's animation ticks to play per second. The routine
-# that walks the tables counts calls, and how often it is called is in
-# code functions/clut_anim.py has not followed, so nothing on the disc
-# says what this should be - it is set by eye against the game. It is
-# the one number here that is a guess: how long each step of an
-# animation holds, in ticks, is read off the area's overlay.
-TICK_HZ = 15
-
-
-class MDATViewer(CameraEventMixin, QOpenGLWidget):
+class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
@@ -81,17 +71,9 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.clut_index_groups = {}  # address -> list of indices
         self.clut_transparency = {}  # address -> whether its faces blend
 
-        # Animated palettes - see functions/clut_anim.py. Only the ones
-        # this room's faces actually point at are kept.
-        self.clut_animations = {}   # VRAM address -> ClutAnimation
-        self.anim_tick = 0
-        self.anim_shown = {}        # VRAM address -> frame last uploaded
-        # Whether animation should start on its own when a room that has
-        # some is opened. Turned off by unticking the toolbar button, so
-        # a deliberately still view stays still from room to room.
-        self.animate_wanted = True
-        self.anim_timer = QTimer(self)
-        self.anim_timer.timeout.connect(self._advance_animation)
+        # Animated palettes - see gui/clut_animation.py.
+        self.init_clut_animation()
+
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.toolbar.setStyleSheet("""
@@ -133,24 +115,7 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         self.collision_action.toggled.connect(self.toggle_collision)
         self.toolbar.addAction(self.collision_action)
 
-        # Animated palettes - off, and disabled, until an area whose
-        # overlay carries some has been opened.
-        self.animate_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-            "Animate", self)
-        self.animate_action.setCheckable(True)
-        self.animate_action.setEnabled(False)
-        self.animate_action.setToolTip(
-            "Play this room's animated palettes - the flowing water, the "
-            "waterfalls, the fires. The artwork does not move: the game "
-            "swaps a new 16-colour palette into VRAM each frame and every "
-            "face using it changes together.\n\n"
-            f"Played at {TICK_HZ} ticks a second. How long each step "
-            "holds, in ticks, comes from the area's overlay; the rate "
-            "those ticks are counted at is not on the disc, and is set "
-            "here by eye against the game.")
-        self.animate_action.toggled.connect(self.toggle_animation)
-        self.toolbar.addAction(self.animate_action)
+        self.toolbar.addAction(self.make_animate_action())
 
         frame_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "Frame Level", self)
         frame_action.setToolTip("Put the whole room back in shot")
@@ -446,107 +411,32 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
         GL.glTexSubImage1D(GL.GL_TEXTURE_1D, 0, 0, 16, GL.GL_RGBA,
                            GL.GL_UNSIGNED_BYTE, clut_array)
 
-    def load_clut_animations(self, overlay_path):
-        """Bind this room's animated palettes, out of the area's
-        overlay. Returns how many were bound.
+    def animated_clut_addresses(self):
+        """ClutAnimationMixin's hook - every palette this room draws
+        through. The groups are built by prepare_buffers()."""
+        return self.clut_map.keys()
 
-        Call this AFTER load_mdat_data(): an overlay's table covers the
-        whole area, sprites and backgrounds included, and only the
-        animations whose CLUT this room's own faces point at are kept -
-        which needs the model's palette groups to already exist. AREA_04
-        keeps 13 and the room uses 7 of them, on 631 of the 5,522
-        triangles it draws.
+    def apply_clut_palettes(self, palettes):
+        """ClutAnimationMixin's hook - put palettes on screen.
 
-        Safe to call with None, or with a path that has no table: an
-        area with no overlay, or a disc opened somewhere without a BIN
-        folder, simply gets no animation."""
-        self.stop_animation()
-        self.clut_animations = {}
-        self.anim_tick = 0
-        found = []
-        if overlay_path and os.path.exists(overlay_path):
-            try:
-                _base, found = clut_anim.load_animations(overlay_path)
-            except Exception as e:
-                print(f"Could not read palette animations from "
-                      f"{os.path.basename(overlay_path)}: {e}")
-        # Where two records drive the same CLUT - which happens, and the
-        # game runs both - the last one written is the one on screen.
-        for animation in found:
-            if animation.address in self.clut_map:
-                self.clut_animations[animation.address] = animation
-
-        self.animate_action.setEnabled(bool(self.clut_animations))
-        if self.clut_animations and self.animate_wanted:
-            if self.animate_action.isChecked():
-                self.start_animation()
-            else:
-                self.animate_action.setChecked(True)   # starts it
-        self._update_stats_label()
-        return len(self.clut_animations)
-
-    def toggle_animation(self, checked):
-        # Remembered so that opening the next room keeps playing, or
-        # keeps still, whichever this one was left on.
-        self.animate_wanted = checked
-        if checked and self.clut_animations:
-            self.start_animation()
-        else:
-            self.stop_animation()
-
-    def start_animation(self):
-        self._apply_animation(force=True)
-        self.anim_timer.start(max(1000 // TICK_HZ, 1))
-
-    def stop_animation(self):
-        """Stop, and put back whatever the area's own VRAM holds - the
-        one frame of each animation that was already on screen before
-        any of this."""
-        self.anim_timer.stop()
-        if not self.anim_shown:
-            return
-        shown, self.anim_shown = self.anim_shown, {}
+        This view builds its palette textures as it prepares its
+        buffers, so a frame can be uploaded straight away rather than
+        waiting for the next paint. Nothing but the texture's 16 entries
+        changes: the draw calls are already grouped and bound by
+        palette, so no buffer is rebuilt to make the water move."""
         if not self.isValid():
             return
         self.makeCurrent()
-        for address in shown:
-            tex_id = self.clut_map.get(address)
-            if tex_id is not None:
-                self._replace_clut(tex_id, self.extract_clut_from_vram(
-                    address, self.clut_transparency.get(address, False)))
-        self._update_stats_label()
-        self.update()
-
-    def _advance_animation(self):
-        self.anim_tick += 1
-        self._apply_animation()
-
-    def _apply_animation(self, force=False):
-        """Upload the palettes that have moved on to a new frame.
-
-        Most ticks change nothing - the shortest step on the disc holds
-        for two ticks and the longest for twenty - so the frame each
-        palette is showing is remembered and only the ones that actually
-        moved are touched."""
-        if not self.clut_animations or not self.isValid():
-            return
-        self.makeCurrent()
-        changed = False
-        for address, animation in self.clut_animations.items():
+        for address, raw in palettes:
             tex_id = self.clut_map.get(address)
             if tex_id is None:
                 continue
-            frame = animation.frame_at(self.anim_tick)
-            if not force and self.anim_shown.get(address) == frame:
-                continue
-            self.anim_shown[address] = frame
-            self._replace_clut(tex_id, self.palette_texture(
-                animation.frames[frame],
-                self.clut_transparency.get(address, False)))
-            changed = True
-        if changed:
-            self._update_stats_label()
-            self.update()
+            transparent = self.clut_transparency.get(address, False)
+            self._replace_clut(tex_id, self.palette_texture(raw, transparent)
+                               if raw is not None
+                               else self.extract_clut_from_vram(address, transparent))
+        self._update_stats_label()
+        self.update()
 
     def load_mdat_data(self, dat_file_path, dat_start, offset):
         clut_quad = np.random.randint(0, 256, (16, 4), dtype=np.uint8)  # RGBA
@@ -577,9 +467,7 @@ class MDATViewer(CameraEventMixin, QOpenGLWidget):
             # A new room means new palette textures, so anything bound
             # to the old ones has to go; load_clut_animations() rebinds
             # once the groups below exist.
-            self.stop_animation()
-            self.clut_animations = {}
-            self.animate_action.setEnabled(False)
+            self.clear_clut_animations()
 
             self.clut_map = {}
             self.clut_index_groups = {}

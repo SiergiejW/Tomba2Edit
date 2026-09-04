@@ -2583,6 +2583,14 @@ class MainWindow(QMainWindow):
                                 self.smst_viewer.export_name = _export_name(selected_item)
                                 self.smst_viewer.export_bones = self._bones_for_model(
                                     self.smst_viewer.model_data, chunk_index)
+                                # The area's animated palettes, which are
+                                # in its overlay rather than in the DAT -
+                                # see functions/clut_anim.py. An asset
+                                # pack animates out of the same table its
+                                # room does.
+                                self.smst_viewer.load_clut_animations(
+                                    self.overlay_for_area(chunk_index)
+                                    if chunk_index is not None else None)
                                 if not success:
                                     QMessageBox.critical(
                                         self, "Error",
