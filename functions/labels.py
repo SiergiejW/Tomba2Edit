@@ -283,6 +283,12 @@ def _expand_areas(raw, path):
     return areas
 
 
+# Files that share the labels/ folder without being labels files. They
+# are the same kind of thing - knowledge about the disc that is not on
+# it - but keyed differently, so load() would only refuse them.
+NOT_LABELS = {"placements.json"}
+
+
 def builtin():
     """Every labels file in the labels/ folder, unreadable ones skipped
     with a printed reason rather than taking the app down."""
@@ -293,7 +299,8 @@ def builtin():
     except OSError:
         return sets
     for filename in names:
-        if not filename.lower().endswith(".json"):
+        if (not filename.lower().endswith(".json")
+                or filename.lower() in NOT_LABELS):
             continue
         try:
             sets.append(load(os.path.join(folder, filename)))

@@ -831,9 +831,15 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.stats_label.setText(line + "\n" + cam.status_text())
         self._place_labels()
 
+    def draw_backdrop(self):
+        """Anything that goes behind the model, drawn after the clear
+        and before the geometry. Nothing here; the level view puts the
+        area's background picture there - see gui/level/level_viewer.py."""
+
     def paintGL(self):
         self._sync_gl()
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        self.draw_backdrop()
         if self.culling_enabled:
             GL.glEnable(GL.GL_CULL_FACE)
             GL.glCullFace(GL.GL_BACK)

@@ -31,6 +31,7 @@ from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
 from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
+from gui.level.level_panel import LevelEditorPanel
 from gui import theme
 from gui import panel_title
 from functions import labels as labels_module
@@ -163,6 +164,11 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(dat_panel, "Data View (DAT)")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
+        # A whole area at once rather than a file at a time: the room,
+        # its background, and everything the area's overlay stands in
+        # it - see gui/level/.
+        self.level_panel = LevelEditorPanel()
+        self.main_tabs.addTab(self.level_panel, "Level Editor")
         # Its own tab rather than beside the text: the voice track has to
         # be opened from a raw BIN, which is a different file from the
         # disc the rest of the tool is working on.
@@ -221,10 +227,10 @@ class MainWindow(QMainWindow):
         # to its name - the audio equivalent of the "*" the other tabs
         # use for unsaved edits, since walking away from the Dialogues
         # tab with a channel still playing is otherwise easy to forget.
-        self._playback_tabs = ((4, "Dialogues", self.voice_panel),
-                               (5, "Music", self.music_panel),
-                               (6, "SFX", self.sfx_panel))
-        for _index, _label, panel in self._playback_tabs:
+        self._playback_tabs = (("Dialogues", self.voice_panel),
+                               ("Music", self.music_panel),
+                               ("SFX", self.sfx_panel))
+        for _label, panel in self._playback_tabs:
             panel.transport.player.playbackStateChanged.connect(
                 self._refresh_playback_status)
         self._refresh_playback_status()
@@ -1105,10 +1111,13 @@ class MainWindow(QMainWindow):
         and track change, whichever tab it happens on."""
         from PyQt6.QtMultimedia import QMediaPlayer
 
-        for index, label, panel in self._playback_tabs:
+        # Looked up rather than remembered: a tab added in front of
+        # these would otherwise put the note on somebody else's.
+        for label, panel in self._playback_tabs:
             playing = (panel.transport.player.playbackState()
                       == QMediaPlayer.PlaybackState.PlayingState)
-            self.main_tabs.setTabText(index, f"{label} ♫" if playing else label)
+            self.main_tabs.setTabText(self.main_tabs.indexOf(panel),
+                                      f"{label} ♫" if playing else label)
 
     def _refresh_edit_status(self):
         """Status bar text AND the tabs' own "*" unsaved-marker, both
@@ -1177,9 +1186,15 @@ class MainWindow(QMainWindow):
         or the disc was opened somewhere without a BIN folder."""
         chunk = chunk_index or 0
         name = self.OVERLAY_NAMES.get(chunk + 6)
-        if not name:
+        if ((not name or not name.startswith("A0"))
+                and chunk >= self.PURIFIED_OFFSET):
             # A purified area has no overlay of its own; it runs on the
-            # one belonging to the area it is a copy of.
+            # one belonging to the area it is a copy of. Reached both
+            # when chunk + 6 names nothing (AREA_1B) and when it names
+            # something that is not an area's overlay at all: AREA_1A,
+            # 1C and 1D land on SOP/OPN/CRD.BIN, which are the menu and
+            # cutscene overlays, and were taking those areas' animated
+            # palettes with them.
             name = self.OVERLAY_NAMES.get(chunk - self.PURIFIED_OFFSET + 6)
         if not name or not self.dat_file:
             return None
@@ -1839,6 +1854,38 @@ class MainWindow(QMainWindow):
             overlays, sop_path,
             self.labels.bins if self.labels else None)
 
+    def _area_names(self):
+        """{chunk index: the name its folder carries in the tree}. The
+        AREA folders are already named after the level inside them (see
+        idx_parser.apply_labels), so the Level Editor's area list says
+        the same thing the tree does, minus the file count."""
+        model = self.tree_view.model()
+        names = {}
+        if model is None:
+            return names
+        root = model.invisibleRootItem()
+        for row in range(root.rowCount()):
+            text = root.child(row).text()
+            index = area_index_of(root.child(row))
+            if index is None:
+                continue
+            names[index] = re.sub(r"\s*\(\d+\)$", "", text)
+        return names
+
+    def _load_level_editor(self):
+        """Point the Level Editor at whatever disc has just opened."""
+        if not self.dat_file:
+            return
+        cd_folder = os.path.dirname(self.dat_file)
+        self.level_panel.set_disc(
+            self.dat_file, os.path.join(cd_folder, "TOMBA2.IDX"),
+            self.overlay_for_area,
+            # The character models' texture pages are only ever in
+            # AREA_01's chunk, so a level's VRAM needs it merged in for
+            # the people standing in the level to be textured at all.
+            lambda chunk: self._load_area_vram_bytes(chunk, merge_common=True),
+            self._area_names())
+
     def open_iso_dialog(self, _checked=False, iso_only=False):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp
         folder and populate the tree view. See open_folder_dialog() for
@@ -1921,6 +1968,7 @@ class MainWindow(QMainWindow):
         self.voice_panel.set_image(iso_path)
         self.music_panel.set_image(iso_path)
         self.sfx_panel.set_image(iso_path)
+        self._load_level_editor()
         # If Translation is already the tab in front, it has been
         # waiting for a disc rather than for a click.
         self._tab_changed()
@@ -2019,6 +2067,7 @@ class MainWindow(QMainWindow):
                     if name.upper() == "SOP.BIN":
                         sop_path = full
         self._load_bins(overlays, sop_path)
+        self._load_level_editor()
 
         self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
