@@ -18,6 +18,7 @@ from main import version
 from gui.txtd.txtd_viewer import TXTDViewer
 from gui.txtd.txt2_viewer import TXT2Viewer
 from gui.mdat.mdat_viewer import MDATViewer
+from gui.mdat.mdat_panel import MDATPanel
 from gui.drwa.drwa_viewer import DRWAViewer
 from gui.drwb.drwb_viewer import DRWBViewer
 from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
@@ -2264,8 +2265,12 @@ class MainWindow(QMainWindow):
         # geometry (see gui/drwa/drwa_parser.py). So it hangs off the
         # MDAT rows as a second tab rather than getting a tree row.
         self.drwa_viewer = DRWAViewer()
+        # The 3D view sits inside a panel listing the drawmap's entries
+        # and their polygons, so a face on screen can be traced back to
+        # the record it was read from - see gui/mdat/mdat_panel.py.
+        self.mdat_panel = MDATPanel(self.mdat_viewer)
         self.mdat_tabs = QTabWidget()
-        self.mdat_tabs.addTab(self.mdat_viewer, "3D View")
+        self.mdat_tabs.addTab(self.mdat_panel, "3D View")
         self.mdat_tabs.addTab(self.drwa_viewer, "Drawmap (DRWA)")
         # DRWB, unlike DRWA, IS a file of its own - four of them - so
         # it gets the tree rows the IDX already labels DRWB.
@@ -2523,13 +2528,14 @@ class MainWindow(QMainWindow):
                                 success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
+                                self.mdat_panel.populate()
 
-                                # The room's animated palettes, which are
-                                # in the area's overlay rather than in the
-                                # DAT - see functions/clut_anim.py. After
-                                # the model, which is what says which of
-                                # the area's animations this room uses.
-                                self.mdat_viewer.load_clut_animations(
+                                # The room's animated textures - palettes
+                                # out of the area's overlay, UV frames off
+                                # its own texture pages. After the model,
+                                # which is what says which of the area's
+                                # animations this room actually uses.
+                                self.mdat_viewer.load_animations(
                                     self.overlay_for_area(chunk_index)
                                     if chunk_index is not None else None)
 
@@ -2583,12 +2589,11 @@ class MainWindow(QMainWindow):
                                 self.smst_viewer.export_name = _export_name(selected_item)
                                 self.smst_viewer.export_bones = self._bones_for_model(
                                     self.smst_viewer.model_data, chunk_index)
-                                # The area's animated palettes, which are
-                                # in its overlay rather than in the DAT -
-                                # see functions/clut_anim.py. An asset
-                                # pack animates out of the same table its
-                                # room does.
-                                self.smst_viewer.load_clut_animations(
+                                # The area's animated textures - an asset
+                                # pack animates out of the same overlay
+                                # table its room does, and off the same
+                                # texture pages.
+                                self.smst_viewer.load_animations(
                                     self.overlay_for_area(chunk_index)
                                     if chunk_index is not None else None)
                                 if not success:

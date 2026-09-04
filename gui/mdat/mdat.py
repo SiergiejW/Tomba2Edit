@@ -55,6 +55,36 @@ def area_mdat_entries(idx_path, dat_path, chunk_index):
     return entries
 
 
+def _polygon(entry, kind, first_vertex, first_face, address, type_byte,
+             tex_info, uvs, index, slot):
+    """One record, as the viewer needs it to outline and describe it.
+
+    `first_vertex` and `first_face` index the arrays being built, so a
+    selection can be drawn without re-reading anything. The vertices are
+    a ring - a quad's two triangles are (0,1,2) and (0,2,3) - which is
+    what an outline is drawn along."""
+    page, clut, transparent, blend = tex_info
+    return {
+        'index': index,
+        'entry': entry['index'],
+        'kind': kind,
+        'slot': slot,           # this polygon's place among its entry's tris/quads
+        'address': address,
+        'type': type_byte,
+        'first_vertex': first_vertex,
+        'vertex_count': len(uvs),
+        'first_face': first_face,
+        'face_count': 1 if kind == 'tri' else 2,
+        'page': page,
+        'clut': clut,
+        'transparent': transparent,
+        'blend': blend,
+        'texels': [(round(u * psx_vram.ATLAS_WIDTH - 0.5) % psx_vram.UV_WRAP,
+                    round(v * psx_vram.ATLAS_HEIGHT - 0.5) % psx_vram.UV_WRAP)
+                   for u, v in uvs],
+    }
+
+
 def exportMDAT(drwa_addr, datpath):
     base_idx = 0
     model_data = {
@@ -65,6 +95,13 @@ def exportMDAT(drwa_addr, datpath):
         'texture_info': [],  # (page, clut_address, is_transparent, blend_mode)
         'tri_count': 0,
         'quad_count': 0,
+        # What the drawmap says, kept so a viewer can show the geometry
+        # the way the file has it - one entry per cell that points
+        # somewhere, one polygon per record inside it. See
+        # gui/drwa/drwa_parser.py for the layout these come from.
+        'drawmap': (0, 0),   # (rows, columns)
+        'entries': [],
+        'polygons': [],
     }
 
     triangles = {32: 0, 34: 0, 37: 0, 38: 0, 39: 0, 48: 0, 50: 1, 52: 0, 54: 1} #this is from PSX draw modes manual
@@ -115,6 +152,11 @@ def exportMDAT(drwa_addr, datpath):
         drwa_data = rom.read(drwa_size)
         drwa = io.BytesIO(drwa_data)
 
+        # The first word is the row count, so the grid's stride is the
+        # second - see gui/drwa/drwa_parser.py.
+        model_data['drawmap'] = (amount_x, amount_y)
+        stride = amount_y or 1
+
         eye = 0
         face = 1
         while eye < drwa_size:
@@ -127,8 +169,20 @@ def exportMDAT(drwa_addr, datpath):
                 num_tris, num_quads = struct.unpack("<hh", rom.read(4))
                 #print(f"0x{ind:X}: {num_tris} tris, {num_quads} quads")
 
+                cell = eye // 2
+                entry = {
+                    'index': len(model_data['entries']),
+                    'cell': cell, 'col': cell % stride, 'row': cell // stride,
+                    'pointer': val, 'address': ind, 'offset': val * 4,
+                    'tris': num_tris, 'quads': num_quads,
+                    'size': 4 + num_tris * 36 + num_quads * 44,
+                    'first_polygon': len(model_data['polygons']),
+                    'polygon_count': 0,
+                }
+                model_data['entries'].append(entry)
+
                 # Triangles
-                for _ in range(num_tris):
+                for slot in range(num_tris):
                     ind += 7
                     ttype = char(rom, ind, 0)
                     transparent = bool(triangles.get(ttype, 0))
@@ -171,6 +225,10 @@ def exportMDAT(drwa_addr, datpath):
                     #print(f"[DEBUG] Page {texture_page}: UV1 = {uv1} UV2 = {uv2} UV3 = {uv3}")
 
                     base_idx = len(model_data['vertices'])
+                    model_data['polygons'].append(_polygon(
+                        entry, 'tri', base_idx, len(model_data['faces']),
+                        ind - 3, ttype, tex_info, [uv1, uv2, uv3],
+                        len(model_data['polygons']), slot))
                     model_data['vertices'].extend([v1, v2, v3])
                     model_data['vertex_colors'].extend([c1, c2, c3])
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
@@ -182,7 +240,7 @@ def exportMDAT(drwa_addr, datpath):
                     ind += (36 - 7)
 
                 # Quads
-                for _ in range(num_quads):
+                for slot in range(num_quads):
                     ind += 7
                     qtype = char(rom, ind, 0)
                     transparent = bool(quads.get(qtype, 0))
@@ -220,6 +278,10 @@ def exportMDAT(drwa_addr, datpath):
                     #print(f"[DEBUG] Page {texture_page}: UV1 = {uv1} UV2 = {uv2} UV3 = {uv3} UV4 = {uv4}")
 
                     base_idx = len(model_data['vertices'])
+                    model_data['polygons'].append(_polygon(
+                        entry, 'quad', base_idx, len(model_data['faces']),
+                        ind - 3, qtype, tex_info, [uv1, uv2, uv3, uv4],
+                        len(model_data['polygons']), slot))
                     model_data['vertices'].extend([v1, v2, v3, v4])
                     model_data['vertex_colors'].extend([c1, c2, c3, c4])
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
@@ -231,6 +293,9 @@ def exportMDAT(drwa_addr, datpath):
 
                     face += 4
                     ind += (44 - 7)
+
+                entry['polygon_count'] = (len(model_data['polygons'])
+                                          - entry['first_polygon'])
             eye += 2
 
         #print(f"Exported from 0x{drwa_addr:X}: {face} faces, {base_idx} base index")

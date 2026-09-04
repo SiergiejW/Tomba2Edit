@@ -1,6 +1,6 @@
 # mdat_viewer.py
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -8,7 +8,8 @@ from PyQt6.QtOpenGL import (
     QOpenGLVertexArrayObject,
     QOpenGLBuffer
 )
-from PyQt6.QtGui import QMatrix4x4, QImage, QIcon, QAction
+from PyQt6.QtGui import (
+    QMatrix4x4, QImage, QIcon, QAction, QVector2D, QVector4D)
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from functions import gltf_export
@@ -29,7 +30,23 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QStatusBar, QToolBar, QFileDialog, QMessageBox, QStyle,
 )
 
+# The selection outline: yellow for the selected polygon, a dimmer amber
+# for the rest of the drawmap entry it belongs to.
+OUTLINE_WIDTH = 2.0
+POLYGON_OUTLINE = (1.0, 0.92, 0.15)
+ENTRY_OUTLINE = (0.80, 0.50, 0.05)
+
+# How near a click has to land, in pixels, to still count as a click and
+# not a camera drag.
+CLICK_SLOP = 4
+
+
 class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
+    # (entry index or None, polygon index or None) whenever the
+    # selection changes, so a list beside the view can follow a pick
+    # made in the view itself.
+    selection_changed = pyqtSignal(object, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
@@ -71,8 +88,22 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.clut_index_groups = {}  # address -> list of indices
         self.clut_transparency = {}  # address -> whether its faces blend
 
-        # Animated palettes - see gui/clut_animation.py.
+        # Animated textures - see gui/clut_animation.py.
+        self.uv_offsets = {}        # CLUT address -> (du, dv) in atlas units
         self.init_clut_animation()
+
+        # What is picked out of the drawmap - an entry, and optionally
+        # one polygon inside it. Both are indices into model_data.
+        self.selected_entry = None
+        self.selected_polygon = None
+        self.outline_vao = QOpenGLVertexArrayObject()
+        self.outline_vbo = QOpenGLBuffer()
+        self.outline_cbo = QOpenGLBuffer()
+        self.outline_vertex_count = 0
+        self._outline_arrays = None     # built on the CPU, uploaded in paintGL
+        self._face_polygon = None       # triangle -> polygon, for picking
+        self._pick_vertices = None
+        self._pick_faces = None
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -305,6 +336,180 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self.collision_point_vao.release()
 
+    # --- picking out of the drawmap -----------------------------------
+
+    def select(self, entry=None, polygon=None):
+        """Select a drawmap entry, one polygon inside one, or neither.
+
+        Passing a polygon selects its entry too - a polygon is only ever
+        looked at as part of the entry it was read from."""
+        polygons = (self.model_data or {}).get("polygons") or ()
+        if polygon is not None and 0 <= polygon < len(polygons):
+            entry = polygons[polygon]["entry"]
+        else:
+            polygon = None
+        entries = (self.model_data or {}).get("entries") or ()
+        if entry is not None and not 0 <= entry < len(entries):
+            entry = None
+        self.selected_entry = entry
+        self.selected_polygon = polygon
+        self._build_outline()
+        self.update()
+        self.selection_changed.emit(entry, polygon)
+
+    def selected(self):
+        """The selected polygon's record, or None."""
+        polygons = (self.model_data or {}).get("polygons") or ()
+        if self.selected_polygon is None:
+            return None
+        return polygons[self.selected_polygon]
+
+    def _build_outline(self):
+        """The line segments the selection is drawn with. Left on the
+        CPU - a file can be picked in the tree before Qt has given this
+        widget a context, and paintGL uploads it."""
+        positions, colors = [], []
+        model = self.model_data
+        entries = (model or {}).get("entries") or ()
+        polygons = (model or {}).get("polygons") or ()
+        chosen = []
+        if self.selected_entry is not None and self.selected_entry < len(entries):
+            entry = entries[self.selected_entry]
+            for i in range(entry["first_polygon"],
+                           entry["first_polygon"] + entry["polygon_count"]):
+                if i != self.selected_polygon:
+                    chosen.append((polygons[i], ENTRY_OUTLINE))
+        if self.selected_polygon is not None and self.selected_polygon < len(polygons):
+            chosen.append((polygons[self.selected_polygon], POLYGON_OUTLINE))
+
+        for polygon, color in chosen:
+            first, count = polygon["first_vertex"], polygon["vertex_count"]
+            ring = model["vertices"][first:first + count]
+            for i, point in enumerate(ring):
+                nxt = ring[(i + 1) % count]
+                positions.extend(point)
+                positions.extend(nxt)
+                colors.extend(color)
+                colors.extend(color)
+
+        self._outline_arrays = (
+            np.array(positions, dtype=np.float32) / UNIT_SCALE,
+            np.array(colors, dtype=np.float32))
+
+    def _sync_outline(self):
+        positions, colors = self._outline_arrays
+        self._outline_arrays = None
+        self.outline_vertex_count = positions.size // 3
+        if not self.outline_vertex_count:
+            return
+        if not self.outline_vao.isCreated():
+            self.outline_vao.create()
+        self.outline_vao.bind()
+        for buffer, array, location in ((self.outline_vbo, positions, 0),
+                                        (self.outline_cbo, colors, 1)):
+            if not buffer.isCreated():
+                buffer.create()
+            buffer.bind()
+            buffer.allocate(array.tobytes(), array.nbytes)
+            GL.glEnableVertexAttribArray(location)
+            GL.glVertexAttribPointer(location, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self.outline_vao.release()
+
+    def _model_view_projection(self):
+        """The same matrix paintGL draws with, so a click can be turned
+        back into a ray through the room."""
+        radius = self.scene_radius or 5.0
+        projection = QMatrix4x4()
+        projection.perspective(45.0, self.width() / max(self.height(), 1),
+                               max(0.01, radius / 500), max(100.0, radius * 10))
+        view = QMatrix4x4()
+        view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
+        view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
+        view.translate(self.camera_controls.camera_x,
+                       self.camera_controls.camera_y,
+                       self.camera_controls.camera_z)
+        return projection * view
+
+    def pick(self, x, y):
+        """Which polygon is under the widget point, or None.
+
+        Done against the triangles rather than by drawing an id buffer:
+        the geometry is already in hand, it needs no context to be
+        current, and there is nothing to get wrong about reading pixels
+        back out of a framebuffer Qt owns."""
+        model = self.model_data
+        if not model or not model.get("polygons"):
+            return None
+        inverse, ok = self._model_view_projection().inverted()
+        if not ok:
+            return None
+
+        def unproject(z):
+            point = inverse.map(QVector4D(
+                2.0 * x / max(self.width(), 1) - 1.0,
+                1.0 - 2.0 * y / max(self.height(), 1), z, 1.0))
+            if not point.w():
+                return None
+            return np.array([point.x() / point.w(), point.y() / point.w(),
+                             point.z() / point.w()], dtype=np.float64)
+
+        near, far = unproject(-1.0), unproject(1.0)
+        if near is None or far is None:
+            return None
+        direction = far - near
+        length = np.linalg.norm(direction)
+        if length < 1e-9:
+            return None
+        direction /= length
+
+        if self._face_polygon is None:
+            self._build_face_index()
+        vertices = self._pick_vertices
+        faces = self._pick_faces
+        a = vertices[faces[:, 0]]
+        edge1 = vertices[faces[:, 1]] - a
+        edge2 = vertices[faces[:, 2]] - a
+        pvec = np.cross(direction, edge2)
+        det = np.einsum("ij,ij->i", edge1, pvec)
+        live = np.abs(det) > 1e-12
+        if not live.any():
+            return None
+        inv = np.zeros_like(det)
+        inv[live] = 1.0 / det[live]
+        tvec = near - a
+        u = np.einsum("ij,ij->i", tvec, pvec) * inv
+        qvec = np.cross(tvec, edge1)
+        v = np.einsum("ij,ij->i", direction, qvec) * inv
+        t = np.einsum("ij,ij->i", edge2, qvec) * inv
+        hit = live & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6) & (t > 1e-6)
+        if not hit.any():
+            return None
+        return int(self._face_polygon[int(np.argmin(np.where(hit, t, np.inf)))])
+
+    def _build_face_index(self):
+        """Arrays the ray test needs, and which triangle belongs to which
+        polygon - a quad contributes two."""
+        model = self.model_data
+        self._pick_vertices = (np.array(model["vertices"], dtype=np.float64)
+                               / UNIT_SCALE)
+        self._pick_faces = np.array(model["faces"], dtype=np.int64)
+        lookup = np.zeros(len(model["faces"]), dtype=np.int64)
+        for polygon in model["polygons"]:
+            first = polygon["first_face"]
+            lookup[first:first + polygon["face_count"]] = polygon["index"]
+        self._face_polygon = lookup
+
+    def mousePressEvent(self, event):
+        # Ctrl+click picks. Plain left-click is already the camera's own
+        # mouse-look toggle (see functions/camera_controls.py), so this
+        # takes a modifier rather than the button.
+        if (event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            point = event.position().toPoint()
+            self.select(polygon=self.pick(point.x(), point.y()))
+            return
+        super().mousePressEvent(event)
+
     def extract_clut_from_vram(self, clut_address, transparent=False):
         """One 16-colour palette, read the way the hardware reads it.
 
@@ -416,6 +621,22 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         through. The groups are built by prepare_buffers()."""
         return self.clut_map.keys()
 
+    def animation_source(self):
+        """ClutAnimationMixin's hook - what to look for UV animations in."""
+        return self.vram_raw_bytes, self.model_data
+
+    def apply_uv_offsets(self, offsets):
+        """ClutAnimationMixin's hook - shift a group's UVs. Kept as a
+        uniform rather than rewritten into the buffer: the draw calls
+        are already grouped by palette, so this is one uniform per group
+        and no geometry is touched."""
+        self.uv_offsets.update(offsets)
+        self.update()
+
+    def _bind_uv_offset(self, clut_address):
+        du, dv = self.uv_offsets.get(clut_address, (0.0, 0.0))
+        self.shader_program.setUniformValue("uvOffset", QVector2D(du, dv))
+
     def apply_clut_palettes(self, palettes):
         """ClutAnimationMixin's hook - put palettes on screen.
 
@@ -465,9 +686,14 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         try:
             # A new room means new palette textures, so anything bound
-            # to the old ones has to go; load_clut_animations() rebinds
-            # once the groups below exist.
+            # to the old ones has to go; load_animations() rebinds once
+            # the groups below exist.
             self.clear_clut_animations()
+            self.uv_offsets = {}
+            # Selections index the old model's arrays, so they go too.
+            self.selected_entry = self.selected_polygon = None
+            self._face_polygon = None
+            self._build_outline()
 
             self.clut_map = {}
             self.clut_index_groups = {}
@@ -595,6 +821,10 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 uniform sampler1D clutTexture;
                 uniform bool useTextures;  // <---- NEW UNIFORM
                 uniform float alpha;
+                // Whole frames along the texture page, for the surfaces
+                // that animate by UV - see functions/uv_anim.py. Zero
+                // for everything else.
+                uniform vec2 uvOffset;
 
                 void main() {
                     if (useTextures) {
@@ -602,7 +832,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         // encodes, then read the middle of that palette
                         // entry rather than its edge - same reasoning as
                         // functions.psx_vram.atlas_uv, one level down.
-                        float index = floor(texture(indexTexture, fragTexCoord).r * 15.0 + 0.5);
+                        float index = floor(texture(indexTexture, fragTexCoord + uvOffset).r * 15.0 + 0.5);
                         vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
@@ -672,11 +902,15 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         quad_count = self.model_data.get('quad_count', 0) if self.model_data else 0
         cam = self.camera_controls
         line = f"Tris: {tri_count}  Quads: {quad_count}"
-        if self.clut_animations:
+        if self.clut_animations or self.uv_animations:
             drawn = sum(len(self.clut_index_groups.get(a, ())) // 3
-                        for a in self.clut_animations)
-            line += (f"  Animated: {len(self.clut_animations)} palette(s), "
-                     f"{drawn} tri(s)")
+                        for a in set(self.clut_animations) | set(self.uv_animations))
+            parts = []
+            if self.clut_animations:
+                parts.append(f"{len(self.clut_animations)} palette(s)")
+            if self.uv_animations:
+                parts.append(f"{len(self.uv_animations)} UV")
+            line += f"  Animated: {', '.join(parts)}, {drawn} tri(s)"
             if self.anim_timer.isActive():
                 line += f"  tick {self.anim_tick}"
         self.stats_label.setText(line + "\n" + cam.status_text())
@@ -684,6 +918,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
 
     def paintGL(self):
+        if self._outline_arrays is not None:
+            self._sync_outline()
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         if self.culling_enabled:
             GL.glEnable(GL.GL_CULL_FACE)
@@ -744,6 +980,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             # Check if this CLUT is transparent or not
             # You need to store transparency per CLUT! We'll fix that in a second!
 
+            self._bind_uv_offset(clut_address)
             is_transparent = self.clut_transparency.get(clut_address, False)
 
             if not is_transparent:
@@ -772,6 +1009,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             offset = self.index_offsets[clut_address]
             count = self.index_counts[clut_address]
 
+            self._bind_uv_offset(clut_address)
             is_transparent = self.clut_transparency.get(clut_address, False)
 
             if is_transparent:
@@ -820,6 +1058,20 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             GL.glDepthFunc(GL.GL_LESS)
             GL.glDepthMask(GL.GL_TRUE)
             self.shader_program.setUniformValue("alpha", 1.0)
+
+        if self.outline_vertex_count:
+            # Over everything, depth test off: a selected polygon is
+            # usually the one you cannot see, and an outline that hides
+            # behind the wall in front of it is no use for finding it.
+            self.shader_program.setUniformValue("useTextures", False)
+            self.shader_program.setUniformValue("alpha", 1.0)
+            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glLineWidth(OUTLINE_WIDTH)
+            self.outline_vao.bind()
+            GL.glDrawArrays(GL.GL_LINES, 0, self.outline_vertex_count)
+            self.outline_vao.release()
+            GL.glLineWidth(1.0)
+            GL.glEnable(GL.GL_DEPTH_TEST)
 
         if self.show_origin:
             self.shader_program.setUniformValue("useTextures", False)

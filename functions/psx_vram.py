@@ -62,6 +62,13 @@ def clut_address(clut):
     return x * 2 + y * VRAM_STRIDE
 
 
+def clut_address_xy(address):
+    """(x, y) in halfword coordinates of a palette at `address` - the
+    inverse of clut_address(), for anything holding the address rather
+    than the attribute it came from."""
+    return (address % VRAM_STRIDE) // 2, address // VRAM_STRIDE
+
+
 def page_origin(texpage):
     """(byte offset within a VRAM row, first row) of a texture page."""
     return (texpage & 0xF) * PAGE_BYTES, ((texpage >> 4) & 1) * PAGE_ROWS

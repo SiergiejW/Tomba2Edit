@@ -15,7 +15,7 @@ import math
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QImage, QMatrix4x4
+from PyQt6.QtGui import QAction, QImage, QMatrix4x4, QVector2D
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLShader,
@@ -157,10 +157,11 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.show_origin = False
         self.origin_axes = OriginAxes()
 
-        # Animated palettes - see gui/clut_animation.py. An asset pack
+        # Animated textures - see gui/clut_animation.py. An asset pack
         # animates the same way its area's room does, and out of the
         # same table: parts 72-77 of AREA_04's Fishermen's Town pack are
         # its water.
+        self.uv_offsets = {}        # CLUT address -> (du, dv) in atlas units
         self.init_clut_animation()
 
         self.toolbar = QToolBar(self)
@@ -399,9 +400,10 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.draw_ranges = []
         self._arrays = None
         # A new model means new palette textures, so anything bound to
-        # the old ones has to go; load_clut_animations() rebinds once
+        # the old ones has to go; load_animations() rebinds once
         # the groups below exist.
         self.clear_clut_animations()
+        self.uv_offsets = {}
         self._clut_arrays = {}
         self._clut_transparency = {}
         self._cluts_dirty = set()
@@ -594,6 +596,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         through. The groups are built by prepare_buffers()."""
         return self._clut_arrays.keys()
 
+    def animation_source(self):
+        """ClutAnimationMixin's hook - what to look for UV animations in."""
+        return self.vram_raw_bytes, self.model_data
+
+    def apply_uv_offsets(self, offsets):
+        """ClutAnimationMixin's hook - shift a group's UVs. A uniform set
+        per draw range, so no geometry is rebuilt to make water flow."""
+        self.uv_offsets.update(offsets)
+        self.update()
+
     def apply_clut_palettes(self, palettes):
         """ClutAnimationMixin's hook - put palettes on screen.
 
@@ -744,6 +756,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 // What weight a blended texel gets, which is the part of
                 // the PSX's blend mode that a blend function cannot say.
                 uniform float blendWeight;
+                // Whole frames along the texture page, for the surfaces
+                // that animate by UV - see functions/uv_anim.py.
+                uniform vec2 uvOffset;
 
                 void main() {
                     if (useTextures) {
@@ -753,7 +768,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         // read the MIDDLE of that palette entry. Sampling
                         // at index / 16.0 is the entry's own edge, and a
                         // whisker short of it is the entry before.
-                        float index = floor(texture(indexTexture, fragTexCoord).r * 15.0 + 0.5);
+                        float index = floor(texture(indexTexture, fragTexCoord + uvOffset).r * 15.0 + 0.5);
                         vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
@@ -802,10 +817,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         line = (f"Parts: {shown}/{parts}  "
                 f"Tris: {model.get('tri_count', 0) if model else 0}  "
                 f"Quads: {model.get('quad_count', 0) if model else 0}")
-        if self.clut_animations:
+        moving = set(self.clut_animations) | set(self.uv_animations)
+        if moving:
             animated = sorted({group for group, clut, _o, _c, _t, _b
-                               in self.draw_ranges if clut in self.clut_animations})
-            line += (f"  Animated: {len(self.clut_animations)} palette(s) on "
+                               in self.draw_ranges if clut in moving})
+            what = []
+            if self.clut_animations:
+                what.append(f"{len(self.clut_animations)} palette(s)")
+            if self.uv_animations:
+                what.append(f"{len(self.uv_animations)} UV")
+            line += (f"  Animated: {', '.join(what)} on "
                      f"part(s) {_runs_text(animated)}")
         self.stats_label.setText(line + "\n" + cam.status_text())
         self._place_labels()
@@ -906,6 +927,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def _draw_pass(self, transparent, blend=None):
         bound = None
         alpha = None
+        shifted = None
         for (group_index, clut, offset, count, is_transparent,
              face_blend) in self.draw_ranges:
             if is_transparent != transparent or group_index in self.hidden_groups:
@@ -917,6 +939,10 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             if want != alpha:
                 self.shader_program.setUniformValue("alpha", want)
                 alpha = want
+            uv = self.uv_offsets.get(clut, (0.0, 0.0))
+            if uv != shifted:
+                self.shader_program.setUniformValue("uvOffset", QVector2D(*uv))
+                shifted = uv
             tex_id = self.clut_map.get(clut)
             if tex_id and tex_id != bound:
                 GL.glActiveTexture(GL.GL_TEXTURE1)
