@@ -545,28 +545,43 @@ class LevelEditorPanel(QWidget):
         for instance in self.scene.instances:
             if instance.role == "object" and instance.placement is not None:
                 self.scene.bindings[instance.placement.key()] = instance.source
-        kept = sum(1 for source in self.scene.bindings.values() if source)
         if self._store_bindings():
+            name = os.path.basename(self.scene.overlay_path)
             QMessageBox.information(
                 self, "Kept",
-                f"{kept} of this area's objects now have a model in "
-                f"labels/placements.json.")
+                f"{len(placement_module.load_bindings(name, section=placement_module.CORRECTED))}"
+                f" correction(s) for this area are now in "
+                f"labels/placements.json, over the "
+                f"{len(placement_module.load_bindings(name, section=placement_module.LEARNED))}"
+                f" binding(s) read out of savestates.")
 
     def _store_bindings(self):
-        """Replace this overlay's section of labels/placements.json,
-        leaving every other area's alone. True if it was written."""
+        """Put this area's models in labels/placements.json, leaving
+        every other area's alone. True if it was written.
+
+        They go in the corrections section: what a person settles on by
+        looking at the room is worth more than what matching a savestate
+        worked out, and only that section survives the correlation being
+        run again. Only what differs from what was learned is kept, so
+        the file stays a list of what somebody actually put right."""
         name = os.path.basename(self.scene.overlay_path)
+        learned = placement_module.load_bindings(
+            name, section=placement_module.LEARNED)
         path = placement_module.bindings_path()
-        overlays = {}
+        corrections = {}
         try:
             with open(path, "r", encoding="utf-8") as f:
-                for overlay in (json.load(f).get("overlays") or {}):
-                    overlays[overlay] = placement_module.load_bindings(overlay)
+                for overlay in (json.load(f).get(placement_module.CORRECTED) or {}):
+                    corrections[overlay] = placement_module.load_bindings(
+                        overlay, section=placement_module.CORRECTED)
         except (OSError, ValueError):
             pass
-        overlays[name] = dict(self.scene.bindings)
+        corrections[name] = {key: source
+                             for key, source in self.scene.bindings.items()
+                             if source is not None and learned.get(key) != source}
         try:
-            placement_module.save_bindings(overlays)
+            placement_module.save_bindings(
+                corrections, section=placement_module.CORRECTED)
         except OSError as e:
             QMessageBox.warning(self, "Couldn't write that",
                                 f"labels/placements.json wouldn't save:\n\n{e}")

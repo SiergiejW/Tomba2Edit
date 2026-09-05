@@ -1,5 +1,5 @@
 {
- "note": "Which asset-pack part each of an area's placed objects is drawn with. Not on the disc - the binding is an immediate in the handler's own code - so this is read back out of PCSX savestates by functions.placement.bindings_from_state().",
+ "note": "Which asset-pack part each of an area's placed objects is drawn with. Not on the disc - the binding is an immediate in the handler's own code. \"overlays\" is read back out of PCSX savestates by functions.placement.bindings_from_state() and is rewritten whenever that is run again; \"corrections\" is what somebody put right by eye in the Level Editor, wins over it, and is never touched by it.",
  "overlays": {
   "A00.BIN": [
    {
@@ -1114,5 +1114,16 @@
   ],
   "A0F.BIN": [],
   "A0K.BIN": []
+ },
+ "corrections": {
+  "A00.BIN": [
+   {
+    "kind": 5,
+    "slot": 0,
+    "handler": "0x80133D6C",
+    "file": 12,
+    "group": 0
+   }
+  ]
  }
 }
