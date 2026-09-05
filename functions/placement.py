@@ -58,6 +58,8 @@ import os
 import struct
 from dataclasses import dataclass
 
+import numpy as np
+
 RECORD = struct.Struct("<hhhBBhHHIBB")
 RECORD_SIZE = RECORD.size          # 20
 
@@ -91,6 +93,35 @@ STATE_MAGIC = b"STv4"
 STATE_RAM = 32 + 4 + 1 + 128 * 96 * 3
 PSX_RAM_SIZE = 0x200000
 PSX_RAM_BASE = 0x80000000
+
+# DuckStation savestate: 'DUCC', a version, a title and a serial, then
+# a run of u32 fields of which the last four are the ones that matter -
+# how the payload is compressed, how big it is either way, and where it
+# starts. The payload is a stream of named sections whose layout is
+# DuckStation's own business and changes between versions; RAM is
+# somewhere inside it and is found rather than seeked to (see
+# solve_origin).
+DUCK_MAGIC = b"DUCC"
+DUCK_TITLE = 128
+DUCK_SERIAL = 32
+DUCK_FIELDS = 4 + 4 + DUCK_TITLE + DUCK_SERIAL   # where the u32 run starts
+DUCK_COMPRESSION = DUCK_FIELDS + 8 * 4           # the last four fields
+DUCK_NONE, DUCK_DEFLATE, DUCK_ZSTD = 0, 1, 2
+
+# A chunk of the DAT is loaded on a 2KB boundary - every one seen in a
+# state is, and the disc is read in 2KB sectors - so a base that is not
+# is not a base. That is what makes solving for one cheap: there are
+# only a couple of thousand places it can be.
+LOAD_ALIGN = 0x800
+
+# How many of a buffer's words have to land on a model before its load
+# address is believed. A real one is agreed on by dozens; a wrong one
+# picks up a handful by chance.
+ANCHOR_POINTERS = 12
+
+# How many of an overlay's probes have to agree before its position in a
+# buffer is believed - see anchor_origin().
+ANCHOR_RUNS = 3
 
 # Rotations are held in 4096ths, the PSX's usual fixed point.
 ONE = 4096
@@ -329,54 +360,222 @@ def save_bindings(overlays, path=None, section=LEARNED):
 # Reading a savestate
 # --------------------------------------------------------------------
 
-def state_ram(path):
-    """The 2MB of PSX RAM out of a PCSX-Reloaded savestate.
+def _duckstation_payload(data):
+    """A DuckStation state's section stream, decompressed."""
+    kind, compressed, plain, at = struct.unpack_from("<4I", data,
+                                                     DUCK_COMPRESSION)
+    body = data[at:at + compressed]
+    if len(body) < compressed:
+        raise PlacementError("the state is cut short - its payload is missing")
+    if kind == DUCK_NONE:
+        return body
+    if kind == DUCK_DEFLATE:
+        import zlib
+        return zlib.decompress(body)
+    if kind == DUCK_ZSTD:
+        try:
+            import zstandard
+        except ImportError:
+            raise PlacementError(
+                "this state is Zstandard-compressed and the zstandard module "
+                "isn't installed. Either `pip install zstandard`, or set "
+                "DuckStation's Save State Compression to Deflate or None and "
+                "take the state again.")
+        return zstandard.ZstdDecompressor().decompress(
+            body, max_output_size=max(plain, 1) + 1)
+    raise PlacementError(f"unknown save state compression {kind}")
 
-    Handles both the plain and the gzipped form - PCSXR writes either,
-    depending on the build."""
+
+def state_memory(path):
+    """(bytes holding PSX RAM, where PSX 0x80000000 sits in them).
+
+    The offset is None when the format does not say - which is the
+    DuckStation case: its payload is a stream of named sections whose
+    layout is version-specific, so RAM is somewhere inside rather than
+    at a fixed place. solve_origin() works it out from the state's own
+    pointers instead.
+
+    PCSX-Reloaded is the simple one: a fixed header and a screenshot,
+    then RAM. Both its plain and its gzipped form are read."""
     with open(path, "rb") as f:
-        head = f.read(2)
-        f.seek(0)
-        if head == b"\x1f\x8b":
-            import gzip
-            data = gzip.decompress(f.read())
-        else:
-            data = f.read()
-    if not data.startswith(STATE_MAGIC):
-        raise PlacementError(
-            "this isn't a PCSX savestate - it should start with \"STv4\"")
-    ram = data[STATE_RAM:STATE_RAM + PSX_RAM_SIZE]
-    if len(ram) < PSX_RAM_SIZE:
-        raise PlacementError(
-            f"the state holds only {len(ram)} bytes of RAM, not {PSX_RAM_SIZE}")
-    return ram
+        data = f.read()
+    if data[:2] == b"\x1f\x8b":
+        import gzip
+        data = gzip.decompress(data)
+    if data.startswith(STATE_MAGIC):
+        ram = data[STATE_RAM:STATE_RAM + PSX_RAM_SIZE]
+        if len(ram) < PSX_RAM_SIZE:
+            raise PlacementError(
+                f"the state holds only {len(ram)} bytes of RAM, "
+                f"not {PSX_RAM_SIZE}")
+        return ram, 0
+    if data.startswith(DUCK_MAGIC):
+        return _duckstation_payload(data), None
+    # A plain 2MB dump is worth taking too - it is what every other
+    # emulator's "save memory" gives, and it needs no unwrapping.
+    if len(data) == PSX_RAM_SIZE:
+        return data, 0
+    raise PlacementError(
+        "this isn't a savestate this can read - PCSX-Reloaded (\"STv4\"), "
+        "DuckStation (\"DUCC\") and a raw 2MB RAM dump are what it knows")
 
 
-def find_chunk(ram, dat_path, dat_start, dat_end):
-    """Where an area's SDAT chunk is loaded in RAM, or None.
+def state_ram(path):
+    """Just the memory out of a state whose layout says where RAM is."""
+    data, origin = state_memory(path)
+    if origin is None:
+        raise PlacementError("this state's RAM has to be located first")
+    return data[origin:origin + PSX_RAM_SIZE]
 
-    The chunk goes into RAM verbatim, so this is three probes taken from
-    inside it agreeing on one base. Three rather than one because the
-    head of a chunk is often a run of one byte, which matches anywhere;
-    and agreeing rather than first-hit because two areas can hold the
-    same bytes - a purified area is a copy of the one it mirrors."""
-    base = None
+
+# How many places in a chunk to look for, and how much of each. Twelve
+# rather than a handful because a probe can miss for reasons that say
+# nothing about whether the area is loaded - see find_chunk().
+PROBE_COUNT = 12
+PROBE_BYTES = 48
+
+# How many times one probe's bytes are allowed to turn up before the
+# rest are ignored. A short run that repeats all over RAM is no evidence
+# either way, and following every copy of it only costs time.
+MAX_PROBE_HITS = 16
+
+
+def match_chunk(ram, dat_path, dat_start, dat_end):
+    """(where the chunk sits in `ram`, how many of the probes agreed,
+    how many could vote) - the working half of find_chunk() below, split
+    out so that two areas both claiming to be loaded can be told apart
+    by which is better supported.
+
+    The chunk goes into RAM verbatim, so this is a vote: twelve probes
+    taken through it, every place each one turns up, and the base that
+    most of them agree on.
+
+    A vote rather than unanimity because a probe can fail while the area
+    is perfectly well loaded. The game writes into the chunk it has
+    loaded, so a probe can land on bytes that have since been changed;
+    and a probe can also turn up somewhere else entirely, since areas
+    share assets and a purified area is a copy of the one it mirrors.
+    Requiring all three of three probes to agree - which is what this
+    did - threw away AREA_05 for one probe out of three landing 0x6C
+    away from where the other two put it."""
+    size = dat_end - dat_start
+    votes = {}
+    usable = 0
     with open(dat_path, "rb") as f:
-        for fraction in (0.2, 0.45, 0.7):
-            at = int((dat_end - dat_start) * fraction) & ~3
+        for n in range(PROBE_COUNT):
+            at = int(size * (n + 0.5) / PROBE_COUNT) & ~3
             f.seek(dat_start + at)
-            probe = f.read(48)
-            if len(probe) < 48 or probe.count(probe[:1]) == len(probe):
-                return None
-            found = ram.find(probe)
-            if found < 0:
-                return None
-            here = PSX_RAM_BASE + found - at
-            if base is None:
-                base = here
-            elif base != here:
-                return None
-    return base
+            probe = f.read(PROBE_BYTES)
+            if len(probe) < PROBE_BYTES or probe.count(probe[:1]) == len(probe):
+                continue
+            usable += 1
+            seen, found = set(), ram.find(probe)
+            while found >= 0 and len(seen) < MAX_PROBE_HITS:
+                seen.add(found - at)
+                found = ram.find(probe, found + 1)
+            for base in seen:
+                votes[base] = votes.get(base, 0) + 1
+    if not votes:
+        return None, 0, usable
+    base = max(votes, key=votes.get)
+    return base, votes[base], usable
+
+
+def find_chunk(ram, dat_path, dat_start, dat_end, origin=0):
+    """Where an area's SDAT chunk is loaded in RAM, as a PSX address, or
+    None. `origin` is where PSX 0x80000000 sits in `ram`."""
+    at, agreed, usable = match_chunk(ram, dat_path, dat_start, dat_end)
+    # A strict majority of the probes that could vote at all. Anything
+    # less is one area's assets turning up inside another's.
+    if at is None or agreed * 2 <= usable:
+        return None
+    return PSX_RAM_BASE + at - origin
+
+
+def anchor_origin(data, overlay_path, overlay_base=None):
+    """Where PSX 0x80000000 sits in a buffer, worked out from the area's
+    overlay, or None.
+
+    The overlay is a file on the disc that is loaded whole at an address
+    the overlays themselves give up (functions.clut_anim.folder_base),
+    so finding its bytes in the buffer says where memory begins - and,
+    unlike solving it from what is being drawn, it says so whether or
+    not anything is."""
+    from functions import clut_anim
+
+    if not overlay_path or not os.path.exists(overlay_path):
+        return None
+    if overlay_base is None:
+        overlay_base = clut_anim.folder_base(os.path.dirname(overlay_path))
+    if not overlay_base:
+        return None
+    with open(overlay_path, "rb") as f:
+        overlay = f.read()
+    votes = {}
+    for n in range(PROBE_COUNT):
+        at = int(len(overlay) * (n + 0.5) / PROBE_COUNT) & ~3
+        probe = overlay[at:at + PROBE_BYTES]
+        if len(probe) < PROBE_BYTES or probe.count(probe[:1]) == len(probe):
+            continue
+        found = data.find(probe)
+        while found >= 0:
+            origin = found - at - (overlay_base - PSX_RAM_BASE)
+            if origin >= 0:
+                votes[origin] = votes.get(origin, 0) + 1
+            found = data.find(probe, found + 1)
+    if not votes:
+        return None
+    origin = max(votes, key=votes.get)
+    return origin if votes[origin] >= ANCHOR_RUNS else None
+
+
+def solve_origin(data, chunk_at, group_offsets):
+    """Where PSX 0x80000000 sits in a buffer whose format doesn't say.
+
+    Worked out from the state's own pointers. Every drawn object holds
+    the address of the model it draws - a group inside the area's chunk
+    - so the chunk's load address is whichever one makes the most of
+    the buffer's pointer-shaped words land exactly on a group. Knowing
+    where the chunk sits in the buffer then gives the origin.
+
+    Cheap because a chunk is loaded on a 2KB boundary, which leaves a
+    couple of thousand addresses to try rather than two million.
+
+    Scored on NEIGHBOURS rather than on hits. Pointer-shaped words are
+    everywhere and a wrong base picks up plenty of them by chance; what
+    it cannot fake is the shape of the array they live in, which is one
+    object every 68 bytes. Counting only the model pointers that have
+    another one exactly a record away is what tells the real base from
+    the several thousand that merely score well."""
+    if not group_offsets:
+        return None
+    raw = np.frombuffer(data[:len(data) // 4 * 4], dtype="<u4")
+    where = np.nonzero((raw >= RAM_LOW) & (raw < RAM_HIGH))[0]
+    if not where.size:
+        return None
+    words = raw[where].astype(np.int64)
+    at = (where * 4).astype(np.int64)
+    span = max(group_offsets) + 1
+    marks = np.zeros(span, dtype=bool)
+    marks[np.asarray(sorted(group_offsets), dtype=np.int64)] = True
+
+    best, score = None, 0
+    for base in range(RAM_LOW, RAM_HIGH - span, LOAD_ALIGN):
+        offsets = words - base
+        hit = (offsets >= 0) & (offsets < span)
+        if hit.sum() <= score:
+            continue
+        hit[hit] = marks[offsets[hit]]
+        found = at[hit]
+        if found.size <= score:
+            continue
+        # How many of them have another one exactly one record along.
+        neighbours = int(np.isin(found + INSTANCE_SIZE, found).sum())
+        if neighbours > score:
+            best, score = base, neighbours
+    if best is None or score < ANCHOR_POINTERS:
+        return None
+    return chunk_at - (best - PSX_RAM_BASE)
 
 
 def live_instances(ram, models, low, high):
@@ -388,8 +587,7 @@ def live_instances(ram, models, low, high):
     each group landed. Everything with a translation of (0, 0, 0) is
     skipped: an area keeps a record per object it CAN draw, and the ones
     it isn't drawing sit at the origin."""
-    import numpy as np
-    words = np.frombuffer(ram, dtype="<u4")
+    words = np.frombuffer(ram[:len(ram) // 4 * 4], dtype="<u4")
     candidates = np.nonzero((words >= low) & (words < high))[0] * 4
     out = []
     for address in candidates:
@@ -407,9 +605,9 @@ def live_instances(ram, models, low, high):
     return out
 
 
-def group_addresses(dat_path, dat_start, area_files, base):
-    """{RAM address: (file id, group)} for every SMST group in an area
-    whose chunk is loaded at `base`."""
+def group_offsets(dat_path, dat_start, area_files):
+    """{offset within the chunk: (file id, group)} for every SMST group
+    an area holds - where its models sit before it is loaded anywhere."""
     from functions.format_detect import smst_groups
 
     out = {}
@@ -424,12 +622,19 @@ def group_addresses(dat_path, dat_start, area_files, base):
             except Exception:
                 continue
             for index, group_offset, *_rest in groups:
-                out[base + offset + group_offset] = (file_id, index)
+                out[offset + group_offset] = (file_id, index)
     return out
 
 
+def group_addresses(dat_path, dat_start, area_files, base):
+    """{RAM address: (file id, group)} for every SMST group in an area
+    whose chunk is loaded at `base`."""
+    return {base + offset: model for offset, model
+            in group_offsets(dat_path, dat_start, area_files).items()}
+
+
 def bindings_from_state(state_path, dat_path, dat_start, dat_end,
-                        area_files, placements):
+                        area_files, placements, overlay_path=None):
     """{(kind, slot, handler): (file id, group)} learned from one state.
 
     `area_files` is [(file id, offset in the chunk, size), ...] for the
@@ -462,12 +667,27 @@ def bindings_from_state(state_path, dat_path, dat_start, dat_end,
     Raises PlacementError if the state was taken somewhere else, which
     is the one thing worth telling the user about: everything else here
     just comes back with fewer bindings than it might have."""
-    ram = state_ram(state_path)
-    base = find_chunk(ram, dat_path, dat_start, dat_end)
-    if base is None:
+    ram, origin = state_memory(state_path)
+    at, agreed, usable = match_chunk(ram, dat_path, dat_start, dat_end)
+    if at is None or agreed * 2 <= usable:
         raise PlacementError(
-            "this area's files aren't in that state's RAM - it was most "
+            "this area's files aren't in that state's memory - it was most "
             "likely taken in a different area")
+    if origin is None:
+        # A state whose format does not say where RAM begins - the
+        # DuckStation case. The overlay is the better of the two ways of
+        # finding out, because it is there whether or not the game is
+        # drawing anything; what is being drawn is the fallback.
+        origin = anchor_origin(ram, overlay_path)
+        if origin is None:
+            origin = solve_origin(
+                ram, at, group_offsets(dat_path, dat_start, area_files))
+        if origin is None:
+            raise PlacementError(
+                "this area is in that state, but there is nothing in it to "
+                "measure memory against - no overlay to match and nothing "
+                "drawing a model")
+    base = PSX_RAM_BASE + at - origin
     models = group_addresses(dat_path, dat_start, area_files, base)
     if not models:
         raise PlacementError("this area holds no models to bind objects to")
@@ -486,6 +706,13 @@ def bindings_from_state(state_path, dat_path, dat_start, dat_end,
             owner = before.get((placement.table, placement.index - 1))
             if owner is not None:
                 out[owner.key()] = model
+    if not out and not any(
+            True for _m, _t, _r in live_instances(
+                ram, models, base, base + (dat_end - dat_start))):
+        raise PlacementError(
+            "the area is loaded in that state but nothing in it is standing "
+            "anywhere - it was most likely taken on a loading screen, before "
+            "the level was built")
     return out
 
 
@@ -550,17 +777,27 @@ def _learn(states_folder, cd_folder, bin_folder, out_path=None):
             # and is resident whatever the state is standing in. An area
             # and its purified twin hold the same bytes, so both can
             # match - which is no trouble at all, since they run on the
-            # same overlay and the lower chunk is the one to name.
-            hits = sorted(chunk for chunk, (start, end, _f) in areas.items()
-                          if chunk != 1
-                          and find_chunk(ram, dat_path, start, end) is not None)
-            overlays = {overlay_for_chunk(c) for c in hits}
-            if not hits or len(overlays) != 1:
-                print(f"{name}: {'no area' if not hits else 'several areas'} "
-                      f"{[f'{c:02X}' for c in hits]} - skipped")
+            # same overlay and the lower chunk is the one to name. Two
+            # unrelated areas both matching is a different thing, and
+            # the one whose probes agree most is the one that is really
+            # there.
+            hits = []
+            for chunk, (start, end, _files) in sorted(areas.items()):
+                if chunk == 1:
+                    continue
+                base, agreed, usable = match_chunk(ram, dat_path, start, end)
+                if base is not None and agreed * 2 > usable:
+                    hits.append((agreed / max(usable, 1), chunk))
+            if not hits:
+                print(f"{name}: no area - skipped")
                 continue
-            chunk = hits[0]
-            overlay = overlays.pop()
+            best = max(share for share, _c in hits)
+            chunk = min(c for share, c in hits if share == best)
+            overlay = overlay_for_chunk(chunk)
+            others = {overlay_for_chunk(c) for _s, c in hits} - {overlay}
+            if others:
+                print(f"{name}: AREA_{chunk:02X} ({best:.0%} of probes) over "
+                      f"{sorted(others)}")
             path = os.path.join(bin_folder, overlay) if overlay else None
             if not path or not os.path.exists(path):
                 print(f"{name}: AREA_{chunk:02X} has no overlay - skipped")

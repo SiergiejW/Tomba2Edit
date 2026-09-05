@@ -501,7 +501,7 @@ class LevelEditorPanel(QWidget):
         try:
             learned = placement_module.bindings_from_state(
                 path, self.dat_path, self.scene.dat_start, self.scene.dat_end,
-                files, self.scene.placements)
+                files, self.scene.placements, self.scene.overlay_path)
         except placement_module.PlacementError as e:
             QMessageBox.warning(self, "Couldn't read that state", str(e))
             return
@@ -512,8 +512,10 @@ class LevelEditorPanel(QWidget):
             QMessageBox.information(
                 self, "Nothing learned",
                 "Nothing in that state was standing exactly where a record "
-                "puts it. Objects that walk about never will; try a state "
-                "taken nearer this area's fixed scenery.")
+                "puts it.\n\nObjects that walk about never will, and a state "
+                "taken while the level was still loading has none of them "
+                "standing anywhere yet. Try one taken in the room, near this "
+                "area's fixed scenery.")
             return
         fresh = {k: v for k, v in learned.items()
                  if self.scene.bindings.get(k) != v}

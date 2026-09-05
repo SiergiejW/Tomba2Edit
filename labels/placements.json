@@ -342,6 +342,20 @@
    },
    {
     "kind": 12,
+    "slot": 0,
+    "handler": "0x8012583C",
+    "file": 12,
+    "group": 12
+   },
+   {
+    "kind": 12,
+    "slot": 4,
+    "handler": "0x8012583C",
+    "file": 12,
+    "group": 53
+   },
+   {
+    "kind": 12,
     "slot": 6,
     "handler": "0x801156A4",
     "file": 12,
@@ -803,6 +817,274 @@
     "group": 13
    }
   ],
+  "A06.BIN": [
+   {
+    "kind": 0,
+    "slot": 3,
+    "handler": "0x8011CD34",
+    "file": 18,
+    "group": 7
+   },
+   {
+    "kind": 12,
+    "slot": 0,
+    "handler": "0x8011FE54",
+    "file": 12,
+    "group": 3
+   },
+   {
+    "kind": 12,
+    "slot": 2,
+    "handler": "0x8011FE54",
+    "file": 12,
+    "group": 2
+   },
+   {
+    "kind": 14,
+    "slot": 15,
+    "handler": "0x800739AC",
+    "file": 12,
+    "group": 0
+   },
+   {
+    "kind": 14,
+    "slot": 17,
+    "handler": "0x800739AC",
+    "file": 12,
+    "group": 0
+   },
+   {
+    "kind": 15,
+    "slot": 11,
+    "handler": "0x80073CD8",
+    "file": 12,
+    "group": 1
+   },
+   {
+    "kind": 15,
+    "slot": 26,
+    "handler": "0x80073CD8",
+    "file": 12,
+    "group": 1
+   },
+   {
+    "kind": 24,
+    "slot": 1,
+    "handler": "0x80122038",
+    "file": 24,
+    "group": 5
+   },
+   {
+    "kind": 24,
+    "slot": 2,
+    "handler": "0x80122038",
+    "file": 12,
+    "group": 27
+   },
+   {
+    "kind": 58,
+    "slot": 0,
+    "handler": "0x80124058",
+    "file": 12,
+    "group": 55
+   },
+   {
+    "kind": 59,
+    "slot": 0,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 1,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 2,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 3,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 4,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 5,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 6,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 7,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 8,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 9,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 10,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 11,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 12,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 13,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 14,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 15,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 20,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 21,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 22,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 30,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 31,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 32,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 59,
+    "slot": 34,
+    "handler": "0x80124198",
+    "file": 12,
+    "group": 6
+   },
+   {
+    "kind": 62,
+    "slot": 0,
+    "handler": "0x8012B3E4",
+    "file": 12,
+    "group": 31
+   },
+   {
+    "kind": 67,
+    "slot": 128,
+    "handler": "0x80126050",
+    "file": 12,
+    "group": 83
+   },
+   {
+    "kind": 67,
+    "slot": 130,
+    "handler": "0x80126050",
+    "file": 12,
+    "group": 83
+   },
+   {
+    "kind": 67,
+    "slot": 131,
+    "handler": "0x80126050",
+    "file": 12,
+    "group": 83
+   },
+   {
+    "kind": 70,
+    "slot": 2,
+    "handler": "0x8013529C",
+    "file": 24,
+    "group": 3
+   }
+  ],
   "A07.BIN": [
    {
     "kind": 12,
@@ -1123,6 +1405,15 @@
     "handler": "0x80133D6C",
     "file": 12,
     "group": 0
+   }
+  ],
+  "A01.BIN": [
+   {
+    "kind": 12,
+    "slot": 5,
+    "handler": "0x8012583C",
+    "file": 12,
+    "group": 52
    }
   ]
  }
