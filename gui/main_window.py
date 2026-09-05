@@ -261,6 +261,10 @@ class MainWindow(QMainWindow):
         # Set once an ISO has been opened and its TOMBA2.DAT/IDX/IMG have
         # been extracted to a temp folder (see open_iso_dialog / ISOHandler).
         self.dat_file = None
+        # The disc's MAIN.EXE, once one has been found beside it. The
+        # Level Editor reads the object handlers out of it - see
+        # functions/handler_models.py.
+        self.mainexe_path = None
         self.iso_handler = None
         # Path to the disc image currently open - kept around so Export ISO
         # has a full original disc to rebuild from (extracted files alone
@@ -1818,6 +1822,10 @@ class MainWindow(QMainWindow):
             item.setText(f"{item.text()} ({count})")
 
     def _load_mainexe(self, exe_path):
+        # Kept for the Level Editor: the code that decides which model
+        # each placed object draws with is in here (see
+        # functions/handler_models.py), not in any file on the disc.
+        self.mainexe_path = exe_path
         """Load exe_path into the MAIN.EXE tab, or clear it with a clear
         reason if that's not possible - either no file was found (None)
         or it's not the specific build mainbin_editor.py's pointer tables
@@ -1884,7 +1892,7 @@ class MainWindow(QMainWindow):
             # AREA_01's chunk, so a level's VRAM needs it merged in for
             # the people standing in the level to be textured at all.
             lambda chunk: self._load_area_vram_bytes(chunk, merge_common=True),
-            self._area_names())
+            self._area_names(), self.mainexe_path)
 
     def open_iso_dialog(self, _checked=False, iso_only=False):
         """Extract TOMBA2.DAT/IDX/IMG from a disc image into a temp

@@ -432,28 +432,47 @@ class CodeModels:
         self.reader = Reader((self.exe, self.overlay))
         self.attach = set(find_attach(self.exe))
 
-    def model_for(self, handler):
-        """(SDAT id, group) for a class of object, where `group` is an
-        int or a Table to be indexed by an object's slot. None when the
-        handler never reaches an attach routine."""
+    def models_for(self, handler):
+        """Every model a class of object can attach, as [(SDAT id,
+        group), ...] where `group` is an int or a Table to be indexed by
+        an object's slot.
+
+        A list rather than an answer because a class can genuinely have
+        several: AREA_1F's kind 79 attaches groups 62, 63 and 64 as the
+        object goes through its states, and AREA_06's kind 26 picks
+        between two by branching on the slot. Where the list has one
+        entry the code has settled it; where it has more, the code says
+        what the possibilities are and only watching the game says which
+        is standing at a given moment."""
         image = self.reader.image_for(handler)
         if image is None or not self.attach:
-            return None
+            return []
+        found = []
         for call, _target in calls_within(image, handler, self.attach):
             file_id = self.reader.argument(call, A1)
             group = self.reader.argument(call, A2)
             if not isinstance(file_id, Const):
                 continue
-            if isinstance(group, Const):
-                return file_id.n, group.n
-            if isinstance(group, Table):
-                if group.kind == BY_OVERLAY:
-                    resolved = self.entry(group, self.overlay_index)
-                    if resolved is not None:
-                        return file_id.n, resolved
+            if isinstance(group, Table) and group.kind == BY_OVERLAY:
+                resolved = self.entry(group, self.overlay_index)
+                if resolved is None:
                     continue
-                return file_id.n, group
-        return None
+                group = Const(resolved)
+            if isinstance(group, Const):
+                model = (file_id.n, group.n)
+            elif isinstance(group, Table):
+                model = (file_id.n, group)
+            else:
+                continue
+            if model not in found:
+                found.append(model)
+        return found
+
+    def model_for(self, handler):
+        """The one model a class draws with, or None if the code names
+        none or names several."""
+        found = self.models_for(handler)
+        return found[0] if len(found) == 1 else None
 
     def entry(self, table, index):
         """One entry of a table, or None."""
@@ -462,23 +481,37 @@ class CodeModels:
         return self.reader.read(table.address + index * table.stride,
                                 table.width, table.signed)
 
-    def bindings(self, placements):
-        """{(kind, slot, handler): (SDAT id, group)} for a whole object
-        table - the same shape functions.placement.load_bindings
-        returns, worked out from the code instead of from a state."""
-        cache, out = {}, {}
-        for placement in placements:
-            if placement.handler not in cache:
-                cache[placement.handler] = self.model_for(placement.handler)
-            model = cache[placement.handler]
-            if model is None:
-                continue
-            file_id, group = model
+    def choices(self, placement, cache=None):
+        """Every model one record's object could be drawn with, as
+        [(SDAT id, group), ...] - a per-slot table resolved down to this
+        record's own slot."""
+        if cache is None:
+            cache = {}
+        if placement.handler not in cache:
+            cache[placement.handler] = self.models_for(placement.handler)
+        out = []
+        for file_id, group in cache[placement.handler]:
             if isinstance(group, Table):
                 group = self.entry(group, placement.slot)
                 if group is None:
                     continue
-            out[placement.key()] = (file_id, group)
+            if (file_id, group) not in out:
+                out.append((file_id, group))
+        return out
+
+    def bindings(self, placements):
+        """{(kind, slot, handler): (SDAT id, group)} for a whole object
+        table - the same shape functions.placement.load_bindings
+        returns, worked out from the code instead of from a state.
+
+        Only the records the code settles outright. A class that can
+        attach several models is left out rather than guessed at; see
+        choices() for what it does say about those."""
+        cache, out = {}, {}
+        for placement in placements:
+            found = self.choices(placement, cache)
+            if len(found) == 1:
+                out[placement.key()] = found[0]
         return out
 
 

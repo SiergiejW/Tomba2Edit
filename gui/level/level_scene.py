@@ -40,6 +40,7 @@ import numpy as np
 
 import gui.mdat.mdat as mdat
 from functions import format_detect
+from functions import handler_models
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
 
@@ -300,13 +301,18 @@ class LevelScene:
         self.rooms = []
         self.placements = []
         self.bindings = {}
+        # Where each binding came from - "code", "savestate" or
+        # "corrected" - and the reader that produced the code ones.
+        self.binding_source = {}
+        self.code = None
         self.instances = []
         self.background = None          # a BGMPFile, or None
         self.notes = []                 # what didn't load, for the panel
 
     # --- loading ------------------------------------------------------
 
-    def load(self, dat_path, idx_path, chunk_index, overlay_path=None):
+    def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
+             exe_path=None):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
@@ -338,8 +344,7 @@ class LevelScene:
                 self.notes.append(
                     "the overlay holds no object table - a few small areas "
                     "place nothing")
-            self.bindings = placement_module.load_bindings(
-                os.path.basename(overlay_path))
+            self._bind(overlay_path, exe_path)
         else:
             self.notes.append(
                 "no overlay for this area, so nothing says where its objects "
@@ -347,6 +352,54 @@ class LevelScene:
 
         self._build_instances()
         return self
+
+    def _bind(self, overlay_path, exe_path):
+        """Work out what each object is drawn with, best source first.
+
+        Three of them, and they are not equal. The handler's own code is
+        the only one that cannot be a coincidence, so where it settles a
+        class outright it wins over a savestate - AREA_1B's kind 20 slot
+        4 loads group 3 with an immediate, and the state that said group
+        2 had matched the wrong object. A savestate still covers the
+        classes the code does not reach or leaves with several answers,
+        and a correction made by eye beats both."""
+        name = os.path.basename(overlay_path)
+        self.binding_source = {}
+        for label, found in (
+                ("savestate", placement_module.load_bindings(
+                    name, section=placement_module.LEARNED)),
+                ("code", self._code_bindings(overlay_path, exe_path)),
+                ("corrected", placement_module.load_bindings(
+                    name, section=placement_module.CORRECTED))):
+            for key, model in found.items():
+                self.bindings[key] = model
+                self.binding_source[key] = label
+
+    def _code_bindings(self, overlay_path, exe_path):
+        """What the handlers' own code says - see
+        functions/handler_models.py. Never fatal: a disc opened without
+        a MAIN.EXE beside it just falls back on the other sources."""
+        if not exe_path or not os.path.exists(exe_path):
+            self.notes.append(
+                "no MAIN.EXE beside this disc, so the objects' models come "
+                "from savestates rather than from the code that draws them")
+            return {}
+        try:
+            self.code = handler_models.CodeModels(exe_path, overlay_path)
+            return self.code.bindings(self.placements)
+        except Exception as e:
+            self.notes.append(f"couldn't read the handlers' code: {e}")
+            return {}
+
+    def choices_for(self, instance):
+        """Every model the code says this object's class can attach, or
+        [] - what to offer first when a class has more than one."""
+        if self.code is None or instance.placement is None:
+            return []
+        try:
+            return self.code.choices(instance.placement)
+        except Exception:
+            return []
 
     def model(self, file_id):
         """The parsed SMST with that SDAT id, or None. Cached: an area

@@ -13,9 +13,8 @@ objects standing still in it get bound to what the game was drawing
 them with, which is knowledge nothing on the disc carries. See
 functions/placement.py.
 """
-import os
-
 import json
+import os
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
@@ -56,6 +55,9 @@ class LevelEditorPanel(QWidget):
         self.idx_path = None
         self.overlay_for_area = lambda _chunk: None
         self.vram_for_area = lambda _chunk: None
+        # MAIN.EXE, where the routines that decide what each object is
+        # drawn with live - see functions/handler_models.py.
+        self.exe_path = None
         self.scene = None
         self._filling = False
 
@@ -98,9 +100,12 @@ class LevelEditorPanel(QWidget):
 
         self.model_box = QComboBox(self)
         self.model_box.setToolTip(
-            "Which part of the area's models this object is drawn with. "
-            "Nothing on the disc says, so this starts at whatever "
-            "labels/placements.json has been taught and is yours to change.")
+            "Which part of the area's models this object is drawn with.\n\n"
+            "Read out of the code that draws it where that settles it "
+            "outright, otherwise out of whatever a savestate taught "
+            "labels/placements.json - and yours to change either way. A "
+            "class that attaches several models over its life is left for "
+            "you to pick from.")
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
 
         self.boxes = {}
@@ -183,7 +188,7 @@ class LevelEditorPanel(QWidget):
     # --- the disc -----------------------------------------------------
 
     def set_disc(self, dat_path, idx_path, overlay_for_area, vram_for_area,
-                 area_names=None):
+                 area_names=None, exe_path=None):
         """Point the tab at an open disc. `overlay_for_area` and
         `vram_for_area` are MainWindow's - the Level Editor has no
         business working out where an Axx.BIN lives or how to decompress
@@ -192,6 +197,7 @@ class LevelEditorPanel(QWidget):
         self.idx_path = idx_path
         self.overlay_for_area = overlay_for_area
         self.vram_for_area = vram_for_area
+        self.exe_path = exe_path
         self._filling = True
         self.area_box.clear()
         rooms = self._areas_with_rooms()
@@ -246,7 +252,8 @@ class LevelEditorPanel(QWidget):
     def load_area(self, chunk):
         self._stop_cycling()
         overlay = self.overlay_for_area(chunk)
-        scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay)
+        scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
+                                  self.exe_path)
         self.scene = scene
 
         # The VRAM has to be in place before the scene is prepared - the
@@ -405,7 +412,13 @@ class LevelEditorPanel(QWidget):
                 box.setEnabled(False)
             self.model_box.setEnabled(False)
             return
-        self.details.setText(instance.describe())
+        where = (self.scene.binding_source.get(instance.placement.key())
+                 if instance.placement is not None else None)
+        told = {"code": "read out of the handler's own code",
+                "savestate": "learned from a savestate",
+                "corrected": "corrected by hand"}.get(where)
+        self.details.setText(instance.describe()
+                             + (f"<br><i>model {told}</i>" if told else ""))
         self._filling = True
         self.model_box.clear()
         if instance.role == "room":
