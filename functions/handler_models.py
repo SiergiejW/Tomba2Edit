@@ -7,43 +7,56 @@ off the disc after all. No savestate, no guessing.
 
 WHAT THE CODE DOES
 
-Every object that draws a model reaches it through one routine in
-MAIN.EXE, 0x80051B70 on the retail disc, which is what sets an object
-up:
+Every object that draws a model reaches it through one of two routines
+in MAIN.EXE, both of which take the object, an SDAT id and a group
+number, and do this:
 
-    lui   a0, %hi(0x800ECF58)     the area's file table, one pointer
-    addiu a0, a0, %lo(0x800ECF58) per SDAT id
-    sll   v1, s2, 2               s2 = a1, the SDAT id
-    addu  v1, v1, a0
-    lw    a0, 0(v1)               the file
-    sll   v1, s3, 2               s3 = a2, the group number
-    addu  v1, a0, v1
-    lw    v1, 4(v1)               that group's offset, out of the SMST's
-    addu  a0, a0, v1              own pointer table
-    sw    a0, 64(a1)              into the drawing record
+    lui   v0, %hi(0x800ECF58)     the area's file table, one pointer
+    addiu v0, v0, %lo(0x800ECF58) per SDAT id
+    sll   a1, a1, 2               a1 = the SDAT id
+    addu  a1, a1, v0
+    lw    v0, 0(a1)               the file
+    sll   a2, a2, 2               a2 = the group number
+    addu  a2, v0, a2
+    lw    v1, 4(a2)               that group's offset, out of the SMST's
+    addu  v0, v0, v1              own pointer table
+    sw    v0, 64(a0)              into the drawing record
 
-So a call to it carries the answer in two registers: a1 is the SDAT id
-and a2 the group. Both are usually immediates. Where a class of object
-draws with a different model per slot, a2 is a byte read out of a table
-in the overlay indexed by the object's slot - AREA_04's doors are
-`15 16 18 65 23 17`, one byte per door - and that table can be read
-too.
+So a call carries the answer in two registers. find_attach() picks the
+routines out by that shape rather than by address, so a build that
+moved them still works.
 
-The same code says what the drawing record looks like, which is worth
-having written down: 68 bytes, the model pointer at +0x40 and the
+WHERE THE GROUP COMES FROM
+
+Three ways, and all three are readable:
+
+    an immediate      the whole class draws one model
+    table[slot]       a class with a model per object - AREA_04's doors
+                      are the bytes `15 16 18 65 23 17`, one per door
+    table[overlay]    a class that lives in MAIN.EXE and so serves every
+                      area, picking its model by which one is loaded -
+                      the signposts are `61 10 60 0 14 12 ...`, one
+                      halfword per Axx.BIN, and 61 is AREA_04's
+
+The object's slot is its own byte at +3. Which overlay is loaded is a
+byte in MAIN.EXE's memory, at OVERLAY_NUMBER below: it holds 0 with
+A00.BIN loaded and 1 with A01.BIN, so it is the number in the overlay's
+name, which is known without running anything.
+
+WHAT THE CODE ALSO SETTLES
+
+The drawing record is 68 bytes with the model pointer at +0x40 and the
 matrix at +0x2C. Reading the model at +0 - which is where it appears to
 be if you find the records by their matrices - gives you the PREVIOUS
 record's model, and that is exactly the one-record shift
 functions.placement.bindings_from_state has to undo.
 
-WHAT IT DOES NOT COVER
+WHAT IS NOT COVERED
 
-An object whose handler never calls that routine draws nothing, or
-draws through something else; those come back unbound and the Level
-Editor shows them as markers. Everything here is checked against what
-the savestates independently learned - see `python -m
-functions.handler_models` - and where the two disagree the savestate is
-usually looking at a slot the code proves is something else.
+A handler that never reaches an attach routine draws nothing, or draws
+through something this does not follow; those come back unbound and the
+Level Editor shows them as markers. Run this module as a script to
+check what it does say against everything the savestates learned.
 """
 import os
 import struct
@@ -51,31 +64,43 @@ import struct
 from functions import clut_anim
 from functions.mips import Image
 
-# The routine every placed object's model goes through, and the table it
-# reads. Both are found in MAIN.EXE rather than assumed - see
-# find_attach() - so a build that moved them still works.
-ATTACH_HINT = 0x80051B70
-FILE_TABLE_HINT = 0x800ECF58
-
 # MAIN.EXE is a PS-EXE: a 0x800 header, then the body, loaded where the
 # header says.
 EXE_HEADER = 0x800
 EXE_MAGIC = b"PS-X EXE"
+EXE_ADDRESS = 0x18
 
-# How far back from a call to look for what put a value in a register.
-# An immediate is nearly always set within a handful of instructions;
-# forty is generous enough to cross a branch or two.
+# Where the game keeps one pointer per SDAT id for the loaded area, and
+# where in a drawing record the model pointer goes. Both are read out of
+# the attach routine rather than assumed; these are only what to expect.
+FILE_TABLE_HINT = 0x800ECF58
+MODEL_FIELD = 0x40
+
+# The byte that says which overlay is loaded - 0 for A00.BIN, 1 for
+# A01.BIN, which is the number in the name. Checked in savestates taken
+# in AREA_04 and AREA_05; it is what MAIN.EXE's own object classes index
+# their model tables by, since they serve every area at once.
+OVERLAY_NUMBER = 0x800BF870
+
+# The object's slot is a byte at +3 of its record - every per-slot table
+# on the disc is indexed by that load.
+SLOT_FIELD = 3
+
+# How far back from a call to look for what put a value in a register,
+# and how far a walk of one handler may wander from where it started.
 LOOKBACK = 48
-
-# How far a walk of one handler may wander from where it started.
 FUNCTION_SPAN = 0x8000
 
-# Registers by number, for the two arguments that matter.
-A1, A2 = 5, 6
+A0, A1, A2 = 4, 5, 6
+
+# What a table is indexed by.
+BY_SLOT = "slot"
+BY_OVERLAY = "overlay"
 
 
 class Value:
-    """What a register holds, as far as this can tell."""
+    """What a register holds, as far as the immediates say."""
+    __slots__ = ()
 
 
 class Const(Value):
@@ -87,54 +112,46 @@ class Const(Value):
     def __repr__(self):
         return f"Const(0x{self.n:X})"
 
-    def __eq__(self, other):
-        return isinstance(other, Const) and other.n == self.n
 
-    def __hash__(self):
-        return hash(("const", self.n))
+class Index(Value):
+    """A number that is only known once an object is in hand - its slot,
+    or which overlay is loaded."""
+    __slots__ = ("kind", "shift")
 
-
-class Slot(Value):
-    """The object's own slot number - its byte at +3."""
+    def __init__(self, kind, shift=0):
+        self.kind = kind
+        self.shift = shift
 
     def __repr__(self):
-        return "Slot"
-
-    def __eq__(self, other):
-        return isinstance(other, Slot)
-
-    def __hash__(self):
-        return hash("slot")
+        return f"Index({self.kind}<<{self.shift})"
 
 
-class SlotIndex(Value):
-    """An address with the slot added to it - a table being indexed."""
+class Sum(Value):
+    """A constant address with an index scaled onto it."""
+    __slots__ = ("base", "index")
 
-    __slots__ = ("base",)
-
-    def __init__(self, base):
+    def __init__(self, base, index):
         self.base = base
+        self.index = index
 
     def __repr__(self):
-        return f"SlotIndex(0x{self.base:08X})"
+        return f"Sum(0x{self.base:08X}, {self.index})"
 
 
-class SlotTable(Value):
-    """One byte per slot, at this address."""
+class Table(Value):
+    """One entry per index, at `address`, `width` bytes apart."""
+    __slots__ = ("address", "kind", "stride", "width", "signed")
 
-    __slots__ = ("address",)
-
-    def __init__(self, address):
+    def __init__(self, address, kind, stride, width, signed):
         self.address = address
+        self.kind = kind
+        self.stride = stride
+        self.width = width
+        self.signed = signed
 
     def __repr__(self):
-        return f"SlotTable(0x{self.address:08X})"
-
-    def __eq__(self, other):
-        return isinstance(other, SlotTable) and other.address == self.address
-
-    def __hash__(self):
-        return hash(("table", self.address))
+        return (f"Table(0x{self.address:08X}, by {self.kind}, "
+                f"{self.stride}-byte)")
 
 
 def load_exe(path):
@@ -143,8 +160,8 @@ def load_exe(path):
         data = f.read()
     if not data.startswith(EXE_MAGIC):
         raise ValueError(f"{os.path.basename(path)} is not a PS-EXE")
-    address = struct.unpack_from("<I", data, 0x18)[0]
-    return Image(data[EXE_HEADER:], address)
+    return Image(data[EXE_HEADER:],
+                 struct.unpack_from("<I", data, EXE_ADDRESS)[0])
 
 
 def load_overlay(path, base=None):
@@ -158,43 +175,94 @@ def load_overlay(path, base=None):
         base = clut_anim.folder_base(os.path.dirname(path))
     if not base:
         raise ValueError("nothing in the BIN folder says where an overlay "
-                         "loads, so its code can't be placed")
+                         "loads, so its code cannot be placed")
     return Image(data, base)
 
 
-def find_attach(exe):
-    """(the model-attach routine, the file table it reads), found by the
-    shape of the code rather than taken on trust.
-
-    The giveaway is the pair of loads that turn an id and a group into a
-    pointer: `lw a0, 0(table + id*4)` and then `lw v1, 4(a0 + group*4)`,
-    with the second's base being the first's result. Only one routine on
-    the disc does that."""
-    for address in (ATTACH_HINT,):
-        table = _reads_file_table(exe, address)
-        if table is not None:
-            return address, table
-    return None, None
+def overlay_number(path):
+    """Which Axx.BIN this is, as the game counts them - A00 is 0."""
+    name = os.path.basename(path).upper()
+    if not name.startswith("A0") or not name.endswith(".BIN"):
+        return None
+    return "0123456789ABCDEFGHIJKL".find(name[2:-4])
 
 
-def _reads_file_table(exe, entry, limit=0x400):
-    """The file table `entry` indexes, if it is the attach routine."""
-    base = None
-    for instruction in exe.walk(entry, limit):
-        if instruction.name == "lui":
-            base = instruction.unsigned << 16
-        elif instruction.name == "addiu" and base is not None:
-            candidate = base + instruction.imm
-            if 0x80010000 <= candidate < 0x80200000:
-                # Followed, within a few instructions, by a shift-by-two
-                # and a load - the id being turned into a pointer.
-                shifted = any(
-                    later.name == "sll" and later.shift == 2
-                    for later in exe.walk(instruction.address + 4, 8))
-                if shifted:
-                    return candidate
-        elif instruction.name == "jr":
+# --------------------------------------------------------------------
+# Finding the routines that attach a model
+# --------------------------------------------------------------------
+
+def _function_entry(image, address, limit=400):
+    """The start of the routine containing `address` - the instruction
+    two past the previous `jr ra`, which is where the last one ended."""
+    for step in range(1, limit):
+        at = address - step * 4
+        if at not in image:
             break
+        instruction = image.at(at)
+        if instruction.name == "jr" and instruction.rs == 31:
+            return at + 8
+    return address
+
+
+def find_attach(exe):
+    """Every routine in MAIN.EXE that turns an SDAT id and a group into
+    a model pointer, as {entry address: the file table it reads}.
+
+    Found by shape: a routine that forms the file table, loads a group's
+    offset out of an SMST's pointer table (`lw` at +4) and stores the
+    result into a drawing record (`sw` at +0x40). Two on the retail
+    disc, and nothing else on it does all three."""
+    out = {}
+    for i in range(len(exe.data) // 4):
+        address = exe.base + i * 4
+        instruction = exe.at(address)
+        if instruction.name != "lui":
+            continue
+        table = None
+        for step in range(1, 6):
+            following = exe.at(address + step * 4)
+            if (following.name == "addiu" and following.rs == instruction.rt):
+                candidate = (instruction.unsigned << 16) + following.imm
+                if 0x80010000 <= candidate < 0x80200000:
+                    table = candidate
+                break
+        if table is None:
+            continue
+        window = [exe.at(address + k * 4) for k in range(18)]
+        if not any(w.name == "lw" and w.imm == 4 for w in window):
+            continue
+        if not any(w.name == "sw" and w.imm == MODEL_FIELD for w in window):
+            continue
+        out[_function_entry(exe, address)] = table
+    return out
+
+
+# --------------------------------------------------------------------
+# Reading a register back to the immediates that filled it
+# --------------------------------------------------------------------
+
+WRITES_RT = frozenset((
+    "lui", "addiu", "addi", "ori", "andi", "xori", "slti", "sltiu",
+    "lb", "lbu", "lh", "lhu", "lw"))
+WRITES_RD = frozenset((
+    "addu", "add", "subu", "sub", "and", "or", "xor", "nor", "slt", "sltu",
+    "sll", "srl", "sra", "sllv", "srlv", "srav", "mfhi", "mflo"))
+
+# Loads, as (width, signed).
+LOAD_WIDTH = {"lb": (1, True), "lbu": (1, False), "lh": (2, True),
+              "lhu": (2, False), "lw": (4, True)}
+
+
+def _writes(instruction):
+    name = instruction.name
+    if name in WRITES_RT:
+        return instruction.rt
+    if name in WRITES_RD:
+        return instruction.rd
+    if name in ("jal", "bltzal", "bgezal"):
+        return 31
+    if name == "jalr":
+        return instruction.rd
     return None
 
 
@@ -202,7 +270,7 @@ class Reader:
     """Reads registers backwards from a point in the code."""
 
     def __init__(self, images):
-        self.images = images
+        self.images = tuple(images)
 
     def image_for(self, address):
         for image in self.images:
@@ -210,14 +278,20 @@ class Reader:
                 return image
         return None
 
-    def byte(self, address):
+    def read(self, address, width=1, signed=False):
+        """A constant out of whichever image holds that address."""
         image = self.image_for(address)
         if image is None:
             return None
-        return image.data[address - image.base]
+        at = address - image.base
+        if at + width > len(image.data):
+            return None
+        code = {(1, False): "<B", (1, True): "<b", (2, False): "<H",
+                (2, True): "<h", (4, True): "<I", (4, False): "<I"}[(width, signed)]
+        return struct.unpack_from(code, image.data, at)[0]
 
     def argument(self, call, register):
-        """What `register` holds when a call at `call` is made.
+        """What `register` holds when the call at `call` is made.
 
         The delay slot first. MIPS runs the instruction after a jump
         before the jump takes effect, and the compiler puts an argument
@@ -228,15 +302,13 @@ class Reader:
         if image is not None and call + 4 in image:
             delay = image.at(call + 4)
             if _writes(delay) == register:
-                return self._evaluate(delay, 0)
+                return self.evaluate(delay, 0)
         return self.value(call, register)
 
     def value(self, address, register, depth=0):
-        """What `register` holds just before the instruction at
-        `address`, as far as the immediates say."""
         if register == 0:
             return Const(0)
-        if depth > 6:
+        if depth > 8:
             return None
         image = self.image_for(address)
         if image is None:
@@ -246,83 +318,82 @@ class Reader:
             if at not in image:
                 return None
             instruction = image.at(at)
-            written = _writes(instruction)
-            if written != register:
+            if _writes(instruction) != register:
                 continue
-            return self._evaluate(instruction, depth)
+            return self.evaluate(instruction, depth)
         return None
 
-    def _evaluate(self, instruction, depth):
+    def evaluate(self, instruction, depth=0):
         name = instruction.name
         at = instruction.address
         if name == "lui":
             return Const(instruction.unsigned << 16)
         if name in ("addiu", "addi"):
-            source = self.value(at, instruction.rs, depth + 1)
             if instruction.rs == 0:
                 return Const(instruction.imm)
+            source = self.value(at, instruction.rs, depth + 1)
             if isinstance(source, Const):
                 return Const((source.n + instruction.imm) & 0xFFFFFFFF)
+            if isinstance(source, Sum):
+                return Sum(source.base + instruction.imm, source.index)
             return None
         if name == "ori":
             source = self.value(at, instruction.rs, depth + 1)
             if isinstance(source, Const):
                 return Const(source.n | instruction.unsigned)
             return None
+        if name == "sll":
+            source = self.value(at, instruction.rt, depth + 1)
+            if isinstance(source, Index):
+                return Index(source.kind, source.shift + instruction.shift)
+            if isinstance(source, Const):
+                return Const((source.n << instruction.shift) & 0xFFFFFFFF)
+            return None
         if name in ("addu", "add"):
+            if instruction.rt == 0:
+                return self.value(at, instruction.rs, depth + 1)
+            if instruction.rs == 0:
+                return self.value(at, instruction.rt, depth + 1)
             left = self.value(at, instruction.rs, depth + 1)
             right = self.value(at, instruction.rt, depth + 1)
-            if instruction.rt == 0:
-                return left
-            if instruction.rs == 0:
-                return right
             for a, b in ((left, right), (right, left)):
-                if isinstance(a, Slot) and isinstance(b, Const):
-                    return SlotIndex(b.n)
+                if isinstance(a, Index) and isinstance(b, Const):
+                    return Sum(b.n, a)
             if isinstance(left, Const) and isinstance(right, Const):
                 return Const((left.n + right.n) & 0xFFFFFFFF)
             return None
-        if name in ("lbu", "lb"):
+        if name in LOAD_WIDTH:
+            width, signed = LOAD_WIDTH[name]
             source = self.value(at, instruction.rs, depth + 1)
-            if isinstance(source, SlotIndex):
-                return SlotTable(source.base + instruction.imm)
+            if isinstance(source, Sum):
+                return Table(source.base + instruction.imm, source.index.kind,
+                             1 << source.index.shift, width, signed)
             if isinstance(source, Const):
-                byte = self.byte(source.n + instruction.imm)
-                return Const(byte) if byte is not None else None
-            # The object's slot lives at +3 of its own record, and that
-            # is what every per-slot table on the disc is indexed by.
-            if source is None and instruction.imm == 3:
-                return Slot()
+                where = source.n + instruction.imm
+                if where == OVERLAY_NUMBER:
+                    return Index(BY_OVERLAY)
+                value = self.read(where, width, signed)
+                return Const(value) if value is not None else None
+            # An object's slot is its own byte at +3, and that is what
+            # every per-slot table on the disc is indexed by.
+            if source is None and width == 1 and instruction.imm == SLOT_FIELD:
+                return Index(BY_SLOT)
             return None
         return None
 
 
-def _writes(instruction):
-    """Which register an instruction writes, or None."""
-    name = instruction.name
-    if name is None:
-        return None
-    if name in ("lui", "addiu", "addi", "ori", "andi", "xori", "slti",
-                "sltiu", "lb", "lbu", "lh", "lhu", "lw"):
-        return instruction.rt
-    if name in ("addu", "add", "subu", "sub", "and", "or", "xor", "nor",
-                "slt", "sltu", "sll", "srl", "sra", "sllv", "srlv", "srav",
-                "mfhi", "mflo"):
-        return instruction.rd
-    if name in ("jal", "bltzal", "bgezal"):
-        return 31
-    if name == "jalr":
-        return instruction.rd
-    return None
+# --------------------------------------------------------------------
+# Walking a handler
+# --------------------------------------------------------------------
 
-
-def calls_within(image, entry, target, span=FUNCTION_SPAN):
-    """Every place inside the routine at `entry` that calls `target`.
+def calls_within(image, entry, targets, span=FUNCTION_SPAN):
+    """Every place inside the routine at `entry` that calls one of
+    `targets`, as [(call address, target), ...].
 
     A walk of the routine rather than a straight read of it: the
-    handlers jump about, and the call that matters is often past a
-    branch. Bounded to `span` either side of the entry so a tail call
-    into somebody else's code cannot run away with it."""
+    handlers jump about, and the call that matters is usually past a
+    branch or two. Bounded to `span` either side of the entry so a tail
+    call into somebody else's code cannot run away with it."""
     seen, todo, found = set(), [entry], []
     low, high = entry - span, entry + span
     while todo:
@@ -336,9 +407,9 @@ def calls_within(image, entry, target, span=FUNCTION_SPAN):
             instruction = image.at(address)
             name = instruction.name
             if name == "jal":
-                if instruction.target == target:
-                    found.append(address)
-                address += 8         # over the delay slot
+                if instruction.target in targets:
+                    found.append((address, instruction.target))
+                address += 8            # over the delay slot
                 continue
             if name == "jr":
                 break
@@ -351,57 +422,114 @@ def calls_within(image, entry, target, span=FUNCTION_SPAN):
     return found
 
 
-def models_for_handlers(handlers, exe_path, overlay_path, overlay_base=None):
-    """{handler address: (SDAT id, group)} - the model each class of
-    object draws with, read out of the code.
+class CodeModels:
+    """One disc's answer to "what does each object class draw with"."""
 
-    `group` is an int where the whole class draws with one model, or a
-    dict {slot: group} where it draws a different one per slot. A
-    handler that never reaches the attach routine is left out."""
-    exe = load_exe(exe_path)
-    overlay = load_overlay(overlay_path, overlay_base)
-    attach, _table = find_attach(exe)
-    if attach is None:
-        return {}
-    reader = Reader((exe, overlay))
+    def __init__(self, exe_path, overlay_path, overlay_base=None):
+        self.exe = load_exe(exe_path)
+        self.overlay = load_overlay(overlay_path, overlay_base)
+        self.overlay_index = overlay_number(overlay_path)
+        self.reader = Reader((self.exe, self.overlay))
+        self.attach = set(find_attach(self.exe))
 
-    out = {}
-    for handler in sorted(set(handlers)):
-        image = reader.image_for(handler)
-        if image is None:
-            continue
-        for call in calls_within(image, handler, attach):
-            file_id = reader.argument(call, A1)
-            group = reader.argument(call, A2)
+    def model_for(self, handler):
+        """(SDAT id, group) for a class of object, where `group` is an
+        int or a Table to be indexed by an object's slot. None when the
+        handler never reaches an attach routine."""
+        image = self.reader.image_for(handler)
+        if image is None or not self.attach:
+            return None
+        for call, _target in calls_within(image, handler, self.attach):
+            file_id = self.reader.argument(call, A1)
+            group = self.reader.argument(call, A2)
             if not isinstance(file_id, Const):
                 continue
             if isinstance(group, Const):
-                out.setdefault(handler, (file_id.n, group.n))
-            elif isinstance(group, SlotTable):
-                out.setdefault(handler, (file_id.n, group))
-    return out
+                return file_id.n, group.n
+            if isinstance(group, Table):
+                if group.kind == BY_OVERLAY:
+                    resolved = self.entry(group, self.overlay_index)
+                    if resolved is not None:
+                        return file_id.n, resolved
+                    continue
+                return file_id.n, group
+        return None
+
+    def entry(self, table, index):
+        """One entry of a table, or None."""
+        if index is None:
+            return None
+        return self.reader.read(table.address + index * table.stride,
+                                table.width, table.signed)
+
+    def bindings(self, placements):
+        """{(kind, slot, handler): (SDAT id, group)} for a whole object
+        table - the same shape functions.placement.load_bindings
+        returns, worked out from the code instead of from a state."""
+        cache, out = {}, {}
+        for placement in placements:
+            if placement.handler not in cache:
+                cache[placement.handler] = self.model_for(placement.handler)
+            model = cache[placement.handler]
+            if model is None:
+                continue
+            file_id, group = model
+            if isinstance(group, Table):
+                group = self.entry(group, placement.slot)
+                if group is None:
+                    continue
+            out[placement.key()] = (file_id, group)
+        return out
 
 
 def bindings_from_code(placements, exe_path, overlay_path, overlay_base=None):
-    """{(kind, slot, handler): (SDAT id, group)} for a whole overlay's
-    object table - the same shape functions.placement.load_bindings
-    returns, worked out from the code instead of from a savestate."""
-    found = models_for_handlers({p.handler for p in placements},
-                                exe_path, overlay_path, overlay_base)
-    exe = load_exe(exe_path)
-    overlay = load_overlay(overlay_path, overlay_base)
-    reader = Reader((exe, overlay))
+    """{(kind, slot, handler): (SDAT id, group)} for one overlay."""
+    return CodeModels(exe_path, overlay_path, overlay_base).bindings(placements)
 
-    out = {}
-    for placement in placements:
-        model = found.get(placement.handler)
-        if model is None:
+
+# --------------------------------------------------------------------
+# Checking it against what the savestates worked out
+# --------------------------------------------------------------------
+
+def _check(cd_folder, bin_folder, exe_path):
+    from functions import placement
+
+    agree = disagree = fresh = missing = 0
+    for name in sorted(os.listdir(bin_folder)):
+        if not name.upper().startswith("A0"):
             continue
-        file_id, group = model
-        if isinstance(group, SlotTable):
-            byte = reader.byte(group.address + placement.slot)
-            if byte is None:
-                continue
-            group = byte
-        out[placement.key()] = (file_id, group)
-    return out
+        path = os.path.join(bin_folder, name)
+        records = placement.load_placements(path)
+        if not records:
+            continue
+        try:
+            found = bindings_from_code(records, exe_path, path)
+        except ValueError as e:
+            print(f"{name}: {e}")
+            continue
+        known = placement.load_bindings(name)
+        both = set(found) & set(known)
+        wrong = [k for k in both if found[k] != known[k]]
+        agree += len(both) - len(wrong)
+        disagree += len(wrong)
+        fresh += len(set(found) - set(known))
+        missing += len(set(known) - set(found))
+        print(f"{name}: {len(found)}/{len(records)} objects from code, "
+              f"{len(both) - len(wrong)} agree, {len(wrong)} disagree, "
+              f"{len(set(found) - set(known))} new")
+        for key in sorted(wrong):
+            print(f"    {key[0]}.{key[1]} handler 0x{key[2]:08X}: "
+                  f"code {found[key]}, states {known[key]}")
+    print(f"\ntotal: {agree} agree, {disagree} disagree, {fresh} the states "
+          f"never learned, {missing} the code does not reach")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 4:
+        print(__doc__)
+        print("usage: python -m functions.handler_models <CD folder> "
+              "<BIN folder> <MAIN.EXE>")
+        raise SystemExit(2)
+    _check(*sys.argv[1:4])
