@@ -138,24 +138,107 @@ def _apply_single_replacement(dat_bytes, chunks, area, file_idx, new_data):
     return new_dat
 
 
+def _apply_trail_replacement(dat_bytes, chunks, address, new_data):
+    """Replace one TRAIL file's bytes and keep every trailer consistent.
+
+    The trail is the part of the DAT past the last AREA chunk - on the
+    retail disc, 0x82F000 to the end - and its files are addressed
+    absolutely rather than by a slot in a chunk's pointer table, which
+    is why they need their own path through here. Two things follow
+    from that and make this the simpler of the two:
+
+    Nothing in front moves. Every chunk sits below the trail, so no
+    dat_start, dat_end or SDAT pointer changes; only the trail ranges
+    at or after the replaced file shift.
+
+    A trail file is SHARED. Thirteen of the retail disc's 53 are listed
+    by more than one area - that is what the trail is for - so the same
+    range turns up in several chunks' trailers and every copy of it has
+    to move together. Replacing one changes it for every area that uses
+    it, which is the point rather than a hazard, but it is worth
+    knowing before doing it.
+
+    Trail files start on a sector boundary, so the replacement is padded
+    up to one and the shift applied to everything after it is the padded
+    difference.
+
+    Returns the new DAT bytes (bytearray).
+    """
+    end = None
+    for chunk in chunks:
+        for start, stop in chunk['trail_ranges']:
+            if start == address:
+                end = stop if end is None else max(end, stop)
+    if end is None:
+        raise ValueError(f"no trail file starts at {address:#x}")
+
+    padded = pad_to_sector(new_data)
+    size_diff = len(padded) - (end - address)
+
+    debug_print(
+        "trail",
+        "{:08X}-{:08X} ({} bytes) -> {} bytes padded to {} (diff {:+d})".format(
+            address, end, end - address, len(new_data), len(padded), size_diff))
+
+    new_dat = bytearray(dat_bytes[:address]) + padded + dat_bytes[end:]
+
+    if size_diff:
+        def remap(x):
+            return x + size_diff if x >= end else x
+
+        for chunk in chunks:
+            chunk['trail_ranges'] = [
+                # The replaced file's own end moves to wherever its new
+                # bytes finish; everything past it just shifts.
+                (remap(start), address + len(padded) if start == address
+                 else remap(stop))
+                for start, stop in chunk['trail_ranges']]
+    else:
+        for chunk in chunks:
+            chunk['trail_ranges'] = [
+                (start, address + len(padded) if start == address else stop)
+                for start, stop in chunk['trail_ranges']]
+    return new_dat
+
+
 def repack_files(original_dat_path, original_idx_path, edits, output_dat_path, output_idx_path):
     """
     Apply a batch of edits in one pass and write the resulting DAT + IDX.
 
-    edits: list of {"area": int, "file_idx": int, "data": bytes}
+    edits: list of {"area": int, "file_idx": int, "data": bytes} for a
+    file in an AREA's chunk, or {"trail": int, "data": bytes} naming a
+    TRAIL file by the DAT address it starts at.
+
     Safe to call with edits spanning multiple AREAs, or several edits
     within the same AREA - each edit's pointer/size math is computed
     against the cumulative state left by the edits applied before it.
+
+    ORDER MATTERS, and is settled here rather than by the caller. A
+    trail edit names its file by a DAT address, so anything that has
+    already moved the trail would leave that address pointing at the
+    wrong file; the chunk edits do move it, so the trail edits go first.
+    Among themselves they run from the back of the DAT forwards, since
+    replacing a trail file only shifts what is after it - so every
+    address still to be used is still where the caller found it. The
+    chunk edits then shift the whole trail as they always have (see
+    _apply_single_replacement's remap).
     """
     chunks = parse_idx(original_idx_path)
 
     with open(original_dat_path, 'rb') as f:
         dat_bytes = bytearray(f.read())
 
-    for edit in edits:
-        dat_bytes = _apply_single_replacement(
-            dat_bytes, chunks, edit['area'], edit['file_idx'], edit['data']
-        )
+    ordered = (sorted((e for e in edits if 'trail' in e),
+                      key=lambda e: e['trail'], reverse=True)
+               + [e for e in edits if 'trail' not in e])
+    for edit in ordered:
+        if 'trail' in edit:
+            dat_bytes = _apply_trail_replacement(
+                dat_bytes, chunks, edit['trail'], edit['data'])
+        else:
+            dat_bytes = _apply_single_replacement(
+                dat_bytes, chunks, edit['area'], edit['file_idx'], edit['data']
+            )
 
     with open(output_dat_path, 'wb') as f:
         f.write(pad_to_sector(dat_bytes))

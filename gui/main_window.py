@@ -31,6 +31,7 @@ from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
 from gui.mainbin.mainbin_viewer import MainExeViewer
 from gui.bins.bins_viewer import BinsViewer
+from gui.entry_picker import EntryPicker
 from gui.level.level_panel import LevelEditorPanel
 from gui import theme
 from gui import panel_title
@@ -243,6 +244,15 @@ class MainWindow(QMainWindow):
         # txt2_packer.pack_txt2() for that entry; everything else here
         # (coloring, export bookkeeping) treats both kinds identically.
         self.pending_txtd_edits = {}
+
+        # (chunk_index, file_index) -> {"data", "label", "size"} for a
+        # whole SDAT entry whose bytes are being replaced outright -
+        # imported from a file, or copied from another entry to swap one
+        # model for another. Kept apart from pending_txtd_edits because
+        # nothing packs these: what is staged IS what gets written, and
+        # functions/repacker.py resizes the DAT and rewrites every
+        # pointer around it (see _apply_single_replacement).
+        self.pending_file_edits = {}
 
         # (chunk_index, file_index) -> the QStandardItem for that TXTD/TXT2
         # file in self.tree_view, so pending edits can be highlighted there
@@ -985,6 +995,223 @@ class MainWindow(QMainWindow):
         self.load_labels_for_disc(
             os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"))
 
+    # --- replacing a whole file's bytes ---------------------------------
+
+    def _entry_of(self, item):
+        """What a tree row's file is, as a dict the replace/swap code
+        can act on, or None for a row that is not one.
+
+        Two kinds, because the disc has two. A file in an AREA's data
+        folder is a slot in that chunk's pointer table, and is named by
+        (area, file index). A file in its TRAIL folder is named by the
+        DAT address it starts at - the trail sits past every chunk and
+        is shared between areas, which is where Tomba's own models live.
+        Both go to functions/repacker.py, which has a path for each."""
+        data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return None
+        if data[0] == "trail":
+            _tag, address, size, _dat_start = data
+            return {"kind": "trail", "trail": address,
+                    "address": address, "size": size, "key": ("trail", address)}
+        where = item.data(Qt.ItemDataRole.UserRole + 2)
+        if not where or not isinstance(data[0], int):
+            return None
+        _id, dat_start, offset, size = data
+        chunk_index, file_index = where
+        return {"kind": "sdat", "area": chunk_index, "file_idx": file_index,
+                "address": dat_start + offset, "size": size,
+                "key": (chunk_index, file_index)}
+
+    def _entry_bytes(self, item):
+        """What a tree row's file currently holds - the staged
+        replacement if it has one, otherwise what is on the disc."""
+        entry = self._entry_of(item)
+        if entry is None or not self.dat_file:
+            return None
+        staged = self.pending_file_edits.get(entry["key"])
+        if staged is not None:
+            return staged["data"]
+        with open(self.dat_file, "rb") as f:
+            f.seek(entry["address"])
+            return f.read(entry["size"])
+
+    def _stage_file_edit(self, item, data, label):
+        """Stage a whole-file replacement, or clear it when the bytes
+        are what the disc already has."""
+        entry = self._entry_of(item)
+        if entry is None:
+            return
+        with open(self.dat_file, "rb") as f:
+            f.seek(entry["address"])
+            original = f.read(entry["size"])
+        key = entry["key"]
+        if data == original:
+            self.pending_file_edits.pop(key, None)
+        else:
+            self.pending_file_edits[key] = dict(entry, data=data, label=label)
+        self._colour_address(entry["address"],
+                             "edited" if key in self.pending_file_edits else None)
+        self._refresh_edit_status()
+
+    def _confirm_replacement(self, item, data, source):
+        """Ask before staging, saying what changes. A different size is
+        the thing worth stopping on: the repacker will resize the DAT
+        and move every pointer after it, which is fine for the disc, but
+        the game may still expect the file it was built with."""
+        entry = self._entry_of(item)
+        size = entry["size"]
+        difference = len(data) - size
+        note = ("the same size" if not difference
+                else f"{abs(difference)} byte(s) "
+                     f"{'larger' if difference > 0 else 'smaller'}")
+        warning = ""
+        if entry["kind"] == "trail":
+            where = f"TRAIL, 0x{entry['address']:X}, {size} bytes"
+            shared = self._areas_using_trail(entry["address"])
+            if len(shared) > 1:
+                warning = (f"\n\nThis is a TRAIL file, and {len(shared)} areas "
+                           f"share it ({', '.join(shared[:6])}"
+                           f"{', ...' if len(shared) > 6 else ''}) - replacing "
+                           f"it changes it in every one of them.")
+        else:
+            where = (f"AREA_{entry['area']:02X}, slot {entry['file_idx']}, "
+                     f"{size} bytes")
+        answer = QMessageBox.question(
+            self, "Replace this file?",
+            f"Replace the bytes of\n\n    {item.text()}\n\n"
+            f"({where})\n\nwith {source} - {note}.{warning}\n\n"
+            f"Nothing is written to the disc until you export; this is "
+            f"staged like a text edit, and exporting rebuilds TOMBA2.DAT "
+            f"and TOMBA2.IDX around the new size.")
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _areas_using_trail(self, address):
+        """Which areas list a trail file. The trail is shared - 13 of
+        the retail disc's 53 files are in more than one area's trailer -
+        so replacing one reaches every area that uses it."""
+        from gui.level.level_scene import trail_files
+        idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+        out = []
+        try:
+            for chunk in range(os.path.getsize(idx_path) // 0x800):
+                if any(start == address
+                       for start, _size in trail_files(idx_path, chunk)):
+                    out.append(f"AREA_{chunk:02X}")
+        except OSError:
+            pass
+        return out
+
+    def import_selected_bytes(self):
+        """Replace the selected file's bytes from a file on disk."""
+        item = self._selected_tree_item()
+        if self._entry_of(item) is None:
+            QMessageBox.warning(self, "Nothing to replace",
+                                "Pick a file inside an AREA's data folder.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Bytes to put in {item.text()}", "",
+            "Binary files (*.bin);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            QMessageBox.critical(self, "Couldn't read that", str(e))
+            return
+        if self._confirm_replacement(item, data, os.path.basename(path)):
+            self._stage_file_edit(item, data, os.path.basename(path))
+
+    def swap_selected_bytes(self):
+        """Replace the selected file with another entry's bytes.
+
+        What a swap on this disc has to be. An IDX pointer is an offset
+        inside its own AREA's chunk, so an entry cannot be pointed at
+        another area's file - but its bytes can be copied over, and the
+        repacker resizes the chunk around them. Which is how Tomba's
+        second suit ends up where his first one was."""
+        item = self._selected_tree_item()
+        entry = self._entry_of(item)
+        if entry is None:
+            QMessageBox.warning(self, "Nothing to replace",
+                                "Pick a file inside an AREA's data folder.")
+            return
+        kind = item.text().rsplit(".", 1)[-1].upper()
+        choices = self._entries_of_type(kind, exclude=entry["key"])
+        if not choices:
+            QMessageBox.information(
+                self, "Nothing to swap with",
+                f"This disc holds no other {kind} to put here.")
+            return
+        source = EntryPicker.ask(
+            self, "Swap in another file",
+            f"Put the bytes of which {kind} into {item.text()}?", choices)
+        if source is None:
+            return
+        chosen = source.text()
+        data = self._entry_bytes(source)
+        if data is None:
+            QMessageBox.critical(self, "Couldn't read that",
+                                 "That entry's bytes could not be read.")
+            return
+        if self._confirm_replacement(item, data, chosen):
+            self._stage_file_edit(item, data, chosen)
+
+    def _entries_of_type(self, kind, exclude=None, limit=800):
+        """[(row name, item), ...] for every SDAT entry of one type -
+        what a swap can choose from."""
+        model = self.tree_view.model()
+        out = []
+        if model is None:
+            return out
+        root = model.invisibleRootItem()
+        for area_row in range(root.rowCount()):
+            area = root.child(area_row)
+            for folder_row in range(area.rowCount()):
+                folder = area.child(folder_row)
+                for file_row in range(folder.rowCount()):
+                    child = folder.child(file_row)
+                    entry = self._entry_of(child)
+                    if entry is None or entry["key"] == exclude:
+                        continue
+                    if child.text().rsplit(".", 1)[-1].upper() != kind:
+                        continue
+                    out.append((f"{area.text().split(' (')[0]}  "
+                                f"{'TRAIL  ' if entry['kind'] == 'trail' else ''}"
+                                f"{child.text()}  ({entry['size']} bytes)",
+                                child))
+                    if len(out) >= limit:
+                        return out
+        return out
+
+    def _selected_tree_item(self):
+        selected = self.tree_view.selectionModel().selectedIndexes()
+        if not selected:
+            return None
+        return self.tree_view.model().itemFromIndex(selected[0])
+
+    def _revert_file_edit(self, item):
+        """Put a staged replacement back to what the disc holds."""
+        entry = self._entry_of(item)
+        if entry is None:
+            return
+        self.pending_file_edits.pop(entry["key"], None)
+        self._colour_address(entry["address"], None)
+        self._refresh_edit_status()
+
+    def _pack_pending_file_edits(self):
+        """self.pending_file_edits as the `edits` list repack_files()
+        wants. Nothing to pack - the staged bytes are the file."""
+        out = []
+        for info in self.pending_file_edits.values():
+            if info["kind"] == "trail":
+                out.append({"trail": info["trail"], "data": info["data"]})
+            else:
+                out.append({"area": info["area"], "file_idx": info["file_idx"],
+                            "data": info["data"]})
+        return out
+
     def export_selected_bytes(self):
         selected_indexes = self.tree_view.selectionModel().selectedIndexes()
         if not selected_indexes:
@@ -1131,22 +1358,25 @@ class MainWindow(QMainWindow):
         (mark_exported() doesn't emit content_changed, so nothing else
         would refresh this)."""
         n_txtd = len(self.pending_txtd_edits)
+        n_files = len(self.pending_file_edits)
         n_mainexe = len(self.mainexe_viewer.pending_edits())
         n_sop = len(self.bins_viewer.pending_edits())
 
-        self.main_tabs.setTabText(0, "Indexed View (IDX)*" if n_txtd else "Indexed View (IDX)")
-        self.main_tabs.setTabText(1, "Data View (DAT)*" if n_txtd else "Data View (DAT)")
+        staged = n_txtd or n_files
+        self.main_tabs.setTabText(0, "Indexed View (IDX)*" if staged else "Indexed View (IDX)")
+        self.main_tabs.setTabText(1, "Data View (DAT)*" if staged else "Data View (DAT)")
         self.main_tabs.setTabText(2, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
         self.main_tabs.setTabText(3, "BINs*" if n_sop else "BINs")
 
         renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
 
-        if n_txtd == 0 and n_mainexe == 0 and n_sop == 0:
+        if n_txtd == 0 and n_files == 0 and n_mainexe == 0 and n_sop == 0:
             self.statusBar().showMessage(
                 ("No pending edits." + renamed) if renamed else "No pending edits.")
         else:
             self.statusBar().showMessage(
-                f"{n_txtd} disc file(s), {n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
+                f"{n_txtd} disc file(s), {n_files} replaced file(s), "
+                f"{n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
                 f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button "
                 f"when ready.{renamed}"
             )
@@ -1526,8 +1756,9 @@ class MainWindow(QMainWindow):
             return
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
-        if (not self.pending_txtd_edits and not mainexe_edits
-                and not sop_edits and not self.font_page_dirty):
+        if (not self.pending_txtd_edits and not self.pending_file_edits
+                and not mainexe_edits and not sop_edits
+                and not self.font_page_dirty):
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
@@ -1540,6 +1771,7 @@ class MainWindow(QMainWindow):
         edits = self._pack_pending_txtd_edits()
         if edits is None:
             return
+        edits += self._pack_pending_file_edits()
         replacements = {}
         with tempfile.TemporaryDirectory(prefix="tomba2bin_") as work:
             try:
@@ -1608,6 +1840,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
+        self.pending_file_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
         if sop_edits:
@@ -1654,10 +1887,13 @@ class MainWindow(QMainWindow):
         # would silently get dropped from this one.
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
-        if (not self.pending_txtd_edits and not mainexe_edits
-                and not sop_edits and not self.font_page_dirty):
-            QMessageBox.information(self, "Nothing to export",
-                                     "No TXTD/TXT2/MAIN.EXE/SOP.BIN/font page edits are pending. Edit some entry text first.")
+        if (not self.pending_txtd_edits and not self.pending_file_edits
+                and not mainexe_edits and not sop_edits
+                and not self.font_page_dirty):
+            QMessageBox.information(
+                self, "Nothing to export",
+                "No text, replaced file, MAIN.EXE, SOP.BIN or font page "
+                "edits are pending.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -1673,6 +1909,7 @@ class MainWindow(QMainWindow):
         edits = self._pack_pending_txtd_edits()
         if edits is None:
             return
+        edits += self._pack_pending_file_edits()
 
         original_dir = os.path.dirname(self.dat_file)
         original_idx = os.path.join(original_dir, "TOMBA2.IDX")
@@ -1741,6 +1978,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.txtd_viewer.mark_exported(chunk_index, file_index)
         self.pending_txtd_edits.clear()
+        self.pending_file_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
         if sop_edits:
@@ -1916,7 +2154,9 @@ class MainWindow(QMainWindow):
         if not iso_path:
             return
 
-        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits() or self.bins_viewer.has_pending_edits():
+        if (self.pending_txtd_edits or self.pending_file_edits
+                or self.mainexe_viewer.has_pending_edits()
+                or self.bins_viewer.has_pending_edits()):
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
                 f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
@@ -1935,6 +2175,7 @@ class MainWindow(QMainWindow):
             self.iso_handler.cleanup()
         self.iso_handler = ISOHandler()
         self.pending_txtd_edits.clear()
+        self.pending_file_edits.clear()
         self.txtd_file_states.clear()
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
@@ -2011,7 +2252,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.pending_txtd_edits or self.mainexe_viewer.has_pending_edits() or self.bins_viewer.has_pending_edits():
+        if (self.pending_txtd_edits or self.pending_file_edits
+                or self.mainexe_viewer.has_pending_edits()
+                or self.bins_viewer.has_pending_edits()):
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
                 f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
@@ -2030,6 +2273,7 @@ class MainWindow(QMainWindow):
         self.iso_handler = None
         self.current_iso_path = None
         self.pending_txtd_edits.clear()
+        self.pending_file_edits.clear()
         self.txtd_file_states.clear()
         self.txtd_viewer.clear_cache()
         self.txt2_viewer.clear_cache()
@@ -2142,6 +2386,7 @@ class MainWindow(QMainWindow):
             edits = self._pack_pending_txtd_edits()
             if edits is None:
                 return
+        edits += self._pack_pending_file_edits()
         # all_edits(), not pending_edits() - see export_all_files()'s
         # own comment on this for why.
         mainexe_edits = self.mainexe_viewer.all_edits()
@@ -2248,6 +2493,8 @@ class MainWindow(QMainWindow):
                     else:
                         self.txtd_viewer.mark_exported(chunk_index, file_index)
             self.pending_txtd_edits.clear()
+            self.pending_file_edits.clear()
+        self.pending_file_edits.clear()
         if mainexe_edits:
             self.mainexe_viewer.mark_exported()
         if sop_edits:
@@ -2310,6 +2557,23 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             export = menu.addAction("Export File...")
             export.triggered.connect(self.export_selected_bytes)
+            entry = self._entry_of(item)
+            if entry is not None:
+                replace = menu.addAction("Replace File...")
+                replace.setToolTip(
+                    "Put the bytes of a file from disk here. Staged like a "
+                    "text edit - exporting rebuilds the DAT and IDX around "
+                    "whatever size it is.")
+                replace.triggered.connect(self.import_selected_bytes)
+                swap = menu.addAction("Swap With...")
+                swap.setToolTip(
+                    "Put another entry of the same type here - one model "
+                    "where another was.")
+                swap.triggered.connect(self.swap_selected_bytes)
+                if entry["key"] in self.pending_file_edits:
+                    revert = menu.addAction("Undo Replacement")
+                    revert.triggered.connect(
+                        lambda: self._revert_file_edit(item))
 
         menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
