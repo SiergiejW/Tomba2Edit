@@ -64,7 +64,14 @@ def _icon_files():
     until a user did."""
     source = os.path.join(BUILD_DIR, "icons", "icons.py")
     with open(source, encoding="utf-8") as f:
-        wanted = sorted(set(re.findall(r'resource_path\("([^"]+)"\)', f.read())))
+        wanted = set(re.findall(r'resource_path\("([^"]+)"\)', f.read()))
+    # Art that is reached by path rather than through icons.py, so the
+    # scan above cannot see it. The text preview draws its dialogue box
+    # over this, in the Translation, MAIN.EXE and BINs tabs alike (see
+    # gui/txtd/font_preview.py) - without it those three came out with a
+    # blank panel behind the text in the built exe and nowhere else.
+    wanted.add("icons/tomba/txtd_background.jpg")
+    wanted = sorted(wanted)
     files = []
     for relative in wanted:
         path = os.path.join(BUILD_DIR, relative.replace("/", os.sep))

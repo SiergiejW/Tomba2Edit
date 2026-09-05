@@ -164,40 +164,46 @@ def _apply_trail_replacement(dat_bytes, chunks, address, new_data):
 
     Returns the new DAT bytes (bytearray).
     """
+    starts = sorted({start for chunk in chunks
+                     for start, _stop in chunk['trail_ranges']})
+    if address not in starts:
+        raise ValueError(f"no trail file starts at {address:#x}")
     end = None
     for chunk in chunks:
         for start, stop in chunk['trail_ranges']:
             if start == address:
                 end = stop if end is None else max(end, stop)
-    if end is None:
-        raise ValueError(f"no trail file starts at {address:#x}")
+
+    # A trail file's SLOT runs to wherever the next one begins, which is
+    # further than the file itself: every trail file starts on a sector
+    # boundary and none of them fills its last sector, so there is slack
+    # behind each one. Replacing the file alone and padding that to a
+    # sector would eat the slack and leave the next file unaligned, so
+    # the whole slot is what gets replaced.
+    later = [s for s in starts if s > address]
+    slot_end = later[0] if later else len(dat_bytes)
 
     padded = pad_to_sector(new_data)
-    size_diff = len(padded) - (end - address)
+    size_diff = len(padded) - (slot_end - address)
 
     debug_print(
         "trail",
-        "{:08X}-{:08X} ({} bytes) -> {} bytes padded to {} (diff {:+d})".format(
-            address, end, end - address, len(new_data), len(padded), size_diff))
+        "{:08X}-{:08X} in a slot to {:08X} -> {} bytes padded to {} "
+        "(diff {:+d})".format(address, end, slot_end, len(new_data),
+                              len(padded), size_diff))
 
-    new_dat = bytearray(dat_bytes[:address]) + padded + dat_bytes[end:]
+    new_dat = bytearray(dat_bytes[:address]) + padded + dat_bytes[slot_end:]
 
-    if size_diff:
-        def remap(x):
-            return x + size_diff if x >= end else x
+    def remap(x):
+        return x + size_diff if x >= slot_end else x
 
-        for chunk in chunks:
-            chunk['trail_ranges'] = [
-                # The replaced file's own end moves to wherever its new
-                # bytes finish; everything past it just shifts.
-                (remap(start), address + len(padded) if start == address
-                 else remap(stop))
-                for start, stop in chunk['trail_ranges']]
-    else:
-        for chunk in chunks:
-            chunk['trail_ranges'] = [
-                (start, address + len(padded) if start == address else stop)
-                for start, stop in chunk['trail_ranges']]
+    for chunk in chunks:
+        chunk['trail_ranges'] = [
+            # The replaced file's own end is where its new bytes finish,
+            # inside the padding; everything past the slot shifts.
+            (remap(start),
+             address + len(new_data) if start == address else remap(stop))
+            for start, stop in chunk['trail_ranges']]
     return new_dat
 
 

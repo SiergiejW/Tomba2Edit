@@ -46,6 +46,17 @@ MARKER_WIDTH = 2.0
 # geometry to hit - a marker is a few lines and a ray rarely meets one.
 MARKER_PICK_PIXELS = 18.0
 
+# The vertical field of view every view here draws with. Kept here as
+# well as in paintGL's matrix because the background has to be hung at
+# the same angles the geometry is seen through.
+FIELD_OF_VIEW = 45.0
+
+# How many degrees of looking up and down the background's full height
+# covers. With the 45-degree field of view above, a screenful is a
+# quarter of the picture, so the horizon sits in the middle of it and
+# there is as much sky above as ground below.
+BACKGROUND_PITCH_SPAN = 180.0
+
 CONTROLS = ("Left-click: select | Left-drag: move it along the ground\n"
             "Shift+drag: move it up and down\n" + CONTROLS_HINT)
 
@@ -94,9 +105,12 @@ class LevelViewer(SMSTViewer):
         self.background_action.setCheckable(True)
         self.background_action.setChecked(True)
         self.background_action.setToolTip(
-            "Draw the area's BGMP behind the room. It is a picture rather "
-            "than geometry, so it sits flat against the back of the view "
-            "however the camera moves.")
+            "Draw the area's BGMP behind the room.\n\n"
+            "It is a tall strip rather than geometry, hung round the "
+            "camera: look up and you see the top of it, level and you get "
+            "the horizon in the middle, down and you get the ground. It "
+            "repeats sideways as you turn, and keeps its own proportions "
+            "rather than being stretched to the window.")
         self.background_action.toggled.connect(self._toggle_background)
         self.toolbar.insertAction(self.marker_action, self.background_action)
 
@@ -510,13 +524,9 @@ class LevelViewer(SMSTViewer):
             """
             #version 330 core
             layout(location = 0) in vec2 corner;
-            out vec2 uv;
-            // How much of the picture the viewport shows, so it covers
-            // the view without being stretched out of shape.
-            uniform vec2 cover;
+            out vec2 screen;
             void main() {
-                uv = corner * 0.5 * cover + 0.5;
-                uv.y = 1.0 - uv.y;
+                screen = corner;
                 gl_Position = vec4(corner, 0.0, 1.0);
             }
             """)
@@ -524,10 +534,32 @@ class LevelViewer(SMSTViewer):
             QOpenGLShader.ShaderTypeBit.Fragment,
             """
             #version 330 core
-            in vec2 uv;
+            in vec2 screen;
             out vec4 outColor;
             uniform sampler2D picture;
-            void main() { outColor = vec4(texture(picture, uv).rgb, 1.0); }
+            // tan(half the field of view), across and up, so a screen
+            // position can be turned back into the angle it looks along.
+            uniform vec2 halfFov;
+            // Where the camera is pointing, in degrees.
+            uniform vec2 look;
+            // How many degrees the picture covers, across and up.
+            uniform vec2 span;
+
+            void main() {
+                // The angle this pixel looks along, which is what
+                // decides where in the picture it lands: up at the top
+                // of it, down at the bottom, and round it as you turn.
+                //
+                // The screen term is ADDED while the heading is
+                // subtracted, which looks wrong and is not: checked by
+                // drawing a background that runs black on its left to
+                // white on its right and seeing which way round it
+                // lands. Subtracting it instead comes out mirrored.
+                float yaw = look.x + degrees(atan(screen.x * halfFov.x));
+                float pitch = look.y - degrees(atan(screen.y * halfFov.y));
+                vec2 uv = vec2(yaw / span.x, 0.5 + pitch / span.y);
+                outColor = vec4(texture(picture, uv).rgb, 1.0);
+            }
             """)
         if not self.background_program.link():
             print("Background shader failed:", self.background_program.log())
@@ -592,7 +624,10 @@ class LevelViewer(SMSTViewer):
                         np.ascontiguousarray(image).tobytes())
         for name, value in ((GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
                             (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR),
-                            (GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE),
+                            # Repeats sideways as the camera turns;
+                            # clamped up and down, since the sky does
+                            # not start again below the ground.
+                            (GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT),
                             (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)):
             GL.glTexParameteri(GL.GL_TEXTURE_2D, name, value)
 
@@ -603,15 +638,35 @@ class LevelViewer(SMSTViewer):
         if not self.show_background or self.background_texture is None:
             return
         height, width = self._background_image.shape[:2]
-        view = self.width() / max(self.height(), 1)
-        picture = width / max(height, 1)
-        # Cover: whichever axis has spare picture is the one cropped.
-        cover = QVector2D(min(1.0, picture / view), min(1.0, view / picture))
         if not self.background_program.bind():
             return
+        # The picture is a tall strip - AREA_04's is 576 by 1152 - and
+        # it is hung round the camera rather than pasted flat: its
+        # height covers a whole look-up-to-look-down sweep, so the top
+        # of it is the sky and the bottom the ground, and it repeats
+        # sideways as the camera turns. How wide that makes one copy
+        # follows from the picture's own shape, which is what keeps the
+        # texels square instead of stretched.
+        vertical = BACKGROUND_PITCH_SPAN
+        horizontal = vertical * width / max(height, 1)
+        aspect = self.width() / max(self.height(), 1)
+        half = math.tan(math.radians(FIELD_OF_VIEW) / 2)
+        # How far the picture slides as the camera turns. Hung at the
+        # camera's own rate it goes round nearly four times in one turn,
+        # which is what makes it look like it is racing - so instead the
+        # turn is scaled to put exactly one copy of it round the whole
+        # circle. It still moves with the level rather than against it,
+        # just at the pace a distant backdrop should.
+        parallax = horizontal / 360.0
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDepthMask(GL.GL_FALSE)
-        self.background_program.setUniformValue("cover", cover)
+        self.background_program.setUniformValue(
+            "halfFov", QVector2D(half * aspect, half))
+        self.background_program.setUniformValue(
+            "look", QVector2D(-self.camera_controls.camera_angle_h * parallax,
+                              self.camera_controls.camera_angle_v))
+        self.background_program.setUniformValue(
+            "span", QVector2D(horizontal, vertical))
         self.background_program.setUniformValue("picture", 0)
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.background_texture)

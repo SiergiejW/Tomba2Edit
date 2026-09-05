@@ -137,6 +137,9 @@ class MainWindow(QMainWindow):
         self.dat_view.setHeaderHidden(True)
         self.dat_view.doubleClicked.connect(self._open_from_dat_view)
         self.dat_view.setItemDelegate(LabelNameDelegate(self.rename_row, self.dat_view))
+        # The same right-click menu the Indexed View has - see
+        # install_file_menu.
+        self.install_file_menu(self.dat_view)
         self.dat_search = QLineEdit()
         self.dat_search.setPlaceholderText(
             "Search by name or offset (e.g. 55F54, 19-11Da4)...")
@@ -1102,9 +1105,9 @@ class MainWindow(QMainWindow):
             pass
         return out
 
-    def import_selected_bytes(self):
-        """Replace the selected file's bytes from a file on disk."""
-        item = self._selected_tree_item()
+    def import_selected_bytes(self, item=None):
+        """Replace a file's bytes from a file on disk."""
+        item = item if item is not None else self._selected_tree_item()
         if self._entry_of(item) is None:
             QMessageBox.warning(self, "Nothing to replace",
                                 "Pick a file inside an AREA's data folder.")
@@ -1123,15 +1126,15 @@ class MainWindow(QMainWindow):
         if self._confirm_replacement(item, data, os.path.basename(path)):
             self._stage_file_edit(item, data, os.path.basename(path))
 
-    def swap_selected_bytes(self):
-        """Replace the selected file with another entry's bytes.
+    def swap_selected_bytes(self, item=None):
+        """Replace a file with another entry's bytes.
 
         What a swap on this disc has to be. An IDX pointer is an offset
         inside its own AREA's chunk, so an entry cannot be pointed at
         another area's file - but its bytes can be copied over, and the
         repacker resizes the chunk around them. Which is how Tomba's
         second suit ends up where his first one was."""
-        item = self._selected_tree_item()
+        item = item if item is not None else self._selected_tree_item()
         entry = self._entry_of(item)
         if entry is None:
             QMessageBox.warning(self, "Nothing to replace",
@@ -1158,38 +1161,47 @@ class MainWindow(QMainWindow):
         if self._confirm_replacement(item, data, chosen):
             self._stage_file_edit(item, data, chosen)
 
-    def _entries_of_type(self, kind, exclude=None, limit=800):
-        """[(row name, item), ...] for every SDAT entry of one type -
-        what a swap can choose from."""
-        model = self.tree_view.model()
+    def _entries_of_type(self, kind, exclude=None):
+        """[(row name, item), ...] - what a swap can choose from, listed
+        the way the Data View lists the disc rather than the way the
+        Indexed View does.
+
+        One row per distinct FILE, not one per area that reaches one. An
+        area's own SDAT carries its own full copy of a character it
+        reuses, so the Indexed View shows the same model twenty-two
+        times over and a list built from it is mostly the same file
+        again and again. content_item is already keyed by what a file's
+        bytes ARE (see functions/idx_parser.build_dat_view), so this is
+        the same group-by that view does, filtered to one type."""
         out = []
-        if model is None:
-            return out
-        root = model.invisibleRootItem()
-        for area_row in range(root.rowCount()):
-            area = root.child(area_row)
-            for folder_row in range(area.rowCount()):
-                folder = area.child(folder_row)
-                for file_row in range(folder.rowCount()):
-                    child = folder.child(file_row)
-                    entry = self._entry_of(child)
-                    if entry is None or entry["key"] == exclude:
-                        continue
-                    if child.text().rsplit(".", 1)[-1].upper() != kind:
-                        continue
-                    out.append((f"{area.text().split(' (')[0]}  "
-                                f"{'TRAIL  ' if entry['kind'] == 'trail' else ''}"
-                                f"{child.text()}  ({entry['size']} bytes)",
-                                child))
-                    if len(out) >= limit:
-                        return out
-        return out
+        for _content, item in self.content_item.items():
+            entry = self._entry_of(item)
+            if entry is None or entry["key"] == exclude:
+                continue
+            if item.text().rsplit(".", 1)[-1].upper() != kind:
+                continue
+            out.append((item.text(), entry["address"], entry["size"], item))
+        # First-seen address order, the same as the Data View's - a hash
+        # has no meaningful order and the address is what the disc reads
+        # in.
+        out.sort(key=lambda row: row[1])
+        return [(f"{name}  ({size} bytes)", item)
+                for name, _address, size, item in out]
 
     def _selected_tree_item(self):
-        selected = self.tree_view.selectionModel().selectedIndexes()
-        if not selected:
-            return None
-        return self.tree_view.model().itemFromIndex(selected[0])
+        """Whatever is picked in whichever view is on screen.
+
+        The toolbar's Export acts on the tab being looked at rather than
+        always on the Indexed View - only one of the two is ever
+        visible, so that is the whole test."""
+        for view in (self.dat_view, self.tree_view):
+            model = view.model()
+            if model is None or not view.isVisible():
+                continue
+            selected = view.selectionModel().selectedIndexes()
+            if selected:
+                return model.itemFromIndex(selected[0])
+        return None
 
     def _revert_file_edit(self, item):
         """Put a staged replacement back to what the disc holds."""
@@ -1212,14 +1224,11 @@ class MainWindow(QMainWindow):
                             "data": info["data"]})
         return out
 
-    def export_selected_bytes(self):
-        selected_indexes = self.tree_view.selectionModel().selectedIndexes()
-        if not selected_indexes:
+    def export_selected_bytes(self, item=None):
+        selected_item = item if item is not None else self._selected_tree_item()
+        if selected_item is None:
             QMessageBox.warning(self, "Warning", "No item selected.")
             return
-
-        selected_index = selected_indexes[0]
-        selected_item = self.tree_view.model().itemFromIndex(selected_index)
 
         additional_data = selected_item.data(Qt.ItemDataRole.UserRole)
         chunk_file_info = selected_item.data(Qt.ItemDataRole.UserRole + 2)  # NEW
@@ -1692,6 +1701,13 @@ class MainWindow(QMainWindow):
         dat_item = getattr(self, "dat_view_lookup", {}).get(address)
         if dat_item is not None:
             self._apply_tree_item_state_color(dat_item, state)
+
+        # Everything else that reaches this address. address_locations
+        # above only knows the text files; a replaced model has rows to
+        # colour too, and a trail file has one under every area that
+        # lists it.
+        for row in getattr(self, "address_rows", {}).get(address, ()):
+            self._apply_tree_item_state_color(row, state)
 
     @staticmethod
     def _apply_tree_item_state_color(item, state):
@@ -2530,17 +2546,25 @@ class MainWindow(QMainWindow):
         # a keyboard shortcut on its own is undiscoverable.
         self.tree_view.setEditTriggers(
             QAbstractItemView.EditTrigger.EditKeyPressed)
-        self.tree_view.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(self._tree_context_menu)
+        self.install_file_menu(self.tree_view)
 
-    def _tree_context_menu(self, position):
-        """Right-click menu for the tree: rename, and export the bytes
-        of whatever was clicked."""
-        index = self.tree_view.indexAt(position)
+    def install_file_menu(self, view):
+        """Give a view the right-click menu for a file row.
+
+        Both views get the same one. They are two ways of listing the
+        same disc - one row per area that reaches a file, or one row per
+        file - and a file's bytes are the file's bytes whichever way you
+        arrived at them."""
+        view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        view.customContextMenuRequested.connect(
+            lambda position, which=view: self._file_context_menu(which, position))
+
+    def _file_context_menu(self, view, position):
+        """Rename, export, replace and swap, for whatever was clicked."""
+        index = view.indexAt(position)
         if not index.isValid():
             return
-        item = self.tree_view.model().itemFromIndex(index)
+        item = view.model().itemFromIndex(index)
         if item is None:
             return
 
@@ -2548,7 +2572,7 @@ class MainWindow(QMainWindow):
         renameable = bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
         rename = menu.addAction("Rename\tF2")
         rename.setEnabled(renameable)
-        rename.triggered.connect(lambda: self.tree_view.edit(index))
+        rename.triggered.connect(lambda _checked=False: view.edit(index))
         if not renameable:
             rename.setToolTip(
                 "Only AREA folders and the files in them carry names")
@@ -2556,7 +2580,8 @@ class MainWindow(QMainWindow):
         if item.data(Qt.ItemDataRole.UserRole):
             menu.addSeparator()
             export = menu.addAction("Export File...")
-            export.triggered.connect(self.export_selected_bytes)
+            export.triggered.connect(
+                lambda _checked=False: self.export_selected_bytes(item))
             entry = self._entry_of(item)
             if entry is not None:
                 replace = menu.addAction("Replace File...")
@@ -2564,18 +2589,20 @@ class MainWindow(QMainWindow):
                     "Put the bytes of a file from disk here. Staged like a "
                     "text edit - exporting rebuilds the DAT and IDX around "
                     "whatever size it is.")
-                replace.triggered.connect(self.import_selected_bytes)
+                replace.triggered.connect(
+                    lambda _checked=False: self.import_selected_bytes(item))
                 swap = menu.addAction("Swap With...")
                 swap.setToolTip(
                     "Put another entry of the same type here - one model "
                     "where another was.")
-                swap.triggered.connect(self.swap_selected_bytes)
+                swap.triggered.connect(
+                    lambda _checked=False: self.swap_selected_bytes(item))
                 if entry["key"] in self.pending_file_edits:
                     revert = menu.addAction("Undo Replacement")
                     revert.triggered.connect(
-                        lambda: self._revert_file_edit(item))
+                        lambda _checked=False: self._revert_file_edit(item))
 
-        menu.exec(self.tree_view.viewport().mapToGlobal(position))
+        menu.exec(view.viewport().mapToGlobal(position))
 
     def setup_widgets(self):
         self.txtd_viewer = TXTDViewer()

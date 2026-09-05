@@ -262,6 +262,12 @@ def build_dat_view(main_window):
         item = QStandardItem(source.icon(), f"{stem}.{filetype}")
         item.setData(data, _ROW_LABEL_DATA)
         item.setData(source.data(Qt.ItemDataRole.UserRole), Qt.ItemDataRole.UserRole)
+        # Which AREA slot the file sits in, carried over from the row
+        # this one stands for. The Data View has no folders to read it
+        # off, and replacing a file's bytes needs it - see
+        # MainWindow._entry_of.
+        item.setData(source.data(Qt.ItemDataRole.UserRole + 2),
+                     Qt.ItemDataRole.UserRole + 2)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setToolTip(detail)
         root.appendRow(item)
@@ -435,6 +441,14 @@ def parse_idx_file(main_window, cd_folder):
     main_window.address_content = {}
     main_window.content_item = {}
 
+    # DAT address -> every Indexed View row that reaches it, of any
+    # type. address_locations above covers only the text files, because
+    # that is all its edit-following needed; replacing a file's bytes
+    # applies to anything, and a trail file genuinely does sit under
+    # every area that lists it, so its replacement has to colour all of
+    # them.
+    main_window.address_rows = {}
+
     # (address, size) -> (type, tooltip) for every file, so the trail's
     # repeated copies are only read once.
     entry_types = {}
@@ -511,6 +525,8 @@ def parse_idx_file(main_window, cd_folder):
                     file_item.setIcon(_type_icon(main_window, filetype, file_icon))
                     main_window.area_membership.setdefault(
                         dat_start + offset, set()).add(chunk_index)
+                    main_window.address_rows.setdefault(
+                        dat_start + offset, []).append(file_item)
                     main_window.address_item.setdefault(
                         dat_start + offset, file_item)
                     main_window.address_content[dat_start + offset] = content
@@ -560,6 +576,7 @@ def parse_idx_file(main_window, cd_folder):
                 trail_file_item.setData((stem, filetype, adr, tooltip, content), _ROW_LABEL_DATA)
                 trail_file_item.setToolTip(tooltip)
                 main_window.area_membership.setdefault(adr, set()).add(chunk_index)
+                main_window.address_rows.setdefault(adr, []).append(trail_file_item)
                 main_window.address_item.setdefault(adr, trail_file_item)
                 main_window.address_content[adr] = content
                 main_window.content_item.setdefault(content, trail_file_item)

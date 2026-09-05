@@ -15,6 +15,7 @@ functions/placement.py.
 """
 import json
 import os
+from math import gcd
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
@@ -24,9 +25,11 @@ from PyQt6.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from functions import clut_anim
 from functions import placement as placement_module
 from gui.bgmp import bgmp_render
-from gui.bgmp.bgmp_parser import load_bgmp
+from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
+from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
     ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, room_entries)
 from gui.level.level_viewer import LevelViewer
@@ -35,14 +38,9 @@ from gui.panel_title import make_panel_title
 COLUMNS = ["Instance", "Model", "X", "Y", "Z", "Angle"]
 ROLE = Qt.ItemDataRole.UserRole
 
-# How fast the background's cycling palettes are stepped. The same rate
-# gui/bgmp/bgmp_viewer.py plays them at, and just as much a guess: how
-# often the game rotates a palette is in code, not in the file.
-CYCLE_FPS = 12
-
-# A background whose loop is longer than this is left still. Every one
-# on the disc loops in eight phases or fewer; the cap is only here so an
-# odd file cannot make this render for a minute.
+# How many frames of a moving background to render at most. Each one is
+# the whole map cut tile by tile, so this is a bound on how long opening
+# an area can take rather than anything the data asks for.
 MAX_PHASES = 24
 
 
@@ -266,7 +264,7 @@ class LevelEditorPanel(QWidget):
         self.viewer.export_name = f"AREA_{chunk:02X}"
         self.viewer.load_scene(scene)
         self.viewer.load_animations(overlay)
-        self._load_background(scene, vram)
+        self._load_background(scene, vram, overlay)
         self._populate()
 
         placed = sum(1 for i in scene.instances
@@ -278,12 +276,22 @@ class LevelEditorPanel(QWidget):
         lines.extend(scene.notes)
         self.summary.setText("\n".join(lines))
 
-    def _load_background(self, scene, vram):
-        """Render the area's BGMP, every phase of its palette cycling."""
+    def _load_background(self, scene, vram, overlay):
+        """Render the area's BGMP, and every frame of it that moves.
+
+        What moves is read out of the area's overlay - the same table
+        the room's own animated palettes come from (see
+        functions/clut_anim.py) - rather than guessed at from the
+        colours. Guessing was wrong in both directions: it had AREA_09's
+        sky rippling when the game holds it still, and it found one of
+        AREA_04's three moving palettes."""
         self._phases = []
         self._phase = 0
         entry = scene.by_id.get(BACKGROUND_ID)
         if not entry or not entry[1]:
+            scene.notes.append(
+                "this area holds no background - some levels are indoors "
+                "and simply have none")
             self.viewer.set_background(None)
             return
         try:
@@ -291,22 +299,68 @@ class LevelEditorPanel(QWidget):
                                    entry[0], entry[1])
             textures = bgmp_render.BackgroundTextures(vram) if vram else None
             offset = bgmp_render.detect_page_y_offset(background, textures)
-            palettes = background.palettes_used
-            length = (textures.cycle_length(background, palettes)
-                      if textures else 1)
-            length = length if 1 < length <= MAX_PHASES else 1
-            self._phases = [
-                np.asarray(bgmp_render.render_background(
-                    background, textures, offset, phase
-                ).convert("RGB"), dtype=np.uint8)
-                for phase in range(length)]
+            self._phases = self._background_frames(
+                background, vram, offset, overlay)
         except Exception as e:
             scene.notes.append(f"the background wouldn't draw: {e}")
             self.viewer.set_background(None)
             return
-        self.viewer.set_background(self._phases[0] if self._phases else None)
+        self.viewer.set_background(self._phases[0][0] if self._phases else None)
         if len(self._phases) > 1:
-            self._phase_timer.start(max(1000 // CYCLE_FPS, 1))
+            self._phase_timer.start(self._phases[0][1])
+
+    def _background_frames(self, background, vram, offset, overlay):
+        """[(picture, milliseconds), ...] over one loop of the
+        background, which for most areas is one still frame.
+
+        A palette the overlay animates is written into a copy of the
+        area's VRAM before the tiles are cut from it, exactly as the
+        game writes it into the real thing - so what comes out is the
+        disc's own colours rather than a rotation of the ones it starts
+        with. Frames that come out identical are held rather than
+        repeated, which is what keeps the count down to something worth
+        rendering."""
+        still = [(np.asarray(bgmp_render.render_background(
+            background, bgmp_render.BackgroundTextures(vram) if vram else None,
+            offset).convert("RGB"), dtype=np.uint8), 0)]
+        if not vram or not overlay:
+            return still
+        try:
+            _base, found = clut_anim.load_animations(overlay)
+        except Exception:
+            return still
+        # Only the palettes this background actually draws through.
+        wanted = {background.clut_address + index * PALETTE_STRIDE
+                  for index in background.palettes_used}
+        moving = [a for a in found if a.address in wanted]
+        if not moving:
+            return still
+
+        period = 1
+        for animation in moving:
+            period = period * animation.loop_ticks // gcd(period,
+                                                          animation.loop_ticks)
+        runs = []
+        for tick in range(period):
+            state = tuple(a.frame_at(tick) for a in moving)
+            if not runs or runs[-1][0] != state:
+                if len(runs) >= MAX_PHASES:
+                    break
+                runs.append([state, 0])
+            runs[-1][1] += 1
+
+        frames = []
+        for state, ticks in runs:
+            patched = bytearray(vram)
+            for animation, frame in zip(moving, state):
+                at = animation.address
+                patched[at:at + len(animation.frames[frame])] = \
+                    animation.frames[frame]
+            picture = bgmp_render.render_background(
+                background, bgmp_render.BackgroundTextures(patched), offset)
+            frames.append((np.asarray(picture.convert("RGB"), dtype=np.uint8),
+                           max(20, round(ticks * 1000 / TICK_HZ))))
+        return frames
 
     def _stop_cycling(self):
         self._phase_timer.stop()
@@ -316,7 +370,9 @@ class LevelEditorPanel(QWidget):
             self._phase_timer.stop()
             return
         self._phase = (self._phase + 1) % len(self._phases)
-        self.viewer.set_background(self._phases[self._phase])
+        picture, hold = self._phases[self._phase]
+        self.viewer.set_background(picture)
+        self._phase_timer.start(hold)
 
     # --- the list -----------------------------------------------------
 
