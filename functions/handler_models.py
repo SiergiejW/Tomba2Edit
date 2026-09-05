@@ -58,6 +58,7 @@ through something this does not follow; those come back unbound and the
 Level Editor shows them as markers. Run this module as a script to
 check what it does say against everything the savestates learned.
 """
+import collections
 import os
 import struct
 
@@ -136,6 +137,33 @@ class Sum(Value):
 
     def __repr__(self):
         return f"Sum(0x{self.base:08X}, {self.index})"
+
+
+class File(Value):
+    """The base of one of the area's files, and anything added to it -
+    a handler that resolves its own model instead of calling for one
+    holds this while it walks the file's group table."""
+    __slots__ = ("file_id", "offset")
+
+    def __init__(self, file_id, offset=0):
+        self.file_id = file_id
+        self.offset = offset
+
+    def __repr__(self):
+        return f"File(id {self.file_id} + {self.offset})"
+
+
+class Model(Value):
+    """A group's offset, fetched out of a file's own pointer table -
+    which is to say, a model, named."""
+    __slots__ = ("file_id", "group")
+
+    def __init__(self, file_id, group):
+        self.file_id = file_id
+        self.group = group
+
+    def __repr__(self):
+        return f"Model(id {self.file_id}, group {self.group})"
 
 
 class Table(Value):
@@ -266,11 +294,22 @@ def _writes(instruction):
     return None
 
 
+# An SMST's own pointer table starts one word into it, so group k's
+# offset is read from the file's base + 4 + 4k - see
+# gui/smst/smst_parser.py.
+GROUP_TABLE = 4
+
+# How many SDAT ids the file table covers. The disc's areas top out at
+# about 45; this is only a bound on what counts as a read of it.
+MAX_FILE_ID = 64
+
+
 class Reader:
     """Reads registers backwards from a point in the code."""
 
-    def __init__(self, images):
+    def __init__(self, images, file_table=None):
         self.images = tuple(images)
+        self.file_table = file_table
 
     def image_for(self, address):
         for image in self.images:
@@ -359,6 +398,8 @@ class Reader:
             for a, b in ((left, right), (right, left)):
                 if isinstance(a, Index) and isinstance(b, Const):
                     return Sum(b.n, a)
+                if isinstance(a, File) and isinstance(b, Const):
+                    return File(a.file_id, a.offset + b.n)
             if isinstance(left, Const) and isinstance(right, Const):
                 return Const((left.n + right.n) & 0xFFFFFFFF)
             return None
@@ -368,10 +409,25 @@ class Reader:
             if isinstance(source, Sum):
                 return Table(source.base + instruction.imm, source.index.kind,
                              1 << source.index.shift, width, signed)
+            if isinstance(source, File):
+                # A handler walking the file's own group table: group k
+                # sits one word in, four bytes apart.
+                offset = source.offset + instruction.imm - GROUP_TABLE
+                if width == 4 and offset >= 0 and offset % 4 == 0:
+                    return Model(source.file_id, offset // 4)
+                return None
             if isinstance(source, Const):
                 where = source.n + instruction.imm
                 if where == OVERLAY_NUMBER:
                     return Index(BY_OVERLAY)
+                if (self.file_table is not None and width == 4
+                        and self.file_table <= where
+                        < self.file_table + MAX_FILE_ID * 4
+                        and (where - self.file_table) % 4 == 0):
+                    # A read of the area's file table: which file, not
+                    # what is in it. Nothing on disc holds that pointer -
+                    # it is filled in when the area loads.
+                    return File((where - self.file_table) // 4)
                 value = self.read(where, width, signed)
                 return Const(value) if value is not None else None
             # An object's slot is its own byte at +3, and that is what
@@ -386,18 +442,91 @@ class Reader:
 # Walking a handler
 # --------------------------------------------------------------------
 
-def calls_within(image, entry, targets, span=FUNCTION_SPAN):
-    """Every place inside the routine at `entry` that calls one of
-    `targets`, as [(call address, target), ...].
+# How many entries of a switch's jump table to follow at most, and how
+# far back from the `jr` to look for the table's address.
+MAX_SWITCH = 64
+SWITCH_LOOKBACK = 16
 
-    A walk of the routine rather than a straight read of it: the
-    handlers jump about, and the call that matters is usually past a
-    branch or two. Bounded to `span` either side of the entry so a tail
-    call into somebody else's code cannot run away with it."""
-    seen, todo, found = set(), [entry], []
-    low, high = entry - span, entry + span
+
+def jump_table(image, jr_address, low, high):
+    """Where a computed `jr` can go - the targets of a switch.
+
+    A handler is usually a switch on the object's state, compiled to the
+    ordinary MIPS idiom: a bounds check, the table's address built with
+    lui/addiu, the state shifted by two and added, a load, and a jump to
+    what came back. Without following it most of a handler is invisible
+    - the routine that draws AREA_04's villagers is 187 instructions
+    past its own entry, all of it behind one of these."""
+    base = None
+    for step in range(1, SWITCH_LOOKBACK):
+        at = jr_address - step * 4
+        if at not in image:
+            return []
+        instruction = image.at(at)
+        if instruction.name != "lw":
+            continue
+        # The table's address is built just above the load, as the usual
+        # lui/addiu pair. Read backwards, so the addiu is met first and
+        # kept until the lui that goes with it turns up.
+        lower = 0
+        for back in range(1, SWITCH_LOOKBACK):
+            here = at - back * 4
+            if here not in image:
+                break
+            older = image.at(here)
+            if older.name == "addiu" and older.rs != 0:
+                lower = older.imm
+            elif older.name == "lui":
+                base = (older.unsigned << 16) + lower + instruction.imm
+                break
+        break
+    if base is None:
+        return []
+    out = []
+    for n in range(MAX_SWITCH):
+        address = base + n * 4
+        if address not in image:
+            break
+        target = image.word(address)
+        if not (low <= target <= high) or target % 4 or target not in image:
+            break
+        out.append(target)
+    return out
+
+
+# How many levels of call to follow out of a handler. A handler often
+# does no drawing itself and hands off to a routine that does - the one
+# that draws AREA_04's villagers is a `jal` away - so following none of
+# them leaves most of the disc's objects unexplained. Two is enough for
+# every case seen and shallow enough not to wander into the engine.
+CALL_DEPTH = 0
+
+
+def reachable(images, entry, span=FUNCTION_SPAN, depth=CALL_DEPTH):
+    """Every instruction the routine at `entry` can run, as
+    [(image, address), ...] - calls followed `depth` deep.
+
+    A walk rather than a straight read: a handler is a switch on the
+    object's state, so most of it sits behind a computed jump, and the
+    part that draws is usually in something it calls. Each routine is
+    bounded to `span` either side of its own entry so a tail call into
+    somebody else's code cannot run away with it."""
+    def image_for(address):
+        for image in images:
+            if address in image:
+                return image
+        return None
+
+    seen, out = set(), []
+    todo = [(entry, depth)]
+    starts = {entry}
     while todo:
-        address = todo.pop()
+        address, left = todo.pop()
+        image = image_for(address)
+        if image is None:
+            continue
+        origin = min(starts, key=lambda s: abs(s - address))
+        low, high = origin - span, origin + span
         while True:
             if address in seen or address not in image:
                 break
@@ -405,32 +534,58 @@ def calls_within(image, entry, targets, span=FUNCTION_SPAN):
                 break
             seen.add(address)
             instruction = image.at(address)
+            out.append((image, address))
             name = instruction.name
             if name == "jal":
-                if instruction.target in targets:
-                    found.append((address, instruction.target))
+                if left > 0 and instruction.target not in starts:
+                    starts.add(instruction.target)
+                    todo.append((instruction.target, left - 1))
                 address += 8            # over the delay slot
                 continue
             if name == "jr":
+                if instruction.rs != 31:      # a switch, not a return
+                    todo.extend((t, left)
+                                for t in jump_table(image, address, low, high))
                 break
             if name == "j":
-                todo.append(instruction.target)
+                todo.append((instruction.target, left))
                 break
             if instruction.target is not None:      # a conditional branch
-                todo.append(instruction.target)
+                todo.append((instruction.target, left))
             address += 4
+    return out
+
+
+def calls_within(images, entry, targets, span=FUNCTION_SPAN,
+                 depth=CALL_DEPTH):
+    """Every place reachable from `entry` that calls one of `targets`,
+    as [(call address, target), ...]."""
+    found = []
+    for image, address in reachable(images, entry, span, depth):
+        instruction = image.at(address)
+        if instruction.name == "jal" and instruction.target in targets:
+            found.append((address, instruction.target))
     return found
 
 
 class CodeModels:
     """One disc's answer to "what does each object class draw with"."""
 
-    def __init__(self, exe_path, overlay_path, overlay_base=None):
+    def __init__(self, exe_path, overlay_path, overlay_base=None,
+                 depth=CALL_DEPTH):
         self.exe = load_exe(exe_path)
         self.overlay = load_overlay(overlay_path, overlay_base)
         self.overlay_index = overlay_number(overlay_path)
-        self.reader = Reader((self.exe, self.overlay))
-        self.attach = set(find_attach(self.exe))
+        found = find_attach(self.exe)
+        # By majority: the shape test picks up the odd routine that does
+        # the same three things to a different table, and the file table
+        # is whichever the attach routines agree on.
+        counts = collections.Counter(found.values())
+        table = (counts.most_common(1)[0][0] if counts else FILE_TABLE_HINT)
+        self.attach = {a for a, t in found.items() if t == table}
+        self.file_table = table
+        self.reader = Reader((self.exe, self.overlay), table)
+        self.depth = depth
 
     def models_for(self, handler):
         """Every model a class of object can attach, as [(SDAT id,
@@ -444,11 +599,26 @@ class CodeModels:
         entry the code has settled it; where it has more, the code says
         what the possibilities are and only watching the game says which
         is standing at a given moment."""
-        image = self.reader.image_for(handler)
-        if image is None or not self.attach:
+        if self.reader.image_for(handler) is None or not self.attach:
             return []
         found = []
-        for call, _target in calls_within(image, handler, self.attach):
+        # A handler that resolves its own model rather than calling for
+        # one - which most of them do. It is the same two steps the
+        # attach routine takes, written out in place: pick a file out of
+        # the area's table, then read a group's offset out of that
+        # file's own pointer table.
+        for image, address in reachable(self.reader.images, handler,
+                                        depth=self.depth):
+            instruction = image.at(address)
+            if instruction.name != "lw":
+                continue
+            value = self.reader.evaluate(instruction)
+            if isinstance(value, Model):
+                model = (value.file_id, value.group)
+                if model not in found:
+                    found.append(model)
+        for call, _target in calls_within(self.reader.images, handler,
+                                          self.attach, depth=self.depth):
             file_id = self.reader.argument(call, A1)
             group = self.reader.argument(call, A2)
             if not isinstance(file_id, Const):
@@ -466,7 +636,14 @@ class CodeModels:
                 continue
             if model not in found:
                 found.append(model)
-        return found
+        # A class with a table of its own has already said what each of
+        # its objects draws, one entry per slot. Anything else the walk
+        # picked up is machinery the class shares between its slots -
+        # AREA_05's doors each have their own model AND reach the same
+        # three groups further down the handler - so the table wins
+        # outright rather than having them hung off it.
+        by_slot = [m for m in found if isinstance(m[1], Table)]
+        return by_slot or found
 
     def model_for(self, handler):
         """The one model a class draws with, or None if the code names

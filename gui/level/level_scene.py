@@ -79,7 +79,12 @@ class Instance:
     index: int
     role: str                       # "room", "object" or "scenery"
     label: str
-    source: tuple = None            # (file id, group index), or None
+    # Every (file id, group index) this object draws. Usually one, but
+    # a class can name several and they are all drawn, at the same
+    # place: some objects are built from parts - a pole and its flame -
+    # and the ones that are really variations read better overlapping
+    # than they would as a bare marker.
+    sources: tuple = ()
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -100,6 +105,17 @@ class Instance:
     quads: int = 0
     size: int = 0
     offset: int = 0
+
+    @property
+    def source(self):
+        """The first of this object's models - what the panel's model
+        box shows and sets, since picking one there means "draw this and
+        nothing else"."""
+        return self.sources[0] if self.sources else None
+
+    @source.setter
+    def source(self, value):
+        self.sources = (value,) if value else ()
 
     @property
     def empty(self):
@@ -152,8 +168,8 @@ class Instance:
         where = f"({self.x:.0f}, {self.y:.0f}, {self.z:.0f})"
         if self.role == "room":
             return f"The room itself - {self.face_count} drawn triangles"
-        model = (f"id {self.source[0]} group {self.source[1]}"
-                 if self.source else "no model known")
+        model = (", ".join(f"id {f} group {g}" for f, g in self.sources)
+                 or "no model known")
         if self.placement is not None:
             return (f"{self.placement.describe()}<br>{model}, at {where}<br>"
                     f"record {self.placement.index} of table "
@@ -365,14 +381,18 @@ class LevelScene:
         and a correction made by eye beats both."""
         name = os.path.basename(overlay_path)
         self.binding_source = {}
-        for label, found in (
-                ("savestate", placement_module.load_bindings(
-                    name, section=placement_module.LEARNED)),
-                ("code", self._code_bindings(overlay_path, exe_path)),
-                ("corrected", placement_module.load_bindings(
-                    name, section=placement_module.CORRECTED))):
-            for key, model in found.items():
-                self.bindings[key] = model
+        single = {}
+        for label in ("savestate", "corrected"):
+            section = (placement_module.LEARNED if label == "savestate"
+                       else placement_module.CORRECTED)
+            single[label] = {
+                key: (model,) for key, model
+                in placement_module.load_bindings(name, section=section).items()}
+        for label, found in (("savestate", single["savestate"]),
+                             ("code", self._code_bindings(overlay_path, exe_path)),
+                             ("corrected", single["corrected"])):
+            for key, models in found.items():
+                self.bindings[key] = models
                 self.binding_source[key] = label
 
     def _code_bindings(self, overlay_path, exe_path):
@@ -386,10 +406,15 @@ class LevelScene:
             return {}
         try:
             self.code = handler_models.CodeModels(exe_path, overlay_path)
-            return self.code.bindings(self.placements)
         except Exception as e:
             self.notes.append(f"couldn't read the handlers' code: {e}")
             return {}
+        out, cache = {}, {}
+        for record in self.placements:
+            found = self.code.choices(record, cache)
+            if found:
+                out[record.key()] = tuple(found)
+        return out
 
     def choices_for(self, instance):
         """Every model the code says this object's class can attach, or
@@ -444,15 +469,14 @@ class LevelScene:
         room_box = self.room_bounds()
         used = set()
         for record in self.placements:
-            source = self.bindings.get(record.key())
-            if source:
-                used.add(source)
+            sources = self.bindings.get(record.key()) or ()
+            used.update(sources)
             x, y, z = view_position(record)
-            _model, group = self.group(source)
+            _model, group = self.group(sources[0] if sources else None)
             instances.append(Instance(
                 index=len(instances), role="object",
                 label=f"{record.kind}.{record.slot}",
-                source=source, x=x, y=y, z=z,
+                sources=tuple(sources), x=x, y=y, z=z,
                 angle=float(record.angle), placement=record,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
@@ -466,7 +490,7 @@ class LevelScene:
             instances.append(Instance(
                 index=len(instances), role="scenery",
                 label=f"scenery {group.index}",
-                source=(ASSET_PACK_ID, group.index), authored=True))
+                sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
 
     def apply_bindings(self):
@@ -483,11 +507,11 @@ class LevelScene:
         for instance in self.instances:
             if instance.role != "object" or instance.placement is None:
                 continue
-            source = self.bindings.get(instance.placement.key())
-            if source is None or source == instance.source:
+            sources = self.bindings.get(instance.placement.key())
+            if not sources or tuple(sources) == instance.sources:
                 continue
-            instance.source = source
-            _model, group = self.group(source)
+            instance.sources = tuple(sources)
+            _model, group = self.group(instance.sources[0])
             instance.authored = bool(group is not None
                                      and world_placed(group, room_box))
             changed += 1
@@ -514,10 +538,13 @@ class LevelScene:
                 instance.tris = room.get("tri_count", 0)
                 instance.quads = room.get("quad_count", 0)
             else:
-                model, group = self.group(instance.source)
-                if group is not None:
+                for source in instance.sources:
+                    model, group = self.group(source)
+                    if group is None:
+                        continue
                     self._append(scene, model, group)
-                    instance.tris, instance.quads = group.tris, group.quads
+                    instance.tris += group.tris
+                    instance.quads += group.quads
                     instance.size, instance.offset = group.size, group.offset
             instance.vertex_count = len(scene["vertices"]) - instance.first_vertex
             instance.face_count = len(scene["faces"]) - instance.first_face

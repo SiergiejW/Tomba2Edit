@@ -338,8 +338,8 @@ class LevelEditorPanel(QWidget):
         self._show_details(None)
 
     def _fill_row(self, row, instance):
-        model = (f"id {instance.source[0]} g{instance.source[1]}"
-                 if instance.source else
+        model = (" + ".join(f"id {f} g{g}" for f, g in instance.sources)
+                 if instance.sources else
                  ("-" if instance.role == "room" else "unknown"))
         for column, text in ((1, model), (2, f"{instance.x:.0f}"),
                              (3, f"{instance.y:.0f}"), (4, f"{instance.z:.0f}"),
@@ -559,7 +559,7 @@ class LevelEditorPanel(QWidget):
             return
         for instance in self.scene.instances:
             if instance.role == "object" and instance.placement is not None:
-                self.scene.bindings[instance.placement.key()] = instance.source
+                self.scene.bindings[instance.placement.key()] = instance.sources
         if self._store_bindings():
             name = os.path.basename(self.scene.overlay_path)
             QMessageBox.information(
@@ -591,9 +591,13 @@ class LevelEditorPanel(QWidget):
                         overlay, section=placement_module.CORRECTED)
         except (OSError, ValueError):
             pass
-        corrections[name] = {key: source
-                             for key, source in self.scene.bindings.items()
-                             if source is not None and learned.get(key) != source}
+        # One model per record, which is what the file holds and what
+        # picking one in the box means. A record left with the several
+        # the code named is not a correction, so it is not written.
+        corrections[name] = {key: models[0]
+                             for key, models in self.scene.bindings.items()
+                             if len(models or ()) == 1
+                             and learned.get(key) != models[0]}
         try:
             placement_module.save_bindings(
                 corrections, section=placement_module.CORRECTED)
