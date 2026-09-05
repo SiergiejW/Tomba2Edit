@@ -39,6 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 
 import gui.mdat.mdat as mdat
+from functions import format_detect
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
 
@@ -46,6 +47,9 @@ from gui.smst.smst_parser import parse_smst
 ROOM_ID = 8
 BACKGROUND_ID = 11
 ASSET_PACK_ID = 12
+
+# How much of an IDX chunk the trailer takes, at the end of it.
+TRAILER_BYTES = 0x700
 
 # The marker an object with no known model is drawn as, in world units.
 MARKER_SIZE = 90.0
@@ -80,6 +84,7 @@ class Instance:
     z: float = 0.0
     angle: float = 0.0              # degrees about Y
     placement: object = None        # the Placement record, for an object
+    room: int = None                # which of the scene's MDATs, for a room
     # Whether the geometry is already where it belongs - see
     # world_placed(). Such a part is drawn as it is; a transform would
     # move it a second time.
@@ -176,6 +181,59 @@ def area_files(idx_path, chunk_index):
     return start, files
 
 
+def trail_files(idx_path, chunk_index):
+    """[(address, size), ...] for every file in an area's trailer.
+
+    The trailer is the last 0x700 bytes of the area's IDX chunk, holding
+    start/end pairs of absolute DAT addresses - the same walk
+    functions/idx_parser.py does to build the NN_TRAIL folder."""
+    with open(idx_path, "rb") as idx:
+        idx.seek(chunk_index * 0x800 + (0x800 - TRAILER_BYTES))
+        raw = idx.read(TRAILER_BYTES)
+    if len(raw) < TRAILER_BYTES:
+        return []
+    values = struct.unpack(f"<{TRAILER_BYTES // 4}I", raw)
+    return [(values[i], values[i + 1] - values[i])
+            for i in range(0, len(values) - 1, 2)
+            if values[i + 1] > values[i]]
+
+
+def room_entries(idx_path, dat_path, chunk_index):
+    """Every MDAT that makes up this area's level, as
+    [(address, size, where it came from), ...].
+
+    All of them, not the first: an area's level is often several MDATs
+    that stand together in one world. The Water Temple keeps its rooms
+    in the TRAIL rather than in the SDAT at all; the Ranch Area has the
+    room and the flight over it; the Ranch Summit has the main level and
+    the minigame. They share a SCLD between them, which is what says
+    they belong in the same space.
+
+    The SDAT ones come from gui.mdat.mdat.area_mdat_entries, which finds
+    them by the 0xFFFF at the head of a drawmap rather than by id -
+    theirs is usually 8 but not always. The trailer's have no id at all,
+    so they are read the way the tree reads them, out of their own
+    bytes."""
+    out = []
+    try:
+        start, files = area_files(idx_path, chunk_index)
+        ids = {index: file_id for index, file_id, _o, _s in files}
+        found = mdat.area_mdat_entries(idx_path, dat_path, chunk_index)
+    except (OSError, ValueError, struct.error):
+        return []
+    for index, dat_start, offset, size in sorted(
+            found, key=lambda e: (ids.get(e[0]) != ROOM_ID, e[0])):
+        out.append((dat_start + offset, size, f"id {ids.get(index, '?')}"))
+    for address, size in trail_files(idx_path, chunk_index):
+        try:
+            best = format_detect.identify_at(dat_path, address, size)
+        except (OSError, ValueError, struct.error):
+            continue
+        if best and best[0].kind == "MDAT":
+            out.append((address, size, f"trail 0x{address:X}"))
+    return out
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -238,7 +296,8 @@ class LevelScene:
         self.by_id = {}                 # id -> (offset, size)
         # {file id: the parsed SMST}, filled as models are asked for.
         self.models = {}
-        self.room = None
+        # Every MDAT this area's level is made of - see room_entries().
+        self.rooms = []
         self.placements = []
         self.bindings = {}
         self.instances = []
@@ -265,14 +324,13 @@ class LevelScene:
         for _index, file_id, offset, size in files:
             self.by_id.setdefault(file_id, (offset, size))
 
-        room_entry = self.by_id.get(ROOM_ID)
-        if room_entry and room_entry[1] > 0:
+        for address, _size, where in room_entries(idx_path, dat_path, chunk_index):
             try:
-                self.room = mdat.exportMDAT(dat_start + room_entry[0], dat_path)
+                self.rooms.append((where, mdat.exportMDAT(address, dat_path)))
             except Exception as e:
-                self.notes.append(f"the room (id {ROOM_ID}) wouldn't read: {e}")
-        else:
-            self.notes.append(f"this area has no room MDAT (id {ROOM_ID})")
+                self.notes.append(f"the MDAT at {where} wouldn't read: {e}")
+        if not self.rooms:
+            self.notes.append("this area has no room MDAT")
 
         if overlay_path:
             self.placements = placement_module.load_placements(overlay_path)
@@ -318,12 +376,19 @@ class LevelScene:
             return None, None
         return model, groups[source[1]]
 
+    def room_bounds(self):
+        """The box round every MDAT this area draws, together."""
+        return _bounds([v for _where, room in self.rooms
+                        for v in room["vertices"]])
+
     def _build_instances(self):
         instances = []
-        if self.room:
-            instances.append(Instance(index=0, role="room", label="Room (MDAT)"))
+        for number, (where, _room) in enumerate(self.rooms):
+            instances.append(Instance(
+                index=len(instances), role="room",
+                label=f"Room ({where})", room=number))
 
-        room_box = _bounds(self.room["vertices"]) if self.room else ()
+        room_box = self.room_bounds()
         used = set()
         for record in self.placements:
             source = self.bindings.get(record.key())
@@ -351,6 +416,30 @@ class LevelScene:
                 source=(ASSET_PACK_ID, group.index), authored=True))
         self.instances = instances
 
+    def apply_bindings(self):
+        """Point each object at whatever `bindings` now says it is drawn
+        with, and say how many changed.
+
+        What a fresh learn has to go through: the bindings are a lookup,
+        but an instance carries its own model so that changing one by
+        hand does not have to write to the lookup. A binding that says
+        nothing leaves the instance alone - learning from a state adds
+        knowledge, it does not take any away."""
+        room_box = self.room_bounds()
+        changed = 0
+        for instance in self.instances:
+            if instance.role != "object" or instance.placement is None:
+                continue
+            source = self.bindings.get(instance.placement.key())
+            if source is None or source == instance.source:
+                continue
+            instance.source = source
+            _model, group = self.group(source)
+            instance.authored = bool(group is not None
+                                     and world_placed(group, room_box))
+            changed += 1
+        return changed
+
     # --- geometry -----------------------------------------------------
 
     def build(self):
@@ -367,9 +456,10 @@ class LevelScene:
             instance.first_vertex = len(scene["vertices"])
             instance.first_face = len(scene["faces"])
             if instance.role == "room":
-                self._append(scene, self.room)
-                instance.tris = self.room.get("tri_count", 0)
-                instance.quads = self.room.get("quad_count", 0)
+                _where, room = self.rooms[instance.room]
+                self._append(scene, room)
+                instance.tris = room.get("tri_count", 0)
+                instance.quads = room.get("quad_count", 0)
             else:
                 model, group = self.group(instance.source)
                 if group is not None:

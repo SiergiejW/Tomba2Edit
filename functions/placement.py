@@ -236,21 +236,25 @@ def bindings_path():
     return os.path.join(labels.labels_dir(), BINDINGS_FILE)
 
 
-def load_bindings(overlay_name, path=None):
-    """{(kind, slot, handler): (file id, group)} for one overlay.
+# The two sections of labels/placements.json. "overlays" is what the
+# savestate correlation worked out and is rewritten wholesale every time
+# it is run again; "corrections" is what a person put right by eye in
+# the Level Editor, is never rewritten by the correlation, and wins.
+LEARNED = "overlays"
+CORRECTED = "corrections"
 
-    Read from labels/placements.json, which is where the savestate
-    correlation below has its results kept - see this module's
-    docstring on why the binding cannot come off the disc. Missing file,
-    missing overlay and unreadable json all mean the same thing here:
-    nothing is known, and the editor shows the objects as markers."""
+
+def _read_bindings(path=None):
     try:
         with open(path or bindings_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
+            return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def _rows_to_bindings(rows):
     out = {}
-    for row in (data.get("overlays") or {}).get(overlay_name, []):
+    for row in rows or ():
         try:
             out[(int(row["kind"]), int(row["slot"]),
                  int(row["handler"], 16))] = (int(row["file"]), int(row["group"]))
@@ -259,24 +263,65 @@ def load_bindings(overlay_name, path=None):
     return out
 
 
-def save_bindings(overlays, path=None):
-    """Write {overlay name: {(kind, slot, handler): (file, group)}} out."""
+def load_bindings(overlay_name, path=None, section=None):
+    """{(kind, slot, handler): (file id, group)} for one overlay.
+
+    Both sections at once by default, corrections over the top of what
+    was learned - see this module's docstring on why the binding cannot
+    come off the disc at all. Pass `section` to read just one, which is
+    what rewriting one of them needs.
+
+    Missing file, missing overlay and unreadable json all mean the same
+    thing here: nothing is known, and the editor shows the objects as
+    markers."""
+    data = _read_bindings(path)
+    sections = (section,) if section else (LEARNED, CORRECTED)
+    out = {}
+    for name in sections:
+        out.update(_rows_to_bindings((data.get(name) or {}).get(overlay_name)))
+    return out
+
+
+def _bindings_to_rows(overlays):
     rows = {}
     for name, bindings in sorted(overlays.items()):
+        # A binding of None is "this object has no model" - which is
+        # what an object starts as, so writing it down would only be
+        # recording that nothing is known.
         rows[name] = [
             {"kind": kind, "slot": slot, "handler": f"0x{handler:08X}",
-             "file": file_id, "group": group}
-            for (kind, slot, handler), (file_id, group) in sorted(bindings.items())
+             "file": source[0], "group": source[1]}
+            for (kind, slot, handler), source in sorted(bindings.items())
+            if source is not None
         ]
-    with open(path or bindings_path(), "w", encoding="utf-8") as f:
-        json.dump({
-            "note": ("Which asset-pack part each of an area's placed objects "
-                     "is drawn with. Not on the disc - the binding is an "
-                     "immediate in the handler's own code - so this is read "
-                     "back out of PCSX savestates by "
-                     "functions.placement.bindings_from_state()."),
-            "overlays": rows,
-        }, f, indent=1)
+    return rows
+
+
+def save_bindings(overlays, path=None, section=LEARNED):
+    """Rewrite one section of labels/placements.json, leaving the other
+    exactly as it was.
+
+    `overlays` is {overlay name: {(kind, slot, handler): (file, group)}}.
+    Which section it goes in decides what happens to it later: the
+    savestate correlation owns LEARNED and rewrites all of it, so a
+    correction made by hand has to go in CORRECTED to survive the next
+    run of it."""
+    path = path or bindings_path()
+    data = _read_bindings(path)
+    data.setdefault(LEARNED, {})
+    data.setdefault(CORRECTED, {})
+    data[section] = _bindings_to_rows(overlays)
+    data["note"] = (
+        "Which asset-pack part each of an area's placed objects is drawn "
+        "with. Not on the disc - the binding is an immediate in the "
+        f"handler's own code. \"{LEARNED}\" is read back out of PCSX "
+        "savestates by functions.placement.bindings_from_state() and is "
+        f"rewritten whenever that is run again; \"{CORRECTED}\" is what "
+        "somebody put right by eye in the Level Editor, wins over it, and "
+        "is never touched by it.")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"note": data["note"], LEARNED: data[LEARNED],
+                   CORRECTED: data[CORRECTED]}, f, indent=1)
         f.write("\n")
 
 
@@ -393,6 +438,27 @@ def bindings_from_state(state_path, dat_path, dat_start, dat_end,
     position - the static ones are, to the unit; the ones that walk
     about are not, and are left alone.
 
+    THE MODEL BELONGS TO THE RECORD BEFORE THE ONE THE MATRIX MATCHES.
+    A live object's matrix is the NEXT record's, one along the table,
+    while the model pointer at the head of the same 68 bytes is this
+    record's - so a position match lands one record late and the model
+    has to be walked back.
+
+    That is measured, not assumed. AREA_04's descriptors run in table
+    order, and reading them straight through gives 14.1 a signpost and
+    then hands the same signpost to 15.0 and 12.0, which are a signpost
+    of the other kind and a door. Walked back one, every one of them
+    lands on what is really there - checked by eye against the room -
+    and record 14.0, which no state had standing anywhere and which
+    therefore got no binding at all, picks one up. Across the whole disc
+    it also drops the number of object classes drawing with more than
+    one model from 24 to 15, which is what a class is supposed to look
+    like.
+
+    Even so a binding is a good start rather than the last word: the
+    Level Editor's model list is what corrects one, and its "Keep
+    models" button is what keeps the correction.
+
     Raises PlacementError if the state was taken somewhere else, which
     is the one thing worth telling the user about: everything else here
     just comes back with fewer bindings than it might have."""
@@ -409,12 +475,17 @@ def bindings_from_state(state_path, dat_path, dat_start, dat_end,
     by_position = {}
     for placement in placements:
         by_position.setdefault(placement.position, []).append(placement)
+    # The record one earlier in the same table - see the note above on
+    # why the model has to be walked back to it.
+    before = {(p.table, p.index): p for p in placements}
 
     out = {}
     for model, translation, _rotation in live_instances(
             ram, models, base, base + (dat_end - dat_start)):
         for placement in by_position.get(translation, ()):
-            out[placement.key()] = model
+            owner = before.get((placement.table, placement.index - 1))
+            if owner is not None:
+                out[owner.key()] = model
     return out
 
 

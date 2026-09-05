@@ -132,8 +132,14 @@ class LevelViewer(SMSTViewer):
 
     # --- loading ------------------------------------------------------
 
-    def load_scene(self, scene):
-        """Show a gui.level.level_scene.LevelScene."""
+    def load_scene(self, scene, frame=True):
+        """Show a gui.level.level_scene.LevelScene.
+
+        `frame` puts the camera back over the whole level. Off when the
+        scene is being rebuilt around a change the user has just made -
+        binding an object to a different model rebuilds every array, but
+        it is still the same level and they are still looking at the
+        part of it they were looking at."""
         self.scene = scene
         self.selected = None
         self.hidden_groups = set()
@@ -145,7 +151,8 @@ class LevelViewer(SMSTViewer):
         self.prepare_buffers()
         self.rebuild_markers()
         self._build_selection()
-        self.frame_level()
+        if frame:
+            self.frame_level()
         self.update()
 
     def set_background(self, image):

@@ -28,7 +28,8 @@ from PyQt6.QtWidgets import (
 from functions import placement as placement_module
 from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import load_bgmp
-from gui.level.level_scene import BACKGROUND_ID, LevelScene
+from gui.level.level_scene import (
+    ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, room_entries)
 from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
 
@@ -128,6 +129,15 @@ class LevelEditorPanel(QWidget):
             "standing still in it to the models the game was drawing them "
             "with.")
         self.learn_button.clicked.connect(self._learn)
+        self.keep_button = QPushButton("Keep models", self)
+        self.keep_button.setToolTip(
+            "Write the model each object is set to into "
+            "labels/placements.json, so this area opens with them next "
+            "time. What a savestate teaches is a good start and not always "
+            "right - two objects standing on the same spot are told apart "
+            "by eye, not by matching - so a correction made here is worth "
+            "keeping.")
+        self.keep_button.clicked.connect(self._keep_models)
         self.save_button = QPushButton("Save overlay as...", self)
         self.save_button.setToolTip(
             "Write a copy of this area's Axx.BIN with the positions and "
@@ -136,6 +146,7 @@ class LevelEditorPanel(QWidget):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.learn_button)
+        buttons.addWidget(self.keep_button)
         buttons.addWidget(self.save_button)
 
         top = QHBoxLayout()
@@ -193,11 +204,16 @@ class LevelEditorPanel(QWidget):
             self.area_box.setCurrentIndex(0)
             self._on_area_changed(0)
         else:
-            self.summary.setText("This disc has no areas with a room in them.")
+            self.summary.setText("This disc holds no areas with a level in them.")
 
     def _areas_with_rooms(self):
-        """Which chunks are worth opening - the ones with a room MDAT."""
-        from gui.level.level_scene import ROOM_ID, area_files
+        """Which chunks are worth opening.
+
+        A room MDAT is the usual reason, but not the only one: the Water
+        Temple's chunk has no room in it at all and still holds a
+        140K asset pack and a table saying where its contents stand, so
+        an asset pack counts too. What is left out is the menus, the
+        cutscenes and the empty slots, which have neither."""
         out = []
         if not self.idx_path or not os.path.exists(self.idx_path):
             return out
@@ -206,14 +222,15 @@ class LevelEditorPanel(QWidget):
                 _start, files = area_files(self.idx_path, chunk)
             except (OSError, ValueError):
                 continue
-            if any(file_id == ROOM_ID and size > 0
-                   for _i, file_id, _o, size in files):
+            pack = any(file_id == ASSET_PACK_ID and size > 0
+                       for _i, file_id, _o, size in files)
+            if pack or room_entries(self.idx_path, self.dat_path, chunk):
                 out.append(chunk)
         return out
 
     def _enable(self, on):
         for widget in (self.table, self.model_box, self.learn_button,
-                       self.save_button, *self.boxes.values()):
+                       self.keep_button, self.save_button, *self.boxes.values()):
             widget.setEnabled(on)
 
     # --- loading an area ----------------------------------------------
@@ -396,8 +413,13 @@ class LevelEditorPanel(QWidget):
         else:
             for label, source in self.scene.model_choices():
                 self.model_box.addItem(label, source)
-            wanted = self.model_box.findData(instance.source)
-            self.model_box.setCurrentIndex(max(0, wanted))
+            # Walked rather than findData()'d: the data is a Python
+            # tuple, and findData compares the variants it is wrapped in
+            # rather than the tuples themselves, so it never matches.
+            for row in range(self.model_box.count()):
+                if self.model_box.itemData(row) == instance.source:
+                    self.model_box.setCurrentIndex(row)
+                    break
             self.model_box.setEnabled(True)
         for name, value in (("X", instance.x), ("Y", instance.y),
                             ("Z", instance.z), ("Angle", instance.angle)):
@@ -442,12 +464,20 @@ class LevelEditorPanel(QWidget):
         # is rebuilt rather than patched.
         self._rebuild()
 
-    def _rebuild(self):
+    def _rebuild(self, frame=False):
+        """Rebuild the scene around a change, leaving the camera, the
+        selection and the hidden rows where the user had them."""
         selected = self.viewer.selected
         hidden = set(self.viewer.hidden_groups)
-        self.viewer.load_scene(self.scene)
-        self.viewer.set_hidden_groups(hidden)
+        self.viewer.load_scene(self.scene, frame=frame)
         self._populate()
+        self.viewer.set_hidden_groups(hidden)
+        self._filling = True
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item.data(ROLE) in hidden:
+                item.setCheckState(Qt.CheckState.Unchecked)
+        self._filling = False
         if selected is not None:
             self.viewer.select(selected)
 
@@ -488,16 +518,43 @@ class LevelEditorPanel(QWidget):
         fresh = {k: v for k, v in learned.items()
                  if self.scene.bindings.get(k) != v}
         self.scene.bindings.update(learned)
+        changed = self.scene.apply_bindings()
         self._rebuild()
         keep = QMessageBox.question(
             self, "Learned",
-            f"Bound {len(learned)} object(s), {len(fresh)} of them new.\n\n"
+            f"Bound {len(learned)} object(s), {len(fresh)} of them new - "
+            f"{changed} object(s) on screen changed.\n\n"
             f"Keep them in labels/placements.json, so this area opens with "
             f"them next time?")
         if keep == QMessageBox.StandardButton.Yes:
             self._store_bindings()
 
+    def _keep_models(self):
+        """Write the models the objects are set to into
+        labels/placements.json.
+
+        Taken off the instances rather than out of `bindings`: what the
+        combo box changes is the object on screen, and this is what
+        makes that stick."""
+        if self.scene is None or not self.scene.overlay_path:
+            QMessageBox.information(
+                self, "Nothing to keep",
+                "This area has no overlay, so there are no objects to "
+                "remember models for.")
+            return
+        for instance in self.scene.instances:
+            if instance.role == "object" and instance.placement is not None:
+                self.scene.bindings[instance.placement.key()] = instance.source
+        kept = sum(1 for source in self.scene.bindings.values() if source)
+        if self._store_bindings():
+            QMessageBox.information(
+                self, "Kept",
+                f"{kept} of this area's objects now have a model in "
+                f"labels/placements.json.")
+
     def _store_bindings(self):
+        """Replace this overlay's section of labels/placements.json,
+        leaving every other area's alone. True if it was written."""
         name = os.path.basename(self.scene.overlay_path)
         path = placement_module.bindings_path()
         overlays = {}
@@ -513,6 +570,8 @@ class LevelEditorPanel(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "Couldn't write that",
                                 f"labels/placements.json wouldn't save:\n\n{e}")
+            return False
+        return True
 
     def _save_overlay(self):
         if self.scene is None or not self.scene.overlay_path:
