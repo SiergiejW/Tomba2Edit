@@ -90,8 +90,12 @@ class AudioTransport(QWidget):
     renamed = pyqtSignal(str, str)          # key, new name ("" clears it)
     save_requested = pyqtSignal(str, str)   # key, path
 
-    def __init__(self, parent=None, columns=None, pitch=False):
+    def __init__(self, parent=None, columns=None, pitch=False,
+                 source="Audio"):
         super().__init__(parent)
+        # Which list this is - Music, Dialogues or SFX - so a
+        # printed selection says where it came from.
+        self.source = source
         self._scrubbing = False
         self._buffer = None
         self._current = -1
@@ -465,8 +469,32 @@ class AudioTransport(QWidget):
         on - and only for a genuinely new row: play_row() itself moves
         the current cell to where it already is, which would otherwise
         retrigger this and restart the same row it's mid-answering."""
+        if row >= 0 and row != previous_row:
+            self._print_selection(row)
         if row >= 0 and row != previous_row and self.autoplay.isChecked():
             self.play_row(row)
+
+    def _print_selection(self, row):
+        """Name the picked entry by its key rather than by its label.
+
+        The label is whatever the user renamed it to; the key is what
+        the disc calls it, and is what a name is stored against - so it
+        is the half worth printing. Music, Dialogues and SFX all come
+        through here, so `source` says which."""
+        item = self.list.item(row, 0)
+        if item is None:
+            return
+        extras = []
+        for column in range(1, self.list.columnCount()):
+            cell = self.list.item(row, column)
+            if cell is not None:
+                extras.append(f"{self._extra_columns[column - 1]} "
+                              f"{cell.data(Qt.ItemDataRole.DisplayRole)}")
+        shown = item.text()
+        description = item.data(DESCRIPTION)
+        print(f"selected: {self.source}  key {item.data(KEY)}  {description}"
+              + (f"  named '{shown}'" if shown and shown != description else "")
+              + ("  " + "  ".join(extras) if extras else ""))
 
     def _loop_toggled(self, checked):
         """Applies live to whatever is already playing, not just to the

@@ -550,12 +550,13 @@ class LevelViewer(SMSTViewer):
                 // decides where in the picture it lands: up at the top
                 // of it, down at the bottom, and round it as you turn.
                 //
-                // The screen term is ADDED while the heading is
-                // subtracted, which looks wrong and is not: checked by
-                // drawing a background that runs black on its left to
-                // white on its right and seeing which way round it
-                // lands. Subtracting it instead comes out mirrored.
-                float yaw = look.x + degrees(atan(screen.x * halfFov.x));
+                // Both terms are subtracted. The view matrix rotates the
+                // world by +h about Y, which puts a point at world
+                // azimuth t on screen at s = -(t + h - 180): so the
+                // azimuth under a pixel is t = 180 - h - s, and the
+                // picture has to run the same way round in BOTH terms.
+                // Adding the screen term came out mirrored.
+                float yaw = look.x - degrees(atan(screen.x * halfFov.x));
                 float pitch = look.y - degrees(atan(screen.y * halfFov.y));
                 vec2 uv = vec2(yaw / span.x, 0.5 + pitch / span.y);
                 outColor = vec4(texture(picture, uv).rgb, 1.0);

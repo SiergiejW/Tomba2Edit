@@ -552,6 +552,18 @@ def parse_idx_file(main_window, cd_folder):
             vram_c_item.setData(("vram_compressed", img_start, img_end - img_start, img_path), Qt.ItemDataRole.UserRole)
             vram_item.appendRow(vram_c_item)
 
+            # The chunk as it sits in TOMBA2.IMG - the shard table and
+            # what each shard cost - rather than the VRAM it builds.
+            img_item = QStandardItem(main_window.cvram_icon,
+                                     f"{chunk_index:02X}.IMG")
+            img_item.setFlags(img_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            img_item.setData(("img_chunk", img_start, img_end - img_start,
+                              img_path), Qt.ItemDataRole.UserRole)
+            img_item.setToolTip(
+                f"TOMBA2.IMG chunk {chunk_index:02X}: 0x{img_start:X} to "
+                f"0x{img_end:X}, {img_end - img_start} bytes compressed.")
+            vram_item.appendRow(img_item)
+
             vram_u_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.VRAM")
             vram_u_item.setFlags(vram_u_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             vram_u_item.setData(("vram_uncompressed", chunk_index), Qt.ItemDataRole.UserRole)

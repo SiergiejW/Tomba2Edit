@@ -84,6 +84,7 @@ class MusicPanel(QWidget):
             "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
         self.transport = AudioTransport(
+            source="Music",
             columns=["Index", "Length", "Stream", "Channel", "Track"])
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)

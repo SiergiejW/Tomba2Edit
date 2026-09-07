@@ -107,12 +107,22 @@ def preview(DAT, datstart):
                     entries.append({
                         "adr": entry_headers[text]["adr"],  # Store relative address
                         "extra": entry_headers[text]["extra"],
+                        # Where the text itself sits in the DAT, and where
+                        # the pointer that reached it does. Kept so a
+                        # selection can be named by address rather than by
+                        # quoting the line back - see the viewer.
+                        "real": real,
+                        # The pointer table follows the 16-byte header at
+                        # `start`, four bytes per entry.
+                        "pointer_at": start + MHSIZE + text * 4,
                         "text": text_content
                     })
 
                 output["entries"].append({
                     "master_adr": master_headers[entry]["adr"],  # Store relative address
                     "entry_amount": entry_amount,
+                    "start": start,
+                    "entry_root": entry_root,
                     "entries": entries
                 })
 

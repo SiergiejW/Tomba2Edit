@@ -364,7 +364,7 @@ def glyph_key(char):
     return None if char == " " else char
 
 
-def split_runs(text, icons=True, mapper=cell_for):
+def split_runs(text, icons=True, mapper=cell_for, raw_cells=False):
     """Editor text as [(cells, colour)], with line breaks as None.
 
     Colour controls switch the tint and the button controls draw their
@@ -376,7 +376,13 @@ def split_runs(text, icons=True, mapper=cell_for):
 
     `mapper` turns one character into whatever the sheet draws it with -
     a grid cell by default, and the character itself for the console
-    font, which is indexed by character rather than by cell."""
+    font, which is indexed by character rather than by cell.
+
+    `raw_cells` makes a bare {$XX} draw grid cell 0xXX instead of being
+    skipped. On this font a cell number IS the byte that selects it, so
+    that is what lets a glyph drawn into a spare cell be typed as its
+    own byte and previewed - which is the only way to use a letter the
+    character table has no name for, a Polish one included."""
     runs = []
     color = DEFAULT_COLOR
     cells = []
@@ -402,10 +408,17 @@ def split_runs(text, icons=True, mapper=cell_for):
                 i += 1
             elif text.startswith("{$", i) and "}" in text[i:i + 12]:
                 end = text.index("}", i) + 1
-                icon = ICONS.get(text[i:end]) if icons else None
+                token = text[i:end]
+                icon = ICONS.get(token) if icons else None
                 if icon:
                     cells.extend(icon)
-                i = end                          # a control, not a glyph
+                elif raw_cells and len(token) == 5:
+                    body = token[2:4]
+                    try:
+                        cells.append(int(body, 16))
+                    except ValueError:
+                        pass                     # a name, not a byte
+                i = end                          # otherwise a control
             else:
                 cells.append(mapper(text[i]))
                 i += 1
@@ -677,9 +690,11 @@ class FontPreview(QWidget):
     like the one the game puts around dialogue."""
 
     def __init__(self, big=True, style=DEFAULT_STYLE, marker=False,
-                 console_font=False, parent=None):
+                 console_font=False, raw_cells=False, parent=None):
         super().__init__(parent)
         self.big = big
+        # Draw a bare {$XX} as grid cell 0xXX - see split_runs.
+        self.raw_cells = raw_cells
         self.style = style
         self.marker = marker
         # Text the console draws rather than the game - MAIN.EXE's pool.
@@ -729,6 +744,7 @@ class FontPreview(QWidget):
             runs = split_runs(text, icons=False, mapper=glyph_key)
             image = self.sheet.render(runs)
         else:
-            image = self.sheet.render(split_runs(text, self.big), self.big,
-                                      marker=self.marker)
+            image = self.sheet.render(
+                split_runs(text, self.big, raw_cells=self.raw_cells),
+                self.big, marker=self.marker)
         self._canvas.set_pixmap(QPixmap.fromImage(image))

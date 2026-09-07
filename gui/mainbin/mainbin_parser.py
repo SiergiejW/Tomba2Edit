@@ -31,6 +31,33 @@ class MainBinParseError(Exception):
 # character an editor could not see or retype.
 _LATIN1_FIRST = 0xA0
 
+# GLYPH-BYTE MODE
+#
+# Off, a byte from 0xA0 up reads as the Latin-1 character of the same
+# value, which is right for the stock discs (see above). On, it reads as
+# a {$XX} escape instead - the byte itself, spelled out.
+#
+# That is what a translation needs. The letters a Polish build wants are
+# not in Latin-1 and never will be; what it does instead is draw them
+# into spare cells of the font page, and on this font a cell number IS
+# the byte that selects it. So a glyph put in cell 160 is typed as
+# {$A0}, and gui/txtd/font_preview.split_runs(raw_cells=True) draws it.
+# Latin-1 would show that same byte as an invisible no-break space,
+# which is why it could not be used before.
+#
+# Encoding is unaffected: encode_bytes() already accepts both spellings,
+# so turning this on changes what you SEE, never what gets written.
+_GLYPH_BYTES = False
+
+
+def glyph_bytes():
+    return _GLYPH_BYTES
+
+
+def set_glyph_bytes(on):
+    global _GLYPH_BYTES
+    _GLYPH_BYTES = bool(on)
+
 
 def _japanese():
     """Whether the disc open right now is the Japanese one.
@@ -55,7 +82,7 @@ def decode_bytes(raw):
             out.append(chr(b))
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
-        elif b >= _LATIN1_FIRST:
+        elif b >= _LATIN1_FIRST and not _GLYPH_BYTES:
             out.append(chr(b))          # Latin-1 is code point == byte
         else:
             out.append(f"{{${b:02X}}}")

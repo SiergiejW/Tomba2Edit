@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (
 
 from functions import gltf_export, pairings, skeleton
 from gui import panel_title
-from gui.anmp.anmp_parser import ANMPError, blend, load_anmp
+from gui.anmp.anmp_parser import (
+    BITS_PER_VALUE, VALUES_PER_LIMB, ANMPError, blend, load_anmp)
 from gui.anmp.skeleton import (
     SPARES, hierarchy_for, pose_transforms, rest_pivots, rest_pose)
 from gui.anmp import game_rest
@@ -100,6 +101,10 @@ class ANMPViewer(QWidget):
         self.limbs_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents)
         self.limbs_table.horizontalHeader().setStretchLastSection(True)
+        self.limbs_table.itemSelectionChanged.connect(self._on_limb_selected)
+        # The frame the limb rows were filled from, so a picked
+        # row can be named by where its angles live in the DAT.
+        self._limbs_frame = None
 
         self.model_box = QComboBox()
         self.model_box.setToolTip(
@@ -462,6 +467,23 @@ class ANMPViewer(QWidget):
             self._use_model(load_smst(self._source[0], address, size))
         except Exception as e:
             print(f"Could not load the model to pose: {e}")
+
+    def reload_model(self, address=None):
+        """Read the posed model again.
+
+        Called when an SMST is edited elsewhere - a part pasted in the
+        SMST tab - so the animation shows the change without the model
+        having to be picked out of the box a second time. `address`
+        limits it to that model; None reloads whatever is showing.
+        Returns whether anything was reloaded."""
+        index = self.model_box.currentIndex()
+        data = self.model_box.itemData(index)
+        if not data or not self._source:
+            return False
+        if address is not None and data[0] != address:
+            return False
+        self._on_model_changed(index)
+        return True
 
     def _use_model(self, model):
         self.model = model
@@ -834,11 +856,47 @@ class ANMPViewer(QWidget):
         for r, cells in enumerate(rows):
             for c, text in enumerate(cells):
                 self.limbs_table.setItem(r, c, QTableWidgetItem(text))
+        # So a picked row can be named by where its angles live.
+        self._limbs_frame = frame
+
+    def _on_limb_selected(self):
+        """Say which limb was picked, and where its three 12-bit angles
+        sit in the DAT.
+
+        A slot is three 12-bit values - 36 bits - packed back to back
+        from the frame's own offset, so slot n starts 4.5 bytes in and
+        lands on a nibble boundary every other limb. The root, when the
+        tag bit says there is one, is slot 0 and the limbs follow it."""
+        frame = getattr(self, "_limbs_frame", None)
+        rows = self.limbs_table.selectionModel().selectedRows()
+        if frame is None or not self.anmp or not rows:
+            return
+        row = rows[0].row()
+        name = self.limbs_table.item(row, 0)
+        bit = row * VALUES_PER_LIMB * BITS_PER_VALUE
+        at = self.anmp.address + frame.offset + bit // 8
+        # Which SMST part this limb drives, which is the number that
+        # makes it addressable against the model rather than the ANMP.
+        limb = row - (1 if frame.root else 0)
+        drives = ("-" if limb < 0
+                  else str(self.viewer.pose_first_group + limb))
+        print(f"selected: ANMP @ 0x{self.anmp.address:X}  frame "
+              f"{frame.index} (@ 0x{self.anmp.address + frame.offset:X}, "
+              f"tag 0x{frame.tag:02X})  row {row} "
+              f"'{name.text() if name else ''}'  "
+              f"slot @ 0x{at:X}{'+4bits' if bit % 8 else ''}  "
+              f"drives SMST group {drives}")
 
     def _on_frame_selected(self):
         rows = self.frames_table.selectionModel().selectedRows()
         if rows:
             self.show_frame(rows[0].row())
+            frame = self.anmp.frames[rows[0].row()] if self.anmp else None
+            if frame is not None:
+                print(f"selected: ANMP @ 0x{self.anmp.address:X}  frame "
+                      f"{frame.index} @ 0x{self.anmp.address + frame.offset:X}"
+                      f"  tag 0x{frame.tag:02X}  {frame.limb_count} limb(s)"
+                      f"{' + root' if frame.root else ''}")
 
     def _on_play_toggled(self, playing):
         self.play_button.setText("Pause" if playing else "Play")

@@ -513,6 +513,94 @@ class TXT2Viewer(QWidget):
             entry = self.current_data["entries"][e_idx]
             self._set_entry_item_label(item, entry, location)
 
+    def selected_location(self):
+        """The index of the row that is selected, or None."""
+        item = self._current_entry_item
+        return None if item is None else item.data(ENTRY_LOCATION_ROLE)
+
+    def file_address(self):
+        """The DAT address of the file on screen, or None."""
+        if self.dat_start is None or self.offset is None:
+            return None
+        return self.dat_start + self.offset
+
+    def file_state(self, chunk_index, file_index, dat_file, dat_start,
+                   offset, size, id_val):
+        """One file's parsed data and edit state, reading it if it has
+        not been opened yet - the same cache load_txt2_data() fills."""
+        key = (chunk_index, file_index)
+        cached = self._file_state_cache.get(key)
+        if cached is None:
+            data = txt2.preview(dat_file, dat_start + offset, size=size,
+                                id_val=id_val)
+            originals = {}
+            lengths = {}
+            for loc, entry in enumerate(data.get("entries", [])):
+                if entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF:
+                    continue
+                originals[loc] = entry["text"]
+                if id_val != 3 or not entry.get("is_gap"):
+                    continue
+                try:
+                    lengths[loc] = len(encode_text(entry["text"]))
+                except TxtdPackError:
+                    pass
+            cached = {
+                "data": data,
+                "edited_locations": set(),
+                "exported_locations": set(),
+                "original_entry_lengths": lengths,
+                "original_entry_texts": originals,
+            }
+            self._file_state_cache[key] = cached
+        return cached
+
+    def apply_import(self, chunk_index, file_index, dat_file, dat_start,
+                     offset, size, id_val, address, texts):
+        """Put imported text into one file, open or not. Returns
+        (data, the locations whose text actually differed, whether it
+        now has any edits, ids that named nothing in it)."""
+        from gui.txtd import translation_io
+
+        state = self.file_state(chunk_index, file_index, dat_file, dat_start,
+                                offset, size, id_val)
+        changed, missed = translation_io.apply_txt2(state["data"], address,
+                                                    texts)
+        originals = state["original_entry_texts"]
+        for location in changed:
+            entry = state["data"]["entries"][location]
+            state["exported_locations"].discard(location)
+            if entry["text"] == originals.get(location):
+                state["edited_locations"].discard(location)
+            else:
+                state["edited_locations"].add(location)
+        if changed and (self.chunk_index, self.file_index) == (chunk_index,
+                                                               file_index):
+            self._relabel_imported(changed)
+        return (state["data"], changed, bool(state["edited_locations"]),
+                missed)
+
+    def _relabel_imported(self, changed):
+        """Bring the rows an import touched up to date, and re-show the
+        selected entry if it was one of them."""
+        for location in changed:
+            item = self._entry_items.get(location)
+            if item is None:
+                continue
+            self._set_entry_item_label(
+                item, self.current_data["entries"][location], location)
+        item = self._current_entry_item
+        location = None if item is None else item.data(ENTRY_LOCATION_ROLE)
+        if location is None or location not in changed:
+            return
+        self._loading = True
+        try:
+            text = self.current_data["entries"][location]["text"]
+            self.text_edit.setPlainText(text)
+            self.preview.set_text(text)
+        finally:
+            self._loading = False
+
     def pending_state(self):
         """"edited"/"exported"/None for the currently loaded file, based
         on _edited_locations/_exported_locations."""

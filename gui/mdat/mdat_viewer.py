@@ -9,12 +9,13 @@ from PyQt6.QtOpenGL import (
     QOpenGLBuffer
 )
 from PyQt6.QtGui import (
-    QMatrix4x4, QImage, QIcon, QAction, QVector2D, QVector4D)
+    QMatrix4x4, QImage, QIcon, QAction, QVector2D)
 from OpenGL import GL
 import gui.mdat.mdat as mdat
 from functions import gltf_export
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
+from gui import polygon_pick
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
@@ -436,51 +437,15 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         model = self.model_data
         if not model or not model.get("polygons"):
             return None
-        inverse, ok = self._model_view_projection().inverted()
-        if not ok:
+        ray = polygon_pick.ray_through(self._model_view_projection(), x, y,
+                                       self.width(), self.height())
+        if ray is None:
             return None
-
-        def unproject(z):
-            point = inverse.map(QVector4D(
-                2.0 * x / max(self.width(), 1) - 1.0,
-                1.0 - 2.0 * y / max(self.height(), 1), z, 1.0))
-            if not point.w():
-                return None
-            return np.array([point.x() / point.w(), point.y() / point.w(),
-                             point.z() / point.w()], dtype=np.float64)
-
-        near, far = unproject(-1.0), unproject(1.0)
-        if near is None or far is None:
-            return None
-        direction = far - near
-        length = np.linalg.norm(direction)
-        if length < 1e-9:
-            return None
-        direction /= length
-
         if self._face_polygon is None:
             self._build_face_index()
-        vertices = self._pick_vertices
-        faces = self._pick_faces
-        a = vertices[faces[:, 0]]
-        edge1 = vertices[faces[:, 1]] - a
-        edge2 = vertices[faces[:, 2]] - a
-        pvec = np.cross(direction, edge2)
-        det = np.einsum("ij,ij->i", edge1, pvec)
-        live = np.abs(det) > 1e-12
-        if not live.any():
-            return None
-        inv = np.zeros_like(det)
-        inv[live] = 1.0 / det[live]
-        tvec = near - a
-        u = np.einsum("ij,ij->i", tvec, pvec) * inv
-        qvec = np.cross(tvec, edge1)
-        v = np.einsum("j,ij->i", direction, qvec) * inv
-        t = np.einsum("ij,ij->i", edge2, qvec) * inv
-        hit = live & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6) & (t > 1e-6)
-        if not hit.any():
-            return None
-        return int(self._face_polygon[int(np.argmin(np.where(hit, t, np.inf)))])
+        return polygon_pick.nearest_polygon(
+            ray[0], ray[1], self._pick_vertices, self._pick_faces,
+            self._face_polygon)
 
     def _build_face_index(self):
         """Arrays the ray test needs, and which triangle belongs to which
@@ -488,12 +453,20 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         model = self.model_data
         self._pick_vertices = (np.array(model["vertices"], dtype=np.float64)
                                / UNIT_SCALE)
-        self._pick_faces = np.array(model["faces"], dtype=np.int64)
-        lookup = np.zeros(len(model["faces"]), dtype=np.int64)
-        for polygon in model["polygons"]:
-            first = polygon["first_face"]
-            lookup[first:first + polygon["face_count"]] = polygon["index"]
-        self._face_polygon = lookup
+        self._pick_faces, self._face_polygon = polygon_pick.build_face_index(
+            model["faces"], model["polygons"], len(model["faces"]))
+
+    def describe_selection(self):
+        """The picked polygon as one addressable line, or None."""
+        polygon = self.selected()
+        if polygon is None:
+            return None
+        entries = (self.model_data or {}).get("entries") or ()
+        entry = entries[polygon["entry"]] if polygon["entry"] < len(entries) else None
+        owner = f"entry {polygon['entry']}"
+        if entry is not None:
+            owner += f" (@ 0x{entry['address']:X})"
+        return polygon_pick.describe_polygon(polygon, owner=owner)
 
     def mousePressEvent(self, event):
         # Left-click picks. The camera is on the right button (see
@@ -502,6 +475,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             point = event.position().toPoint()
             self.select(polygon=self.pick(point.x(), point.y()))
+            line = self.describe_selection()
+            print(f"selected: {line}" if line else "selected: nothing")
             return
         super().mousePressEvent(event)
 

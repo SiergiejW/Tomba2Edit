@@ -1300,6 +1300,12 @@ class FontPageView(QWidget):
             self._refresh_detail()
             self.detail.warn(str(e))
             return
+        # claim() only writes the table's own dict. Every reader and
+        # both packers hold tombadict.letters instead, and apply() is
+        # what rebuilds it - without this the new letter is on screen
+        # and in the file, but text using it will not encode until the
+        # disc is opened again.
+        translation.apply(self.table)
         try:
             translation.save(self.cd_folder, self.table)
         except Exception as e:
@@ -1490,11 +1496,38 @@ class FontPageView(QWidget):
                                        pieces=self.selected_pieces())
         self.selected.emit(kind, what)
         self.info.setText(f"({x}, {y})  {describe(kind, what, self.build)}")
+        self._print_selection(kind, what, x, y, box)
         if box:
             # Same brief red marking a palette change gives. Picking a
             # part is the other moment "and which palette is that?" is
             # worth answering without being asked.
             self._flash_clut()
+
+    def _print_selection(self, kind, what, x, y, box):
+        """Name what was clicked on the page by number, not by picture.
+
+        A glyph's cell number IS the byte that draws it, which is the
+        whole point of picking one - so it is given in both bases, with
+        the texel the cell starts at and where that lands in VRAM."""
+        spec = self.kind.spec
+        bits = [f"{spec.name} page", f"texel ({x}, {y})", f"{kind}"]
+        if kind in ("glyph", "system") and what is not None:
+            bits.append(f"cell {what} (0x{what:02X}, {what} decimal)")
+        elif kind == "palette" and what is not None:
+            row, slot = what
+            bits.append(f"palette row {row} slot {slot}")
+            bits.append(f"VRAM 0x{fontpage.clut_vram_address(spec, row, slot):X}"
+                        if hasattr(fontpage, "clut_vram_address") else "")
+        elif what is not None:
+            bits.append(str(what))
+        if box:
+            bits.append(f"box {box[2]}x{box[3]} at ({box[0]}, {box[1]})")
+        # Where the click lands in the whole of VRAM, which is what a
+        # hex editor or the VRAM view wants.
+        vram_x, vram_y = spec.x + x, spec.y + y
+        bits.append(f"VRAM texel ({vram_x}, {vram_y}) "
+                    f"= 0x{vram_x // 2 + vram_y * 0x800:X}")
+        print("selected: " + "  ".join(b for b in bits if b))
 
     def _move_selection(self, dx, dy):
         """Step the selection one part in that direction.
@@ -1857,8 +1890,13 @@ class FontPageView(QWidget):
             "Undo only takes back edits made in this tab.\n\nGo ahead?")
         if answer != QMessageBox.StandardButton.Yes:
             return
+        # The palette the export was written with, so a file an editor
+        # has renumbered can still be matched back by colour.
+        which = self.clut_box.currentData()
+        clut = (self.cluts[which][2]
+                if which is not None and which < len(self.cluts) else None)
         try:
-            count = fontpage.import_png(self.cd_folder, path, spec)
+            count = fontpage.import_png(self.cd_folder, path, spec, clut)
         except Exception as e:
             QMessageBox.critical(self, "Import failed", str(e))
             return

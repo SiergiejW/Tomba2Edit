@@ -14,7 +14,7 @@ import math
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QImage, QMatrix4x4, QVector2D
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
@@ -25,7 +25,7 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
     QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QSplitter, QStyle, QTableWidget,
+    QMenu, QMessageBox, QPushButton, QSplitter, QStyle, QTableWidget,
     QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
@@ -33,11 +33,15 @@ from functions.camera_controls import (
     CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
 )
+from functions import psx_vram
 from functions.format_detect import FormatError
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from functions import gltf_export
-from gui.smst.smst_parser import load_smst
+from gui import polygon_pick
+from gui.texture_panel import TexturePanel
+from gui.smst import smst_edit
+from gui.smst.smst_parser import load_smst, parse_smst
 
 # World units per GL unit. A level MDAT is thousands of units across and
 # is drawn at 1000 (gui/scld/scld_render.UNIT_SCALE); a character is
@@ -65,6 +69,15 @@ QUARTER = 3     # B + F/4
 # varies per texel, so it goes through the shader instead.
 WEIGHTS = {HALF: 0.5, ADD: 1.0, SUBTRACT: 1.0, QUARTER: 0.25}
 
+# The selection outline, matching gui/mdat/mdat_viewer.py: yellow for the
+# picked polygon, a dimmer amber for the rest of the part it sits in.
+POLYGON_OUTLINE = (1.0, 1.0, 0.2)
+GROUP_OUTLINE = (0.75, 0.55, 0.1)
+
+# PSX draw modes, by the type byte a packet carries - the same names
+# gui/mdat/mdat_panel.py uses, for the same bits.
+BLEND_NAMES = {0: "half", 1: "add", 2: "subtract", 3: "quarter"}
+
 
 def _runs_text(numbers, limit=6):
     """[72, 73, 74, 75, 76, 77] as "72-77" - part numbers for the stats
@@ -83,9 +96,15 @@ def _runs_text(numbers, limit=6):
 
 
 class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
+    # (group index, polygon index), either of which may be None, so a
+    # list beside the view can follow a pick in it.
+    selection_changed = pyqtSignal(object, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
+        self.source = None
+        self.blob = None
         self.camera_controls = CameraControls(self)
 
         self.vao = QOpenGLVertexArrayObject()
@@ -127,6 +146,20 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.draw_ranges = []
         self.hidden_groups = set()
         self.highlighted_group = None
+
+        # One polygon picked out of the model, and the outline it is
+        # drawn with - see gui/polygon_pick.py, which MDAT shares.
+        self.selected_polygon = None
+        self.outline_vao = QOpenGLVertexArrayObject()
+        self.outline_vbo = QOpenGLBuffer()
+        self.outline_cbo = QOpenGLBuffer()
+        self.outline_vertex_count = 0
+        self._outline_arrays = None
+        # Rebuilt lazily, and thrown away whenever the pose or the
+        # spread moves the vertices out from under it.
+        self._pick_vertices = None
+        self._pick_faces = None
+        self._face_polygon = None
         # An animation frame's transforms, or None for the rest pose -
         # see set_pose and gui/anmp/anmp_viewer.py.
         self.pose = None
@@ -284,19 +317,67 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             print(f"Error loading SMST data at 0x{address:X}: {e}")
             self.model_data = None
             self.draw_ranges = []
+            self.source = None
+            self.blob = None
             self.update()
             return False
+        # The blob as it stands, kept for copy/paste - see
+        # gui/smst/smst_edit.py, which works on bytes rather than on
+        # the parsed model so nothing can be lost in a round trip.
+        self.source = (dat_file_path, address, size)
+        with open(dat_file_path, "rb") as f:
+            f.seek(address)
+            self.blob = f.read(size)
 
-        self.hidden_groups = set()
-        self.highlighted_group = None
-        # An animation frame's transforms, or None for the rest pose -
-        # see set_pose and gui/anmp/anmp_viewer.py.
-        self.pose = None
-        self.pose_pivots = None
-        self.prepare_buffers()
+        self._settle(reset_view=True)
+        print(f"selected: SMST @ 0x{address:X}  size 0x{size:X}  "
+              f"{len(self.model_data['groups'])} group(s)  "
+              f"{self.model_data['tri_count']} tris  "
+              f"{self.model_data['quad_count']} quads")
         self.frame_model()
-        self.update()
         return True
+
+    def show_blob(self, blob):
+        """Draw an SMST that is in memory rather than on the disc.
+
+        What a paste needs: the edited bytes have to be on screen before
+        anything is saved, or there is no way to tell whether the paste
+        did what was wanted. The camera and what is hidden are left
+        alone - the model is the same model with one part swapped, and
+        re-framing it would throw away the view you were looking at it
+        from."""
+        try:
+            model = parse_smst(bytes(blob), address=self.model_data["address"]
+                               if self.model_data else 0)
+        except (FormatError, ValueError) as e:
+            print(f"Error reading the edited SMST: {e}")
+            return False
+        self.blob = bytes(blob)
+        self.model_data = model
+        self._settle(reset_view=False)
+        return True
+
+    def _settle(self, reset_view):
+        """Rebuild everything that hangs off model_data.
+
+        `reset_view` is for a genuinely new file; a paste keeps the
+        camera, the hidden parts and the pose it already had."""
+        if reset_view:
+            self.hidden_groups = set()
+            self.highlighted_group = None
+            self.pose = None
+            self.pose_pivots = None
+        else:
+            # The parts are the same parts, but a polygon index is not
+            # the same polygon any more.
+            self.hidden_groups = {g for g in self.hidden_groups
+                                  if g < len(self.model_data["groups"])}
+        self.selected_polygon = None
+        self._outline_arrays = (np.zeros(0, dtype=np.float32),
+                                np.zeros(0, dtype=np.float32))
+        self._invalidate_pick_cache()
+        self.prepare_buffers()
+        self.update()
 
     @property
     def groups(self):
@@ -307,9 +388,15 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def _spread_offsets(self):
         """Where each part's centre is moved to when spread out: a
         square grid in reading order, big enough for the biggest part.
-        Empty parts take no cell, so a model with a placeholder group in
-        the middle doesn't come out with a hole in it."""
-        drawn = [g for g in self.groups if not g.empty]
+
+        EVERY part takes a cell, empty ones included. Skipping them - as
+        this used to - closed the gap up, so the nth thing on screen was
+        not part n and the grid could not be counted along to find a
+        part by its number. An empty cell is drawn as an outline instead
+        (see _empty_marker_lines), which says "part 7 is empty" where a
+        closed-up grid said nothing at all."""
+        groups = list(self.groups)
+        drawn = [g for g in groups if not g.empty]
         if not drawn:
             return {}
         # Sized off the 90th percentile rather than the largest part.
@@ -319,10 +406,11 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         # every other part a dot.
         step = max(float(np.percentile([g.radius * 2 for g in drawn], 90))
                    * SPREAD_GAP, 1.0)
-        columns = max(1, math.ceil(math.sqrt(len(drawn))))
-        rows = math.ceil(len(drawn) / columns)
+        columns = max(1, math.ceil(math.sqrt(len(groups))))
+        rows = math.ceil(len(groups) / columns)
+        self._spread_step = step
         offsets = {}
-        for n, group in enumerate(drawn):
+        for n, group in enumerate(groups):
             cx, cy, cz = group.centre
             col, row = n % columns, n // columns
             offsets[group.index] = (
@@ -331,6 +419,37 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 -cz,
             )
         return offsets
+
+    def _empty_marker_lines(self):
+        """A dashed-looking square at each empty part's cell.
+
+        Only while spread out: stacked at the origin every cell is the
+        same point, and a pile of identical squares says nothing. An
+        empty part has no vertices, so its offset IS its cell centre."""
+        if not self.spread or not self.model_data:
+            return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
+        empties = [g for g in self.groups if g.empty]
+        if not empties:
+            return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
+        offsets = self._spread_offsets()
+        half = getattr(self, "_spread_step", 1.0) * 0.5 * EMPTY_MARKER_SIZE
+        positions, colors = [], []
+        for group in empties:
+            at = offsets.get(group.index)
+            if at is None:
+                continue
+            x, y, z = at
+            corners = [(x - half, y - half, z), (x + half, y - half, z),
+                       (x + half, y + half, z), (x - half, y + half, z)]
+            # The square, plus its diagonals - an outline alone reads as
+            # a part that happens to be flat, a crossed one does not.
+            pairs = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2), (1, 3)]
+            for a, b in pairs:
+                positions.extend(corners[a])
+                positions.extend(corners[b])
+                colors.extend(EMPTY_MARKER_COLOR * 2)
+        return (np.array(positions, dtype=np.float32) / UNIT_SCALE,
+                np.array(colors, dtype=np.float32))
 
     def set_pose(self, transforms, pivots):
         """Pose the parts from an animation frame.
@@ -363,6 +482,10 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         positions, colors, tex_coords, indices = self._arrays
         self._arrays = (self._positions().flatten(), colors, tex_coords, indices)
         self._positions_dirty = True
+        # The vertices just moved, so the picking arrays and the outline
+        # built off them are stale.
+        self._invalidate_pick_cache()
+        self._build_outline()
 
     def _positions(self):
         """Every vertex in GL units, with the spread or the pose applied."""
@@ -399,6 +522,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         context yet when a file is picked in the tree."""
         self.draw_ranges = []
         self._arrays = None
+        self._invalidate_pick_cache()
         # A new model means new palette textures, so anything bound to
         # the old ones has to go; load_animations() rebinds once
         # the groups below exist.
@@ -661,6 +785,154 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.highlighted_group = index
         self.update()
 
+    # --- picking one polygon ------------------------------------------
+
+    @property
+    def polygons(self):
+        return (self.model_data or {}).get("polygons") or ()
+
+    def selected(self):
+        """The picked polygon's record, or None."""
+        if self.selected_polygon is None:
+            return None
+        return self.polygons[self.selected_polygon]
+
+    def select(self, polygon=None):
+        """Pick one polygon, or nothing.
+
+        Picking one highlights the part it belongs to as well, since a
+        polygon is only ever looked at as part of its group."""
+        if polygon is not None and not 0 <= polygon < len(self.polygons):
+            polygon = None
+        self.selected_polygon = polygon
+        group = self.polygons[polygon]["group"] if polygon is not None else None
+        self._build_outline()
+        self.update()
+        self.selection_changed.emit(group, polygon)
+
+    def describe_selection(self):
+        """The picked polygon as one addressable line, or None."""
+        polygon = self.selected()
+        if polygon is None:
+            return None
+        model = self.model_data
+        where = f"SMST @ 0x{model['address']:X}"
+        group = model["groups"][polygon["group"]]
+        owner = f"group {group.index} (@ 0x{model['address'] + group.offset:X})"
+        return f"{where}  {polygon_pick.describe_polygon(polygon, owner=owner)}"
+
+    def _invalidate_pick_cache(self):
+        self._pick_vertices = None
+        self._face_polygon = None
+
+    def _model_view_projection(self):
+        """The same matrix paintGL draws with, so a click can be turned
+        back into a ray through the model."""
+        radius = self.scene_radius or 5.0
+        projection = QMatrix4x4()
+        projection.perspective(45.0, self.width() / max(self.height(), 1),
+                               max(0.01, radius / 500), max(100.0, radius * 10))
+        view = QMatrix4x4()
+        view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
+        view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
+        view.translate(self.camera_controls.camera_x,
+                       self.camera_controls.camera_y,
+                       self.camera_controls.camera_z)
+        return projection * view
+
+    def pick(self, x, y):
+        """Which polygon is under the widget point, or None."""
+        if not self.polygons:
+            return None
+        ray = polygon_pick.ray_through(self._model_view_projection(), x, y,
+                                       self.width(), self.height())
+        if ray is None:
+            return None
+        if self._pick_vertices is None:
+            # The posed or spread positions, not the rest ones, so what
+            # gets picked is what is actually on screen.
+            self._pick_vertices = self._positions().astype(np.float64)
+            self._pick_faces, self._face_polygon = polygon_pick.build_face_index(
+                self.model_data["faces"], self.polygons,
+                len(self.model_data["faces"]))
+        # A hidden part is not on screen, so it cannot be clicked through
+        # the gap where it is not being drawn.
+        drawable = None
+        if self.hidden_groups:
+            hidden = np.array([p["group"] in self.hidden_groups
+                               for p in self.polygons], dtype=bool)
+            drawable = ~hidden[self._face_polygon]
+        return polygon_pick.nearest_polygon(
+            ray[0], ray[1], self._pick_vertices, self._pick_faces,
+            self._face_polygon, drawable)
+
+    def mousePressEvent(self, event):
+        # Left-click picks. The camera is on the right button (see
+        # functions/camera_controls.py), so the left one is free for it.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            point = event.position().toPoint()
+            self.select(self.pick(point.x(), point.y()))
+            line = self.describe_selection()
+            print(f"selected: {line}" if line else "selected: nothing")
+            return
+        super().mousePressEvent(event)
+
+    def _build_outline(self):
+        """The line segments the selection is drawn with. Left on the
+        CPU - there may be no GL context yet - and uploaded by paintGL."""
+        positions, colors = [], []
+        polygon = self.selected()
+        if polygon is not None:
+            verts = (self._pick_vertices if self._pick_vertices is not None
+                     else self._positions())
+            group = self.model_data["groups"][polygon["group"]]
+            for i in range(group.first_polygon,
+                           group.first_polygon + group.polygon_count):
+                other = self.polygons[i]
+                color = (POLYGON_OUTLINE if i == self.selected_polygon
+                         else GROUP_OUTLINE)
+                segments = polygon_pick.outline_segments(other, verts)
+                positions.extend(segments)
+                colors.extend(color * (len(segments) // 3))
+        self._outline_arrays = (np.array(positions, dtype=np.float32),
+                                np.array(colors, dtype=np.float32))
+
+    def _sync_outline(self):
+        if self._outline_arrays is None:
+            return
+        positions, colors = self._outline_arrays
+        self._outline_arrays = None
+        self.outline_vertex_count = positions.size // 3
+        if not self.outline_vertex_count:
+            return
+        if not self.outline_vao.isCreated():
+            self.outline_vao.create()
+        self.outline_vao.bind()
+        for buffer, array, location in ((self.outline_vbo, positions, 0),
+                                        (self.outline_cbo, colors, 1)):
+            if not buffer.isCreated():
+                buffer.create()
+            buffer.bind()
+            buffer.allocate(array.tobytes(), array.nbytes)
+            GL.glEnableVertexAttribArray(location)
+            GL.glVertexAttribPointer(location, 3, GL.GL_FLOAT, GL.GL_FALSE,
+                                     0, None)
+        self.outline_vao.release()
+
+    def _draw_outline(self):
+        """The selection, drawn untextured and on top of the model."""
+        self._sync_outline()
+        if not self.outline_vertex_count:
+            return
+        self.shader_program.setUniformValue("useTextures", False)
+        self.shader_program.setUniformValue("alpha", 1.0)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        self.outline_vao.bind()
+        GL.glDrawArrays(GL.GL_LINES, 0, self.outline_vertex_count)
+        self.outline_vao.release()
+        GL.glEnable(GL.GL_DEPTH_TEST)
+
     def export_to_gltf(self):
         """Write the model out, rigged if a skeleton has been found.
 
@@ -903,6 +1175,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("texelClass", 0)
             self.shader_program.setUniformValue("blendWeight", 1.0)
         self.vao.release()
+        self._draw_outline()
         if self.show_origin:
             # Untextured and at full alpha, whatever the model is drawn
             # with - the marker is not part of the art.
@@ -985,6 +1258,15 @@ class SMSTPanel(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._part_menu)
+        self.viewer.selection_changed.connect(self._on_viewer_pick)
+        # Set by MainWindow to stage a rebuilt blob as a file edit, the
+        # same way any other whole-file replacement is staged. Left None
+        # when nobody has said, and paste then says so rather than
+        # pretending it wrote something.
+        self.stage_edit = None
 
         show_all = QPushButton("Show all", self)
         show_all.clicked.connect(self._show_all)
@@ -996,11 +1278,24 @@ class SMSTPanel(QWidget):
         buttons.addWidget(show_all)
         buttons.addWidget(isolate)
 
+        self.details = QLabel("Click a polygon in the view.", self)
+        self.details.setWordWrap(True)
+        self.details.setMinimumHeight(66)
+        self.details.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.details.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        # The same texture view the MDAT panel has - palette strip, the
+        # page with this polygon's UVs ringed on it, and the two exports.
+        self.texture = TexturePanel(viewer, stem=self._stem, parent=self)
+
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self.table)
+        left_layout.addWidget(self.table, 1)
         left_layout.addLayout(buttons)
+        left_layout.addWidget(self.details)
+        left_layout.addWidget(self.texture)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(left)
@@ -1037,6 +1332,7 @@ class SMSTPanel(QWidget):
         self.table.clearSelection()
         self.viewer.set_hidden_groups(())
         self.viewer.set_highlighted_group(None)
+        self._show_polygon(None)
 
     def _on_item_changed(self, item):
         if self._filling or item.column() != 0:
@@ -1050,10 +1346,148 @@ class SMSTPanel(QWidget):
             self.viewer.set_highlighted_group(None)
             return
         item = self.table.item(rows[0].row(), 0)
-        self.viewer.set_highlighted_group(item.data(Qt.ItemDataRole.UserRole))
+        index = item.data(Qt.ItemDataRole.UserRole)
+        self.viewer.set_highlighted_group(index)
+        if not self._filling:
+            print(f"selected: {self._describe_group(index)}")
+
+    def _describe_group(self, index):
+        """One addressable line for a part: where it starts in the DAT,
+        and what it holds."""
+        model = self.viewer.model_data
+        if not model:
+            return f"SMST group {index}"
+        group = model["groups"][index]
+        return (f"SMST @ 0x{model['address']:X}  group {index} "
+                f"@ 0x{model['address'] + group.offset:X} "
+                f"(+0x{group.offset:X})  {group.tris} tris  {group.quads} "
+                f"quads  size 0x{group.size:X}")
+
+    # --- copy and paste a part ----------------------------------------
+
+    def _part_menu(self, position):
+        """Right-click a part: copy it, or paste one over it.
+
+        The clipboard is module-level, so a part copied out of one model
+        can be pasted into the next one opened - which is the whole
+        point of it."""
+        row = self.table.rowAt(position.y())
+        if row < 0 or not self.viewer.blob:
+            return
+        index = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        copy = menu.addAction(f"Copy part {index}")
+        copy.triggered.connect(lambda: self._copy_part(index))
+        clip = smst_edit.clipboard()
+        if clip is None:
+            paste = menu.addAction("Paste over this part")
+            paste.setEnabled(False)
+        else:
+            paste = menu.addAction(
+                f"Paste the copied part ({clip['tris']} tris, "
+                f"{clip['quads']} quads) over part {index}")
+            paste.triggered.connect(lambda: self._paste_part(index))
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _copy_part(self, index):
+        try:
+            clip = smst_edit.copy_group(self.viewer.blob, index)
+        except Exception as e:
+            QMessageBox.critical(self, "Copy failed", str(e))
+            return
+        model = self.viewer.model_data
+        clip["from"] = f"SMST @ 0x{model['address']:X} part {index}"
+        smst_edit.set_clipboard(clip)
+        print(f"copied: {clip['from']}  {clip['tris']} tris  "
+              f"{clip['quads']} quads  {len(clip['bytes'])} bytes")
+
+    def _paste_part(self, index):
+        clip = smst_edit.clipboard()
+        if clip is None or not self.viewer.blob:
+            return
+        try:
+            blob, note = smst_edit.paste_group(self.viewer.blob, index, clip)
+        except Exception as e:
+            QMessageBox.critical(self, "Paste failed", str(e))
+            return
+        # Drawn before it is staged, and with no dialog in the way: the
+        # point of a paste is to look at it. Nothing is written to the
+        # disc either way until the ISO or the files are saved, so the
+        # only thing a confirmation would buy is a click.
+        # populate_table() unticks nothing and clears everything, so the
+        # parts that were hidden are put back afterwards - pasting into
+        # a model you had isolated a part of should not undo that.
+        hidden = set(self.viewer.hidden_groups)
+        if not self.viewer.show_blob(blob):
+            QMessageBox.critical(
+                self, "Paste failed",
+                "The rebuilt model wouldn't parse, so nothing was changed.")
+            return
+        self.populate_table()
+        if hidden:
+            self._set_checks(lambda row: self.table.item(row, 0).data(
+                Qt.ItemDataRole.UserRole) not in hidden)
+        if self.stage_edit is not None:
+            self.stage_edit(blob, f"pasted a part over part {index}")
+            staged = "staged - save the ISO or the files to keep it"
+        else:
+            staged = ("NOT staged: this SMST wasn't opened from a disc row, "
+                      "so it is on screen only")
+        print(f"pasted: {clip['from']} -> part {index}. {note} ({staged})")
+        self.details.setText(f"<b>Pasted over part {index}</b><br>{note}"
+                             f"<br><i>{staged}</i>")
+
+    def _stem(self, polygon):
+        """What an exported page or GIF is called: the part the polygon
+        came out of, since that is how one is named here."""
+        return (f"page{polygon['page']}_clut{polygon['clut']:06X}"
+                f"_group{polygon['group']}_{polygon['kind']}{polygon['slot']}")
+
+    def _on_viewer_pick(self, group, polygon_index):
+        """Follow a pick in the 3D view: put the row for the part it
+        landed in under the cursor, without printing it a second time -
+        the viewer has already said what was picked."""
+        self._show_polygon(polygon_index)
+        if group is None:
+            return
+        self._filling = True
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item.data(Qt.ItemDataRole.UserRole) == group:
+                self.table.selectRow(row)
+                break
+        self._filling = False
+
+    def _show_polygon(self, index):
+        """Spell out what a picked polygon is, and show its texture."""
+        polygons = self.viewer.polygons
+        if index is None or index >= len(polygons):
+            self.details.setText("Click a polygon in the view.")
+            self.texture.show_polygon(None)
+            return
+        polygon = polygons[index]
+        model = self.viewer.model_data
+        x, y = psx_vram.clut_address_xy(polygon["clut"])
+        self.details.setText(
+            f"<b>{polygon['kind']} {polygon['slot']}</b> of part "
+            f"{polygon['group']}<br>"
+            f"packet at <b>0x{polygon['address']:X}</b>, draw type "
+            f"{polygon['type']} "
+            f"({'semi-transparent' if polygon['transparent'] else 'opaque'}, "
+            f"{BLEND_NAMES.get(polygon['blend'], polygon['blend'])})<br>"
+            f"texture page <b>{polygon['page']}</b>, CLUT "
+            f"<b>0x{polygon['clut']:06X}</b> at ({x}, {y})<br>"
+            f"UVs " + ", ".join(f"({u},{v})" for u, v in polygon["texels"]))
+        self.texture.show_polygon(polygon)
 
     def _show_all(self):
+        # Two things make a part invisible: its tick, and the highlight
+        # that fades everything except the selected row. Clearing only
+        # the ticks left a selected model still faded, which read as the
+        # button doing nothing at all.
         self._set_checks(lambda _row: True)
+        self.table.clearSelection()
+        self.viewer.set_highlighted_group(None)
 
     def _isolate_selected(self):
         rows = {index.row() for index in self.table.selectionModel().selectedRows()}

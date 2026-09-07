@@ -546,8 +546,10 @@ class TXTDViewer(QWidget):
                 return
 
             m_idx, e_idx = location
-            entry = self.current_data["entries"][m_idx]["entries"][e_idx]
+            master = self.current_data["entries"][m_idx]
+            entry = master["entries"][e_idx]
             is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
+            self._print_selection(m_idx, e_idx, master, entry, is_sentinel)
 
             self._current_entry_item = selected_item
             self.text_edit.setPlainText(entry["text"])
@@ -566,6 +568,27 @@ class TXTDViewer(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to handle selection change: {e}")
         finally:
             self._loading = False
+
+    @staticmethod
+    def _print_selection(m_idx, e_idx, master, entry, is_sentinel):
+        """Name the selected line by where it lives, not by what it says.
+
+        The text is in the editor already; what is not anywhere is the
+        address to point a hex editor at. So: which master and which
+        entry inside it, the pointer word that reaches the line, the
+        pointer's own value, and where the bytes actually start."""
+        bits = [f"TXTD master {m_idx} entry {e_idx}",
+                f"master ptr 0x{master['master_adr']:04X}"]
+        if entry.get("pointer_at") is not None:
+            bits.append(f"header @ 0x{entry['pointer_at']:X}")
+        bits.append(f"adr 0x{entry.get('adr', 0):04X}")
+        bits.append(f"extra 0x{entry.get('extra', 0):04X}")
+        if is_sentinel:
+            bits.append("END marker")
+        elif entry.get("real") is not None:
+            bits.append(f"text @ 0x{entry['real']:X}")
+            bits.append(f"{len(entry.get('text') or '')} chars")
+        print("selected: " + "  ".join(bits))
 
     # --- voice ---------------------------------------------------------
 
@@ -761,6 +784,97 @@ class TXTDViewer(QWidget):
             m_idx, e_idx = location
             entry = self.current_data["entries"][m_idx]["entries"][e_idx]
             self._set_entry_item_label(item, entry, location)
+
+    def selected_location(self):
+        """(master, entry) of the row that is selected, or None."""
+        item = self._current_entry_item
+        return None if item is None else item.data(ENTRY_LOCATION_ROLE)
+
+    def file_address(self):
+        """The DAT address of the file on screen, or None."""
+        if self.dat_start is None or self.offset is None:
+            return None
+        return self.dat_start + self.offset
+
+    def file_state(self, chunk_index, file_index, dat_file, dat_start, offset):
+        """One file's parsed data and edit state, reading it if it has
+        not been opened yet.
+
+        The same cache load_txtd_data() fills, so a file an import
+        touches without anyone having looked at it is already edited -
+        and coloured - the first time it is opened."""
+        key = (chunk_index, file_index)
+        cached = self._file_state_cache.get(key)
+        if cached is None:
+            data = txtd.preview(dat_file, dat_start + offset)
+            cached = {
+                "data": data,
+                "edited_locations": set(),
+                "exported_locations": set(),
+                "original_entry_texts": {
+                    (m, e): entry["text"]
+                    for m, group in enumerate(data.get("entries", []))
+                    for e, entry in enumerate(group.get("entries", []))},
+            }
+            self._file_state_cache[key] = cached
+        return cached
+
+    def apply_import(self, chunk_index, file_index, dat_file, dat_start,
+                     offset, address, texts):
+        """Put imported text into one file, open or not.
+
+        Returns (data, the locations whose text actually differed,
+        whether the file now has any edits at all, ids that named
+        nothing in it). `data` is the same dict the viewer edits in
+        place, so handing it to the owning window registers a pending
+        edit exactly the way typing does."""
+        from gui.txtd import translation_io
+
+        state = self.file_state(chunk_index, file_index, dat_file,
+                                dat_start, offset)
+        changed, missed = translation_io.apply_txtd(state["data"], address,
+                                                    texts)
+        originals = state["original_entry_texts"]
+        for location in changed:
+            m_idx, e_idx = location
+            entry = state["data"]["entries"][m_idx]["entries"][e_idx]
+            state["exported_locations"].discard(location)
+            if entry["text"] == originals.get(location):
+                state["edited_locations"].discard(location)
+            else:
+                state["edited_locations"].add(location)
+        if changed and (self.chunk_index, self.file_index) == (chunk_index,
+                                                               file_index):
+            self._relabel_imported(changed)
+        return (state["data"], changed, bool(state["edited_locations"]),
+                missed)
+
+    def _relabel_imported(self, changed):
+        """Bring the rows an import touched up to date, and re-show the
+        selected entry if it was one of them - it is still on screen
+        holding the text it had before."""
+        for location in changed:
+            item = self._entry_items.get(location)
+            if item is None:
+                continue
+            m_idx, e_idx = location
+            entry = self.current_data["entries"][m_idx]["entries"][e_idx]
+            self._set_entry_item_label(item, entry, location)
+        for m_idx in {m for m, _e in changed}:
+            self._refresh_master_color(m_idx)
+        item = self._current_entry_item
+        location = None if item is None else item.data(ENTRY_LOCATION_ROLE)
+        if location is None or location not in changed:
+            return
+        self._loading = True
+        try:
+            m_idx, e_idx = location
+            text = self.current_data["entries"][m_idx]["entries"][e_idx]["text"]
+            self.text_edit.setPlainText(text)
+            self.preview.set_text(text)
+            self._update_screen_width_status(text, edited=True)
+        finally:
+            self._loading = False
 
     def pending_state(self):
         """"edited"/"exported"/None for the currently loaded file, based

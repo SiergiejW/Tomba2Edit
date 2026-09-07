@@ -26,6 +26,7 @@ from gui.scld.scld_parser import find_area_scld_location
 from gui.anmp.anmp_viewer import ANMPViewer
 from gui.anmp import game_rest
 from functions import pairings
+from gui.smst import smst_parser
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
 from gui.bgmp.bgmp_viewer import BGMPViewer
@@ -50,6 +51,8 @@ from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
+from gui.img.img_viewer import IMGViewer
+from gui.img.img_browser import IMGBrowser
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
 # Colors used to flag a file's row in the main file tree,
@@ -145,7 +148,7 @@ class MainWindow(QMainWindow):
             "Search by name or offset (e.g. 55F54, 19-11Da4)...")
         self.dat_search.setClearButtonEnabled(True)
         self.dat_search.textChanged.connect(self._filter_dat_view)
-        dat_panel = QWidget()
+        dat_panel = self.dat_panel = QWidget()
         dat_panel_layout = QVBoxLayout()
         dat_panel_layout.setContentsMargins(0, 0, 0, 0)
         dat_panel_layout.setSpacing(0)
@@ -166,6 +169,8 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self.splitter, "Indexed View (IDX)")
         self.main_tabs.addTab(dat_panel, "Data View (DAT)")
+        self.img_browser = IMGBrowser()
+        self.main_tabs.addTab(self.img_browser, "Image View (IMG)")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
         # A whole area at once rather than a file at a time: the room,
@@ -256,6 +261,9 @@ class MainWindow(QMainWindow):
         # functions/repacker.py resizes the DAT and rewrites every
         # pointer around it (see _apply_single_replacement).
         self.pending_file_edits = {}
+        # So every view that loads an SMST sees a staged paste
+        # rather than the disc's version - see the method.
+        smst_parser.set_pending_source(self._pending_smst_blob)
 
         # (chunk_index, file_index) -> the QStandardItem for that TXTD/TXT2
         # file in self.tree_view, so pending edits can be highlighted there
@@ -427,6 +435,32 @@ class MainWindow(QMainWindow):
             "Draw glyphs and say what each code means, for a translation")
         translate_action.triggered.connect(self.open_font_editor)
         font_menu.addAction(translate_action)
+
+        # The script leaves as one file to be translated elsewhere and
+        # comes back as one file - see import_text() and
+        # gui/txtd/translation_io.
+        text_menu = self.menuBar().addMenu("T&ranslation")
+        export_text_menu = text_menu.addMenu("Export Text")
+        for label, tip, slot in (
+                ("Selected Entry...",
+                 "The one entry picked in the text file on screen",
+                 self.export_text_entry),
+                ("Current File...",
+                 "Every entry in the text file on screen",
+                 self.export_text_file),
+                ("Whole Script...",
+                 "Every TXTD, TXT1 and TXT2 on the disc, plus MAIN.EXE "
+                 "and SOP.BIN",
+                 self.export_text_all)):
+            action = QAction(label, self)
+            action.setToolTip(tip)
+            action.triggered.connect(slot)
+            export_text_menu.addAction(action)
+        import_text_action = QAction("Import Translated Text...", self)
+        import_text_action.setToolTip(
+            "Read a translated export back in as pending edits")
+        import_text_action.triggered.connect(self.import_text)
+        text_menu.addAction(import_text_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
         theme_menu = settings_menu.addMenu("Theme")
@@ -619,6 +653,55 @@ class MainWindow(QMainWindow):
             print(f"[ANMP] skeleton shapes on this disc: "
                   f"{len(self._type_names)}")
         return self._type_names
+
+    def _stage_smst_edit(self, item, blob, label, address):
+        """Stage a pasted SMST and let every other view catch up.
+
+        Staging alone is enough for anything that loads the model
+        afterwards (see _pending_smst_blob), but the ANMP tab may
+        already be holding the old one, so it is told to read it
+        again."""
+        self._stage_file_edit(item, blob, label)
+        if self.anmp_viewer.reload_model(address):
+            print(f"ANMP: reloaded the model at 0x{address:X} with the edit")
+
+    def _pending_smst_blob(self, address):
+        """An SMST edit that is staged but not yet written to the disc.
+
+        Handed to gui/smst/smst_parser so every view that loads a model
+        - the SMST tab, the ANMP tab, the skeleton search, the export -
+        sees a pasted part rather than what is still on the disc. Read
+        straight out of pending_file_edits, so undoing the edit there
+        undoes this with it."""
+        for info in self.pending_file_edits.values():
+            if info.get("address") == address:
+                return info.get("data")
+        return None
+
+    def _load_img_browser(self):
+        """Point the IMG tab at the disc that just opened."""
+        folder = os.path.dirname(self.dat_file) if self.dat_file else None
+        self.img_browser.load(folder)
+
+    def _push_clut_choices(self, model, vram_bytes, name=None):
+        """Offer the VRAM view the palettes this model samples.
+
+        Nothing in VRAM marks a palette as a palette, so a viewer left
+        to itself can only guess where they are. A loaded model already
+        knows: every face carries the address of the one it draws
+        through. Each is listed with the texture pages that use it,
+        since that is what identifies it by eye."""
+        if not model:
+            return
+        pages = {}
+        for page, clut, *_rest in model.get("texture_info") or ():
+            pages.setdefault(clut, set()).add(page)
+        choices = [(f"page {', '.join(str(p) for p in sorted(used))}", clut)
+                   for clut, used in sorted(pages.items())]
+        self.vram_viewer.set_clut_choices(choices)
+        if vram_bytes is not None:
+            self.vram_viewer.set_vram_bytes(
+                vram_bytes, name or self.vram_viewer.source_name)
 
     def _bones_for_model(self, model, chunk_index):
         """The skeleton this model is built on, or None.
@@ -1372,10 +1455,16 @@ class MainWindow(QMainWindow):
         n_sop = len(self.bins_viewer.pending_edits())
 
         staged = n_txtd or n_files
-        self.main_tabs.setTabText(0, "Indexed View (IDX)*" if staged else "Indexed View (IDX)")
-        self.main_tabs.setTabText(1, "Data View (DAT)*" if staged else "Data View (DAT)")
-        self.main_tabs.setTabText(2, "MAIN.EXE*" if n_mainexe else "MAIN.EXE")
-        self.main_tabs.setTabText(3, "BINs*" if n_sop else "BINs")
+        # By widget rather than by index: these were fixed positions, so
+        # inserting a tab anywhere before BINs renamed the wrong ones.
+        for widget, label, dirty in (
+                (self.splitter, "Indexed View (IDX)", staged),
+                (self.dat_panel, "Data View (DAT)", staged),
+                (self.mainexe_viewer, "MAIN.EXE", n_mainexe),
+                (self.bins_viewer, "BINs", n_sop)):
+            at = self.main_tabs.indexOf(widget)
+            if at >= 0:
+                self.main_tabs.setTabText(at, label + ("*" if dirty else ""))
 
         renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
 
@@ -1476,6 +1565,419 @@ class MainWindow(QMainWindow):
             return
         self.load_translation_tab(cd_folder)
         self.main_tabs.setCurrentWidget(self.translation_tab)
+
+    # ------------------------------------------------------------------
+    # Text out to be translated, and back in again
+    # ------------------------------------------------------------------
+    #
+    # The whole script leaves as one file and comes back as one file,
+    # because that is how a translation is actually done - somewhere
+    # else, on all of it at once. gui/txtd/translation_io owns the
+    # format; what lives here is finding every text file on the disc,
+    # and what to do about characters the build has never had.
+
+    TEXT_FILTER = ("JSON (*.json);;Plain text (*.txt);;All files (*)")
+
+    def _text_files(self):
+        """Every TXTD/TXT1/TXT2 file on the disc, once each.
+
+        Keyed by DAT address: the same file is reached from every area
+        that uses it, and translating it once is translating it in all
+        of them (see idx_parser's address_locations)."""
+        from functions import idx_parser
+
+        found = {}
+        for (chunk_index, file_index), item in getattr(
+                self, "txtd_item_lookup", {}).items():
+            row = idx_parser.row_label_data(item)
+            slot = item.data(Qt.ItemDataRole.UserRole)
+            if not row or not slot:
+                continue
+            stem, filetype, address, _detail, _content = row
+            if filetype not in ("TXTD", "TXT1", "TXT2") or address in found:
+                continue
+            id_val, dat_start, offset, size = slot
+            found[address] = {
+                "kind": filetype, "address": address, "id": id_val,
+                "dat_start": dat_start, "offset": offset, "size": size,
+                "chunk": chunk_index, "file": file_index,
+                "label": f"{chunk_index:02X}/{stem}.{filetype}",
+            }
+        return [found[a] for a in sorted(found)]
+
+    def _records_for_file(self, entry, only=None):
+        """One text file's records, off the viewer's own copy so that
+        edits already made go out with the export."""
+        from gui.txtd import translation_io
+
+        if entry["kind"] == "TXTD":
+            state = self.txtd_viewer.file_state(
+                entry["chunk"], entry["file"], self.dat_file,
+                entry["dat_start"], entry["offset"])
+            return translation_io.txtd_records(
+                entry["address"], state["data"], entry["label"], only)
+        state = self.txt2_viewer.file_state(
+            entry["chunk"], entry["file"], self.dat_file, entry["dat_start"],
+            entry["offset"], entry["size"], entry["id"])
+        return translation_io.txt2_records(
+            entry["address"], state["data"], entry["label"], only)
+
+    def _write_text_export(self, records, suggested):
+        """Ask where, write it, say how much went."""
+        from gui.txtd import translation_io
+
+        if not records:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "There is no text here to export. Open a text file in the "
+                "DAT Assets tab first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export text for translating", suggested, self.TEXT_FILTER)
+        if not path:
+            return
+        try:
+            translation_io.dump(records, path,
+                                build=getattr(self, "build", ""))
+        except (OSError, translation_io.TranslationIOError) as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Text exported",
+            f"{len(records)} entr{'y' if len(records) == 1 else 'ies'} "
+            f"written to {os.path.basename(path)}.\n\n"
+            "Translate the text only - every {$TAG} has to come back "
+            "exactly as it went out.")
+
+    def _current_text_viewer(self):
+        """(viewer, its file entry) for whichever text file is on
+        screen, or (None, None)."""
+        for viewer in (self.txtd_viewer, self.txt2_viewer):
+            address = viewer.file_address()
+            if address is None:
+                continue
+            for entry in self._text_files():
+                if entry["address"] == address:
+                    return viewer, entry
+        return None, None
+
+    def export_text_entry(self):
+        """The one entry that is selected."""
+        viewer, entry = self._current_text_viewer()
+        if entry is None:
+            QMessageBox.information(
+                self, "No text file open",
+                "Open a TXTD, TXT1 or TXT2 file in the DAT Assets tab first.")
+            return
+        location = viewer.selected_location()
+        if location is None:
+            QMessageBox.information(
+                self, "No entry selected",
+                "Pick an entry in the list on the left first.")
+            return
+        records = self._records_for_file(entry, only={location})
+        self._write_text_export(records, "entry.json")
+
+    def export_text_file(self):
+        """Every entry in the text file on screen."""
+        _viewer, entry = self._current_text_viewer()
+        if entry is None:
+            QMessageBox.information(
+                self, "No text file open",
+                "Open a TXTD, TXT1 or TXT2 file in the DAT Assets tab first.")
+            return
+        records = self._records_for_file(entry)
+        self._write_text_export(records, f"{entry['address']:08X}.json")
+
+    def export_text_all(self):
+        """The disc's whole script - every text file in the DAT, plus
+        MAIN.EXE's and SOP.BIN's pools where they are readable."""
+        from gui.txtd import translation_io
+
+        if not self.dat_file:
+            QMessageBox.information(self, "No disc open",
+                                    "Open an ISO or a CD folder first.")
+            return
+        records = []
+        failed = []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for entry in self._text_files():
+                try:
+                    records += self._records_for_file(entry)
+                except Exception as exc:
+                    failed.append(f"{entry['label']}: {exc}")
+            exe = getattr(self.mainexe_viewer, "entries", None)
+            if exe:
+                records += translation_io.pool_records("mainexe", exe,
+                                                       "MAIN.EXE")
+            sop = getattr(getattr(self.bins_viewer, "sop_viewer", None),
+                          "entries", None)
+            if sop:
+                records += translation_io.pool_records("sop", sop, "SOP.BIN")
+            else:
+                # It is only read once someone picks it in the BINs tab,
+                # so an export taken before that would quietly be twelve
+                # lines short.
+                failed.append("SOP.BIN: not open - select it in the BINs "
+                              "tab first if you want its story text too")
+        finally:
+            QApplication.restoreOverrideCursor()
+        if failed:
+            QMessageBox.warning(
+                self, "Some files could not be read",
+                "These were left out of the export:\n\n" + "\n".join(failed[:12]))
+        self._write_text_export(records, "tomba2-script.json")
+
+    def import_text(self):
+        """Read a translated file back in and put it on the disc's text.
+
+        Nothing is written to the disc here - every entry lands as a
+        pending edit, the same as typing it would, and goes out with the
+        next Save. What is decided here is the alphabet: a translation
+        that brings letters this build has never drawn needs codes for
+        them before any of it can be packed."""
+        from gui.txtd import translation_io
+
+        if not self.dat_file:
+            QMessageBox.information(self, "No disc open",
+                                    "Open an ISO or a CD folder first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import translated text", "", self.TEXT_FILTER)
+        if not path:
+            return
+        try:
+            meta, records = translation_io.load(path)
+        except translation_io.TranslationIOError as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        if not self._confirm_import_build(meta, path):
+            return
+        grouped, bad_ids = translation_io.group_by_kind(records)
+        if not grouped:
+            QMessageBox.warning(
+                self, "Nothing to import",
+                f"{os.path.basename(path)} holds {len(records)} entr"
+                f"{'y' if len(records) == 1 else 'ies'}, none of them named "
+                "the way this tool names them.")
+            return
+        if not self._offer_new_characters(grouped):
+            return
+        report = self._apply_imported(grouped)
+        report["bad_ids"] = bad_ids
+        self._report_import(os.path.basename(path), report)
+
+    def _confirm_import_build(self, meta, path):
+        """Stop an export from one disc being poured into another."""
+        theirs = (meta or {}).get("build")
+        mine = getattr(self, "build", "")
+        if not theirs or not mine or theirs == mine:
+            return True
+        answer = QMessageBox.question(
+            self, "Different build",
+            f"{os.path.basename(path)} was exported from a {theirs} disc and "
+            f"this one is {mine}.\n\nThe two do not lay their text files out "
+            "the same way, so most entries will land somewhere else or "
+            "nowhere at all.\n\nImport it anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _import_alphabet_check(self, grouped):
+        """(letters the game's own table has no code for, letters the
+        MAIN.EXE/SOP pools cannot hold at all).
+
+        Two alphabets, and only one of them can be extended. The DAT's
+        text is drawn from the font page, so a new letter is a matter of
+        claiming a cell and drawing it. MAIN.EXE's pool and SOP.BIN's
+        are Latin-1 bytes the console draws with a font that is not on
+        the disc - there is nothing to claim and nothing to draw."""
+        from gui.txtd import txtd_packer
+        from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
+
+        game, pool = [], []
+        for kind, texts in grouped.items():
+            for text in texts.values():
+                if kind in ("txtd", "txt2"):
+                    for char in txtd_packer.unencodable(text, cells=(kind == "txt2")):
+                        if char not in game:
+                            game.append(char)
+                else:
+                    for char in text:
+                        if char in pool or char in "\n":
+                            continue
+                        try:
+                            encode_bytes(char)
+                        except MainBinParseError:
+                            pool.append(char)
+        return game, pool
+
+    def _offer_new_characters(self, grouped):
+        """Ask about letters the build has never had. False to stop.
+
+        Claiming a code is not drawing a glyph: the cell it points at is
+        still blank afterwards, and the Translation tab is where it gets
+        a shape. Doing it here is what makes that possible at all - text
+        cannot be packed against a letter with no code."""
+        from gui.txtd import dicts, translation
+
+        game, pool = self._import_alphabet_check(grouped)
+        if pool:
+            QMessageBox.warning(
+                self, "Some letters cannot go in MAIN.EXE or SOP.BIN",
+                "These are drawn by the console, out of a font that is not "
+                "on the disc, so there is no cell to give them:\n\n"
+                f"    {' '.join(pool)}\n\n"
+                "Those entries will import, but will not pack until the "
+                "letters are gone. Everything else is unaffected.")
+        if not game:
+            return True
+        listed = " ".join(game)
+        if dicts.japanese_disc():
+            QMessageBox.warning(
+                self, "New letters on the Japanese disc",
+                f"These are not in this disc's alphabet:\n\n    {listed}\n\n"
+                "Assigning cells is not offered here - the Japanese build "
+                "draws its text from the console's font, not from a page "
+                "this tool can add to. The import will go ahead; those "
+                "entries will not pack.")
+            return True
+        cd_folder = os.path.dirname(self.dat_file)
+        answer = QMessageBox.question(
+            self, "New letters",
+            f"This translation uses {len(game)} letter"
+            f"{'' if len(game) == 1 else 's'} the disc has no code for:\n\n"
+            f"    {listed}\n\n"
+            "Give each one a free cell in the font page now?\n\n"
+            "That claims the code so the text can be packed. The cells "
+            "stay blank until you draw the glyphs in the Translation tab.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes)
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.No:
+            return True
+        try:
+            page = fontpage.read_page(cd_folder)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not read the font page", str(exc))
+            return False
+        picked, unplaced = translation.suggest_codes(
+            page, game, top=self.preview_glyph_top())
+        table = translation.active()
+        try:
+            for char, code in picked.items():
+                table.claim(code, char)
+            translation.apply(table)
+            translation.save(cd_folder, table)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not claim the cells", str(exc))
+            return False
+        if getattr(self, "_translation_loaded", False):
+            self.font_page_view.set_source(cd_folder)
+        taken = ", ".join(f"{char} = {code:#04x}"
+                          for char, code in sorted(picked.items()))
+        message = f"Claimed {len(picked)} cell(s):\n\n    {taken}\n\n" \
+                  "Open the Translation tab to draw them - until you do, " \
+                  "they encode correctly but draw nothing."
+        if unplaced:
+            message += ("\n\nNo room for: " + " ".join(unplaced) +
+                        "\nEvery other cell on the page is already spoken "
+                        "for. Free some in the Translation tab first.")
+        QMessageBox.information(self, "Cells claimed", message)
+        return True
+
+    def _apply_imported(self, grouped):
+        """Put the imported text on the disc's own copies, as pending
+        edits. Returns what happened, for _report_import."""
+        from gui.txtd import translation_io
+
+        report = {"files": 0, "entries": 0, "missed": [], "pinned": 0}
+        on_disc = {e["address"] for e in self._text_files()}
+        for kind in ("txtd", "txt2"):
+            for key in grouped.get(kind, {}):
+                if key[0] not in on_disc:
+                    report["missed"].append(translation_io.make_id(kind, *key))
+        for entry in self._text_files():
+            kind = "txtd" if entry["kind"] == "TXTD" else "txt2"
+            texts = {k: v for k, v in grouped.get(kind, {}).items()
+                     if k[0] == entry["address"]}
+            if not texts:
+                continue
+            try:
+                if kind == "txtd":
+                    data, changed, edited, missed = self.txtd_viewer.apply_import(
+                        entry["chunk"], entry["file"], self.dat_file,
+                        entry["dat_start"], entry["offset"], entry["address"],
+                        texts)
+                else:
+                    data, changed, edited, missed = self.txt2_viewer.apply_import(
+                        entry["chunk"], entry["file"], self.dat_file,
+                        entry["dat_start"], entry["offset"], entry["size"],
+                        entry["id"], entry["address"], texts)
+            except Exception as exc:
+                report["missed"].append(f"{entry['label']}: {exc}")
+                continue
+            report["missed"] += missed
+            if not changed:
+                continue
+            report["files"] += 1
+            report["entries"] += len(changed)
+            self._register_imported_edit(kind, entry, data, edited)
+        for kind, viewer, name in (
+                ("mainexe", self.mainexe_viewer, "MAIN.EXE"),
+                ("sop", getattr(self.bins_viewer, "sop_viewer", None),
+                 "SOP.BIN")):
+            texts = grouped.get(kind)
+            if not texts or viewer is None or not getattr(viewer, "entries", None):
+                continue
+            applied, pinned, missed = viewer.apply_import(texts)
+            report["files"] += 1 if applied else 0
+            report["entries"] += len(applied)
+            report["pinned"] += len(pinned)
+            report["missed"] += [f"{name} {m}" for m in missed]
+        self._refresh_edit_status()
+        return report
+
+    def _register_imported_edit(self, kind, entry, data, edited):
+        """Mark one imported file pending, the way typing in it does.
+
+        Not routed through on_txtd_content_changed: that asks the viewer
+        for the state of whatever file is on screen, and an import
+        touches files nobody has opened."""
+        address = entry["address"]
+        if edited:
+            self.pending_txtd_edits[address] = {
+                "kind": kind, "id": entry["id"],
+                "dat_start": entry["dat_start"], "offset": entry["offset"],
+                "data": data,
+                "locations": self.address_locations.get(
+                    address, [(entry["chunk"], entry["file"])]),
+            }
+        else:
+            self.pending_txtd_edits.pop(address, None)
+        self._set_txtd_tree_item_state(address, "edited" if edited else None)
+
+    def _report_import(self, name, report):
+        lines = [f"{report['entries']} entr"
+                 f"{'y' if report['entries'] == 1 else 'ies'} changed across "
+                 f"{report['files']} file{'' if report['files'] == 1 else 's'}."]
+        if report["pinned"]:
+            lines.append(f"{report['pinned']} refused - pinned entries have "
+                         "no reference the repacker can move.")
+        if report["bad_ids"]:
+            lines.append(f"{len(report['bad_ids'])} id(s) were not in this "
+                         "tool's format and were skipped.")
+        if report["missed"]:
+            shown = "\n    ".join(report["missed"][:10])
+            more = ("" if len(report["missed"]) <= 10
+                    else f"\n    ...and {len(report['missed']) - 10} more")
+            lines.append(f"{len(report['missed'])} named nothing on this "
+                         f"disc:\n    {shown}{more}")
+        lines.append("Nothing is on the disc yet - use Save to write it.")
+        QMessageBox.information(self, f"Imported {name}", "\n\n".join(lines))
 
     def preview_glyph_top(self):
         """Which page row this disc's dialogue grid starts at.
@@ -1612,7 +2114,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            count = fontpage.import_png(cd_folder, path)
+            # The same palette export_font_page writes with, so a file
+            # an image editor has renumbered still comes back right.
+            cluts = fontpage.read_cluts(cd_folder)
+            clut = next((pal for _row, _slot, pal in cluts
+                         if pal[2][:3] == (255, 255, 255)), None)
+            count = fontpage.import_png(cd_folder, path, clut=clut)
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
             return
@@ -2234,6 +2741,7 @@ class MainWindow(QMainWindow):
         self.music_panel.set_image(iso_path)
         self.sfx_panel.set_image(iso_path)
         self._load_level_editor()
+        self._load_img_browser()
         # If Translation is already the tab in front, it has been
         # waiting for a disc rather than for a click.
         self._tab_changed()
@@ -2336,6 +2844,7 @@ class MainWindow(QMainWindow):
                         sop_path = full
         self._load_bins(overlays, sop_path)
         self._load_level_editor()
+        self._load_img_browser()
 
         self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
@@ -2636,6 +3145,7 @@ class MainWindow(QMainWindow):
         self.sprt_viewer = SPRTViewer()
         self.bgmp_viewer = BGMPViewer()
         self.vram_viewer = VRAMViewer()  # Add this line
+        self.img_viewer = IMGViewer()
 
         self.widgets = {
             "Folder": QLabel("This is a folder"),
@@ -2655,6 +3165,7 @@ class MainWindow(QMainWindow):
             "DRWB": self.drwb_viewer,
             "SCLD": self.scld_panel,
             "VRAM": self.vram_viewer,  # Add this line
+            "IMG": self.img_viewer,
             "DEFAULT": QLabel("File Viewer"),
         }
         for widget in self.widgets.values():
@@ -2669,6 +3180,24 @@ class MainWindow(QMainWindow):
                 selected_item = self.tree_view.model().itemFromIndex(selected_index)
                 item_name = selected_item.data(Qt.ItemDataRole.DisplayRole)
                 print(f"Selected Item: {item_name}")
+
+                # The IMG chunk itself - the shard table, not the VRAM
+                # it decompresses into. See gui/img/img_viewer.py.
+                if item_name.endswith('.IMG'):
+                    data = selected_item.data(Qt.ItemDataRole.UserRole) or ()
+                    if len(data) == 4 and data[0] == "img_chunk":
+                        _kind, start, size, img_path = data
+                        try:
+                            with open(img_path, "rb") as IMG:
+                                IMG.seek(start)
+                                chunk = IMG.read(size)
+                        except OSError as e:
+                            QMessageBox.critical(self, "Error",
+                                                 f"Couldn't read TOMBA2.IMG:\n\n{e}")
+                            return
+                        self.widgets_area.setCurrentWidget(self.widgets["IMG"])
+                        self.img_viewer.load_chunk(chunk, item_name, start)
+                    return
 
                 # Check if this is a VRAM file
                 if item_name.endswith('.VRAM') or item_name.endswith('.CVRAM'):
@@ -2867,6 +3396,9 @@ class MainWindow(QMainWindow):
                                                             QImage.Format.Format_RGBA8888)
 
                                         self.mdat_viewer.set_vram_image(qimage, vram_bytes)
+                                        self._push_clut_choices(
+                                            self.mdat_viewer.model_data,
+                                            vram_bytes, item_name)
 
                                 except Exception as e:
                                     print(f"❌ Could not load VRAM for AREA_{area_number}: {e}")
@@ -2929,6 +3461,20 @@ class MainWindow(QMainWindow):
                                 success = self.smst_viewer.load_smst_data(
                                     self.dat_file, dat_start + offset, entry_size)
                                 self.smst_panel.populate_table()
+                                # Let a pasted part be staged as an
+                                # ordinary whole-file replacement, so it
+                                # goes out through the same repack that
+                                # can resize a DAT entry.
+                                self.smst_panel.stage_edit = (
+                                    lambda blob, label, item=selected_item,
+                                    at=dat_start + offset:
+                                    self._stage_smst_edit(item, blob, label, at))
+                                # So the VRAM view's CLUT list offers the
+                                # palettes this model actually samples,
+                                # rather than making the user find them.
+                                self._push_clut_choices(
+                                    self.smst_viewer.model_data,
+                                    vram_bytes, item_name)
                                 # Find this model's skeleton now, so
                                 # exporting it writes a rigged file
                                 # rather than a bag of loose parts. It

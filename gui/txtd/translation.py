@@ -175,6 +175,32 @@ def save(cd_folder, table=None):
     return path
 
 
+def suggest_codes(page, chars, used_codes=(), top=None):
+    """Where a set of new characters could live: {character: code}.
+
+    Blank cells first and in order, then cells that draw art no text on
+    the disc asks for - taking a blank one costs nothing, and taking an
+    art one costs a symbol nobody sees. A character already in the table
+    is not given a second code, and characters that run out of room are
+    returned separately.
+
+    This only claims the code. The cell it points at is still blank
+    until someone draws the glyph in the Translation tab, which is the
+    whole point of assigning it there rather than silently."""
+    have = active().cells()
+    wanted = [c for c in chars if c not in have]
+    room = free_codes(page, used_codes, top)
+    spare = ([code for code, state, _c in room if state == "blank"]
+             + [code for code, state, _c in room if state == "art"])
+    picked, unplaced = {}, []
+    for char in wanted:
+        if spare:
+            picked[char] = spare.pop(0)
+        else:
+            unplaced.append(char)
+    return picked, unplaced
+
+
 def free_codes(page, used_codes=(), top=None):
     """Which codes a translation can take, and what taking each costs.
 

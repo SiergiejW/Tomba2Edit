@@ -153,6 +153,7 @@ class SPRTViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.sprt_data = None
+        self._source = None
         self.textures = None
         self.current_index = None
         self._sprite_images = {}     # sprite index -> (PIL image, ox, oy)
@@ -425,6 +426,25 @@ class SPRTViewer(QWidget):
             return
         self.current_index = index
         self._show_current()
+        self._print_sprite(index)
+
+    def _base_address(self):
+        """Where this SPRT blob starts in the DAT, so a piece can be
+        named by an address rather than by its place in a list."""
+        if not self._source:
+            return 0
+        _path, dat_start, offset, _chunk = self._source
+        return (dat_start or 0) + (offset or 0)
+
+    def _print_sprite(self, index):
+        data = self.sprt_data
+        if not data or index is None or index >= len(data.sprites):
+            return
+        sprite = data.sprites[index]
+        base = self._base_address()
+        print(f"selected: SPRT @ 0x{base:X}  sprite {index} "
+              f"@ 0x{base + sprite.offset:X} (+0x{sprite.offset:X})  "
+              f"{len(sprite.pieces)} piece(s)  extent {sprite.extent()}")
 
     def _on_piece_row_changed(self):
         rows = self.piece_table.selectionModel().selectedRows()
@@ -433,7 +453,22 @@ class SPRTViewer(QWidget):
         else:
             item = self.piece_table.item(rows[0].row(), 0)
             self.canvas.highlighted_piece = item.data(Qt.ItemDataRole.UserRole)
+            self._print_piece(item.data(Qt.ItemDataRole.UserRole))
         self.canvas.update()
+
+    def _print_piece(self, piece_index):
+        data = self.sprt_data
+        if not data or self.current_index is None or piece_index is None:
+            return
+        sprite = data.sprites[self.current_index]
+        piece = next((p for p in sprite.pieces if p.index == piece_index), None)
+        if piece is None:
+            return
+        base = self._base_address()
+        print(f"selected: SPRT @ 0x{base:X}  sprite {self.current_index} "
+              f"piece {piece.index} @ 0x{base + piece.offset:X} "
+              f"(+0x{piece.offset:X})  page {piece.pg}  clut 0x{piece.clut:X}  "
+              f"{piece.ww}x{piece.hh} at ({piece.pX}, {piece.pY})")
 
     def _on_canvas_clicked(self, x, y):
         index = self.canvas.sprite_at(x, y)

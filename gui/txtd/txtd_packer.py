@@ -169,6 +169,67 @@ def encode_text(text, cells=False):
     return bytes(out)
 
 
+def unencodable(text, cells=False):
+    """Every character in `text` this build has no code for, in the
+    order they first appear.
+
+    The same walk encode_text() does, collecting instead of stopping at
+    the first one - an imported translation is worth telling the whole
+    truth about, and a Polish one arrives with eight new letters, not
+    one. A {$XX} escape is not a character and never counts.
+    """
+    from gui.txtd import dicts
+
+    missing = []
+    seen = set()
+
+    def note(char):
+        if char not in seen:
+            seen.add(char)
+            missing.append(char)
+
+    if dicts.japanese_disc():
+        from gui.txtd import jptext
+        table = jptext._cells_reverse() if cells else None
+        i = 0
+        while i < len(text):
+            for token, _unit in jptext._by_token:
+                if text.startswith(token, i):
+                    i += len(token)
+                    break
+            else:
+                if text.startswith("{$", i) and "}" in text[i:i + 12]:
+                    i = text.index("}", i) + 1
+                    continue
+                char = text[i]
+                if table is not None:
+                    if char not in table:
+                        note(char)
+                else:
+                    try:
+                        jptext.unit_for(char)
+                    except jptext.JapaneseTextError:
+                        note(char)
+                i += 1
+        return missing
+
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i:i + 2] == "{$" and i + 5 <= n and text[i + 4] == "}":
+            if all(c in "0123456789ABCDEFabcdef" for c in text[i + 2:i + 4]):
+                i += 5
+                continue
+        for tok in _TOKENS:
+            if text.startswith(tok, i):
+                i += len(tok)
+                break
+        else:
+            note(text[i])
+            i += 1
+    return missing
+
+
 def pack_txtd(txtd_data):
     """
     txtd_data: the structure produced by txtd.preview(), optionally

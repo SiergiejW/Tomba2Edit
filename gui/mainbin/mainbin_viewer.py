@@ -11,7 +11,8 @@ entries (no known table reference) are never editable.
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
-from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QTextEdit, QLabel, QToolButton
+from PyQt6.QtWidgets import (QTreeView, QWidget, QVBoxLayout, QSplitter,
+                             QTextEdit, QLabel, QToolButton, QCheckBox)
 
 from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui import panel_title
@@ -20,6 +21,7 @@ from gui.mainbin.mainbin_editor import (
     _mainbin_entries, compute_pool_state, detect_build, _is_flowable, UnsupportedExeError,
     categorize_entries, PINNED_CATEGORY,
 )
+from gui.mainbin import mainbin_parser
 from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
@@ -126,6 +128,19 @@ class MainExeViewer(QWidget):
         # means a font of the console's own rather than the page's.
         self.preview = FontPreview(big=False, style="notice",
                                    console_font=True)
+        # Type a byte, see the glyph that byte draws. Off, a high byte
+        # reads as Latin-1, which is right for the stock discs; on, it
+        # reads and previews as {$XX} - the only way to use a letter
+        # drawn into a spare font-page cell. See mainbin_parser.
+        self.glyph_bytes = QCheckBox("Bytes as {$XX} glyphs")
+        self.glyph_bytes.setToolTip(
+            "Show every non-ASCII byte as {$XX} and preview it as font "
+            "page cell 0xXX, instead of reading it as a Latin-1 "
+            "character.\n\nThis is how a glyph drawn into a spare cell "
+            "gets used: put a letter in cell 160 and type {$A0}. What "
+            "gets written to the file is the same byte either way.")
+        self.glyph_bytes.toggled.connect(self._on_glyph_bytes)
+        preview_side_layout.addWidget(self.glyph_bytes)
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)
@@ -151,6 +166,16 @@ class MainExeViewer(QWidget):
 
         self.tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
         self.text_edit.textChanged.connect(self._on_text_changed)
+
+    def _on_glyph_bytes(self, on):
+        """Re-read the pool in the other spelling.
+
+        Decoding is what changes, so the whole pool is scanned again -
+        the entries on screen are the old spelling until it is."""
+        mainbin_parser.set_glyph_bytes(on)
+        self.preview.raw_cells = on
+        if self.exe_path:
+            self.load_exe(self.exe_path)
 
     def load_exe(self, exe_path):
         """Scan exe_path's string pool and populate the tree. Safe to call
@@ -240,6 +265,11 @@ class MainExeViewer(QWidget):
         self.preview.set_text(current_text)
         self.text_edit.setReadOnly(pinned)
         self._loading = False
+
+        entry = self._entries_by_offset[offset]
+        print(f"selected: MAIN.EXE string @ 0x{offset:X}  "
+              f"{entry.get('length', len(current_text))} bytes  "
+              f"{len(current_text)} chars")
 
         self._update_status(offset, current_text)
 
@@ -342,6 +372,55 @@ class MainExeViewer(QWidget):
                 f"Text pool: {used} / {capacity} bytes used - OVER BUDGET by {-free} "
                 f"byte(s). Shorten some entries before saving."
             )
+
+    def apply_import(self, texts):
+        """Put imported text into the pool.
+
+        Returns (offsets applied, offsets refused as pinned, ids that
+        named nothing here). A pinned entry is refused rather than
+        written: it has no reference the repacker can move, so its text
+        would either be dropped or land on top of something else. A
+        build whose tables are not mapped has no flowable entries at
+        all, which is what refuses the whole import there."""
+        from gui.txtd import translation_io
+
+        changed, missed = translation_io.apply_pool(self.entries, texts)
+        applied, pinned = [], []
+        for offset, text in sorted(changed.items()):
+            if not _is_flowable(offset, self.build):
+                pinned.append(offset)
+                continue
+            self._entries_by_offset[offset]["text"] = text
+            if text == self._original_texts.get(offset):
+                self._edited_offsets.discard(offset)
+            else:
+                self._edited_offsets.add(offset)
+            self._exported_offsets.discard(offset)
+            applied.append(offset)
+            item = self._entry_items.get(offset)
+            if item is not None:
+                self._set_item_state(item, offset)
+        if applied:
+            self._update_pool_label()
+            self.content_changed.emit()
+            self._reshow_current(applied)
+        return applied, pinned, missed
+
+    def _reshow_current(self, applied):
+        """The selected entry is still on screen holding its old text if
+        the import changed it."""
+        item = self._current_entry_item
+        offset = None if item is None else item.data(ENTRY_LOCATION_ROLE)
+        if offset is None or offset not in applied:
+            return
+        self._loading = True
+        try:
+            text = self._entries_by_offset[offset]["text"]
+            self.text_edit.setPlainText(text)
+            self.preview.set_text(text)
+        finally:
+            self._loading = False
+        self._update_status(offset, text)
 
     def pending_edits_for_pool(self):
         """{offset: text} for every flowable entry currently different

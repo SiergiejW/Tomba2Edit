@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 
-version = "0.3.5"
+version = "0.3.6"
 
 
 def _install_crash_report():
@@ -55,4 +55,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

@@ -44,6 +44,7 @@ class SfxPanel(QWidget):
         self.pick.clicked.connect(self._browse)
 
         self.transport = AudioTransport(
+            source="SFX",
             columns=["Index", "Bank", "Slot", "Length", "Loop"], pitch=True)
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)

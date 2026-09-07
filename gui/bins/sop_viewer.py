@@ -9,13 +9,15 @@ reference table and shared "blank" pointer this relies on).
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
-from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QSplitter, QLabel, QToolButton, QTextEdit
+from PyQt6.QtWidgets import (QTreeView, QWidget, QVBoxLayout, QSplitter,
+                             QLabel, QToolButton, QTextEdit, QCheckBox)
 
 from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui.margin_text_edit import MarginTextEdit
 from gui import panel_title
 from gui.txtd.font_preview import FontPreview
 from gui.bins.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
+from gui.mainbin import mainbin_parser
 from gui.mainbin.mainbin_parser import encode_bytes, MainBinParseError
 
 STATUS_WARNING_COLOR = "#c0392b"
@@ -107,6 +109,17 @@ class SopViewer(QWidget):
             panel_title.make_panel_title("In-game preview"))
         # No box: this text is drawn straight onto the scene.
         self.preview = FontPreview(big=True, style=None)
+        # The same glyph-byte switch the MAIN.EXE editor has - SOP
+        # shares its encoder, so it shares the problem and the fix.
+        self.glyph_bytes = QCheckBox("Bytes as {$XX} glyphs")
+        self.glyph_bytes.setToolTip(
+            "Show every non-ASCII byte as {$XX} and preview it as font "
+            "page cell 0xXX, instead of reading it as a Latin-1 "
+            "character.\n\nThis is how a glyph drawn into a spare cell "
+            "gets used: put a letter in cell 160 and type {$A0}. What "
+            "gets written to the file is the same byte either way.")
+        self.glyph_bytes.toggled.connect(self._on_glyph_bytes)
+        preview_side_layout.addWidget(self.glyph_bytes)
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)
@@ -132,6 +145,13 @@ class SopViewer(QWidget):
 
         self.tree.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
         self.text_edit.textChanged.connect(self._on_text_changed)
+
+    def _on_glyph_bytes(self, on):
+        """Re-read the story text in the other spelling."""
+        mainbin_parser.set_glyph_bytes(on)
+        self.preview.raw_cells = on
+        if self.sop_path:
+            self.load_sop(self.sop_path)
 
     def load_sop(self, sop_path):
         """Scan sop_path's story text and populate the tree. For a build
@@ -198,6 +218,11 @@ class SopViewer(QWidget):
         self.text_edit.setReadOnly(not editable)
         self._loading = False
 
+        entry = self._entries_by_offset[offset]
+        print(f"selected: SOP.BIN string @ 0x{offset:X}  "
+              f"{entry.get('length', len(current_text))} bytes  "
+              f"{len(current_text)} chars")
+
         self._update_status(offset, current_text)
 
     def _on_text_changed(self):
@@ -222,6 +247,47 @@ class SopViewer(QWidget):
         self._update_status(offset, new_text)
         self._update_pool_label()
         self.content_changed.emit()
+
+    def apply_import(self, texts):
+        """Put imported text into the story pool.
+
+        Returns (offsets applied, offsets refused, ids that named
+        nothing here). The trailing filler is refused - it is alignment
+        padding with no reference pointing at it - and so is every
+        entry on a build whose layout is not mapped."""
+        from gui.txtd import translation_io
+
+        changed, missed = translation_io.apply_pool(self.entries, texts)
+        applied, pinned = [], []
+        for offset, text in sorted(changed.items()):
+            if self.build is None or self._is_trailing_filler(offset):
+                pinned.append(offset)
+                continue
+            self._entries_by_offset[offset]["text"] = text
+            if text == self._original_texts.get(offset):
+                self._edited_offsets.discard(offset)
+            else:
+                self._edited_offsets.add(offset)
+            self._exported_offsets.discard(offset)
+            applied.append(offset)
+            item = self._entry_items.get(offset)
+            if item is not None:
+                self._set_item_state(item, offset)
+        if applied:
+            self._update_pool_label()
+            self.content_changed.emit()
+            item = self._current_entry_item
+            here = None if item is None else item.data(ENTRY_LOCATION_ROLE)
+            if here in applied:
+                self._loading = True
+                try:
+                    text = self._entries_by_offset[here]["text"]
+                    self.text_edit.setPlainText(text)
+                    self.preview.set_text(text)
+                finally:
+                    self._loading = False
+                self._update_status(here, text)
+        return applied, pinned, missed
 
     def _set_item_state(self, item, offset):
         if offset in self._edited_offsets:

@@ -51,6 +51,7 @@ class LevelEditorPanel(QWidget):
         super().__init__(parent)
         self.dat_path = None
         self.idx_path = None
+        self.chunk = None
         self.overlay_for_area = lambda _chunk: None
         self.vram_for_area = lambda _chunk: None
         # MAIN.EXE, where the routines that decide what each object is
@@ -249,6 +250,8 @@ class LevelEditorPanel(QWidget):
 
     def load_area(self, chunk):
         self._stop_cycling()
+        # Kept so a printed selection can say which area it is in.
+        self.chunk = chunk
         overlay = self.overlay_for_area(chunk)
         scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
                                   self.exe_path)
@@ -460,8 +463,38 @@ class LevelEditorPanel(QWidget):
             return None
         return instances[index]
 
+    def _print_selection(self, instance):
+        """Name what was picked in the level by where it is written.
+
+        An object is a record in an overlay's placement table, so that -
+        table, record number, file offset - is what identifies it; the
+        model it draws with is named by the DAT ids it comes from."""
+        if instance is None:
+            print("selected: nothing")
+            return
+        area = f"AREA_{self.chunk:02X}" if self.chunk is not None else "level"
+        bits = [f"{area} {instance.role} #{instance.index}",
+                f"'{instance.label}'"]
+        placement = instance.placement
+        if placement is not None:
+            bits.append(f"kind {placement.kind} slot {placement.slot}")
+            bits.append(f"handler 0x{placement.handler:X}"
+                        if isinstance(placement.handler, int)
+                        else f"handler {placement.handler}")
+            bits.append(f"record {placement.index} of table {placement.table}"
+                        f" @ 0x{placement.offset:X} in the overlay")
+        if instance.room is not None:
+            bits.append(f"room MDAT {instance.room}")
+        if instance.sources:
+            bits.append("model " + ", ".join(f"id {f} g{g}"
+                                             for f, g in instance.sources))
+        bits.append(f"at ({instance.x:.0f}, {instance.y:.0f}, "
+                    f"{instance.z:.0f}) turned {instance.angle:.0f} deg")
+        print("selected: " + "  ".join(bits))
+
     def _show_details(self, index):
         instance = self._instance(index)
+        self._print_selection(instance)
         if instance is None:
             self.details.setText("Click something in the view, or pick a row.")
             for box in self.boxes.values():

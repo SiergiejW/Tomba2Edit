@@ -431,10 +431,16 @@ class DRWAViewer(QWidget):
         if bounds:
             where = (f", world X {bounds[0]}..{bounds[1]} "
                      f"Y {bounds[2]}..{bounds[3]} Z {bounds[4]}..{bounds[5]}")
-        self._update_info(
-            f"cell ({group.col},{group.row}) = 0x{group.pointer:04X} -> "
-            f"0x{self.drwa.address + group.offset:08X}: group {group.index}, "
-            f"{group.tris} tris, {group.quads} quads, 0x{group.size:X} bytes{where}")
+        line = (f"cell ({group.col},{group.row}) = 0x{group.pointer:04X} -> "
+                f"0x{self.drwa.address + group.offset:08X}: group "
+                f"{group.index}, {group.tris} tris, {group.quads} quads, "
+                f"0x{group.size:X} bytes{where}")
+        self._update_info(line)
+        print(f"selected: DRWA @ 0x{self.drwa.address:X}  cell "
+              f"{group.cell} ({group.col},{group.row})  group {group.index} "
+              f"@ 0x{self.drwa.address + group.offset:X} "
+              f"(ptr 0x{group.pointer:04X}, +0x{group.offset:X})  "
+              f"{group.tris} tris  {group.quads} quads  0x{group.size:X} bytes")
 
     def _apply_selection(self, scroll_table=True):
         group = self._selected

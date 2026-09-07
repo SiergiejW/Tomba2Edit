@@ -102,6 +102,8 @@ class SMSTGroup:
     vertex_count: int = 0
     first_face: int = 0
     face_count: int = 0
+    first_polygon: int = 0
+    polygon_count: int = 0
     bounds: tuple = ()      # (x0, x1, y0, y1, z0, z1), () when empty
 
     @property
@@ -144,11 +146,18 @@ def _color(data, ind, r, g, b, low):
     return out
 
 
-def _read_packets(data, at, count, stride, layout, codes, model):
+def _read_packets(data, at, count, stride, layout, codes, model, group):
     """Decode `count` packets of one kind into `model`, appending to the
-    same arrays gui/mdat/mdat.py fills so both feed the same viewer."""
+    same arrays gui/mdat/mdat.py fills so both feed the same viewer.
+
+    Each packet also gets a record in model['polygons'], shaped exactly
+    like gui/mdat/mdat.py's so gui/polygon_pick.py can pick and describe
+    either format without knowing which it has. 'address' is absolute in
+    the DAT, which is what makes a picked face addressable in a hex
+    editor."""
     verts, uvs, colors = layout
-    for _ in range(count):
+    kind = "tri" if len(verts) == 3 else "quad"
+    for slot in range(count):
         ind = at + 3
         code = data[ind]
         transparent = bool(codes.get(code, 0))
@@ -161,6 +170,7 @@ def _read_packets(data, at, count, stride, layout, codes, model):
         clut = _clut_address(struct.unpack_from("<h", data, ind + 7)[0])
 
         base = len(model["vertices"])
+        packet_uvs = []
         for (ox, oy, oz), (ou, ov), (cr, cg, cb, low) in zip(verts, uvs, colors):
             x = struct.unpack_from("<h", data, ind + ox)[0]
             y = struct.unpack_from("<h", data, ind + oy)[0]
@@ -169,8 +179,10 @@ def _read_packets(data, at, count, stride, layout, codes, model):
             model["vertex_colors"].append(_color(data, ind, cr, cg, cb, low))
             model["texture_coords"].append(
                 psx_vram.atlas_uv(data[ind + ou], data[ind + ov], page))
+            packet_uvs.append((data[ind + ou], data[ind + ov]))
 
         info = (page, clut, transparent, blend)
+        first_face = len(model["faces"])
         if len(verts) == 3:
             model["faces"].append([base + 2, base + 1, base])
             model["texture_info"].append(info)
@@ -180,6 +192,24 @@ def _read_packets(data, at, count, stride, layout, codes, model):
             model["faces"].append([base + 3, base + 2, base])
             model["texture_info"].extend((info, info))
             model["quad_count"] += 1
+        model["polygons"].append({
+            "index": len(model["polygons"]),
+            "group": group.index,
+            "kind": kind,
+            "slot": slot,
+            # Absolute in the DAT, so it can be typed into a hex editor.
+            "address": model["address"] + at,
+            "type": code,
+            "first_vertex": base,
+            "vertex_count": len(verts),
+            "first_face": first_face,
+            "face_count": len(model["faces"]) - first_face,
+            "page": page,
+            "clut": clut,
+            "transparent": transparent,
+            "blend": blend,
+            "texels": packet_uvs,
+        })
         at += stride
 
 
@@ -195,6 +225,7 @@ def parse_smst(data, address=0):
         "faces": [],
         "texture_coords": [],
         "texture_info": [],
+        "polygons": [],
         "tri_count": 0,
         "quad_count": 0,
         "groups": [],
@@ -206,13 +237,15 @@ def parse_smst(data, address=0):
         group = SMSTGroup(index=index, offset=offset, tris=tris, quads=quads,
                           size=size,
                           first_vertex=len(model["vertices"]),
-                          first_face=len(model["faces"]))
+                          first_face=len(model["faces"]),
+                          first_polygon=len(model["polygons"]))
         at = offset + GROUP_HEADER
         _read_packets(data, at, tris, TRI_SIZE,
-                      (TRI_VERTS, TRI_UVS, TRI_COLORS), TRIANGLES, model)
+                      (TRI_VERTS, TRI_UVS, TRI_COLORS), TRIANGLES, model, group)
         _read_packets(data, at + tris * TRI_SIZE, quads, QUAD_SIZE,
-                      (QUAD_VERTS, QUAD_UVS, QUAD_COLORS), QUADS, model)
+                      (QUAD_VERTS, QUAD_UVS, QUAD_COLORS), QUADS, model, group)
 
+        group.polygon_count = len(model["polygons"]) - group.first_polygon
         group.vertex_count = len(model["vertices"]) - group.first_vertex
         group.face_count = len(model["faces"]) - group.first_face
         own = model["vertices"][group.first_vertex:]
@@ -225,13 +258,42 @@ def parse_smst(data, address=0):
     return model
 
 
+# Where an edit that has not been written to the disc yet can be found.
+# MainWindow sets this to look in its own pending_file_edits, so there is
+# one source of truth rather than a second copy that can drift: revert
+# the edit there and this stops answering for it.
+#
+# It lives at the bottom of load_smst rather than in any one view because
+# every view reaches a model through here - the SMST tab, the ANMP tab's
+# embedded viewer, the skeleton search, the export. A part pasted in one
+# of them is then the same part in all of them, with nothing to keep in
+# step by hand.
+_pending_source = None
+
+
+def set_pending_source(lookup):
+    """`lookup(address) -> bytes or None` for unsaved edits."""
+    global _pending_source
+    _pending_source = lookup
+
+
+def pending_blob(address):
+    return _pending_source(address) if _pending_source else None
+
+
 def load_smst(dat_file_path, address, size):
-    """Read and parse the SMST blob at `address` in the DAT."""
-    if not size:
-        raise FormatError("no size for this entry, so there is no blob to read")
-    with open(dat_file_path, "rb") as f:
-        f.seek(address)
-        data = f.read(size)
+    """Read and parse the SMST blob at `address` in the DAT.
+
+    An edit staged but not yet saved wins over what the file holds, so
+    what is on screen is what would be written."""
+    data = pending_blob(address)
+    if data is None:
+        if not size:
+            raise FormatError(
+                "no size for this entry, so there is no blob to read")
+        with open(dat_file_path, "rb") as f:
+            f.seek(address)
+            data = f.read(size)
     return parse_smst(data, address=address)
 
 

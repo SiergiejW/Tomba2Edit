@@ -92,7 +92,9 @@ class VoicePanel(QWidget):
         self.extract.clicked.connect(self._extract)
         self.extract.setEnabled(False)
 
-        self.transport = AudioTransport(columns=["Index", "Channel", "Sectors", "Length"])
+        self.transport = AudioTransport(
+            source="Dialogues",
+            columns=["Index", "Channel", "Sectors", "Length"])
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)

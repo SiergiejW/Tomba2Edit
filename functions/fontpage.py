@@ -263,33 +263,106 @@ def export_png(cd_folder, path, clut=None, spec=None):
     spec = spec or FONTS
     page = read_page(cd_folder, spec)
     image = Image.new("P", (spec.width, spec.height))
+    alphas = None
     if clut:
         flat = []
         for r, g, b, _a in clut:
             flat += [r, g, b]
         flat += [0] * (768 - len(flat))
         image.putpalette(flat)
+        # The alpha has to go into the file too, as a tRNS chunk. Left
+        # out - which it was - index 0 exported as opaque black, so an
+        # editor had no way to tell "draw nothing" from "draw black",
+        # and anything that round-trips the file through RGBA brought
+        # every transparent texel back as a solid colour.
+        alphas = bytes(a for _r, _g, _b, a in clut)
     else:
         image.putpalette(_PALETTE)
     image.putdata([v for row in page for v in row])
-    image.save(path)
+    if alphas:
+        image.save(path, transparency=alphas)
+    else:
+        image.save(path)
     return path
 
 
-def import_png(cd_folder, path, spec=None):
-    """Read an indexed PNG back into the page and rewrite the IMG."""
+def _palettes_match(image, clut):
+    """Whether an indexed PNG still carries the palette it was exported
+    with, entry for entry.
+
+    If it does, its pixel values are the page's own 4-bit indices and can
+    be used as they stand. If it does not, an editor has rebuilt the
+    palette and the indices mean something else entirely."""
+    if not clut or image.mode != "P":
+        return False
+    raw = image.getpalette() or []
+    for index, (r, g, b, _a) in enumerate(clut[:16]):
+        at = index * 3
+        if raw[at:at + 3] != [r, g, b]:
+            return False
+    return True
+
+
+def _index_of(pixel, clut):
+    """The palette entry an imported RGBA pixel becomes."""
+    if pixel[3] < 8:
+        return 0
+    want = pixel[:3]
+    best, at = None, 0
+    for index, entry in enumerate(clut[:16]):
+        if not entry[3]:
+            continue
+        gap = sum(abs(a - b) for a, b in zip(want, entry[:3]))
+        if gap == 0:
+            return index
+        if best is None or gap < best:
+            best, at = gap, index
+    return at
+
+
+def import_png(cd_folder, path, spec=None, clut=None, keep_cluts=True):
+    """Read a PNG back into the page and rewrite the IMG.
+
+    The bottom rows of a page are NOT pixels. From `spec.clut_top` down
+    they are the palettes, four 4-bit texels to a 16-bit colour word (see
+    read_cluts_from), and they only survive a round trip if their exact
+    index values come back untouched. An external editor does not know
+    that: open the exported PNG in Photoshop, save it, and it rebuilds
+    the palette and renumbers every pixel - which leaves the glyphs
+    looking right and the palettes replaced with noise. That is what
+    turns a transparent texel into an opaque colour in game.
+
+    So by default those rows are taken from the disc rather than from the
+    PNG, and the glyph rows above them are matched back by COLOUR when
+    the file no longer carries the palette it was exported with. Pass
+    `keep_cluts=False` to import the palette rows too, which is only
+    right for a PNG this tool wrote and nothing else has touched."""
     spec = spec or FONTS
     image = Image.open(path)
     if image.size != (spec.width, spec.height):
         raise FontPageError(
             f"{os.path.basename(path)} is {image.size[0]}x{image.size[1]}, "
             f"and {spec.name} is {spec.width}x{spec.height}.")
-    if image.mode != "P":
+
+    exact = image.mode == "P" and (clut is None or _palettes_match(image, clut))
+    if exact:
+        page = list(image.getdata())
+    elif clut:
+        rgba = image.convert("RGBA")
+        page = [_index_of(pixel, clut) for pixel in rgba.getdata()]
+    else:
         raise FontPageError(
-            f"{os.path.basename(path)} is mode {image.mode}; the page has to "
-            "stay indexed (mode P), since its pixels are CLUT indices.")
-    return write_page(cd_folder, list(image.getdata()),
-                      what=os.path.basename(path), spec=spec)
+            f"{os.path.basename(path)} is mode {image.mode} and no palette "
+            "was given to read its colours against, so its pixels cannot be "
+            "turned back into CLUT indices.")
+
+    if keep_cluts and spec.clut_top < spec.height:
+        disc = read_page(cd_folder, spec)
+        for row in range(spec.clut_top, spec.height):
+            at = row * spec.width
+            page[at:at + spec.width] = disc[row]
+
+    return write_page(cd_folder, page, what=os.path.basename(path), spec=spec)
 
 
 def write_page(cd_folder, page, what="the page", spec=None):
