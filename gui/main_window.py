@@ -51,7 +51,7 @@ from functions.iso_handler import ISOHandler
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
-from gui.img.img_viewer import IMGViewer
+from gui.img.img_viewer import IMGViewer, chunk_bounds as img_browser_bounds
 from gui.img.img_browser import IMGBrowser
 from PIL.ImageQt import ImageQt  # Import ImageQt for converting PIL images to QPixmap
 
@@ -199,15 +199,20 @@ class MainWindow(QMainWindow):
         self.font_page_view = FontPageView()
         # A saved glyph changes chunk 0's VRAM, so anything already
         # showing VRAM is looking at a stale copy of it.
-        # Whether the font/title page has been written to the extracted
-        # TOMBA2.IMG since the disc was opened. Exports carry every other
-        # file over from the ORIGINAL image, so without this a glyph
-        # drawn in the Translation tab reaches the copy on disc and never
-        # reaches the disc that gets built from it - the text would come
-        # out referring to a letter whose artwork was never shipped.
+        # Whether the extracted TOMBA2.IMG has been written to since the
+        # disc was opened - by a font/title page save, or by a texture
+        # migration. Exports carry every other file over from the
+        # ORIGINAL image, so without this the edit reaches the copy on
+        # disc and never reaches the disc built from it.
+        #
+        # A migration MUST set this. It rewrites TOMBA2.IDX as well, and
+        # the repacker carries those new img_start/img_end straight
+        # through (functions/repacker.write_new_idx) - so shipping the
+        # new IDX beside the original IMG points every chunk at the
+        # wrong offset and the whole disc's artwork comes out jumbled.
         # Which disc is open - see apply_build_table.
         self.build = ""
-        self.font_page_dirty = False
+        self.img_dirty = False
         self.font_page_view.saved.connect(self._font_page_saved)
 
         # address -> the addresses of byte-identical copies of it, built
@@ -1243,6 +1248,147 @@ class MainWindow(QMainWindow):
             return
         if self._confirm_replacement(item, data, chosen):
             self._stage_file_edit(item, data, chosen)
+            self._offer_texture_migration(item, data, source)
+
+    # --- textures after a swap ------------------------------------------
+
+    def _img_idx_problems(self, replacements):
+        """Whether the IDX and IMG about to be written agree.
+
+        Either may be coming from `replacements` or from the working
+        folder, so both are resolved the same way before checking."""
+        from functions import img_writer
+        cd = os.path.dirname(self.dat_file) if self.dat_file else None
+        if not cd:
+            return []
+
+        def resolve(name):
+            if name in replacements:
+                return replacements[name]
+            path = os.path.join(cd, name)
+            if not os.path.exists(path):
+                return None
+            with open(path, "rb") as f:
+                return f.read()
+
+        idx, img = resolve("TOMBA2.IDX"), resolve("TOMBA2.IMG")
+        if idx is None or img is None:
+            return []
+        return img_writer.check(idx, img)
+
+    def _note_img_written(self):
+        """The working TOMBA2.IMG has been rewritten by something other
+        than a font page save - see img_dirty."""
+        self.img_dirty = True
+        self._chunk_vram_cache = {}
+        self._refresh_edit_status()
+
+    def _chunk_vram(self, area):
+        """One area's IMG chunk, decompressed. Cached - a check walks
+        several areas and each decompress is not cheap."""
+        cache = getattr(self, "_chunk_vram_cache", None)
+        if cache is None:
+            cache = self._chunk_vram_cache = {}
+        if area not in cache:
+            cd = os.path.dirname(self.dat_file)
+            try:
+                start, end = img_browser_bounds(
+                    os.path.join(cd, "TOMBA2.IDX"), area)
+                if end <= start:
+                    cache[area] = None
+                else:
+                    with open(os.path.join(cd, "TOMBA2.IMG"), "rb") as f:
+                        f.seek(start)
+                        cache[area] = decode_vram_bytes(f.read(end - start))
+            except Exception:
+                cache[area] = None
+        return cache[area]
+
+    def _offer_texture_migration(self, item, data, source_item):
+        """After an SMST is swapped in, say whether its art came with it.
+
+        A swap copies bytes, and a model's bytes do not contain its
+        textures - they contain page numbers and palette addresses,
+        which mean whatever the destination area happens to have loaded
+        there. So the swap can succeed and the model still draw wrong,
+        which is exactly what happens putting Tuxedo Tomba where the
+        standard model was. This is the moment to notice."""
+        from functions import texture_migrate, vram_map
+        from functions.format_detect import FormatError, smst_groups
+        try:
+            smst_groups(data)
+        except (FormatError, ValueError):
+            return                      # not a model; nothing to check
+        entry = self._entry_of(item)
+        source_entry = self._entry_of(source_item)
+        if entry is None or source_entry is None or not self.dat_file:
+            return
+        here, came_from = entry.get("area"), source_entry.get("area")
+        if here is None or came_from is None:
+            return
+        try:
+            shards = vram_map.chunk_shards(
+                os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"),
+                os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG"))
+            source_vram = vram_map.loaded_vram(shards, self._chunk_vram,
+                                               came_from)
+            dest_vram = vram_map.loaded_vram(shards, self._chunk_vram, here)
+            boxes, cluts = texture_migrate.survey(data)
+            keep_pages, keep_cluts = texture_migrate.already_there(
+                data, source_vram, dest_vram)
+        except Exception as e:
+            print(f"[textures] couldn't check the swap: {e}")
+            return
+
+        missing_pages = sorted(set(boxes) - keep_pages)
+        missing_cluts = sorted(set(cluts) - keep_cluts)
+        if not missing_pages and not missing_cluts:
+            print(f"[textures] {item.text()}: every page and palette it "
+                  f"samples is already in AREA_{here:02X} - no migration "
+                  f"needed.")
+            return
+
+        answer = QMessageBox.question(
+            self, "The textures did not come with it",
+            f"{item.text()} draws from "
+            + (f"texture page(s) {', '.join(str(p) for p in missing_pages)}"
+               if missing_pages else "")
+            + (" and " if missing_pages and missing_cluts else "")
+            + (f"{len(missing_cluts)} palette(s)" if missing_cluts else "")
+            + f" that AREA_{here:02X} does not have loaded - they are in "
+            f"AREA_{came_from:02X}, where this model came from.\n\n"
+            f"It will draw with whatever this area happens to keep at "
+            f"those addresses until the art is copied somewhere the "
+            f"areas you use can reach.\n\nSet that up now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if answer != QMessageBox.StandardButton.Yes:
+            print(f"[textures] {item.text()} still points at page(s) "
+                  f"{missing_pages} and {len(missing_cluts)} palette(s) "
+                  f"AREA_{here:02X} does not load.")
+            return
+        self.open_texture_migration(item, data, source_vram, preselect=here)
+
+    def open_texture_migration(self, item, data, source_vram, preselect=None):
+        """The placement dialog, staging whatever it decides on `item`."""
+        from gui.smst.migrate_dialog import MigrateDialog
+        dialog = MigrateDialog(data, source_vram,
+                               os.path.dirname(self.dat_file),
+                               item.text(), self)
+        if preselect is not None:
+            dialog.tick_area(preselect)
+        if dialog.exec() and dialog.new_blob is not None:
+            self._stage_file_edit(item, dialog.new_blob,
+                                  f"{item.text()} with migrated textures")
+            self._chunk_vram_cache = {}
+            # The dialog wrote TOMBA2.IMG and TOMBA2.IDX on disc. Without
+            # this an export ships the ORIGINAL IMG beside the rewritten
+            # IDX, which points every chunk at the wrong offset - see
+            # img_dirty.
+            self.img_dirty = True
+            self._refresh_edit_status()
+            print(f"[textures] {item.text()}: UVs rewritten and staged; "
+                  f"TOMBA2.IMG and TOMBA2.IDX will be shipped with it.")
 
     def _entries_of_type(self, kind, exclude=None):
         """[(row name, item), ...] - what a swap can choose from, listed
@@ -1993,9 +2139,9 @@ class MainWindow(QMainWindow):
         return dicts.glyph_top(getattr(self, "build", dicts.DEFAULT_BUILD))
 
     def _edited_img(self):
-        """The working TOMBA2.IMG, if the font page has been written to
-        it, else None. See font_page_dirty."""
-        if not self.font_page_dirty or not getattr(self, "dat_file", None):
+        """The working TOMBA2.IMG if anything has written to it, else
+        None. See img_dirty."""
+        if not self.img_dirty or not getattr(self, "dat_file", None):
             return None
         path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
         if not os.path.exists(path):
@@ -2036,14 +2182,14 @@ class MainWindow(QMainWindow):
         """Reload whatever is showing the VRAM the font page lives in.
 
         Also marks the IMG as needing to travel with the next export -
-        see font_page_dirty.
+        see img_dirty.
 
         The page is chunk 0 of TOMBA2.IMG, which IS AREA_00's VRAM, so a
         glyph written here changes what the VRAM and CVRAM views draw.
         They read the IMG when a row is picked and hold the image after
         that, so without this the edit is on the disc and invisible
         everywhere but the Translation tab."""
-        self.font_page_dirty = True
+        self.img_dirty = True
         self._refresh_edit_status()
         self._area_vram_cache = {}
         selected = self.tree_view.selectionModel().selectedIndexes()
@@ -2281,7 +2427,7 @@ class MainWindow(QMainWindow):
         sop_edits = self.bins_viewer.all_edits()
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.font_page_dirty):
+                and not self.img_dirty):
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
@@ -2328,6 +2474,19 @@ class MainWindow(QMainWindow):
                                      f"Could not rebuild the files: {exc}")
                 return
 
+
+            # An IDX whose offsets do not match the IMG beside it makes
+            # every chunk unreadable, and nothing says so until the game
+            # runs - see functions/img_writer.check.
+            problems = self._img_idx_problems(replacements)
+            if problems:
+                QMessageBox.critical(
+                    self, "Save refused",
+                    "TOMBA2.IDX and TOMBA2.IMG do not agree, and shipping "
+                    "them together would make the whole disc's artwork "
+                    "unreadable:\n\n" + "\n".join(problems[:6]))
+                return
+
             self.statusBar().showMessage("Copying the track...", 0)
             QApplication.processEvents()
             try:
@@ -2368,7 +2527,7 @@ class MainWindow(QMainWindow):
             self.mainexe_viewer.mark_exported()
         if sop_edits:
             self.bins_viewer.mark_exported()
-        self.font_page_dirty = False
+        self.img_dirty = False
         self._refresh_edit_status()
 
     def _copy_audio_track(self, source, target):
@@ -2412,7 +2571,7 @@ class MainWindow(QMainWindow):
         sop_edits = self.bins_viewer.all_edits()
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.font_page_dirty):
+                and not self.img_dirty):
             QMessageBox.information(
                 self, "Nothing to export",
                 "No text, replaced file, MAIN.EXE, SOP.BIN or font page "
@@ -2917,7 +3076,7 @@ class MainWindow(QMainWindow):
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
         has_any_edits = (bool(edits) or bool(mainexe_edits)
-                         or bool(sop_edits) or self.font_page_dirty)
+                         or bool(sop_edits) or self.img_dirty)
 
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
@@ -3465,6 +3624,10 @@ class MainWindow(QMainWindow):
                                 # ordinary whole-file replacement, so it
                                 # goes out through the same repack that
                                 # can resize a DAT entry.
+                                self.smst_panel.cd_folder = os.path.dirname(
+                                    self.dat_file)
+                                self.smst_panel.img_written = (
+                                    self._note_img_written)
                                 self.smst_panel.stage_edit = (
                                     lambda blob, label, item=selected_item,
                                     at=dat_start + offset:

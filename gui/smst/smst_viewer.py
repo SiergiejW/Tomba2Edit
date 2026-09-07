@@ -74,6 +74,13 @@ WEIGHTS = {HALF: 0.5, ADD: 1.0, SUBTRACT: 1.0, QUARTER: 0.25}
 POLYGON_OUTLINE = (1.0, 1.0, 0.2)
 GROUP_OUTLINE = (0.75, 0.55, 0.1)
 
+# The placeholder drawn where a spread-out part has no geometry. Dim and
+# grey on purpose: it marks a hole in the model, and should not read as
+# something that is there.
+EMPTY_MARKER_COLOR = (0.42, 0.45, 0.50)
+# How much of its grid cell the marker fills.
+EMPTY_MARKER_SIZE = 0.4
+
 # PSX draw modes, by the type byte a packet carries - the same names
 # gui/mdat/mdat_panel.py uses, for the same bits.
 BLEND_NAMES = {0: "half", 1: "add", 2: "subtract", 3: "quarter"}
@@ -155,6 +162,14 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.outline_cbo = QOpenGLBuffer()
         self.outline_vertex_count = 0
         self._outline_arrays = None
+        # The placeholders for parts with no geometry, drawn only while
+        # spread out - see _empty_marker_lines.
+        self.marker_vao = QOpenGLVertexArrayObject()
+        self.marker_vbo = QOpenGLBuffer()
+        self.marker_cbo = QOpenGLBuffer()
+        self.marker_vertex_count = 0
+        self._marker_arrays = None
+        self._spread_step = 1.0
         # Rebuilt lazily, and thrown away whenever the pose or the
         # spread moves the vertices out from under it.
         self._pick_vertices = None
@@ -523,6 +538,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.draw_ranges = []
         self._arrays = None
         self._invalidate_pick_cache()
+        # The spread grid is worked out in here, so the placeholders
+        # standing on it are rebuilt at the same time.
+        self._marker_arrays = self._empty_marker_lines()
         # A new model means new palette textures, so anything bound to
         # the old ones has to go; load_animations() rebinds once
         # the groups below exist.
@@ -933,6 +951,43 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.outline_vao.release()
         GL.glEnable(GL.GL_DEPTH_TEST)
 
+    def _sync_markers(self):
+        if self._marker_arrays is None:
+            return
+        positions, colors = self._marker_arrays
+        self._marker_arrays = None
+        self.marker_vertex_count = positions.size // 3
+        if not self.marker_vertex_count:
+            return
+        if not self.marker_vao.isCreated():
+            self.marker_vao.create()
+        self.marker_vao.bind()
+        for buffer, array, location in ((self.marker_vbo, positions, 0),
+                                        (self.marker_cbo, colors, 1)):
+            if not buffer.isCreated():
+                buffer.create()
+            buffer.bind()
+            buffer.allocate(array.tobytes(), array.nbytes)
+            GL.glEnableVertexAttribArray(location)
+            GL.glVertexAttribPointer(location, 3, GL.GL_FLOAT, GL.GL_FALSE,
+                                     0, None)
+        self.marker_vao.release()
+
+    def _draw_empty_markers(self):
+        """Where the parts with no geometry sit on the spread grid.
+
+        Depth-tested, unlike the selection outline: a placeholder is a
+        thing standing in the grid among the others, not an annotation
+        over the top of them, so a part in front should hide it."""
+        self._sync_markers()
+        if not self.marker_vertex_count:
+            return
+        self.shader_program.setUniformValue("useTextures", False)
+        self.shader_program.setUniformValue("alpha", 1.0)
+        self.marker_vao.bind()
+        GL.glDrawArrays(GL.GL_LINES, 0, self.marker_vertex_count)
+        self.marker_vao.release()
+
     def export_to_gltf(self):
         """Write the model out, rigged if a skeleton has been found.
 
@@ -1175,6 +1230,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("texelClass", 0)
             self.shader_program.setUniformValue("blendWeight", 1.0)
         self.vao.release()
+        self._draw_empty_markers()
         self._draw_outline()
         if self.show_origin:
             # Untextured and at full alpha, whatever the model is drawn
@@ -1267,16 +1323,32 @@ class SMSTPanel(QWidget):
         # when nobody has said, and paste then says so rather than
         # pretending it wrote something.
         self.stage_edit = None
+        # The disc's CD folder, set by MainWindow - the IMG and
+        # IDX are needed to work out where a texture can go.
+        self.cd_folder = None
+        # Called when the migration dialog has written the IMG,
+        # so MainWindow knows the export must carry it.
+        self.img_written = None
 
         show_all = QPushButton("Show all", self)
         show_all.clicked.connect(self._show_all)
         isolate = QPushButton("Isolate selected", self)
         isolate.clicked.connect(self._isolate_selected)
+        self.migrate = QPushButton("Textures...", self)
+        self.migrate.setToolTip(
+            "Where this model's textures live, and whether they are "
+            "reachable from anywhere but the area they were packed "
+            "for.\n\nA model whose art sits in one level's own IMG "
+            "chunk draws wrong everywhere else; this copies what is "
+            "missing into the resident chunk and rewrites the model's "
+            "UVs to match.")
+        self.migrate.clicked.connect(self._open_migrate)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(show_all)
         buttons.addWidget(isolate)
+        buttons.addWidget(self.migrate)
 
         self.details = QLabel("Click a polygon in the view.", self)
         self.details.setWordWrap(True)
@@ -1387,7 +1459,44 @@ class SMSTPanel(QWidget):
                 f"Paste the copied part ({clip['tris']} tris, "
                 f"{clip['quads']} quads) over part {index}")
             paste.triggered.connect(lambda: self._paste_part(index))
+        menu.addSeparator()
+        clear = menu.addAction(f"Clear part {index} (make it empty)")
+        clear.setEnabled(not self.viewer.groups[index].empty
+                         if index < len(self.viewer.groups) else False)
+        clear.triggered.connect(lambda: self._clear_part(index))
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _open_migrate(self):
+        """Plan a texture migration for the whole model."""
+        from gui.smst.migrate_dialog import MigrateDialog
+        if not self.viewer.blob:
+            return
+        folder = self.cd_folder
+        if not folder:
+            QMessageBox.information(
+                self, "No disc open",
+                "The IMG and IDX have to be on hand to work out where a "
+                "texture could go, so open a disc first.")
+            return
+        if not self.viewer.vram_raw_bytes:
+            QMessageBox.information(
+                self, "No VRAM",
+                "This model has no VRAM loaded, so there is nothing to "
+                "read its textures out of.")
+            return
+        dialog = MigrateDialog(self.viewer.blob, self.viewer.vram_raw_bytes,
+                               folder, self.viewer.export_name or "model",
+                               self)
+        if dialog.exec() and dialog.new_blob is not None:
+            self._apply_edit(
+                dialog.new_blob,
+                "the model now points at the migrated textures.",
+                "Textures migrated", "migrated the model's textures")
+            # The dialog wrote TOMBA2.IMG and TOMBA2.IDX, and an export
+            # has to be told or it ships the original IMG beside the
+            # rewritten IDX - see MainWindow.img_dirty.
+            if self.img_written is not None:
+                self.img_written()
 
     def _copy_part(self, index):
         try:
@@ -1410,17 +1519,34 @@ class SMSTPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Paste failed", str(e))
             return
-        # Drawn before it is staged, and with no dialog in the way: the
-        # point of a paste is to look at it. Nothing is written to the
-        # disc either way until the ISO or the files are saved, so the
-        # only thing a confirmation would buy is a click.
-        # populate_table() unticks nothing and clears everything, so the
-        # parts that were hidden are put back afterwards - pasting into
-        # a model you had isolated a part of should not undo that.
+        self._apply_edit(blob, note, f"Pasted over part {index}",
+                         f"pasted a part over part {index}",
+                         extra=f"{clip['from']} -> part {index}. ")
+
+    def _clear_part(self, index):
+        if not self.viewer.blob:
+            return
+        try:
+            blob, note = smst_edit.clear_group(self.viewer.blob, index)
+        except Exception as e:
+            QMessageBox.critical(self, "Clear failed", str(e))
+            return
+        self._apply_edit(blob, note, f"Cleared part {index}",
+                         f"cleared part {index}")
+
+    def _apply_edit(self, blob, note, heading, label, extra=""):
+        """Show a rebuilt model, refresh the list, and stage the bytes.
+
+        No dialog on the way in: the point of an edit here is to look at
+        it, and nothing reaches the disc until the ISO or the files are
+        saved, so a confirmation would buy nothing but a click."""
+        # populate_table() re-ticks everything, so the parts that were
+        # hidden are put back afterwards - editing a model you had
+        # isolated a part of should not undo that.
         hidden = set(self.viewer.hidden_groups)
         if not self.viewer.show_blob(blob):
             QMessageBox.critical(
-                self, "Paste failed",
+                self, "Edit failed",
                 "The rebuilt model wouldn't parse, so nothing was changed.")
             return
         self.populate_table()
@@ -1428,14 +1554,13 @@ class SMSTPanel(QWidget):
             self._set_checks(lambda row: self.table.item(row, 0).data(
                 Qt.ItemDataRole.UserRole) not in hidden)
         if self.stage_edit is not None:
-            self.stage_edit(blob, f"pasted a part over part {index}")
+            self.stage_edit(blob, label)
             staged = "staged - save the ISO or the files to keep it"
         else:
             staged = ("NOT staged: this SMST wasn't opened from a disc row, "
                       "so it is on screen only")
-        print(f"pasted: {clip['from']} -> part {index}. {note} ({staged})")
-        self.details.setText(f"<b>Pasted over part {index}</b><br>{note}"
-                             f"<br><i>{staged}</i>")
+        print(f"{label}: {extra}{note} ({staged})")
+        self.details.setText(f"<b>{heading}</b><br>{note}<br><i>{staged}</i>")
 
     def _stem(self, polygon):
         """What an exported page or GIF is called: the part the polygon

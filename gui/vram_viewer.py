@@ -159,6 +159,9 @@ class VRAMCanvas(QWidget):
         # One rectangle in image coordinates to ring - what the IMG view
         # marks the selected shard with. None draws nothing.
         self.highlight = None
+        # Several more, as (rect, QColor, label): what the migration
+        # preview marks a proposed texture placement with.
+        self.highlights = []
         # How many image pixels one VRAM halfword column spans, so the
         # grid and the readout mean the same thing in every mode. At
         # 4bpp a halfword is FOUR texels - two per byte, two bytes to a
@@ -286,13 +289,18 @@ class VRAMCanvas(QWidget):
         painter.drawPixmap(target, self.pixmap, clipped)
         if self.show_grid:
             self._draw_grid(painter, source)
+        rings = list(self.highlights)
         if self.highlight is not None:
-            painter.setPen(QPen(QColor(255, 220, 40), 2))
-            painter.drawRect(QRectF(
-                (self.highlight.x() - source.x()) * self.zoom,
-                (self.highlight.y() - source.y()) * self.zoom,
-                self.highlight.width() * self.zoom,
-                self.highlight.height() * self.zoom))
+            rings.append((self.highlight, QColor(255, 220, 40), ""))
+        for rect, color, label in rings:
+            where = QRectF((rect.x() - source.x()) * self.zoom,
+                           (rect.y() - source.y()) * self.zoom,
+                           rect.width() * self.zoom,
+                           rect.height() * self.zoom)
+            painter.setPen(QPen(color, 2))
+            painter.drawRect(where)
+            if label:
+                painter.drawText(where.adjusted(2, -14, 0, 0), label)
 
     def show_rect(self, rect):
         """Ring a rectangle and bring it into view."""
