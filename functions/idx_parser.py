@@ -135,8 +135,17 @@ def _relabel_file_item(main_window, child, label_set):
         # The bytes do not match anything, but the slot might - a
         # translated or PAL-retimed file is still the same asset. See
         # LabelSet.by_slot().
+        #
+        # SDAT rows only. A trail row's (chunk, index) counts position
+        # in its area's TRAIL list, and the slot table counts position
+        # in the SDAT one - two different numberings in one key space.
+        # Looking a trail file up in it is not a near miss, it is a
+        # different file: swap a model into AREA_04's first trail entry
+        # and it comes back named after SDAT slot 04:0, which on the
+        # retail disc is "Fishermens hut windmill waterplant Models".
+        raw = child.data(Qt.ItemDataRole.UserRole)
         where = child.data(Qt.ItemDataRole.UserRole + 2)
-        if where:
+        if where and not (raw and raw[0] == "trail"):
             label = label_set.by_slot(where[0], where[1])
             by_position = label is not None
     name = label.name if label else ""

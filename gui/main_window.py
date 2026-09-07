@@ -26,6 +26,7 @@ from gui.scld.scld_parser import find_area_scld_location
 from gui.anmp.anmp_viewer import ANMPViewer
 from gui.anmp import game_rest
 from functions import pairings
+from functions import psx_vram
 from gui.smst import smst_parser
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
 from gui.sprt.sprt_viewer import SPRTViewer
@@ -1323,29 +1324,48 @@ class MainWindow(QMainWindow):
         source_entry = self._entry_of(source_item)
         if entry is None or source_entry is None or not self.dat_file:
             return
-        here, came_from = entry.get("area"), source_entry.get("area")
-        if here is None or came_from is None:
+        destinations = self._areas_reaching(entry)
+        sources = self._areas_reaching(source_entry)
+        if not destinations or not sources:
+            print("[textures] couldn't tell which areas these files belong "
+                  "to, so the swap was not checked.")
             return
         try:
+            cd = os.path.dirname(self.dat_file)
             shards = vram_map.chunk_shards(
-                os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"),
-                os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG"))
-            source_vram = vram_map.loaded_vram(shards, self._chunk_vram,
-                                               came_from)
-            dest_vram = vram_map.loaded_vram(shards, self._chunk_vram, here)
+                os.path.join(cd, "TOMBA2.IDX"), os.path.join(cd, "TOMBA2.IMG"))
             boxes, cluts = texture_migrate.survey(data)
-            keep_pages, keep_cluts = texture_migrate.already_there(
-                data, source_vram, dest_vram)
+            # Where the model's art really is. A trail file is reached
+            # from many areas and its textures sit in only one of them,
+            # so the source is the area that has the most of what it
+            # samples rather than whichever is listed first.
+            came_from, source_vram, best = None, None, -1
+            for area in sources:
+                vram = vram_map.loaded_vram(shards, self._chunk_vram, area)
+                present = sum(1 for page in boxes
+                              if any(vram[at] for at
+                                     in range(*self._page_span(page))))
+                if present > best:
+                    came_from, source_vram, best = area, vram, present
+            # Missing from ANY area that reaches the destination: the
+            # model has to draw correctly in all of them, not just one.
+            keep_pages, keep_cluts = texture_migrate.needed_for(
+                data, source_vram,
+                [vram_map.loaded_vram(shards, self._chunk_vram, a)
+                 for a in destinations])
         except Exception as e:
             print(f"[textures] couldn't check the swap: {e}")
             return
 
         missing_pages = sorted(set(boxes) - keep_pages)
         missing_cluts = sorted(set(cluts) - keep_cluts)
+        where = (f"all {len(destinations)} areas"
+                 if len(destinations) > 8 else
+                 "AREA_" + ", AREA_".join(f"{a:02X}" for a in destinations))
         if not missing_pages and not missing_cluts:
             print(f"[textures] {item.text()}: every page and palette it "
-                  f"samples is already in AREA_{here:02X} - no migration "
-                  f"needed.")
+                  f"samples is already loaded in all {len(destinations)} "
+                  f"area(s) that use it ({where}) - no migration needed.")
             return
 
         answer = QMessageBox.question(
@@ -1355,28 +1375,55 @@ class MainWindow(QMainWindow):
                if missing_pages else "")
             + (" and " if missing_pages and missing_cluts else "")
             + (f"{len(missing_cluts)} palette(s)" if missing_cluts else "")
-            + f" that AREA_{here:02X} does not have loaded - they are in "
-            f"AREA_{came_from:02X}, where this model came from.\n\n"
-            f"It will draw with whatever this area happens to keep at "
-            f"those addresses until the art is copied somewhere the "
-            f"areas you use can reach.\n\nSet that up now?",
+            + f" that at least one of the {len(destinations)} area(s) using "
+            f"this file does not have loaded.\n\nThis file is reached from "
+            f"{where}, and the art is in AREA_{came_from:02X}.\n\n"
+            f"Until it is copied somewhere all of them can reach, the model "
+            f"will draw with whatever those areas happen to keep at those "
+            f"addresses.\n\nSet that up now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes)
         if answer != QMessageBox.StandardButton.Yes:
             print(f"[textures] {item.text()} still points at page(s) "
-                  f"{missing_pages} and {len(missing_cluts)} palette(s) "
-                  f"AREA_{here:02X} does not load.")
+                  f"{missing_pages} and {len(missing_cluts)} palette(s) that "
+                  f"not every area using it loads.")
             return
-        self.open_texture_migration(item, data, source_vram, preselect=here)
+        self.open_texture_migration(item, data, source_vram,
+                                    preselect=destinations)
 
-    def open_texture_migration(self, item, data, source_vram, preselect=None):
+    @staticmethod
+    def _page_span(page):
+        """(first byte, last byte) of a texture page's first row - enough
+        to tell whether an area has anything there at all."""
+        column = (page % 16) * psx_vram.PAGE_BYTES
+        row = (page // 16) * psx_vram.PAGE_ROWS
+        at = row * psx_vram.VRAM_STRIDE + column
+        return at, at + psx_vram.PAGE_BYTES
+
+    def _areas_reaching(self, entry):
+        """Which areas can reach a file, lowest first.
+
+        An SDAT file belongs to one area. A TRAIL file - which is where
+        Tomba's own models live - sits past every chunk and is reached
+        from all the areas that point at it, so there is no single
+        answer and area_membership is what knows."""
+        if entry.get("area") is not None:
+            return [entry["area"]]
+        membership = getattr(self, "area_membership", None) or {}
+        return sorted(membership.get(entry["address"], ()))
+
+    def open_texture_migration(self, item, data, source_vram, preselect=()):
         """The placement dialog, staging whatever it decides on `item`."""
         from gui.smst.migrate_dialog import MigrateDialog
         dialog = MigrateDialog(data, source_vram,
                                os.path.dirname(self.dat_file),
                                item.text(), self)
-        if preselect is not None:
-            dialog.tick_area(preselect)
+        # Every area that reaches this file starts ticked: those are the
+        # ones it has to draw correctly in, and for a trail model that
+        # is most of the disc.
+        dialog.tick_areas(preselect if isinstance(preselect,
+                                                  (list, tuple, set))
+                          else [preselect])
         if dialog.exec() and dialog.new_blob is not None:
             self._stage_file_edit(item, dialog.new_blob,
                                   f"{item.text()} with migrated textures")

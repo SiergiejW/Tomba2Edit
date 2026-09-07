@@ -67,6 +67,8 @@ class MigrateDialog(QDialog):
         self.plan = None
         self.new_blob = None
         self.shards = None
+        self.to_write = []
+        self.reused = []
         self._vram_cache = {}
         self._occupied = None            # from savestates, or None
         self._states = []
@@ -107,6 +109,19 @@ class MigrateDialog(QDialog):
             "palettes it uploads from the DAT, its sprite art. Add one "
             "per area you care about and the free map accounts for them.")
         state_button.clicked.connect(self._add_states)
+
+        # Placing without a state is how a palette ends up under
+        # something the game uploads at runtime: the shard tables cannot
+        # see those writes, so the free map says yes and the colours
+        # come out wrong in game with nothing to explain it. Allowed,
+        # because not everyone has a state to hand, but not by default.
+        self.risky = QCheckBox("Place without a savestate (risky)", self)
+        self.risky.setToolTip(
+            "Without a savestate the free map cannot see what the game "
+            "uploads at runtime - its palettes and sprite art. Placing "
+            "a palette on top of one of those gives wrong colours and "
+            "no transparency, and nothing warns you until you play it.")
+        self.risky.toggled.connect(self._finish_or_replan)
 
         # --- where the textures go ---
         self.page_box = QSpinBox(self)
@@ -163,6 +178,7 @@ class MigrateDialog(QDialog):
         left_layout.addLayout(row)
         left_layout.addWidget(state_button)
         left_layout.addWidget(self.states_label)
+        left_layout.addWidget(self.risky)
         left_layout.addWidget(place_box)
         left_layout.addWidget(QLabel("Write the pixels into:", self))
         left_layout.addWidget(self.destination)
@@ -233,14 +249,28 @@ class MigrateDialog(QDialog):
         return vram_map.loaded_vram(self.shard_table, self.chunk_vram, area)
 
     def tick_area(self, area):
-        """Tick one area from outside - the area a swap just put a model
-        into, which is the one it has to work in first."""
+        """Tick one area from outside."""
+        self.tick_areas([area])
+
+    def tick_areas(self, areas):
+        """Tick several at once and replan ONCE.
+
+        Ticking them one at a time replans per tick, and a replan
+        decompresses a chunk per area - which for a trail model reached
+        from thirty areas is thirty times the work for one answer."""
+        wanted = set(areas)
+        first = None
+        self.areas.blockSignals(True)
         for row in range(self.areas.count()):
             item = self.areas.item(row)
-            if item.data(Qt.ItemDataRole.UserRole) == area:
+            if item.data(Qt.ItemDataRole.UserRole) in wanted:
                 item.setCheckState(Qt.CheckState.Checked)
-                self.areas.setCurrentRow(row)
-                return
+                if first is None:
+                    first = row
+        self.areas.blockSignals(False)
+        if first is not None:
+            self.areas.setCurrentRow(first)
+        self.replan()
 
     def _add_states(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -333,8 +363,14 @@ class MigrateDialog(QDialog):
         if kind == "page":
             _src, dest = self.plan.rects[key]
             x, y = dest[0], dest[1]
+            # A texture moves in whole halfwords, and 4 texels to each,
+            # so stepping by 4 moves it one halfword at a time.
+            self.x_box.setSingleStep(4)
         else:
             x, y = psx_vram.clut_address_xy(self.plan.cluts[key])
+            # A palette's address packs x/16, so 16 is the only step
+            # that lands on an address at all.
+            self.x_box.setSingleStep(16)
         self.x_box.setValue(x)
         self.y_box.setValue(y)
         self.page_box.setValue((x // psx_vram.PAGE_HALFWORDS)
@@ -358,6 +394,10 @@ class MigrateDialog(QDialog):
                     + (y // psx_vram.PAGE_ROWS) * psx_vram.ATLAS_COLUMNS)
             page_dest[key] = (page, x, y)
         else:
+            # Snapped rather than refused: a palette typed one halfword
+            # off is a slip, not a decision, and rounding it down is
+            # what the address can actually express.
+            x -= x % 16
             clut_dest[key] = x * 2 + y * psx_vram.VRAM_STRIDE
         keep_pages, keep_cluts = self._keep
         try:
@@ -380,8 +420,15 @@ class MigrateDialog(QDialog):
             return
 
         free = self.free_map()
+        # Anything already holding exactly these bytes is the same
+        # texture, not a collision - see texture_migrate.split_shards.
+        dest_vram = self.chunk_vram(self.destination.currentData())
+        if dest_vram is None:
+            dest_vram = bytearray(psx_vram.VRAM_SIZE)
+        self.to_write, self.reused = texture_migrate.split_shards(
+            self.shards, dest_vram)
         clashes = []
-        for x, y, w, h, _pixels in self.shards:
+        for x, y, w, h, _pixels in self.to_write:
             if not free[y:y + h, x:x + w].all():
                 clashes.append((x, y, w, h))
 
@@ -399,6 +446,11 @@ class MigrateDialog(QDialog):
         lines.append(f"{len(self.shards)} shard(s), "
                      f"{sum(w * h * 2 for _x, _y, w, h, _p in self.shards)} "
                      f"bytes of VRAM.")
+        if self.reused:
+            lines.append(
+                f"{len(self.reused)} of them are ALREADY there, byte for "
+                f"byte - that art is shared rather than copied again, so "
+                f"only {len(self.to_write)} shard(s) get written.")
         if clashes:
             lines.append(f"WARNING: {len(clashes)} of them land on space the "
                          f"ticked areas already use - that art would be "
@@ -450,6 +502,18 @@ class MigrateDialog(QDialog):
         if not self.plan:
             return
         chunk_index = self.destination.currentData()
+        if not self.to_write:
+            # Everything it needs is already in VRAM - this is a pure
+            # retarget, so the IMG is left alone entirely.
+            print(f"migrated {self.name}: nothing to copy, every texture "
+                  f"and palette it needs is already there.")
+            QMessageBox.information(
+                self, "Nothing to copy",
+                "Every texture and palette this model needs is already in "
+                "VRAM, so TOMBA2.IMG is untouched.\n\nOnly the model's UVs "
+                "changed, and they are staged - save to keep them.")
+            self.accept()
+            return
         answer = QMessageBox.question(
             self, "Rewrite TOMBA2.IMG?",
             f"{len(self.shards)} shard(s) are added to AREA_"
@@ -465,7 +529,7 @@ class MigrateDialog(QDialog):
             with open(self.img, "rb") as f:
                 f.seek(start)
                 chunk = f.read(end - start)
-            new_chunk = img_writer.add_shards(chunk, self.shards)
+            new_chunk = img_writer.add_shards(chunk, self.to_write)
             info = img_writer.rebuild(self.idx, self.img,
                                       {chunk_index: new_chunk},
                                       self.idx, self.img)

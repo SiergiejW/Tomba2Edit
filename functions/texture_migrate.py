@@ -362,6 +362,24 @@ def shards_for(plan_, vram):
     return out
 
 
+def split_shards(shards, dest_vram):
+    """(shards that must be written, shards already there) .
+
+    Two models can share art. Tuxedo Tomba's black and red suits have
+    byte-identical pixels on both the pages they sample and differ only
+    in three palettes, so migrating the second one after the first
+    should point at the first one's copy rather than write a second.
+
+    A destination holding exactly the bytes we were going to put there
+    is not a collision - it is the same texture, and the only work left
+    is retargeting the UVs at it."""
+    write, reuse = [], []
+    for shard in shards:
+        x, y, w, h, pixels = shard
+        (reuse if cut(dest_vram, (x, y, w, h)) == pixels else write).append(shard)
+    return write, reuse
+
+
 def verify(before, after, old_vram, new_vram):
     """Check every packet still reads the same texels.
 
