@@ -122,6 +122,44 @@ def loaded_vram(shards, chunk_vram, area):
     return out
 
 
+def owners_of(shards, rect, areas=None):
+    """{area: halfwords} for every chunk that writes into `rect`.
+
+    Which matters more than it looks, because of load order. The
+    resident chunks go down first and the area's own chunk goes on top,
+    so a shard added to AREA_01 that lands where AREA_07 also writes is
+    not overwriting AREA_07 - AREA_07 overwrites IT, every time you walk
+    in there. Overwriting somebody else's art only works if your shard
+    is in the same chunk as theirs, where being added last is what
+    settles it.
+
+    Nothing here decides that; it just says whose space it is so the
+    caller can."""
+    x0, y0, w, h = rect
+    out = {}
+    for area, rects in shards.items():
+        if areas is not None and area not in areas:
+            continue
+        count = 0
+        for sx, sy, sw, sh, _packed in rects:
+            across = min(x0 + w, sx + sw) - max(x0, sx)
+            down = min(y0 + h, sy + sh) - max(y0, sy)
+            if across > 0 and down > 0:
+                count += across * down
+        if count:
+            out[area] = count
+    return out
+
+
+def anywhere_but_display():
+    """Everywhere a texture could physically go, ignoring who owns it.
+
+    The relaxed map a deliberate overwrite is planned against. The
+    display is still excluded - it is redrawn every frame, so nothing
+    put there survives a single one."""
+    return ~display_map()
+
+
 def free_for(shards, areas, occupied=None):
     """Halfwords nothing writes in ANY of `areas`.
 

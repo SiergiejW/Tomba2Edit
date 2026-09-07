@@ -65,6 +65,14 @@ def add_shards(chunk, new_shards):
                 f"a {w}x{h} shard is {w * h * 2} bytes and this one is "
                 f"{len(pixels)}")
         packed = img_codec.compress(pixels, w)
+        # Belt and braces: a stream that copies from before its own
+        # start decodes to whatever VRAM already held, which looks
+        # perfect in the tool and wrong in game. compress() will not
+        # emit one; this makes sure nothing ever ships if it does.
+        if img_codec.reads_before_start(packed, w):
+            raise IMGWriteError(
+                f"the {w}x{h} shard compressed to a stream that reads "
+                f"before its own start - refusing to write it")
         room = _round_up(len(packed))
         bodies.append(packed + bytes(room - len(packed)))
         records.append((x, y, w, h, room))

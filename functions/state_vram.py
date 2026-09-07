@@ -131,6 +131,22 @@ def occupancy(vram):
     return rows.reshape(psx_vram.VRAM_ROWS, -1, 2).any(axis=2)
 
 
+def runtime_only(vram, shards, areas):
+    """What a state holds that NO loaded chunk put there.
+
+    The distinction matters for overwriting. Space a chunk owns can be
+    taken - add your shard to that chunk and it goes down last. Space
+    the GAME writes cannot be taken by anyone: the display buffers, the
+    palettes it uploads from the DAT, its sprite art. Both look
+    identical in a raw occupancy map, and the difference is exactly
+    "does any loaded chunk declare it".
+
+    `areas` is which chunks were loaded in this state - normally
+    resident_areas()'s answer."""
+    from functions import vram_map
+    return occupancy(vram) & ~vram_map.claims_of(shards, areas)
+
+
 def resident_areas(vram, shards, chunk_vram, threshold=0.9):
     """Which chunks this state actually has loaded.
 

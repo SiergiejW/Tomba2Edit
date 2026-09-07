@@ -71,6 +71,9 @@ class MigrateDialog(QDialog):
         self.reused = []
         self._vram_cache = {}
         self._occupied = None            # from savestates, or None
+        # What no chunk declares - the display, and whatever the
+        # game uploads itself. Nobody can overwrite that.
+        self._runtime = None
         self._states = []
 
         self.idx = os.path.join(cd_folder, "TOMBA2.IDX")
@@ -122,6 +125,21 @@ class MigrateDialog(QDialog):
             "a palette on top of one of those gives wrong colours and "
             "no transparency, and nothing warns you until you play it.")
         self.risky.toggled.connect(self._finish_or_replan)
+
+        # The escape hatch when nothing fits. Deliberately worded as
+        # destroying something, because that is what it does - and see
+        # vram_map.owners_of for why it only works when the art being
+        # overwritten belongs to the chunk being written into.
+        self.overwrite = QCheckBox("Overwrite art that is already there",
+                                   self)
+        self.overwrite.setToolTip(
+            "Place even where the ticked areas already keep artwork, "
+            "destroying it.\n\nThis only works when the space belongs to "
+            "the SAME chunk you are writing into - your shard is added "
+            "last and wins. Space owned by another area's chunk cannot "
+            "be taken this way: that chunk loads after the resident one "
+            "and would overwrite you instead.")
+        self.overwrite.toggled.connect(self.replan)
 
         # --- where the textures go ---
         self.page_box = QSpinBox(self)
@@ -179,6 +197,7 @@ class MigrateDialog(QDialog):
         left_layout.addWidget(state_button)
         left_layout.addWidget(self.states_label)
         left_layout.addWidget(self.risky)
+        left_layout.addWidget(self.overwrite)
         left_layout.addWidget(place_box)
         left_layout.addWidget(QLabel("Write the pixels into:", self))
         left_layout.addWidget(self.destination)
@@ -291,6 +310,8 @@ class MigrateDialog(QDialog):
             occupied = here if occupied is None else (occupied | here)
             areas = state_vram.resident_areas(vram, self.shard_table,
                                               self.chunk_vram)
+            mine = state_vram.runtime_only(vram, self.shard_table, areas)
+            self._runtime = mine if self._runtime is None                 else (self._runtime | mine)
             self._states.append((os.path.basename(path), areas))
             added += 1
         if not added:
@@ -307,6 +328,18 @@ class MigrateDialog(QDialog):
     def free_map(self):
         return vram_map.free_for(self.shard_table, self.wanted_areas(),
                                  occupied=self._occupied)
+
+    def placement_map(self):
+        """What auto-place may use. Normally the free map; with
+        overwrite on, anywhere but the display and anything a savestate
+        shows the game writing every frame - neither of which can be
+        taken by anybody."""
+        if not self.overwrite.isChecked():
+            return self.free_map()
+        allowed = vram_map.anywhere_but_display()
+        if self._runtime is not None:
+            allowed &= ~self._runtime
+        return allowed
 
     def replan(self):
         """Auto-place, then show what it came to."""
@@ -328,7 +361,7 @@ class MigrateDialog(QDialog):
                 self.refresh_preview()
                 return
             self.plan = texture_migrate.plan(
-                self.blob, self.free_map(), pages=vram_map.USABLE_PAGES,
+                self.blob, self.placement_map(), pages=vram_map.USABLE_PAGES,
                 keep_pages=keep_pages, keep_cluts=keep_cluts)
         except Exception as e:
             self.plan = None
@@ -428,10 +461,25 @@ class MigrateDialog(QDialog):
             dest_vram = bytearray(psx_vram.VRAM_SIZE)
         self.to_write, self.reused = texture_migrate.split_shards(
             self.shards, dest_vram)
-        clashes = []
+        destination = self.destination.currentData()
+        wanted = self.wanted_areas()
+        clashes, doomed = [], []
         for x, y, w, h, _pixels in self.to_write:
-            if not free[y:y + h, x:x + w].all():
-                clashes.append((x, y, w, h))
+            if free[y:y + h, x:x + w].all():
+                continue
+            owners = vram_map.owners_of(self.shard_table, (x, y, w, h),
+                                        areas=wanted)
+            clashes.append(((x, y, w, h), owners))
+            # Somebody else's chunk loading after ours does not lose its
+            # art - it takes ours. That is not an overwrite, it is a
+            # texture that vanishes the moment you walk in there.
+            if any(area != destination for area in owners):
+                doomed.append(((x, y, w, h), owners))
+            # Only what NO chunk declares is untakeable - see
+            # state_vram.runtime_only. A chunk's own art is fair game
+            # if you are writing into that chunk.
+            if self._runtime is not None                     and self._runtime[y:y + h, x:x + w].any():
+                doomed.append(((x, y, w, h), {"runtime": 0}))
 
         # The proof: sample both models against their own VRAM.
         preview = bytearray(self.loaded_vram(
@@ -452,10 +500,27 @@ class MigrateDialog(QDialog):
                 f"{len(self.reused)} of them are ALREADY there, byte for "
                 f"byte - that art is shared rather than copied again, so "
                 f"only {len(self.to_write)} shard(s) get written.")
-        if clashes:
-            lines.append(f"WARNING: {len(clashes)} of them land on space the "
-                         f"ticked areas already use - that art would be "
-                         f"destroyed.")
+        for rect, owners in clashes:
+            who = ", ".join(f"AREA_{a:02X}" for a in sorted(owners)
+                            if isinstance(a, int)) or "something unclaimed"
+            lines.append(f"CLASH at ({rect[0]}, {rect[1]}) {rect[2]}x{rect[3]}"
+                         f": that space belongs to {who}.")
+        if doomed:
+            lines.append(
+                "This cannot be forced. Space owned by another area's chunk "
+                "- or written by the game every frame - is not yours to "
+                "take: that chunk loads after the resident one and would "
+                "overwrite YOUR texture, not the other way round. Write "
+                "into the owning area's chunk instead, or move the "
+                "placement.")
+        elif clashes and self.overwrite.isChecked():
+            lines.append(
+                f"Overwriting on purpose: your shard is added last to "
+                f"AREA_{destination:02X}'s own chunk, so it wins - and the "
+                f"art that was there is gone.")
+        elif clashes:
+            lines.append("Tick 'Overwrite art that is already there' to "
+                         "place anyway and destroy it.")
         if self._occupied is None:
             lines.append("No savestate loaded: the display buffers and "
                          "anything the game uploads at runtime are NOT "
@@ -463,8 +528,17 @@ class MigrateDialog(QDialog):
         lines.append(f"checked {checked} texel reads: "
                      + ("every one lands on the same texel it does now."
                         if not bad else f"{len(bad)} would change - not safe."))
+        # Placing blind is allowed, but only if it is asked for: without
+        # a state the runtime writes are invisible and a palette put on
+        # one of them comes out wrong in game with nothing to explain it.
+        blind = self._occupied is None and not self.risky.isChecked()
+        if blind:
+            lines.append("Apply is off until a savestate is loaded - or tick "
+                         "'Place without a savestate' to go ahead anyway.")
+        self._clashes, self._doomed = clashes, doomed
+        allowed = (not clashes) or (self.overwrite.isChecked() and not doomed)
         self.report.setPlainText("\n".join(lines))
-        self.apply_button.setEnabled(not bad and not clashes)
+        self.apply_button.setEnabled(bool(allowed) and not bad and not blind)
         self.refresh_preview()
 
     # --- preview ------------------------------------------------------

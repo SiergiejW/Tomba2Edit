@@ -23,8 +23,14 @@ the previous byte, or the row above give or take three columns. Copies
 may overlap the write head - going back 1 for 8 bytes is a run of the
 same byte - so they are made a byte at a time.
 
-Reading before the start of the output yields zero, which is how the
-first row compresses at all.
+A copy may never read before the start of the output. decompress()
+below yields zero there, which is a guess and only a guess: it is what
+made the first rows of a shard decode, and it is NOT what the console
+does. Checked across all 1,499,402 instructions on the retail disc, the
+game's own data reads before the start exactly zero times, so there is
+no evidence for any behaviour at all - and a shard compressed that way
+came back with its first halfword taken from whatever VRAM already
+held. compress() therefore refuses to emit one; see the note there.
 
 Thanks to vervalkon (Tomba Club) for working out the instruction format.
 """
@@ -100,7 +106,13 @@ def compress(pixels, width):
         limit = min(MAX_RUN, size - pos)
         for how in range(1, _HOW_COUNT):
             src = pos - back[how]
-            if src >= pos:
+            # Never before the start of the output. The disc never does
+            # it, so what the console would make of it is unknown, and
+            # the one time this emitted one the game read the VRAM that
+            # was already there instead of the zero this module assumes.
+            # It cost a palette its transparent entry and drew the model
+            # with a bright green hole. See the header.
+            if src < 0 or src >= pos:
                 continue
             n = 0
             while n < limit:
@@ -126,6 +138,30 @@ def compress(pixels, width):
                 flush()
     flush()
     return bytes(out)
+
+
+def reads_before_start(packed, width):
+    """Whether a stream copies from before the start of its own output.
+
+    The one thing a shard must never do - see the header. Cheap enough
+    to run on everything written, and the failure it catches is silent
+    in the tool and only visible in game."""
+    back = distances(width)
+    pos = 0
+    out = 0
+    while pos < len(packed):
+        control = packed[pos]
+        pos += 1
+        amount = control >> 3
+        how = control & 0x07
+        if how == 0:
+            pos += amount
+            out += amount
+        else:
+            if out - back[how] < 0:
+                return True
+            out += amount
+    return False
 
 
 def read_chunk_header(data):
