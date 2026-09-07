@@ -143,25 +143,179 @@ def source_rect(page, box):
     return (column + hx0, row + v0, hx1 - hx0, v1 - v0 + 1)
 
 
+class Move:
+    """One patch of one page, and where it is going.
+
+    A patch rather than a whole page - see clusters(). `packets` is
+    which packets sample it, so each face is retargeted by its own
+    patch's offset rather than one offset for the whole page."""
+
+    def __init__(self, page, box, packets, dest_page, dest_x, dest_y):
+        self.page = page
+        self.box = box                  # (u0, v0, u1, v1) in the source page
+        self.packets = set(packets)
+        self.dest_page = dest_page
+        self.dest_x = dest_x            # halfwords, absolute in VRAM
+        self.dest_y = dest_y
+        column = (dest_page % psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_HALFWORDS
+        row = (dest_page // psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_ROWS
+        self.du = ((dest_x - column) - box[0] // TEXELS_PER_HALFWORD) \
+            * TEXELS_PER_HALFWORD
+        self.dv = (dest_y - row) - box[1]
+
+    @property
+    def src_rect(self):
+        return source_rect(self.page, self.box)
+
+    @property
+    def dest_rect(self):
+        _x, _y, w, h = self.src_rect
+        return (self.dest_x, self.dest_y, w, h)
+
+    def label(self):
+        w, h = self.src_rect[2], self.src_rect[3]
+        return f"page {self.page} patch {w}x{h}"
+
+    def check(self):
+        u0, v0, u1, v1 = self.box
+        for value, shift, what in ((u0, self.du, "U"), (u1, self.du, "U"),
+                                   (v0, self.dv, "V"), (v1, self.dv, "V")):
+            if not 0 <= value + shift <= 255:
+                raise MigrationError(
+                    f"page {self.page}: {what} would become {value + shift}, "
+                    f"outside the 0-255 a UV byte holds. Move it nearer the "
+                    f"page's top-left corner.")
+
+
 class Plan:
     """Where everything is going, and what it costs."""
 
     def __init__(self):
-        self.pages = {}      # source page -> (dest page, du texels, dv rows)
-        self.rects = {}      # source page -> (src rect, dest rect) halfwords
+        self.moves = []      # Move, one per patch
         self.cluts = {}      # source address -> dest address
         self.notes = []
 
     def describe(self):
         lines = []
-        for page, (dest, du, dv) in sorted(self.pages.items()):
-            sx, sy, w, h = self.rects[page][0]
-            lines.append(f"page {page} -> page {dest}: {w}x{h} halfwords "
-                         f"({w * TEXELS_PER_HALFWORD}x{h} texels) from "
-                         f"({sx}, {sy}), UVs shift by ({du:+}, {dv:+})")
+        for n, move in enumerate(self.moves):
+            _sx, _sy, w, h = move.src_rect
+            lines.append(
+                f"[{n}] {move.label()} ({w * TEXELS_PER_HALFWORD}x{h} texels)"
+                f" -> page {move.dest_page} at ({move.dest_x}, "
+                f"{move.dest_y}), UVs shift by ({move.du:+}, {move.dv:+})")
         for old, new in sorted(self.cluts.items()):
             lines.append(f"palette 0x{old:X} -> 0x{new:X}")
         return "\n".join(lines + self.notes)
+
+
+def clusters(blob, page):
+    """The patches of one page a model actually samples.
+
+    A bounding box round every UV on a page is usually far bigger than
+    the art inside it - the Squirrel Suit's box covers a whole 64x256
+    page and its faces touch 9% of it - so asking for the box is asking
+    for ten times the VRAM the model needs, and is why a migration can
+    fail to place something that would fit easily.
+
+    So the used cells are found and split into connected patches, each
+    of which is placed on its own. Connectivity is 4-way over halfword
+    cells; a face's own cells are contiguous by construction, so every
+    face lands wholly inside exactly one patch and can be retargeted
+    with one offset.
+
+    Returns [(box, [packet offsets]), ...] where box is
+    (u0, v0, u1, v1) in texels/rows."""
+    cells = {}
+    for ind, uvs in _packets(blob):
+        if (blob[ind + PAGE_BYTE] & 0x1F) != page:
+            continue
+        us = [blob[ind + ou] for ou, _ov in uvs]
+        vs = [blob[ind + ov] for _ou, ov in uvs]
+        own = [(u, v)
+               for u in range(min(us) // TEXELS_PER_HALFWORD,
+                              max(us) // TEXELS_PER_HALFWORD + 1)
+               for v in range(min(vs), max(vs) + 1)]
+        for cell in own:
+            cells.setdefault(cell, []).append(ind)
+    if not cells:
+        return []
+
+    # Flood fill the used cells into patches.
+    seen = set()
+    out = []
+    for start in cells:
+        if start in seen:
+            continue
+        stack, group = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            group.append((x, y))
+            for step in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                near = (x + step[0], y + step[1])
+                if near in cells and near not in seen:
+                    seen.add(near)
+                    stack.append(near)
+        xs = [c[0] for c in group]
+        ys = [c[1] for c in group]
+        packets = sorted({ind for cell in group for ind in cells[cell]})
+        out.append(((min(xs) * TEXELS_PER_HALFWORD,
+                     min(ys),
+                     max(xs) * TEXELS_PER_HALFWORD + TEXELS_PER_HALFWORD - 1,
+                     max(ys)), packets))
+    # Biggest first: the hard one to place should be placed first.
+    out.sort(key=lambda item: -((item[0][2] - item[0][0] + 1)
+                                * (item[0][3] - item[0][1] + 1)))
+    return out
+
+
+def packet_boxes(blob, page):
+    """{packet offset: its own UV box} for one page."""
+    out = {}
+    for ind, uvs in _packets(blob):
+        if (blob[ind + PAGE_BYTE] & 0x1F) != page:
+            continue
+        us = [blob[ind + ou] for ou, _ov in uvs]
+        vs = [blob[ind + ov] for _ou, ov in uvs]
+        out[ind] = (min(us), min(vs), max(us), max(vs))
+    return out
+
+
+def _bbox(boxes):
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def split_to_fit(blob, page, packets, boxes, fits, depth=0):
+    """Cut a patch up until every piece fits somewhere.
+
+    Connected patches are still sometimes the wrong SHAPE rather than
+    the wrong size - free VRAM on this disc comes in blocks 64 wide and
+    32 tall, so a 12x48 patch has nowhere to go even though it is only
+    576 halfwords. Cutting it in half across its longer axis gives two
+    12x24s, and those fit.
+
+    The cut is made between FACES, not through the art: each face keeps
+    its own UVs whole and lands in exactly one piece. Faces either side
+    of the line can have boxes that overlap, which only means a few
+    texels get copied twice - harmless, and much better than not
+    placing at all."""
+    box = _bbox([boxes[i] for i in packets])
+    _x, _y, w, h = source_rect(page, box)
+    if fits(w, h) or len(packets) < 2 or depth > 10:
+        return [(box, packets)]
+    # Halve whichever side is longer, by where each face's middle sits.
+    across = (box[2] - box[0]) >= (box[3] - box[1])
+    middle = ((box[0] + box[2]) / 2 if across else (box[1] + box[3]) / 2)
+    low, high = [], []
+    for ind in packets:
+        b = boxes[ind]
+        centre = ((b[0] + b[2]) / 2 if across else (b[1] + b[3]) / 2)
+        (low if centre <= middle else high).append(ind)
+    if not low or not high:
+        return [(box, packets)]
+    return (split_to_fit(blob, page, low, boxes, fits, depth + 1)
+            + split_to_fit(blob, page, high, boxes, fits, depth + 1))
 
 
 def already_there(blob, old_vram, dest_vram):
@@ -200,34 +354,19 @@ def needed_for(blob, source_vram, area_vrams):
     return keep_pages, keep_cluts
 
 
-def place(blob, page_dest, clut_dest, keep_pages=(), keep_cluts=()):
+def place(blob, moves, clut_dest, keep_cluts=()):
     """A Plan from destinations somebody has chosen.
 
-    `page_dest` is {source page: (dest page, dest x, dest y)} in
-    halfwords and `clut_dest` {source address: dest address}. This is
+    `moves` is [(page, box, packets, dest_page, dest_x, dest_y), ...] -
+    normally a plan()'s own moves with some of their destinations
+    changed - and `clut_dest` {source address: dest address}. This is
     what a hand-placed migration goes through; plan() is the same thing
     with the destinations searched for instead."""
-    boxes, _cluts = survey(blob)
     out = Plan()
-    for page, (dest_page, dx, dy) in sorted(page_dest.items()):
-        if page in keep_pages:
-            continue
-        box = boxes[page]
-        rect = source_rect(page, box)
-        dest_column = (dest_page % psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_HALFWORDS
-        dest_row = (dest_page // psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_ROWS
-        du = ((dx - dest_column) - box[0] // TEXELS_PER_HALFWORD) \
-            * TEXELS_PER_HALFWORD
-        dv = (dy - dest_row) - box[1]
-        for value, shift, what in ((box[0], du, "U"), (box[2], du, "U"),
-                                   (box[1], dv, "V"), (box[3], dv, "V")):
-            if not 0 <= value + shift <= 255:
-                raise MigrationError(
-                    f"page {page}: {what} would become {value + shift}, which "
-                    f"is outside the 0-255 a UV byte can hold. Move it to a "
-                    f"spot nearer the page's top-left corner.")
-        out.pages[page] = (dest_page, du, dv)
-        out.rects[page] = (rect, (dx, dy, rect[2], rect[3]))
+    for page, box, packets, dest_page, dx, dy in moves:
+        move = Move(page, box, packets, dest_page, dx, dy)
+        move.check()
+        out.moves.append(move)
     for old, new in sorted(clut_dest.items()):
         if old in keep_cluts:
             continue
@@ -241,7 +380,7 @@ def place(blob, page_dest, clut_dest, keep_pages=(), keep_cluts=()):
 
 
 def plan(blob, free, pages=None, clut_pages=None,
-         keep_pages=(), keep_cluts=()):
+         keep_pages=(), keep_cluts=(), split=True):
     """Work out where a model's textures could go.
 
     `free` is the boolean halfword map from functions/vram_map. `pages`
@@ -253,11 +392,17 @@ def plan(blob, free, pages=None, clut_pages=None,
     `keep_pages` and `keep_cluts` are what the destination already has -
     normally already_there()'s answer. Anything in them is left pointing
     where it points, which is what keeps a migration down to the part
-    that is actually missing."""
+    that is actually missing.
+
+    `split` places each connected patch of a page separately rather than
+    one rectangle round the lot. It is on because the difference is not
+    marginal: the Squirrel Suit's page-23 box is a whole 64x256 page and
+    its patches come to 2092 halfwords, so the box asks for eight times
+    the space and fails to place where the patches fit easily."""
     from functions import vram_map
 
     boxes, cluts = survey(blob)
-    boxes = {p: b for p, b in boxes.items() if p not in keep_pages}
+    wanted = [p for p in sorted(boxes) if p not in keep_pages]
     cluts = [c for c in cluts if c not in keep_cluts]
     taken = free.copy()
     out = Plan()
@@ -270,33 +415,50 @@ def plan(blob, free, pages=None, clut_pages=None,
             f"palettes left alone: {len(keep_cluts)} of "
             f"{len(keep_cluts) + len(cluts)}")
 
-    for page in sorted(boxes):
-        box = boxes[page]
-        rect = source_rect(page, box)
-        _sx, _sy, w, h = rect
+    # A work queue rather than a fixed list: placing a patch eats the
+    # space the next one was measured against, so a patch that no longer
+    # fits is split and its halves pushed back instead of failing. That
+    # is the difference between "nowhere free it fits" and a model that
+    # places into whatever gaps are actually left.
+    queue = []
+    for page in wanted:
+        if split:
+            own = packet_boxes(blob, page)
+            for box, packets in clusters(blob, page):
+                queue.append((page, box, packets, own))
+        else:
+            packets = [ind for ind, _uvs in _packets(blob)
+                       if (blob[ind + PAGE_BYTE] & 0x1F) == page]
+            queue.append((page, boxes[page], packets, None))
+
+    def area(item):
+        rect = source_rect(item[0], item[1])
+        return rect[2] * rect[3]
+
+    while queue:
+        # Biggest first: the awkward one gets its pick of the space.
+        queue.sort(key=lambda item: -area(item))
+        page, box, packets, own = queue.pop(0)
+        _sx, _sy, w, h = source_rect(page, box)
         spots = vram_map.free_rects(taken, w, h, pages=pages, limit=1)
         if not spots:
+            if own is not None and len(packets) > 1:
+                halves = split_to_fit(blob, page, packets, own,
+                                      lambda _w, _h: False, depth=10)
+                if len(halves) > 1:
+                    queue.extend((page, b, p, own) for b, p in halves)
+                    continue
             raise MigrationError(
-                f"page {page} needs a free {w}x{h} halfword block and there "
-                f"is nowhere it fits")
+                f"page {page} has a {w}x{h} halfword patch and there is "
+                f"nowhere free it fits"
+                + ("" if split else
+                   " (placed as one rectangle - splitting would ask for "
+                   "less)"))
         dx, dy, dest_page = spots[0]
         taken[dy:dy + h, dx:dx + w] = False
-
-        dest_column = (dest_page % psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_HALFWORDS
-        dest_row = (dest_page // psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_ROWS
-        # The UV shift is what the packets get. Horizontal is in texels
-        # and is always a multiple of 4, since both ends are halfwords.
-        du = (dx - dest_column) * TEXELS_PER_HALFWORD \
-            - (box[0] // TEXELS_PER_HALFWORD) * TEXELS_PER_HALFWORD
-        dv = (dy - dest_row) - box[1]
-        if not 0 <= box[0] + du <= 255 or not 0 <= box[2] + du <= 255:
-            raise MigrationError(
-                f"page {page}'s UVs would land outside a page after the move")
-        if not 0 <= box[1] + dv <= 255 or not 0 <= box[3] + dv <= 255:
-            raise MigrationError(
-                f"page {page}'s V would land outside a page after the move")
-        out.pages[page] = (dest_page, du, dv)
-        out.rects[page] = (rect, (dx, dy, w, h))
+        move = Move(page, box, packets, dest_page, dx, dy)
+        move.check()
+        out.moves.append(move)
 
     for address in cluts:
         spots = vram_map.free_rects(taken, 16, 1,
@@ -313,16 +475,21 @@ def plan(blob, free, pages=None, clut_pages=None,
     return out
 
 
-# --- applying ---------------------------------------------------------
-
 def retarget(blob, plan_):
-    """`blob` with every packet pointing at the plan's destinations."""
+    """`blob` with every packet pointing at the plan's destinations.
+
+    Per packet rather than per page: a page is moved as several patches
+    (see clusters()) and each has its own offset, so which patch a face
+    belongs to decides how far its UVs shift."""
+    by_packet = {}
+    for move in plan_.moves:
+        for ind in move.packets:
+            by_packet[ind] = move
     out = bytearray(blob)
     for ind, uvs in _packets(out):
-        page = out[ind + PAGE_BYTE] & 0x1F
-        move = plan_.pages.get(page)
+        move = by_packet.get(ind)
         if move is not None:
-            dest, du, dv = move
+            dest, du, dv = move.dest_page, move.du, move.dv
             # Bits 5-6 are the blend mode and stay put; only the page
             # number in the low five bits changes.
             out[ind + PAGE_BYTE] = (out[ind + PAGE_BYTE] & 0xE0) | dest
@@ -353,9 +520,10 @@ def shards_for(plan_, vram):
     Pixels come out of the VRAM the model was drawn against, so what
     lands is exactly what it was sampling before."""
     out = []
-    for page in sorted(plan_.pages):
-        source, dest = plan_.rects[page]
-        out.append((dest[0], dest[1], dest[2], dest[3], cut(vram, source)))
+    for move in plan_.moves:
+        dest = move.dest_rect
+        out.append((dest[0], dest[1], dest[2], dest[3],
+                    cut(vram, move.src_rect)))
     for old, new in sorted(plan_.cluts.items()):
         x, y = psx_vram.clut_address_xy(new)
         out.append((x, y, 16, 1, bytes(vram[old:old + 32])))

@@ -50,10 +50,27 @@ class StateVRAMError(ValueError):
 
 
 def _payload(path):
+    """The state's bytes, unwrapped far enough that VRAM is in there.
+
+    Three shapes, and all three matter because people use all three:
+    PCSX-Reloaded writes its sections plainly (sometimes gzipped),
+    DuckStation writes a compressed stream of named sections, and a raw
+    dump is just itself. The DuckStation case is not optional - its
+    payload is Deflate or Zstandard, and searching the file as it sits
+    on disc finds nothing at all, which reads as "not from this disc"
+    when the truth is "not yet decompressed"."""
     with open(path, "rb") as f:
         data = f.read()
     if data[:2] == b"\x1f\x8b":
-        data = gzip.decompress(data)
+        return gzip.decompress(data)
+    if data.startswith(b"DUCC"):
+        # placement.py already worked this format out; there is no
+        # reason for a second copy of it here.
+        from functions.placement import PlacementError, _duckstation_payload
+        try:
+            return _duckstation_payload(data)
+        except PlacementError as e:
+            raise StateVRAMError(str(e)) from e
     return data
 
 
@@ -86,8 +103,10 @@ def find_vram(data, reference):
         found = data.find(first_run, start)
         if found < 0:
             raise StateVRAMError(
-                "couldn't find the resident area's pixels anywhere in this "
-                "state - is it from this disc?")
+                "the state decompressed, but none of AREA_01's pixels are "
+                "in it. That usually means it was taken on a different "
+                "disc, or in a room whose VRAM has been fully replaced - "
+                "try a state taken while standing in a level.")
         base = found - first_at
         start = found + 1
         if base < FIRST_PLAUSIBLE or base + psx_vram.VRAM_SIZE > len(data):

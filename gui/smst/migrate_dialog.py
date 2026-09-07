@@ -346,8 +346,8 @@ class MigrateDialog(QDialog):
     def _fill_moving(self):
         self.moving.blockSignals(True)
         self.moving.clear()
-        for page in sorted(self.plan.pages):
-            self.moving.addItem(f"texture page {page}", ("page", page))
+        for n, move in enumerate(self.plan.moves):
+            self.moving.addItem(f"[{n}] {move.label()}", ("move", n))
         for old in sorted(self.plan.cluts):
             self.moving.addItem(f"palette 0x{old:X}", ("clut", old))
         self.moving.blockSignals(False)
@@ -360,9 +360,9 @@ class MigrateDialog(QDialog):
         kind, key = data
         for box in (self.page_box, self.x_box, self.y_box):
             box.blockSignals(True)
-        if kind == "page":
-            _src, dest = self.plan.rects[key]
-            x, y = dest[0], dest[1]
+        if kind == "move":
+            move = self.plan.moves[key]
+            x, y = move.dest_x, move.dest_y
             # A texture moves in whole halfwords, and 4 texels to each,
             # so stepping by 4 moves it one halfword at a time.
             self.x_box.setSingleStep(4)
@@ -386,13 +386,14 @@ class MigrateDialog(QDialog):
             return
         kind, key = data
         x, y = self.x_box.value(), self.y_box.value()
-        page_dest = {p: (d, self.plan.rects[p][1][0], self.plan.rects[p][1][1])
-                     for p, (d, _du, _dv) in self.plan.pages.items()}
+        moves = [(m.page, m.box, m.packets, m.dest_page, m.dest_x, m.dest_y)
+                 for m in self.plan.moves]
         clut_dest = dict(self.plan.cluts)
-        if kind == "page":
+        if kind == "move":
             page = (x // psx_vram.PAGE_HALFWORDS
                     + (y // psx_vram.PAGE_ROWS) * psx_vram.ATLAS_COLUMNS)
-            page_dest[key] = (page, x, y)
+            src = moves[key]
+            moves[key] = (src[0], src[1], src[2], page, x, y)
         else:
             # Snapped rather than refused: a palette typed one halfword
             # off is a slip, not a decision, and rounding it down is
@@ -402,7 +403,7 @@ class MigrateDialog(QDialog):
         keep_pages, keep_cluts = self._keep
         try:
             self.plan = texture_migrate.place(
-                self.blob, page_dest, clut_dest, keep_pages, keep_cluts)
+                self.blob, moves, clut_dest, keep_cluts)
         except Exception as e:
             self.report.setPlainText(f"That placement will not work: {e}")
             self.apply_button.setEnabled(False)
@@ -468,6 +469,14 @@ class MigrateDialog(QDialog):
 
     # --- preview ------------------------------------------------------
 
+    def _finish_or_replan(self):
+        """Re-evaluate after the risky box is toggled, without redoing
+        the search if a plan is already in hand."""
+        if self.plan:
+            self._finish_plan()
+        else:
+            self.replan()
+
     def refresh_preview(self):
         item = self.areas.currentItem()
         if item is None:
@@ -479,10 +488,10 @@ class MigrateDialog(QDialog):
         rings = []
         if self.plan:
             span = 4
-            for page in sorted(self.plan.pages):
-                x, y, w, h = self.plan.rects[page][1]
+            for n, move in enumerate(self.plan.moves):
+                x, y, w, h = move.dest_rect
                 rings.append((QRectF(x * span, y, w * span, h), PLACED,
-                              f"page {page}"))
+                              f"[{n}] page {move.page}"))
             for old, new in sorted(self.plan.cluts.items()):
                 x, y = psx_vram.clut_address_xy(new)
                 rings.append((QRectF(x * span, y, 16 * span, 1),
