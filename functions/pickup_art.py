@@ -54,9 +54,15 @@ REWARD_TABLE = 0x800A29D0
 REWARD = struct.Struct("<BBhHH")
 REWARD_SIZE = REWARD.size          # 8
 
-# Nothing on the disc rewards past here; the table runs on into other
-# data, so it is read to a length rather than to a terminator.
-REWARD_COUNT = 32
+# The table has no terminator, so it is read to a length. Fifty is where
+# it stops making sense - entry 50 asks for sprite 2912 out of a bank of
+# a few hundred - and the highest reward the disc actually uses is 37.
+REWARD_COUNT = 50
+
+# A reward's top bit isn't part of the number: the spawner keeps it as a
+# flag of its own and masks the reward down to seven bits before looking
+# anything up.
+REWARD_MASK = 0x7F
 
 SEQUENCE_TABLE = 0x80017334
 STEP = struct.Struct("<HH")

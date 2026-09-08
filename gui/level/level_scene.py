@@ -136,7 +136,7 @@ class Instance:
         if self.placement is not None:
             return self.placement.kind
         if self.pickup is not None:
-            return self.pickup.reward
+            return self.pickup.art_reward
         return 0
 
     @property
@@ -281,7 +281,7 @@ PICKUP_HANDLER = 0
 
 def pickup_key(record):
     """What a pickup's model is looked up by."""
-    return record.reward, int(record.apple), PICKUP_HANDLER
+    return record.art_reward, int(record.apple), PICKUP_HANDLER
 
 
 def instance_key(instance):
@@ -542,7 +542,7 @@ class LevelScene:
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
-            art = self.reward_art.get(record.reward)
+            art = self.reward_art.get(record.art_reward)
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),

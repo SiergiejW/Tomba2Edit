@@ -150,6 +150,9 @@ PICKUP = struct.Struct("<BBBBhhhhBBH")
 PICKUP_SIZE = PICKUP.size          # 16
 APPLE = 0x80
 
+# A reward's top bit is a flag the spawner keeps, not part of the number.
+PICKUP_REWARD_MASK = 0x7F
+
 # What a pickup record holds on the disc, for telling a table from a
 # stretch of something else. The save-bit indices inside one table are
 # allocated in order, which is what makes an overlay's own tables
@@ -337,6 +340,13 @@ class Pickup:
     bit: int                # its own bit of the collected-items bitmap
     behaviour: int
     config: int
+
+    @property
+    def art_reward(self):
+        """The reward with its flag bit taken off - what indexes the
+        table in functions/pickup_art.py. The spawner masks it the same
+        way before looking anything up."""
+        return self.reward & PICKUP_REWARD_MASK
 
     @property
     def apple(self):
