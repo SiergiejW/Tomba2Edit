@@ -28,60 +28,64 @@ import numpy as np
 
 VERSIONS = (2,)
 
-# ISO 11172-2 table B.14 - the run/level codes, by code length. Written
-# out as "bits: (run, level)" with the sign bit that follows every code
-# left off. The whole table is here rather than the handful of codes
-# these movies happen to use, since a code that never appears in LOGO
-# turns up in END.
+# ISO 11172-2 table B.14 - the run/level codes. 111 of them, plus an
+# escape and an End Of Block, and together they use up the whole code
+# space bar the twelve leading zeroes reserved for start codes.
 #
-# The layout is a complete Huffman tree: 2 codes of length 2 (one of
-# them End Of Block), then 1, 2, 3, 4+escape, 4, 8, 8, 16, 16, 16, 16
-# and 16, which uses up all of the code space except the twelve leading
-# zeroes reserved for start codes.
+# Laid out the way the standard tabulates it: the (run, level) pairs in
+# order, run by run, and the (code, bit length) each one is written as -
+# with the sign bit that follows every code left off. The whole table is
+# here rather than the codes these three movies happen to use, since a
+# code that never appears in LOGO turns up in END.
 EOB = "10"
 ESCAPE = "000001"
 
-_TABLE = {
-    "11": (0, 1),
-    "011": (1, 1),
-    "0100": (0, 2), "0101": (2, 1),
-    "00101": (0, 3), "00110": (4, 1), "00111": (3, 1),
-    "000100": (7, 1), "000101": (6, 1), "000110": (1, 2), "000111": (5, 1),
-    "0000100": (2, 2), "0000101": (9, 1), "0000110": (0, 4), "0000111": (8, 1),
-}
-
-# The longer codes are all "fixed prefix + 4 bits", so they are written
-# as the prefix and the sixteen things those four bits can mean.
-_GROUPS = (
-    ("00100", ((13, 1), (0, 6), (12, 1), (11, 1),
-               (3, 2), (1, 3), (0, 5), (10, 1))),
-    ("0000001", ((16, 1), (5, 2), (0, 7), (2, 3),
-                 (1, 4), (15, 1), (14, 1), (4, 2))),
-    ("00000001", ((0, 11), (8, 2), (4, 3), (0, 10),
-                  (2, 4), (7, 2), (21, 1), (20, 1),
-                  (0, 9), (19, 1), (18, 1), (1, 5),
-                  (3, 3), (0, 8), (6, 2), (17, 1))),
-    ("000000001", ((9, 2), (6, 3), (5, 3), (3, 4),
-                   (2, 5), (1, 7), (1, 6), (0, 15),
-                   (0, 14), (0, 13), (0, 12), (14, 2),
-                   (13, 2), (12, 2), (11, 2), (10, 2))),
-    # runs of zeroes: 0000000001xxxx is (0, 31) counting down to (0, 16).
-    ("0000000001", tuple((0, 31 - i) for i in range(16))),
-    # then (0, 40) down to (0, 32), and (1, 14) down to (1, 8).
-    ("00000000001", tuple((0, 40 - i) for i in range(9))
-                    + tuple((1, 14 - i) for i in range(7))),
-    # the last four bits of code space: the long runs, and level 15-18
-    # after a single zero.
-    ("000000000001", ((1, 18), (1, 17), (1, 16), (1, 15),
-                      (31, 1), (30, 1), (29, 1), (28, 1),
-                      (27, 1), (26, 1), (25, 1), (24, 1),
-                      (23, 1), (22, 1), (15, 2), (16, 2))),
+_RUN_LEVEL = (
+    [(0, level) for level in range(1, 41)]
+    + [(1, level) for level in range(1, 19)]
+    + [(2, level) for level in range(1, 6)]
+    + [(3, level) for level in range(1, 5)]
+    + [(4, level) for level in range(1, 4)]
+    + [(5, level) for level in range(1, 4)]
+    + [(6, level) for level in range(1, 4)]
+    + [(run, level) for run in range(7, 17) for level in (1, 2)]
+    + [(run, 1) for run in range(17, 32)]
 )
 
-for _prefix, _entries in _GROUPS:
-    _width = 3 if len(_entries) == 8 else 4
-    for _i, _entry in enumerate(_entries):
-        _TABLE[_prefix + format(_i, f"0{_width}b")] = _entry
+_CODES = (
+    (0x3, 2), (0x4, 4), (0x5, 5), (0x6, 7),
+    (0x26, 8), (0x21, 8), (0xa, 10), (0x1d, 12),
+    (0x18, 12), (0x13, 12), (0x10, 12), (0x1a, 13),
+    (0x19, 13), (0x18, 13), (0x17, 13), (0x1f, 14),
+    (0x1e, 14), (0x1d, 14), (0x1c, 14), (0x1b, 14),
+    (0x1a, 14), (0x19, 14), (0x18, 14), (0x17, 14),
+    (0x16, 14), (0x15, 14), (0x14, 14), (0x13, 14),
+    (0x12, 14), (0x11, 14), (0x10, 14), (0x18, 15),
+    (0x17, 15), (0x16, 15), (0x15, 15), (0x14, 15),
+    (0x13, 15), (0x12, 15), (0x11, 15), (0x10, 15),
+    (0x3, 3), (0x6, 6), (0x25, 8), (0xc, 10),
+    (0x1b, 12), (0x16, 13), (0x15, 13), (0x1f, 15),
+    (0x1e, 15), (0x1d, 15), (0x1c, 15), (0x1b, 15),
+    (0x1a, 15), (0x19, 15), (0x13, 16), (0x12, 16),
+    (0x11, 16), (0x10, 16), (0x5, 4), (0x4, 7),
+    (0xb, 10), (0x14, 12), (0x14, 13), (0x7, 5),
+    (0x24, 8), (0x1c, 12), (0x13, 13), (0x6, 5),
+    (0xf, 10), (0x12, 12), (0x7, 6), (0x9, 10),
+    (0x12, 13), (0x5, 6), (0x1e, 12), (0x14, 16),
+    (0x4, 6), (0x15, 12), (0x7, 7), (0x11, 12),
+    (0x5, 7), (0x11, 13), (0x27, 8), (0x10, 13),
+    (0x23, 8), (0x1a, 16), (0x22, 8), (0x19, 16),
+    (0x20, 8), (0x18, 16), (0xe, 10), (0x17, 16),
+    (0xd, 10), (0x16, 16), (0x8, 10), (0x15, 16),
+    (0x1f, 12), (0x1a, 12), (0x19, 12), (0x17, 12),
+    (0x16, 12), (0x1f, 13), (0x1e, 13), (0x1d, 13),
+    (0x1c, 13), (0x1b, 13), (0x1f, 16), (0x1e, 16),
+    (0x1d, 16), (0x1c, 16), (0x1b, 16),
+)
+
+_TABLE = {format(code, f"0{width}b"): pair
+          for pair, (code, width) in zip(_RUN_LEVEL, _CODES)}
+assert len(_RUN_LEVEL) == len(_CODES) == len(_TABLE) == 111
 
 # The MPEG-1 default intra quantisation matrix, in raster order, and the
 # zig-zag that says which coefficient a code's position names.

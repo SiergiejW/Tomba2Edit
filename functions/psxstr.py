@@ -14,27 +14,31 @@ bitstream. Putting a frame back together is concatenating its sectors'
 An audio sector is ordinary CD-XA - the same Form 2 ADPCM as the music
 and the voice - so functions/xa.py decodes it unchanged.
 
-Two sources work, and they are not equally good:
+Three sources work, and they are not equally good:
 
     a bin/cue data track     whole 2352-byte sectors. Both the video and
                              the audio survive, which is what you want.
-    an extracted MOVIE\\*.STR 2048 bytes a sector, because that is what
-                             copying a file off a CD gives you. The video
-                             is untouched - it only ever used 2048 of the
-                             sector - but the audio sectors held 2324
-                             bytes and 276 of every one of them is gone.
-                             Video only, from these.
+    a 2048-byte .iso         the video, and nothing else.
+    an extracted MOVIE\\*.STR the same again: 2048 bytes a sector,
+                             because that is what copying a file off a
+                             CD gives you.
+
+The video survives a 2048-byte extraction because it only ever used
+2048 bytes of its sectors. The audio does not: those are Form 2 sectors
+holding 2324 bytes, and 276 bytes of every one of them are simply not
+in the copy.
 """
+import mmap
 import os
 import struct
 
 from functions import mdec, xa
+from functions.iso9660 import ISO9660Reader
 
 # The magic on a video sector's header: 0x0160, then 0x8001 for video.
 VIDEO_MAGIC = 0x80010160
 SECTOR_HEADER = 32
-FLAT_SECTOR = 2048          # what an extracted STR has
-FORM1_PAYLOAD = 24          # sync + header + subheader, in a raw sector
+FLAT_SECTOR = 2048          # the user data in a sector, however it is framed
 
 # The movies, in the order they are shown.
 NAMES = ("LOGO.STR", "OP.STR", "END.STR")
@@ -55,12 +59,13 @@ class Movie:
     24 MB END.STR, and after it a frame can be decoded on its own -
     every frame in an STR stands alone, so seeking is free."""
 
-    def __init__(self, name, path, lba, count, raw):
+    def __init__(self, name, path, lba, count, stride=FLAT_SECTOR, offset=0):
         self.name = name
         self.path = path
         self.lba = lba              # 0 for an extracted file
         self.count = count          # sectors
-        self.raw = raw              # 2352-byte sectors, audio included
+        self.stride = stride        # bytes a sector in the file it is in
+        self.offset = offset        # where user data starts in one
         self.width = 0
         self.height = 0
         self.version = 0
@@ -72,19 +77,18 @@ class Movie:
 
     # --- reading sectors ------------------------------------------------
 
-    def _sector(self, handle, index):
-        if self.raw:
-            handle.seek((self.lba + index) * xa.SECTOR)
-            return handle.read(xa.SECTOR)
-        handle.seek(index * FLAT_SECTOR)
-        return handle.read(FLAT_SECTOR)
+    @property
+    def raw(self):
+        """Whether this copy has whole CD sectors, and so any audio."""
+        return self.stride == xa.SECTOR
 
-    @staticmethod
-    def _payload(sector, raw):
+    def _sector(self, handle, index):
+        handle.seek((self.lba + index) * self.stride)
+        return handle.read(self.stride)
+
+    def _payload(self, sector):
         """The 2048 bytes of user data in a sector, however it is framed."""
-        if raw:
-            return sector[FORM1_PAYLOAD:FORM1_PAYLOAD + FLAT_SECTOR]
-        return sector
+        return sector[self.offset:self.offset + FLAT_SECTOR]
 
     def _index(self):
         """Walk the movie once and note where every frame's sectors are.
@@ -98,7 +102,7 @@ class Movie:
         with open(self.path, "rb") as f:
             for index in range(self.count):
                 sector = self._sector(f, index)
-                if len(sector) < (xa.SECTOR if self.raw else FLAT_SECTOR):
+                if len(sector) < self.stride:
                     break
                 if self.raw:
                     submode = sector[xa.SUBHEADER + 2]
@@ -107,7 +111,7 @@ class Movie:
                         self.rate, self.channels = _coding(
                             sector[xa.SUBHEADER + 3])
                         continue
-                payload = self._payload(sector, self.raw)
+                payload = self._payload(sector)
                 if len(payload) < SECTOR_HEADER:
                     continue
                 magic, chunk, chunks, number, size, width, height = \
@@ -162,21 +166,25 @@ class Movie:
     # --- getting the pictures and the sound out -------------------------
 
     def frame_bytes(self, number):
-        """The demuxed bitstream of frame `number`, header and all."""
+        """The demuxed bitstream of frame `number`, header and all.
+
+        Opens the file per call rather than holding a handle: the panel
+        decodes on a worker thread while an export decodes on the GUI
+        thread, and a shared handle's file position belongs to whoever
+        seeked last."""
         pieces = self.frames[number]
         out = bytearray()
+        size = 0
         with open(self.path, "rb") as f:
-            for index in pieces:
-                payload = self._payload(self._sector(f, index), self.raw)
+            for place, index in enumerate(pieces):
+                payload = self._payload(self._sector(f, index))
+                if not place:
+                    # The header says how much of the frame is really
+                    # the frame; past that is whatever was in the sector
+                    # when it was written.
+                    size = struct.unpack_from("<I", payload, 0x0C)[0]
                 out += payload[SECTOR_HEADER:]
-        # The header says how much of that is really the frame; the rest
-        # is whatever was in the sector when it was written.
-        size = struct.unpack_from("<I", self._first_header(pieces), 0x0C)[0]
         return bytes(out[:size]) if 0 < size <= len(out) else bytes(out)
-
-    def _first_header(self, pieces):
-        with open(self.path, "rb") as f:
-            return self._payload(self._sector(f, pieces[0]), self.raw)
 
     def frame(self, number):
         """Frame `number` as an (h, w, 3) uint8 RGB array."""
@@ -196,10 +204,9 @@ class Movie:
 
         A raw copy, so what comes out of a BIN is a 2352-byte STR that
         ffmpeg and the emulators read directly."""
-        stride = xa.SECTOR if self.raw else FLAT_SECTOR
         with open(self.path, "rb") as f:
-            f.seek(self.lba * stride if self.raw else 0)
-            return f.read(self.count * stride)
+            f.seek(self.lba * self.stride)
+            return f.read(self.count * self.stride)
 
 
 def _coding(byte):
@@ -236,7 +243,7 @@ def _from_folder(folder):
             if size % FLAT_SECTOR:
                 continue
             try:
-                out.append(Movie(wanted, path, 0, size // FLAT_SECTOR, False))
+                out.append(Movie(wanted, path, 0, size // FLAT_SECTOR))
             except (OSError, struct.error) as e:
                 raise StrError(f"{wanted}: {e}") from e
         if out:
@@ -245,19 +252,58 @@ def _from_folder(folder):
 
 
 def _from_image(image):
-    """Movies out of a raw disc track, audio and all."""
-    from functions import voice
+    """Movies out of a disc image, whatever its sectors are framed as.
 
+    A raw track's 2352-byte sectors bring the audio with them; a
+    2048-byte .iso has thrown it away, but the video in it is whole, so
+    it is still worth opening rather than refused."""
     if not image or not os.path.isfile(image):
         return []
-    out = []
-    for wanted in NAMES:
-        where = voice.find_file(image, wanted)
-        if not where:
-            continue
-        lba, sectors = where
+    with open(image, "rb") as f:
         try:
-            out.append(Movie(wanted, image, lba, sectors, True))
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            data = f.read()
+        try:
+            try:
+                reader = ISO9660Reader(data)
+            except Exception:
+                return []                   # no filesystem: a CD audio track
+            found = _walk(reader)
+            stride, offset = reader.sector_size, reader.data_offset
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
+
+    out = []
+    for wanted, lba, size in found:
+        try:
+            out.append(Movie(wanted, image, lba, size // FLAT_SECTOR,
+                             stride, offset))
         except (OSError, struct.error) as e:
             raise StrError(f"{wanted}: {e}") from e
     return [movie for movie in out if movie.frames]
+
+
+def _walk(reader, depth=2):
+    """[(name, lba, byte size), ...] for the movies in an open image.
+
+    The directory's size is in 2048-byte units whatever the sectors on
+    the disc really are, which is what Movie wants for its sector count
+    - an STR's sectors are Form 1 apart from the audio ones, and those
+    are counted the same way."""
+    found = []
+
+    def visit(lba, size, level=0):
+        for entry in reader.list_directory(lba, size):
+            name = reader.clean_name(entry.name)
+            if not name:
+                continue
+            if entry.is_dir:
+                if level < depth:
+                    visit(entry.lba, entry.size, level + 1)
+            elif name.upper() in NAMES:
+                found.append((name.upper(), entry.lba, entry.size))
+
+    visit(reader.root_lba, reader.root_size)
+    return [item for name in NAMES for item in found if item[0] == name]

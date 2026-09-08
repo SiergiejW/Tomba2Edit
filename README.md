@@ -89,6 +89,22 @@ The project includes tools for working with Tomba! 2 audio data, including:
 * WAV output
 * Optional MP3 export
 
+### Movies
+
+The three STR movies in the disc's `MOVIE` folder — `LOGO.STR`, `OP.STR`
+and `END.STR` — are played and exported in the **Movies** tab:
+
+* Software MDEC decoding, so no external decoder is needed to watch them
+* A frame-accurate timeline (every STR frame is independent, so seeking
+  anywhere costs one frame)
+* Export as a still PNG, a numbered PNG sequence, the soundtrack as
+  WAV/MP3, the raw `.STR` sectors, or — where ffmpeg is on PATH — a
+  finished MP4/MKV/AVI with the sound in it
+
+The soundtrack lives in CD-XA Form 2 sectors, so it only survives in a
+raw bin/cue data track; a 2048-byte ISO or an extracted `MOVIE` folder
+gives the picture alone.
+
 ## Supported / investigated formats
 
 Some of the important Tomba! 2 data formats currently handled or investigated by the project include:
@@ -105,6 +121,7 @@ Some of the important Tomba! 2 data formats currently handled or investigated by
 | `DRWA` / `DRWB`     | Level drawmaps                  |
 | `BGMP`              | Background maps                 |
 | Animation formats   | Character/object animation data |
+| `STR`               | MDEC movies, with CD-XA sound   |
 | PlayStation ISO9660 | Disc filesystem                 |
 
 See the `functions/`, `gui/` and `examples/` directories for implementation details and additional research tools.

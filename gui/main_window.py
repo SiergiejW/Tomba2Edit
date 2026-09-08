@@ -45,6 +45,7 @@ from gui.txtd.font_page_view import FontPageView
 from gui.txtd.voice_panel import VoicePanel
 from gui.music_panel import MusicPanel
 from gui.sfx_panel import SfxPanel
+from gui.movie.movie_panel import MoviePanel
 from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
     content_hashes, row_label_data, area_index_of, LabelNameDelegate)
@@ -67,6 +68,16 @@ EXPORTED_TXTD_ITEM_COLOR = "green"
 # character models' texture pages live only here. See
 # _load_area_vram_bytes(merge_common=True).
 COMMON_VRAM_AREA = 1
+
+
+def _panel_player(panel):
+    """The QMediaPlayer a tab makes sound through.
+
+    Dialogues, Music and SFX share gui/audio_transport and reach it
+    through that; Movies has its own, since what it is keeping time
+    against is a picture rather than a playlist."""
+    transport = getattr(panel, "transport", None)
+    return transport.player if transport is not None else panel.player
 
 
 def _export_name(item):
@@ -192,6 +203,11 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.music_panel, "Music")
         self.sfx_panel = SfxPanel()
         self.main_tabs.addTab(self.sfx_panel, "SFX")
+        # The three STR movies. Beside Music and SFX rather than in the
+        # file tree because they are not in TOMBA2.DAT at all - they sit
+        # in the disc's own MOVIE folder, which the tree never sees.
+        self.movie_panel = MoviePanel()
+        self.main_tabs.addTab(self.movie_panel, "Movies")
 
         # Translation: the font page, whole, and everything selected
         # from it. One view rather than two - the page IS the index, so
@@ -244,9 +260,10 @@ class MainWindow(QMainWindow):
         # tab with a channel still playing is otherwise easy to forget.
         self._playback_tabs = (("Dialogues", self.voice_panel),
                                ("Music", self.music_panel),
-                               ("SFX", self.sfx_panel))
+                               ("SFX", self.sfx_panel),
+                               ("Movies", self.movie_panel))
         for _label, panel in self._playback_tabs:
-            panel.transport.player.playbackStateChanged.connect(
+            _panel_player(panel).playbackStateChanged.connect(
                 self._refresh_playback_status)
         self._refresh_playback_status()
 
@@ -1630,7 +1647,7 @@ class MainWindow(QMainWindow):
         # Looked up rather than remembered: a tab added in front of
         # these would otherwise put the note on somebody else's.
         for label, panel in self._playback_tabs:
-            playing = (panel.transport.player.playbackState()
+            playing = (_panel_player(panel).playbackState()
                       == QMediaPlayer.PlaybackState.PlayingState)
             self.main_tabs.setTabText(self.main_tabs.indexOf(panel),
                                       f"{label} ♫" if playing else label)
@@ -2946,6 +2963,7 @@ class MainWindow(QMainWindow):
         self.voice_panel.set_image(iso_path)
         self.music_panel.set_image(iso_path)
         self.sfx_panel.set_image(iso_path)
+        self.movie_panel.set_source(iso_path)
         self._load_level_editor()
         self._load_img_browser()
         # If Translation is already the tab in front, it has been
@@ -3051,6 +3069,12 @@ class MainWindow(QMainWindow):
         self._load_bins(overlays, sop_path)
         self._load_level_editor()
         self._load_img_browser()
+        # MOVIE sits where MAIN.EXE and BIN do - beside the CD folder,
+        # or inside it depending on how the disc was extracted.
+        for candidate_dir in (folder, cd_folder):
+            self.movie_panel.set_source(candidate_dir)
+            if self.movie_panel.movies:
+                break
 
         self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
 
@@ -3235,6 +3259,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.iso_handler:
             self.iso_handler.cleanup()
+        # The Movies tab has a decoder thread of its own, and Qt takes
+        # the process down noisily if it is still running.
+        self.movie_panel.close()
         super().closeEvent(event)
 
     def tuplify(self, item):
