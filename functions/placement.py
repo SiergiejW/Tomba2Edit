@@ -128,6 +128,36 @@ SECTIONS = {
 # Where an overlay lands - the same address gui.main_window uses.
 OVERLAY_BASE = 0x80108F9C
 
+# The crystals and the apples - a system of their own, nothing to do
+# with the table above. MAIN.EXE holds an array of pointers to them and
+# f_SpawnPersistentPickupPlacementTable walks whichever the area asks
+# for; the index is a table number and not an area, so which overlay
+# owns a table is worked out by parsing it - see find_pickups().
+PICKUP_TABLES = 0x800A3EE0
+PICKUP_TABLE_COUNT = 42
+
+#     u8  type      \  what the actor is allocated as. 0xFF here ends
+#     u8  alloc     /  the table; alloc is 2 or 5 on the whole disc
+#     u8  persist   bit 0x80 counts it against the apples rather than
+#                   the chests; the low bits are the third argument
+#     u8  reward    which pickup it is. 4 is the orange crystal
+#     i16 x, y, z
+#     i16 bit       which bit of the collected-items bitmap is its own
+#     u8  field2a
+#     u8  behaviour
+#     u16 config
+PICKUP = struct.Struct("<BBBBhhhhBBH")
+PICKUP_SIZE = PICKUP.size          # 16
+APPLE = 0x80
+
+# What a pickup record holds on the disc, for telling a table from a
+# stretch of something else. The save-bit indices inside one table are
+# allocated in order, which is what makes an overlay's own tables
+# unmistakable: no other overlay reads one as valid.
+PICKUP_MAX_TYPE = 4
+PICKUP_ALLOC = (2, 5)
+PICKUP_MAX_BIT = 1023
+
 # A run has to be at least this long before it is called a table. Two,
 # because three of the real ones are that short - AREA_08's fourth and
 # AREA_17's hold three records and AREA_18's holds two - and with the
@@ -288,6 +318,130 @@ def find_tables(data):
             tables.append(run)
         at = max(end, at + 2)
     return tables
+
+
+@dataclass
+class Pickup:
+    """One crystal or apple lying in a level."""
+
+    index: int              # which record of the table this is
+    table: int              # which entry of MAIN.EXE's array it came from
+    offset: int             # where it sits in the overlay
+    x: int
+    y: int
+    z: int
+    type: int
+    alloc: int
+    persist: int
+    reward: int             # which pickup it is - 4 is the orange crystal
+    bit: int                # its own bit of the collected-items bitmap
+    behaviour: int
+    config: int
+
+    @property
+    def apple(self):
+        """Whether it counts against the apples rather than the chests -
+        the two are numbered separately."""
+        return bool(self.persist & APPLE)
+
+    @property
+    def position(self):
+        return self.x, self.y, self.z
+
+    def name(self):
+        return f"{'apple' if self.apple else 'item'} {self.bit}"
+
+    def describe(self):
+        return (f"reward {self.reward}, {'apple' if self.apple else 'chest'}"
+                f" bit {self.bit}")
+
+
+def _pickup(data, offset):
+    """The pickup record at `offset`, or None if what is there isn't one."""
+    if offset < 0 or offset + PICKUP_SIZE > len(data):
+        return None
+    kind, alloc, persist, reward, x, y, z, bit, _f2a, behaviour, config = \
+        PICKUP.unpack_from(data, offset)
+    if kind == END or kind > PICKUP_MAX_TYPE or alloc not in PICKUP_ALLOC:
+        return None
+    if not 0 <= bit <= PICKUP_MAX_BIT:
+        return None
+    if not (0 < abs(x) < 32000 and abs(y) < 32000 and 0 < abs(z) < 32000):
+        return None
+    return Pickup(index=0, table=0, offset=offset, x=x, y=y, z=z, type=kind,
+                  alloc=alloc, persist=persist, reward=reward, bit=bit,
+                  behaviour=behaviour, config=config)
+
+
+def pickup_addresses(exe_path):
+    """Every address in MAIN.EXE's array of pickup tables, in order."""
+    try:
+        with open(exe_path, "rb") as f:
+            exe = f.read()
+    except OSError:
+        return []
+    if len(exe) < EXE_TEXT or exe[:8] != EXE_MAGIC:
+        return []
+    base = struct.unpack_from("<I", exe, EXE_BASE_AT)[0]
+    at = PICKUP_TABLES - base + EXE_TEXT
+    if at < 0 or at + PICKUP_TABLE_COUNT * 4 > len(exe):
+        return []
+    return list(struct.unpack_from(f"<{PICKUP_TABLE_COUNT}I", exe, at))
+
+
+def find_pickups(data, exe_path):
+    """[[Pickup, ...], ...] for the tables in MAIN.EXE's array that
+    belong to THIS overlay.
+
+    Only one overlay is in memory at a time, so every entry of the array
+    points into the same window and an area's own entries are the ones
+    that read as a table there. Reading as one is a high bar: the save
+    bits inside a table are numbered in order, and requiring that leaves
+    no entry that two overlays both claim."""
+    tables = []
+    for number, address in enumerate(pickup_addresses(exe_path)):
+        if not address:
+            continue
+        at, run = address - OVERLAY_BASE, []
+        if at < 0:
+            continue
+        while (record := _pickup(data, at)) is not None:
+            run.append(record)
+            at += PICKUP_SIZE
+        if not run or at >= len(data) or data[at] != END:
+            continue
+        if not all(_ordered(r.bit for r in run if r.apple is which)
+                   for which in (True, False)):
+            continue
+        for i, record in enumerate(run):
+            record.index, record.table = i, number
+        tables.append(run)
+    return tables
+
+
+def _ordered(values):
+    values = list(values)
+    return all(b > a for a, b in zip(values, values[1:]))
+
+
+def load_pickups(overlay_path, exe_path):
+    """Every crystal and apple one area's overlay places. [] when either
+    file is missing - a disc opened without a BIN folder has neither."""
+    try:
+        with open(overlay_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return []
+    return [r for table in find_pickups(data, exe_path) for r in table]
+
+
+def patch_pickups(data, pickups):
+    """`data` with each pickup's position written back."""
+    out = bytearray(data)
+    for pickup in pickups:
+        struct.pack_into("<hhh", out, pickup.offset + 4,
+                         int(pickup.x), int(pickup.y), int(pickup.z))
+    return bytes(out)
 
 
 def tables_from_exe(exe_path, area):

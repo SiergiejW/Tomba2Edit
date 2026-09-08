@@ -90,6 +90,7 @@ class Instance:
     z: float = 0.0
     angle: float = 0.0              # degrees about Y
     placement: object = None        # the Placement record, for an object
+    pickup: object = None           # the Pickup record, for a pickup
     room: int = None                # which of the scene's MDATs, for a room
     # Whether the geometry is already where it belongs - see
     # world_placed(). Such a part is drawn as it is; a transform would
@@ -157,12 +158,14 @@ class Instance:
         """Write this instance's position and angle back onto its
         record, in the game's own axes - the inverse of
         view_position()."""
-        if self.placement is None:
+        record = self.placement if self.placement is not None else self.pickup
+        if record is None:
             return
-        self.placement.x = int(round(self.z))
-        self.placement.y = int(round(-self.y))
-        self.placement.z = int(round(self.x))
-        self.placement.angle = int(round(self.angle))
+        record.x = int(round(self.z))
+        record.y = int(round(-self.y))
+        record.z = int(round(self.x))
+        if self.placement is not None:
+            record.angle = int(round(self.angle))
 
     def describe(self):
         where = f"({self.x:.0f}, {self.y:.0f}, {self.z:.0f})"
@@ -174,6 +177,11 @@ class Instance:
             return (f"{self.placement.describe()}<br>{model}, at {where}<br>"
                     f"record {self.placement.index} of table "
                     f"{self.placement.table}, at 0x{self.placement.offset:X} "
+                    f"in the overlay")
+        if self.pickup is not None:
+            return (f"{self.pickup.describe()}<br>{model}, at {where}<br>"
+                    f"record {self.pickup.index} of pickup table "
+                    f"{self.pickup.table}, at 0x{self.pickup.offset:X} "
                     f"in the overlay")
         return f"{model}, at {where}"
 
@@ -251,6 +259,28 @@ def room_entries(idx_path, dat_path, chunk_index):
     return out
 
 
+# A pickup has no handler of its own - one routine draws them all and
+# picks the model off the reward - so a binding covers every pickup of
+# one reward at once. Keyed in the same shape a placement's is, with a
+# handler of 0 to tell the two apart: a real handler is an address.
+PICKUP_HANDLER = 0
+
+
+def pickup_key(record):
+    """What a pickup's model is looked up by."""
+    return record.reward, int(record.apple), PICKUP_HANDLER
+
+
+def instance_key(instance):
+    """What an instance's model is remembered under, or None for the
+    ones that aren't placed by a table - the room and the scenery."""
+    if instance.placement is not None:
+        return instance.placement.key()
+    if instance.pickup is not None:
+        return pickup_key(instance.pickup)
+    return None
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -316,6 +346,7 @@ class LevelScene:
         # Every MDAT this area's level is made of - see room_entries().
         self.rooms = []
         self.placements = []
+        self.pickups = []               # the crystals and apples
         self.bindings = {}
         # Where each binding came from - "code", "savestate" or
         # "corrected" - and the reader that produced the code ones.
@@ -361,6 +392,11 @@ class LevelScene:
                     "the overlay holds no object table - a few small areas "
                     "place nothing")
             self._bind(overlay_path, exe_path)
+            # The crystals and the apples are a table of their own, and
+            # MAIN.EXE is what says where it is.
+            if exe_path:
+                self.pickups = placement_module.load_pickups(overlay_path,
+                                                             exe_path)
         else:
             self.notes.append(
                 "no overlay for this area, so nothing says where its objects "
@@ -478,6 +514,18 @@ class LevelScene:
                 label=f"{record.kind}.{record.slot}",
                 sources=tuple(sources), x=x, y=y, z=z,
                 angle=float(record.angle), placement=record,
+                authored=bool(group is not None
+                              and world_placed(group, room_box))))
+
+        for record in self.pickups:
+            sources = self.bindings.get(pickup_key(record)) or ()
+            used.update(sources)
+            x, y, z = view_position(record)
+            _model, group = self.group(sources[0] if sources else None)
+            instances.append(Instance(
+                index=len(instances), role="pickup",
+                label=record.name(), sources=tuple(sources),
+                x=x, y=y, z=z, pickup=record,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 

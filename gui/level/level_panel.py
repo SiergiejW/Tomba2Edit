@@ -31,7 +31,8 @@ from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
-    ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, room_entries)
+    ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, instance_key,
+    room_entries)
 from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
 
@@ -475,6 +476,11 @@ class LevelEditorPanel(QWidget):
         area = f"AREA_{self.chunk:02X}" if self.chunk is not None else "level"
         bits = [f"{area} {instance.role} #{instance.index}",
                 f"'{instance.label}'"]
+        if instance.pickup is not None:
+            bits.append(instance.pickup.describe())
+            bits.append(f"record {instance.pickup.index} of pickup table "
+                        f"{instance.pickup.table}"
+                        f" @ 0x{instance.pickup.offset:X} in the overlay")
         placement = instance.placement
         if placement is not None:
             bits.append(f"kind {placement.kind} slot {placement.slot}")
@@ -501,8 +507,9 @@ class LevelEditorPanel(QWidget):
                 box.setEnabled(False)
             self.model_box.setEnabled(False)
             return
-        where = (self.scene.binding_source.get(instance.placement.key())
-                 if instance.placement is not None else None)
+        key = instance_key(instance)
+        where = (self.scene.binding_source.get(key)
+                 if key is not None else None)
         told = {"code": "read out of the handler's own code",
                 "savestate": "learned from a savestate",
                 "corrected": "corrected by hand"}.get(where)
@@ -558,8 +565,9 @@ class LevelEditorPanel(QWidget):
         if source == instance.source:
             return
         instance.source = source
-        if instance.placement is not None:
-            self.scene.bindings[instance.placement.key()] = source
+        key = instance_key(instance)
+        if key is not None:
+            self.scene.bindings[key] = source
         # The scene's arrays are laid out instance by instance, so a
         # different model means different geometry in the middle of
         # them: everything downstream of it moves, and the whole scene
@@ -647,8 +655,9 @@ class LevelEditorPanel(QWidget):
                 "remember models for.")
             return
         for instance in self.scene.instances:
-            if instance.role == "object" and instance.placement is not None:
-                self.scene.bindings[instance.placement.key()] = instance.sources
+            key = instance_key(instance)
+            if key is not None:
+                self.scene.bindings[key] = instance.sources
         if self._store_bindings():
             name = os.path.basename(self.scene.overlay_path)
             QMessageBox.information(
@@ -709,13 +718,16 @@ class LevelEditorPanel(QWidget):
         try:
             with open(self.scene.overlay_path, "rb") as f:
                 data = f.read()
+            patched = placement_module.patch(data, self.scene.placements)
+            patched = placement_module.patch_pickups(patched,
+                                                     self.scene.pickups)
             with open(path, "wb") as f:
-                f.write(placement_module.patch(data, self.scene.placements))
+                f.write(patched)
         except OSError as e:
             QMessageBox.critical(self, "Couldn't write it", str(e))
             return
         QMessageBox.information(
             self, "Saved",
-            f"Wrote {len(self.scene.placements)} record(s) into a copy of "
-            f"{name}. Only the positions and angles differ from the "
-            f"original.")
+            f"Wrote {len(self.scene.placements)} object record(s) and "
+            f"{len(self.scene.pickups)} pickup(s) into a copy of {name}. "
+            f"Only the positions and angles differ from the original.")
