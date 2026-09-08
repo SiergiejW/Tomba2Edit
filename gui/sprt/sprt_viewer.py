@@ -345,7 +345,8 @@ class SPRTViewer(QWidget):
         with open(dat_file_path, "rb") as f:
             f.seek(dat_start + offset)
             self._blob = f.read(size)
-        self.editor.set_pool(sprt_edit.clut_pool(self.sprt_data), self._blob)
+        self.editor.set_pool(sprt_edit.clut_pool(self.sprt_data), self._blob,
+                             self.sprt_data)
         self.editor.set_piece(None, None)
         if self._vram is not None:
             try:

@@ -22,8 +22,8 @@ from PIL import Image
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QColorDialog, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+    QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from gui.pixel_canvas import PaintCanvas, fit_zoom
@@ -95,6 +95,7 @@ class SpriteEditPanel(QGroupBox):
         self.original = None            # what it was when loaded
         self.blob = None                # the SPRT bank's own bytes
         self.pool = []                  # (address, how many pieces use it)
+        self.sprt = None                # the parsed bank, for user counts
         self._previewing = None         # a CLUT chosen but not applied
         self.indices = []
         self.colours = []
@@ -149,6 +150,37 @@ class SpriteEditPanel(QGroupBox):
         clut_row.addWidget(self.copy_clut)
         clut_row.addWidget(self.apply_clut)
 
+        # Editing a colour changes it for every piece sharing the
+        # palette, so how many that is has to be on screen before the
+        # edit, not discovered after it.
+        self.users_label = QLabel(self)
+        self.users_label.setWordWrap(True)
+        self.edit_colour = QPushButton("Edit colour...", self)
+        self.edit_colour.setToolTip(
+            "Change the selected swatch. This edits the PALETTE, so every "
+            "piece drawing through it changes too - the count beside this "
+            "says how many.")
+        self.edit_colour.clicked.connect(self._edit_colour)
+        self.make_hole = QPushButton("Make transparent", self)
+        self.make_hole.setToolTip(
+            "Write the hardware's nothing-at-all value into the selected "
+            "swatch. That is a plain zero halfword - the PSX has no alpha "
+            "- and it is how every hole in every sprite is made.")
+        self.make_hole.clicked.connect(self._make_transparent)
+        self.fork_clut = QPushButton("Duplicate palette", self)
+        self.fork_clut.setToolTip(
+            "Copy these sixteen colours to a free slot and point this "
+            "piece at the copy, so editing them stops affecting the other "
+            "pieces that share the original.")
+        self.fork_clut.clicked.connect(self._fork_clut)
+
+        colour_row = QHBoxLayout()
+        colour_row.setContentsMargins(0, 0, 0, 0)
+        colour_row.addWidget(self.edit_colour)
+        colour_row.addWidget(self.make_hole)
+        colour_row.addWidget(self.fork_clut)
+        colour_row.addWidget(self.users_label, 1)
+
         self.info = QLabel("Pick a piece to edit it.", self)
         self.info.setWordWrap(True)
 
@@ -183,6 +215,7 @@ class SpriteEditPanel(QGroupBox):
         layout.addWidget(self.info)
         layout.addLayout(clut_row)
         layout.addWidget(self.palette)
+        layout.addLayout(colour_row)
         layout.addWidget(scroll, 1)
         layout.addLayout(buttons)
         self._enable(False)
@@ -194,13 +227,14 @@ class SpriteEditPanel(QGroupBox):
     def _enable(self, on):
         for button in (self.undo_button, self.import_button,
                        self.export_button, self.save_button,
-                       self.apply_clut, self.copy_clut):
+                       self.apply_clut, self.copy_clut,
+                       self.edit_colour, self.make_hole, self.fork_clut):
             button.setEnabled(on)
         self.clut_box.setEnabled(on)
 
     # --- what is being edited -----------------------------------------
 
-    def set_pool(self, pool, blob):
+    def set_pool(self, pool, blob, sprt=None):
         """The palettes this bank uses, and its own bytes.
 
         Commonest first: a palette 51 pieces already draw through is far
@@ -208,6 +242,7 @@ class SpriteEditPanel(QGroupBox):
         runs to a couple of hundred entries on a big bank."""
         self.pool = list(pool)
         self.blob = blob
+        self.sprt = sprt
         self.clut_box.blockSignals(True)
         self.clut_box.clear()
         for address, count in sorted(pool, key=lambda p: (-p[1], p[0])):
@@ -244,6 +279,7 @@ class SpriteEditPanel(QGroupBox):
         self._history = []
         self._stroke = []
         self.palette.set_palette(self.colours)
+        self._show_users()
         self._redraw(fit=True)
         self.info.setText(
             f"piece {piece.index}: {piece.ww}x{piece.hh} texels, page "
@@ -294,12 +330,115 @@ class SpriteEditPanel(QGroupBox):
         self.colours = sprt_edit.read_palette_at(self.vram, address,
                                                  self.piece.is_8bpp)
         self.palette.set_palette(self.colours)
+        self._show_users()
         self._redraw()
         same = address == self.piece.clut_address
         self.info.setText(
             f"previewing CLUT 0x{address:X}"
             + ("  (this piece's own)" if same else
                "  -  Apply to point the piece at it"))
+
+    # --- editing the palette itself ---------------------------------
+
+    def _clut_address(self):
+        """Whichever palette the piece is drawing through right now -
+        the previewed one if there is one, else its own."""
+        if self._previewing is not None:
+            return self._previewing
+        return self.piece.clut_address if self.piece else None
+
+    def _show_users(self):
+        """Say how many pieces share this palette."""
+        address = self._clut_address()
+        if address is None or self.sprt is None:
+            self.users_label.setText("")
+            return
+        users = sprt_edit.clut_users(self.sprt, address)
+        n = len(users)
+        if n <= 1:
+            self.users_label.setText(
+                f"0x{address:X} is used by this piece only - editing its "
+                f"colours affects nothing else.")
+        else:
+            where = ", ".join(f"{s}/{p}" for s, p in users[:6])
+            self.users_label.setText(
+                f"<b>0x{address:X} is shared by {n} pieces</b> "
+                f"(sprite/piece {where}{'...' if n > 6 else ''}) - editing "
+                f"a colour changes all of them. Duplicate it first to "
+                f"change only this one.")
+
+    def _edit_colour(self):
+        address = self._clut_address()
+        if address is None or not self.colours:
+            return
+        index = self.palette.index
+        _value, r, g, b, stp = sprt_edit.palette_entry(self.vram, address,
+                                                       index)
+        chosen = QColorDialog.getColor(
+            QColor(r, g, b), self,
+            f"Colour {index:X} of palette 0x{address:X}")
+        if not chosen.isValid():
+            return
+        was = sprt_edit.palette_entry(self.vram, address, index)[0]
+        now = sprt_edit.set_palette_entry(
+            self.vram, address, index,
+            (chosen.red(), chosen.green(), chosen.blue()), stp=stp)
+        self._after_palette_change(index, was, now, address)
+
+    def _make_transparent(self):
+        address = self._clut_address()
+        if address is None or not self.colours:
+            return
+        index = self.palette.index
+        was = sprt_edit.palette_entry(self.vram, address, index)[0]
+        now = sprt_edit.set_palette_entry(self.vram, address, index,
+                                          (0, 0, 0), transparent=True)
+        self._after_palette_change(index, was, now, address)
+
+    def _after_palette_change(self, index, was, now, address):
+        """Redraw through the changed palette and say what it cost."""
+        self.colours = sprt_edit.read_palette_at(
+            self.vram, address, self.piece.is_8bpp)
+        self.palette.set_palette(self.colours)
+        self._redraw()
+        n = len(sprt_edit.clut_users(self.sprt, address)) if self.sprt else 1
+        self.info.setText(
+            f"colour {index:X} of 0x{address:X}: 0x{was:04X} -> 0x{now:04X}"
+            + (f"  -  {n} pieces draw through it" if n > 1 else "")
+            + "  -  Save to IMG to keep it.")
+        print(f"palette 0x{address:X} colour {index:X}: "
+              f"0x{was:04X} -> 0x{now:04X} ({n} user(s))")
+        self.edited.emit()
+
+    def _fork_clut(self):
+        """Copy this palette somewhere free and use the copy."""
+        from functions import psx_vram, vram_map
+        from gui.img.img_viewer import chunk_bounds
+        address = self._clut_address()
+        if address is None or not self.cd_folder:
+            return
+        idx = os.path.join(self.cd_folder, "TOMBA2.IDX")
+        img = os.path.join(self.cd_folder, "TOMBA2.IMG")
+        shards = vram_map.chunk_shards(idx, img)
+        free = vram_map.free_for(shards, sorted(shards))
+        spots = vram_map.free_rects(free, 16, 1, pages=vram_map.USABLE_PAGES,
+                                    limit=1, align=16)
+        if not spots:
+            QMessageBox.information(
+                self, "Nowhere to put it",
+                "There is no free 16-halfword slot that every area leaves "
+                "alone.")
+            return
+        x, y, _page = spots[0]
+        destination = x * 2 + y * psx_vram.VRAM_STRIDE
+        sprt_edit.copy_palette(self.vram, address, destination)
+        self._preview_clut(destination)
+        self._commit_clut()
+        self.info.setText(
+            f"palette duplicated to 0x{destination:X} - this piece now has "
+            f"its own copy. Save to IMG to write the colours.")
+        print(f"palette 0x{address:X} duplicated to 0x{destination:X}")
+        self.edited.emit()
 
     def _copy_clut_from_area(self):
         """Bring a palette over from another area and use it."""
