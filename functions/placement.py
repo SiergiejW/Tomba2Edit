@@ -363,7 +363,9 @@ class Pickup:
 
     @property
     def contents(self):
-        """Which item is inside a chest."""
+        """What is inside a chest, as a REWARD number - the same numbering
+        a loose pickup's `reward` uses, so it names an item through
+        functions.pickup_art rather than being an item id itself."""
         return self.config & CONTENTS_MASK
 
     @property
@@ -396,7 +398,8 @@ class Pickup:
         if self.chest:
             what = CHEST_KINDS.get(self.reward & PICKUP_REWARD_MASK,
                                    f"chest kind {self.reward}")
-            return f"{what} (item {self.contents}) #{self.bit}"
+            holds = art.grants if art is not None else f"reward {self.contents}"
+            return f"{what}: {holds} #{self.bit}"
         what = art.label() if art is not None else f"reward {self.reward}"
         return f"{what} #{self.bit}"
 
@@ -404,8 +407,10 @@ class Pickup:
         if self.chest:
             what = CHEST_KINDS.get(self.reward & PICKUP_REWARD_MASK,
                                    f"chest kind {self.reward}")
-            return (f"{what}, holds item {self.contents}, effect "
-                    f"{self.effect}, chest bit {self.bit}")
+            holds = (f"{art.grants} (reward {self.contents})"
+                     if art is not None else f"reward {self.contents}")
+            return (f"{what}, holds {holds}, effect {self.effect}, "
+                    f"chest bit {self.bit}")
         bits = [f"reward {self.reward}",
                 f"{'apple' if self.apple else 'chest'} bit {self.bit}"]
         if art is not None:

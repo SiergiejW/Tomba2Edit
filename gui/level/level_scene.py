@@ -153,6 +153,8 @@ class Instance:
         A crystal has no model to build into the scene's arrays - it is
         a sprite out of the shared bank - so it is drawn its own way and
         must not get a marker on top of it."""
+        if self.pickup is not None and self.pickup.chest:
+            return False
         art = self.art
         return bool(art is not None and art.frames)
 
@@ -611,8 +613,8 @@ class LevelScene:
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
-            art = (None if record.chest
-                   else self.reward_art.get(record.art_reward))
+            art = self.reward_art.get(
+                record.contents if record.chest else record.art_reward)
             offsets = ()
             if record.chest and not sources:
                 sources = self.chest_models.get(

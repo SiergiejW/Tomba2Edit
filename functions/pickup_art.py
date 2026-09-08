@@ -129,6 +129,17 @@ CHEST_FILE = 1
 CHEST_OFFSETS = 0x800A3B1C
 OFFSET = struct.Struct("<hhh")
 
+# What every item is called. Twelve bytes each, the last eight being
+# pointers to the name and the description - and on the retail disc
+# those point at strings inside MAIN.EXE, so the names can just be read.
+ITEM_TABLE = 0x800A2BE8
+ITEM = struct.Struct("<BBBBII")
+ITEM_COUNT = 0xA8
+
+# A name ends at a nul and breaks over a newline in the menus.
+NUL = b"\x00"
+BREAK = "\n"
+
 
 class PickupArtError(ValueError):
     """Raised when MAIN.EXE can't be read for any of this."""
@@ -154,6 +165,7 @@ class RewardArt:
     clut: int
     frames: tuple = ()      # the sequence, expanded
     loops: bool = False     # whether it runs forever or stops on the last
+    name: str = ""          # what the item it grants is called, if any
 
     @property
     def bank(self):
@@ -185,6 +197,8 @@ class RewardArt:
     @property
     def grants(self):
         """What touching it gives, in words."""
+        if self.name:
+            return self.name
         if self.reward in GRANTS:
             return GRANTS[self.reward]
         return f"item {self.item}" if self.item >= 0 else "something"
@@ -273,6 +287,30 @@ def chest_models(exe_path):
     return out
 
 
+def item_names(exe_path):
+    """{item id: name} out of MAIN.EXE.
+
+    A name is stored as a pointer, so this follows it; the newline the
+    game breaks the name over in a menu is turned back into a space."""
+    data, base = _image(exe_path)
+    out = {}
+    for item in range(ITEM_COUNT):
+        try:
+            at = _at(data, base, ITEM_TABLE + item * ITEM.size, ITEM.size)
+        except PickupArtError:
+            break
+        pointer = ITEM.unpack_from(data, at)[4]
+        try:
+            first = _at(data, base, pointer)
+        except PickupArtError:
+            continue
+        last = data.find(NUL, first)
+        text = data[first:last if last >= 0 else first]
+        if text:
+            out[item] = text.decode("ascii", "replace").replace(BREAK, " ")
+    return out
+
+
 def chest_offsets(exe_path):
     """((x, y, z), ...) for a chest's parts, in the game's own axes.
 
@@ -330,12 +368,14 @@ def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
     drawn out of the area's own bank - without them those come back with
     no frames rather than wrong ones."""
     data, base = _image(exe_path)
+    names = item_names(exe_path)
     out = {}
     for reward in range(count):
         at = _at(data, base, REWARD_TABLE + reward * REWARD_SIZE, REWARD_SIZE)
         sequence, clut, width, height, item = REWARD.unpack_from(data, at)
         art = RewardArt(reward=reward, width=width, height=height, item=item,
-                        sequence=sequence, clut=clut)
+                        sequence=sequence, clut=clut,
+                        name=names.get(item, ""))
         try:
             if art.resident:
                 art.frames, art.loops = _sequence(data, base, sequence)
