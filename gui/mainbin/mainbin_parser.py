@@ -47,7 +47,24 @@ _LATIN1_FIRST = 0xA0
 #
 # Encoding is unaffected: encode_bytes() already accepts both spellings,
 # so turning this on changes what you SEE, never what gets written.
+#
+# A cell a translation has claimed shows its letter rather than its
+# number, and that letter types back to the same byte - so once "a" is
+# drawn in cell 0xA0 and named in the Translation tab, "a" is what you
+# write here. Only claimed cells, and only in this mode: a byte that is
+# Latin-1 to a stock disc has to keep meaning that, and 0x41 stays "A"
+# whatever the game table calls cell 0x41.
 _GLYPH_BYTES = False
+
+
+def _claimed():
+    """{byte: letter} for the cells this translation has claimed, or
+    empty when nothing has been."""
+    if not _GLYPH_BYTES:
+        return {}
+    from gui.txtd import translation
+    return {code: char for code, char in translation.active().chars.items()
+            if char and len(char) == 1}
 
 
 def glyph_bytes():
@@ -74,12 +91,15 @@ def decode_bytes(raw):
     if _japanese():
         from gui.txtd import jptext
         return jptext.decode_pool(raw)
+    claimed = _claimed()
     out = []
     for b in raw:
         if b == 0x0A:
             out.append("\n")
         elif 0x20 <= b < 0x7F:
             out.append(chr(b))
+        elif b in claimed:
+            out.append(claimed[b])
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
         elif b >= _LATIN1_FIRST and not _GLYPH_BYTES:
@@ -186,6 +206,7 @@ def encode_bytes(text):
             return jptext.encode_pool(text)
         except jptext.JapaneseTextError as exc:
             raise MainBinParseError(str(exc)) from exc
+    claimed = {char: code for code, char in _claimed().items()}
     out = bytearray()
     i = 0
     n = len(text)
@@ -201,12 +222,22 @@ def encode_bytes(text):
                 out.append(int(hex_part, 16))
                 i += 5
                 continue
-        if 0x20 <= ord(ch) < 0x7F or _LATIN1_FIRST <= ord(ch) <= 0xFF:
+        if 0x20 <= ord(ch) < 0x7F:
+            out.append(ord(ch))
+            i += 1
+            continue
+        byte = claimed.get(ch)
+        if byte is not None:
+            out.append(byte)
+            i += 1
+            continue
+        if _LATIN1_FIRST <= ord(ch) <= 0xFF:
             out.append(ord(ch))
             i += 1
             continue
         raise MainBinParseError(
-            "Can't encode character {!r} at position {} of text {!r}: "
-            "not Latin-1 and not a valid {{$XX}} byte escape.".format(ch, i, text)
+            "Can't encode character {!r} at position {} of text {!r}: no "
+            "cell in the Translation tab is named {!r}, and it is not "
+            "Latin-1 or a {{$XX}} byte escape.".format(ch, i, text, ch)
         )
     return bytes(out)

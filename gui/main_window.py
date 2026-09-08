@@ -484,6 +484,18 @@ class MainWindow(QMainWindow):
             "Read a translated export back in as pending edits")
         import_text_action.triggered.connect(self.import_text)
         text_menu.addAction(import_text_action)
+        text_menu.addSeparator()
+        export_letters_action = QAction("Export Letter Assignments...", self)
+        export_letters_action.setToolTip(
+            "Which cell each new letter was given, as a file you can keep "
+            "or carry to another disc")
+        export_letters_action.triggered.connect(self.export_letters)
+        text_menu.addAction(export_letters_action)
+        import_letters_action = QAction("Import Letter Assignments...", self)
+        import_letters_action.setToolTip(
+            "Take a saved set of letter-to-cell assignments")
+        import_letters_action.triggered.connect(self.import_letters)
+        text_menu.addAction(import_letters_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
         theme_menu = settings_menu.addMenu("Theme")
@@ -1977,6 +1989,114 @@ class MainWindow(QMainWindow):
         report = self._apply_imported(grouped)
         report["bad_ids"] = bad_ids
         self._report_import(os.path.basename(path), report)
+
+    def export_letters(self):
+        """Write out which cell each new letter was given.
+
+        The same shape translation.save() keeps beside the disc, but
+        somewhere you choose - so a Polish alphabet drawn once can be
+        carried to the next disc, or kept in version control next to the
+        script it belongs with."""
+        import json
+
+        from gui.txtd import translation
+
+        table = translation.active()
+        if not table.chars:
+            QMessageBox.information(
+                self, "Nothing assigned",
+                "No cell has been given a letter yet. Assign some in the "
+                "Translation tab first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export letter assignments", "letters.json",
+            "JSON (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(table.to_json(), f, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Assignments exported",
+            f"{len(table.chars)} letter(s) written to "
+            f"{os.path.basename(path)}.")
+
+    def import_letters(self):
+        """Take a saved set of letter-to-cell assignments.
+
+        Merging is offered because carrying an alphabet between discs is
+        the point: replacing would throw away whatever this disc has
+        already been given."""
+        import json
+
+        from gui.txtd import translation
+
+        if not self.dat_file:
+            QMessageBox.information(self, "No disc open",
+                                    "Open an ISO or a CD folder first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import letter assignments", "",
+            "JSON (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                incoming = translation.Table.from_json(json.load(f))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.critical(
+                self, "Import failed",
+                f"{os.path.basename(path)} is not a letter assignment "
+                f"file: {exc}")
+            return
+        if not incoming.chars:
+            QMessageBox.warning(self, "Nothing to import",
+                                f"{os.path.basename(path)} assigns no cells.")
+            return
+        table = translation.active()
+        mode = QMessageBox.StandardButton.Yes
+        if table.chars:
+            mode = QMessageBox.question(
+                self, "Merge or replace?",
+                f"{os.path.basename(path)} assigns {len(incoming.chars)} "
+                f"cell(s). This disc already has {len(table.chars)}.\n\n"
+                "Yes - merge, letting the file win where they disagree\n"
+                "No - replace, dropping what this disc has\n",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes)
+            if mode == QMessageBox.StandardButton.Cancel:
+                return
+        merged = translation.Table(
+            incoming.name or table.name,
+            dict(table.chars) if mode == QMessageBox.StandardButton.Yes else {},
+            incoming.glyph_top if incoming.glyph_top is not None
+            else table.glyph_top)
+        clashes = []
+        for code, char in incoming.chars.items():
+            if code in translation.CONTROL_CODES:
+                clashes.append(f"{code:#04x} is a control - {char!r} skipped")
+                continue
+            merged.chars[code] = char
+        cd_folder = os.path.dirname(self.dat_file)
+        translation.apply(merged)
+        try:
+            translation.save(cd_folder, merged)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not save the table", str(exc))
+            return
+        if getattr(self, "_translation_loaded", False):
+            self.font_page_view.set_source(cd_folder)
+        note = (f"{len(merged.chars)} cell(s) now have letters.\n\n"
+                "The cells themselves are whatever this disc draws - an "
+                "assignment names a cell, it does not carry the glyph. "
+                "Draw any that are blank in the Translation tab.")
+        if clashes:
+            note += "\n\nSkipped:\n    " + "\n    ".join(clashes)
+        QMessageBox.information(self, "Assignments imported", note)
 
     def _confirm_import_build(self, meta, path):
         """Stop an export from one disc being poured into another."""

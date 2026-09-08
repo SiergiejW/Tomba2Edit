@@ -45,10 +45,22 @@ def set_clipboard(clip):
     _CLIPBOARD = clip
 
 
-def _body(data, offset, tris, quads):
-    """One group's bytes: its header and its packets."""
-    size = GROUP_HEADER + tris * TRI_SIZE + quads * QUAD_SIZE
-    return bytes(data[offset:offset + size])
+def _bodies(data):
+    """Every group's bytes, taken as the whole run to the next group.
+
+    Not as header-plus-packets, which is all the counts account for and
+    all smst_groups() measures. Some groups carry more than that: group
+    14 of Tomba's own model declares no faces at all and still occupies
+    504 bytes, and five of the first twelve models on the disc have one
+    like it. Rebuilding from the counts dropped those bytes, so pasting
+    or clearing any part of such a model quietly shortened it - which is
+    what this walk is here to stop."""
+    walked = smst_groups(data)
+    out = []
+    for pos, (_i, offset, _tris, _quads, _size) in enumerate(walked):
+        end = walked[pos + 1][1] if pos + 1 < len(walked) else len(data)
+        out.append(bytes(data[offset:end]))
+    return out
 
 
 def copy_group(data, index):
@@ -60,13 +72,13 @@ def copy_group(data, index):
     walked = smst_groups(data)
     if not 0 <= index < len(walked):
         raise FormatError(f"there is no group {index} in this SMST")
-    _i, offset, tris, quads, size = walked[index]
+    _i, _offset, tris, quads, size = walked[index]
     return {
         "index": index,
         "tris": tris,
         "quads": quads,
         "size": size,
-        "bytes": _body(data, offset, tris, quads),
+        "bytes": _bodies(data)[index],
     }
 
 
@@ -107,7 +119,10 @@ def clear_group(data, index):
     bodies = bodies_of(data)
     if not 0 <= index < len(bodies):
         raise FormatError(f"there is no group {index} in this SMST")
-    if not any(len(b) > GROUP_HEADER
+    # Counted from the headers, not from the body lengths: a group can
+    # be hundreds of bytes long and still declare no faces (see
+    # _bodies), and one of those is not geometry.
+    if not any(any(struct.unpack_from("<HH", b, 0))
                for i, b in enumerate(bodies) if i != index):
         raise FormatError(
             "that is the only part with any geometry in it - emptying it "
@@ -142,8 +157,82 @@ def rebuild(data, bodies):
 
 def bodies_of(data):
     """Every group in a blob, as bytes, in order."""
-    return [_body(data, offset, tris, quads)
-            for _i, offset, tris, quads, _size in smst_groups(data)]
+    return _bodies(data)
+
+
+def packet_slots(body):
+    """[(kind, offset in the body, size)] for every packet in a group,
+    in the order they are stored - every triangle, then every quad."""
+    tris, quads = struct.unpack_from("<HH", body, 0)
+    out = []
+    at = GROUP_HEADER
+    for _ in range(tris):
+        out.append(("tri", at, TRI_SIZE))
+        at += TRI_SIZE
+    for _ in range(quads):
+        out.append(("quad", at, QUAD_SIZE))
+        at += QUAD_SIZE
+    return out
+
+
+def _slot_of(body, kind, slot):
+    """Where one packet of a kind sits, by its number among its own
+    kind - which is how the parser numbers them."""
+    same = [s for s in packet_slots(body) if s[0] == kind]
+    if not 0 <= slot < len(same):
+        raise FormatError(f"there is no {kind} {slot} in this part")
+    return same[slot]
+
+
+def duplicate_packet(data, group_index, kind, slot):
+    """`data` with one face copied, the copy right after the original.
+
+    A new face is made by copying an existing one rather than built
+    from nothing: a packet carries a draw code, a page, a palette and a
+    colour as well as its corners, and a copy is guaranteed to have a
+    working set of all of them. Move the copy afterwards - that is what
+    the UV and vertex fields are for.
+
+    Order matters to the format: every triangle comes before every
+    quad, and a copy goes in beside its own kind."""
+    bodies = bodies_of(data)
+    if not 0 <= group_index < len(bodies):
+        raise FormatError(f"there is no group {group_index} in this SMST")
+    body = bytearray(bodies[group_index])
+    _kind, at, size = _slot_of(body, kind, slot)
+    tris, quads = struct.unpack_from("<HH", body, 0)
+    if kind == "tri":
+        tris += 1
+    else:
+        quads += 1
+    if tris > 0xFFFF or quads > 0xFFFF:
+        raise FormatError("a group cannot hold more than 65535 of a kind")
+    body[at + size:at + size] = body[at:at + size]
+    struct.pack_into("<HH", body, 0, tris, quads)
+    bodies[group_index] = bytes(body)
+    note = (f"part {group_index} now has {tris} tris and {quads} quads. "
+            f"The copy sits on top of the original until it is moved.")
+    return rebuild(data, bodies), note
+
+
+def delete_packet(data, group_index, kind, slot):
+    """`data` with one face removed."""
+    bodies = bodies_of(data)
+    if not 0 <= group_index < len(bodies):
+        raise FormatError(f"there is no group {group_index} in this SMST")
+    body = bytearray(bodies[group_index])
+    _kind, at, size = _slot_of(body, kind, slot)
+    tris, quads = struct.unpack_from("<HH", body, 0)
+    if kind == "tri":
+        tris -= 1
+    else:
+        quads -= 1
+    del body[at:at + size]
+    struct.pack_into("<HH", body, 0, tris, quads)
+    bodies[group_index] = bytes(body)
+    note = (f"part {group_index} now has {tris} tris and {quads} quads. "
+            f"The faces after it in the part have moved up one.")
+    return rebuild(data, bodies), note
 
 
 def paste_group(data, index, clip):
