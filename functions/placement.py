@@ -153,6 +153,16 @@ APPLE = 0x80
 # A reward's top bit is a flag the spawner keeps, not part of the number.
 PICKUP_REWARD_MASK = 0x7F
 
+# An alloc of 2 is a chest. The spawner branches on it: a different
+# handler, and `config` splits into the item inside and an effect id.
+CHEST_ALLOC = 2
+CONTENTS_BITS = 12
+CONTENTS_MASK = (1 << CONTENTS_BITS) - 1
+
+# Which chest is which, by the field that means `reward` on everything
+# else. Confirmed from savestates: the chest at A00 bit 0 is the red one.
+CHEST_KINDS = {0: "red chest", 1: "green chest"}
+
 # What a pickup record holds on the disc, for telling a table from a
 # stretch of something else. The save-bit indices inside one table are
 # allocated in order, which is what makes an overlay's own tables
@@ -342,6 +352,24 @@ class Pickup:
     config: int
 
     @property
+    def chest(self):
+        """Whether it is a chest rather than something lying on the
+        ground. The spawner gives these a different handler and reads
+        two more fields out of `config`; `reward` stops meaning a reward
+        and becomes which chest it is - 0 red, 1 green."""
+        return self.alloc == CHEST_ALLOC
+
+    @property
+    def contents(self):
+        """Which item is inside a chest."""
+        return self.config & CONTENTS_MASK
+
+    @property
+    def effect(self):
+        """The chest's effect id - the top nibble of the same field."""
+        return self.config >> CONTENTS_BITS
+
+    @property
     def art_reward(self):
         """The reward with its flag bit taken off - what indexes the
         table in functions/pickup_art.py. The spawner masks it the same
@@ -361,11 +389,21 @@ class Pickup:
     def name(self, art=None):
         """What it is, then which one it is. `art` is this reward's entry
         from functions.pickup_art, which is what says a reward 4 is a
-        hundred-AP crystal - without it the number has to do."""
+        hundred-AP crystal - without it the number has to do. A chest
+        doesn't use that table at all."""
+        if self.chest:
+            what = CHEST_KINDS.get(self.reward & PICKUP_REWARD_MASK,
+                                   f"chest kind {self.reward}")
+            return f"{what} (item {self.contents}) #{self.bit}"
         what = art.label() if art is not None else f"reward {self.reward}"
         return f"{what} #{self.bit}"
 
     def describe(self, art=None):
+        if self.chest:
+            what = CHEST_KINDS.get(self.reward & PICKUP_REWARD_MASK,
+                                   f"chest kind {self.reward}")
+            return (f"{what}, holds item {self.contents}, effect "
+                    f"{self.effect}, chest bit {self.bit}")
         bits = [f"reward {self.reward}",
                 f"{'apple' if self.apple else 'chest'} bit {self.bit}"]
         if art is not None:
@@ -386,7 +424,13 @@ def _pickup(data, offset):
         return None
     kind, alloc, persist, reward, x, y, z, bit, _f2a, behaviour, config = \
         PICKUP.unpack_from(data, offset)
-    if kind == END or kind > PICKUP_MAX_TYPE or alloc not in PICKUP_ALLOC:
+    # The type carries the same 0x80 flag a placement record's does - the
+    # spawner hands it to the allocator whole and the handler tests the
+    # bit separately - so mask it before judging the number. 0xFF still
+    # ends a table, since 0x7F is not a type.
+    if kind == END or kind & TYPE_MASK > PICKUP_MAX_TYPE:
+        return None
+    if alloc not in PICKUP_ALLOC:
         return None
     if not 0 <= bit <= PICKUP_MAX_BIT:
         return None

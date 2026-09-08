@@ -95,6 +95,17 @@ GRANTS = {
 }
 
 
+# Chests are the exception: they are models, not sprites. The routine at
+# 0x80040410 builds one out of TWO parts of file 1 - a body and a lid -
+# and takes both group numbers from this table, indexed by which chest it
+# is. Red and green are confirmed from savestates; 2 and 3 are the other
+# two colours, in an order nobody has checked yet.
+CHEST_MODELS = 0x800A3B28
+CHEST_KIND_COUNT = 4
+CHEST_PARTS = 2
+CHEST_FILE = 1
+
+
 class PickupArtError(ValueError):
     """Raised when MAIN.EXE can't be read for any of this."""
 
@@ -215,6 +226,22 @@ def _sequence(data, base, index):
         else:
             return tuple(frames), False
     return tuple(frames), False
+
+
+def chest_models(exe_path):
+    """{chest kind: ((file, group), (file, group))} - the body and lid
+    each kind of chest is built from.
+
+    Unlike everything else here these are real models out of the DAT, so
+    the Level Editor can draw a chest without being taught anything."""
+    data, base = _image(exe_path)
+    out = {}
+    for kind in range(CHEST_KIND_COUNT):
+        at = _at(data, base, CHEST_MODELS + kind * CHEST_PARTS * 2,
+                 CHEST_PARTS * 2)
+        groups = struct.unpack_from(f"<{CHEST_PARTS}H", data, at)
+        out[kind] = tuple((CHEST_FILE, group) for group in groups)
+    return out
 
 
 def reward_art(exe_path, count=REWARD_COUNT):

@@ -50,6 +50,10 @@ ROOM_ID = 8
 BACKGROUND_ID = 11
 ASSET_PACK_ID = 12
 
+# The chunk every area keeps loaded, holding what they all share -
+# the chests are models out of it.
+RESIDENT_CHUNK = 1
+
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
 
@@ -363,6 +367,12 @@ class LevelScene:
         # {reward: RewardArt} - what each pickup is and how it is
         # drawn, out of MAIN.EXE. See functions/pickup_art.py.
         self.reward_art = {}
+        # {chest kind: ((file, group), ...)} - a chest's body and lid,
+        # which unlike a crystal's sprite are models we can just draw.
+        self.chest_models = {}
+        # {file id: (dat_start, (offset, size))} for the resident chunk,
+        # which every area keeps loaded - see model().
+        self.resident = {}
         self.bindings = {}
         # Where each binding came from - "code", "savestate" or
         # "corrected" - and the reader that produced the code ones.
@@ -393,6 +403,10 @@ class LevelScene:
         for _index, file_id, offset, size in files:
             self.by_id.setdefault(file_id, (offset, size))
 
+        resident_start, resident = area_files(idx_path, RESIDENT_CHUNK)
+        for _index, file_id, offset, size in resident:
+            self.resident.setdefault(file_id, (resident_start, (offset, size)))
+
         for address, _size, where in room_entries(idx_path, dat_path, chunk_index):
             try:
                 self.rooms.append((where, mdat.exportMDAT(address, dat_path)))
@@ -415,6 +429,7 @@ class LevelScene:
                                                              exe_path)
                 try:
                     self.reward_art = pickup_art.reward_art(exe_path)
+                    self.chest_models = pickup_art.chest_models(exe_path)
                 except pickup_art.PickupArtError as e:
                     self.notes.append(f"couldn't read the reward table: {e}")
         else:
@@ -487,15 +502,20 @@ class LevelScene:
         holds a dozen and a scene usually needs three."""
         if file_id in self.models:
             return self.models[file_id]
-        entry = self.by_id.get(file_id)
+        start, entry = self.dat_start, self.by_id.get(file_id)
+        if entry is None:
+            # Not one of this area's own. The resident chunk is loaded
+            # whatever area you are in and holds what every area shares -
+            # the chests among it - so look there before giving up.
+            start, entry = self.resident.get(file_id, (start, None))
         self.models[file_id] = None
         if entry and entry[1] > 0:
             offset, size = entry
             try:
                 with open(self.dat_path, "rb") as f:
-                    f.seek(self.dat_start + offset)
+                    f.seek(start + offset)
                     self.models[file_id] = parse_smst(
-                        f.read(size), address=self.dat_start + offset)
+                        f.read(size), address=start + offset)
             except Exception as e:
                 self.notes.append(f"id {file_id} wouldn't read as an SMST: {e}")
         return self.models[file_id]
@@ -542,7 +562,11 @@ class LevelScene:
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
-            art = self.reward_art.get(record.art_reward)
+            art = (None if record.chest
+                   else self.reward_art.get(record.art_reward))
+            if record.chest and not sources:
+                sources = self.chest_models.get(
+                    record.reward & placement_module.PICKUP_REWARD_MASK, ())
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
