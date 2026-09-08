@@ -274,9 +274,15 @@ class LevelEditorPanel(QWidget):
         placed = sum(1 for i in scene.instances
                      if i.role == "object" and i.face_count)
         objects = sum(1 for i in scene.instances if i.role == "object")
+        pickups = sum(1 for i in scene.instances if i.role == "pickup")
+        drawn = sum(1 for i in scene.instances
+                    if i.role == "pickup" and i.face_count)
         lines = [f"{objects} object(s) placed by "
                  f"{os.path.basename(overlay) if overlay else 'no overlay'}, "
                  f"{placed} of them with a known model."]
+        if pickups:
+            lines.append(f"{pickups} crystal(s) and apple(s) from MAIN.EXE's "
+                         f"own table, {drawn} of them with a known model.")
         lines.extend(scene.notes)
         self.summary.setText("\n".join(lines))
 

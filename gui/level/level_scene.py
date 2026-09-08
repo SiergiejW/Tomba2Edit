@@ -127,6 +127,17 @@ class Instance:
         return self.role != "room"
 
     @property
+    def marker_class(self):
+        """What its marker is coloured by - the object class for an
+        object, the reward for a pickup, so a level's crystals read as
+        crystals and its apples as apples."""
+        if self.placement is not None:
+            return self.placement.kind
+        if self.pickup is not None:
+            return self.pickup.reward
+        return 0
+
+    @property
     def centre(self):
         if not self.bounds:
             return (self.x, self.y, self.z)
@@ -553,9 +564,10 @@ class LevelScene:
         room_box = self.room_bounds()
         changed = 0
         for instance in self.instances:
-            if instance.role != "object" or instance.placement is None:
+            key = instance_key(instance)
+            if key is None:
                 continue
-            sources = self.bindings.get(instance.placement.key())
+            sources = self.bindings.get(key)
             if not sources or tuple(sources) == instance.sources:
                 continue
             instance.sources = tuple(sources)
@@ -645,15 +657,18 @@ class LevelScene:
 
         An unbound object is still worth drawing: where a level's things
         stand is most of what this view is for, and a marker says that
-        much without pretending to know what the thing looks like."""
+        much without pretending to know what the thing looks like.
+
+        Everything placed gets one, not just the objects - a crystal
+        whose model nobody has picked yet would otherwise be a row in
+        the list and nothing at all in the view."""
         positions, colors = [], []
         for instance in self.instances:
-            if instance.role != "object" or instance.face_count:
+            if not instance.movable or instance.face_count:
                 continue
             x, y, z = instance.x, instance.y, instance.z
             r = MARKER_SIZE
-            color = marker_color(instance.placement.kind if instance.placement
-                                 else 0)
+            color = marker_color(instance.marker_class)
             ring = [(x - r, y, z), (x, y, z - r), (x + r, y, z), (x, y, z + r)]
             for i, point in enumerate(ring):
                 positions.extend(point)

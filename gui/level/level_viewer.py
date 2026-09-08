@@ -390,7 +390,7 @@ class LevelViewer(SMSTViewer):
         matrix = self._model_view_projection()
         best = None
         for instance in self.instances:
-            if instance.role != "object" or instance.face_count:
+            if not instance.movable or instance.face_count:
                 continue
             point = matrix.map(QVector4D(instance.x / UNIT_SCALE,
                                          instance.y / UNIT_SCALE,
@@ -728,7 +728,7 @@ class LevelViewer(SMSTViewer):
         """The SMST viewer counts parts; a level counts what stands in
         it, and how much of that we can actually draw."""
         instances = self.instances
-        objects = [i for i in instances if i.role == "object"]
+        objects = [i for i in instances if i.role in ("object", "pickup")]
         drawn = sum(1 for i in objects if i.face_count)
         model = self.model_data or {}
         line = (f"Objects: {drawn}/{len(objects)} placed  "
