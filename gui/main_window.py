@@ -3807,6 +3807,15 @@ class MainWindow(QMainWindow):
                                 chunk_index = self._area_chunk_index(selected_item)
                                 vram_bytes = self._load_area_vram_bytes(chunk_index)
                                 self.sprt_viewer.export_name = _export_name(selected_item)
+                                # A painted sprite rewrites the IMG, and
+                                # an export has to carry it - see img_dirty.
+                                self.sprt_viewer.img_written = (
+                                    self._note_img_written)
+                                # A recoloured piece is a change to the
+                                # SPRT blob, staged like any file edit.
+                                self.sprt_viewer.stage_edit = (
+                                    lambda blob, label, item=selected_item:
+                                    self._stage_file_edit(item, blob, label))
                                 loader = (self.sprt_viewer.load_sprt_data if kind == "SPRT"
                                           else self.bgmp_viewer.load_bgmp_data)
                                 loader(self.dat_file, dat_start, offset, entry_size,

@@ -16,7 +16,7 @@ which runs at display scale, so a one-pixel outline stays one pixel
 wide at 16x instead of growing into a block along with the art.
 """
 from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QPen, QColor, QPainter
 from PyQt6.QtWidgets import QScrollArea, QWidget
 
 # Below 1 the fractions are all 1/n, so shrinking drops whole pixels
@@ -208,3 +208,63 @@ class PixelCanvas(QWidget):
             event.accept()
         else:
             event.ignore()
+
+
+class PaintCanvas(PixelCanvas):
+    """A pixel canvas you can draw on. Dragging paints; a grid keeps the
+    texels countable, which is the whole point of being zoomed in.
+
+    Lifted out of the font page editor so the sprite editor draws the
+    same way - same buttons, same stroke grouping, same picking."""
+
+    painted = pyqtSignal(int, int)          # col, row
+    picked = pyqtSignal(int, int)          # col, row - take its colour
+    stroke_ended = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(zoom=12, parent=parent)
+        self.show_grid = True
+
+    def mousePressEvent(self, event):
+        self._emit(event)
+
+    def mouseReleaseEvent(self, event):
+        """One press-drag-release is one action to undo.
+
+        Undoing a texel at a time is not undoing anything anyone did -
+        a stroke over a glyph is fifty of them, and taking them back one
+        by one is worse than useless."""
+        self.stroke_ended.emit()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons():
+            self._emit(event)
+
+    def _emit(self, event):
+        """Left paints the chosen index; right takes the one under the
+        cursor.
+
+        Picking beats erasing as the right button's job because it can
+        do both: the transparent index is a swatch like any other, so
+        right-clicking a hole in the glyph selects it and the left
+        button then erases. An eraser cannot pick."""
+        if self.image is None or self.zoom <= 0:
+            return
+        buttons = event.buttons() or event.button()
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        col, row = int(pos.x() // self.zoom), int(pos.y() // self.zoom)
+        if buttons & Qt.MouseButton.RightButton:
+            self.picked.emit(col, row)
+        else:
+            self.painted.emit(col, row)
+
+    def paint_overlays(self, painter, _area):
+        if self.image is None or self.zoom < 6 or not self.show_grid:
+            return
+        painter.setPen(QPen(QColor(255, 255, 255, 45), 1))
+        for x in range(self.image.width() + 1):
+            painter.drawLine(self.scaled(x), 0,
+                             self.scaled(x), self.scaled(self.image.height()))
+        for y in range(self.image.height() + 1):
+            painter.drawLine(0, self.scaled(y),
+                             self.scaled(self.image.width()), self.scaled(y))

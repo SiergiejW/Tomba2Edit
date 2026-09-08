@@ -28,7 +28,7 @@ import os
 
 from functions import fontpage
 from gui.txtd import dicts, translation
-from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
+from gui.pixel_canvas import PaintCanvas, PixelCanvas, fit_zoom, zoom_label
 
 
 # SPRITES THAT ARE IN MORE THAN ONE PIECE
@@ -2632,61 +2632,9 @@ class _Detail(QWidget):
         self.zoom_label.setText(zoom_label(self.canvas.zoom))
 
 
-class _DetailCanvas(PixelCanvas):
-    """The zoomed selection. Dragging paints; a grid keeps the texels
-    countable, which is the whole point of being zoomed in."""
-
-    painted = pyqtSignal(int, int)          # col, row
-    picked = pyqtSignal(int, int)          # col, row - take its colour
-    stroke_ended = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(zoom=12, parent=parent)
-        self.show_grid = True
-
-    def mousePressEvent(self, event):
-        self._emit(event)
-
-    def mouseReleaseEvent(self, event):
-        """One press-drag-release is one action to undo.
-
-        Undoing a texel at a time is not undoing anything anyone did -
-        a stroke over a glyph is fifty of them, and taking them back one
-        by one is worse than useless."""
-        self.stroke_ended.emit()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons():
-            self._emit(event)
-
-    def _emit(self, event):
-        """Left paints the chosen index; right takes the one under the
-        cursor.
-
-        Picking beats erasing as the right button's job because it can
-        do both: the transparent index is a swatch like any other, so
-        right-clicking a hole in the glyph selects it and the left
-        button then erases. An eraser cannot pick."""
-        if self.image is None or self.zoom <= 0:
-            return
-        buttons = event.buttons() or event.button()
-        pos = event.position() if hasattr(event, "position") else event.pos()
-        col, row = int(pos.x() // self.zoom), int(pos.y() // self.zoom)
-        if buttons & Qt.MouseButton.RightButton:
-            self.picked.emit(col, row)
-        else:
-            self.painted.emit(col, row)
-
-    def paint_overlays(self, painter, _area):
-        if self.image is None or self.zoom < 6 or not self.show_grid:
-            return
-        painter.setPen(QPen(QColor(255, 255, 255, 45), 1))
-        for x in range(self.image.width() + 1):
-            painter.drawLine(self.scaled(x), 0,
-                             self.scaled(x), self.scaled(self.image.height()))
-        for y in range(self.image.height() + 1):
-            painter.drawLine(0, self.scaled(y),
-                             self.scaled(self.image.width()), self.scaled(y))
+# The paintable canvas now lives in gui/pixel_canvas.py, so the
+# sprite editor draws the same way. _DetailCanvas is its old name here.
+_DetailCanvas = PaintCanvas
 
 
 class _Swatches(QWidget):

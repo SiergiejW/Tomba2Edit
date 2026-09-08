@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
 from functions.psx_vram import VRAMError
 from gui import panel_title
 from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
+from gui.sprt import sprt_edit
+from gui.sprt.sprt_edit_panel import SpriteEditPanel
 from gui.sprt.sprt_parser import SPRTError, load_sprt
 from gui.sprt.sprt_render import (
     VRAMTextures, draw_cell_borders, piece_color, render_sheet, render_sprite)
@@ -154,6 +156,13 @@ class SPRTViewer(QWidget):
         super().__init__(parent)
         self.sprt_data = None
         self._source = None
+        self._vram = None
+        self._vram_original = None
+        # Set by MainWindow so a save can mark the IMG dirty.
+        self.img_written = None
+        # Set by MainWindow to stage the SPRT blob as a file edit.
+        self.stage_edit = None
+        self._blob = None
         self.textures = None
         self.current_index = None
         self._sprite_images = {}     # sprite index -> (PIL image, ox, oy)
@@ -213,11 +222,18 @@ class SPRTViewer(QWidget):
         pieces_layout.addWidget(panel_title.make_panel_title(
             "Pieces (drawn last to first - piece 0 ends up on top)"))
         pieces_layout.addWidget(self.piece_table)
+        # Painting the selected piece - see gui/sprt/sprt_edit_panel.py.
+        self.editor = SpriteEditPanel(self)
+        self.editor.edited.connect(self._on_edited)
+        self.editor.saved_to_img = self._on_saved_to_img
+        self.editor.clut_committed = self._on_clut_committed
         right.addWidget(canvas_panel)
         right.addWidget(pieces_panel)
+        right.addWidget(self.editor)
         right.setStretchFactor(0, 1)
         right.setStretchFactor(1, 0)
-        right.setSizes([560, 200])
+        right.setStretchFactor(2, 0)
+        right.setSizes([420, 170, 300])
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(left)
@@ -316,9 +332,24 @@ class SPRTViewer(QWidget):
         self._file_key = (dat_file_path, dat_start, offset)
         self.textures = None
         vram_note = "no VRAM for this area - showing piece layout only"
-        if vram_bytes is not None:
+        # The editor paints into this buffer, so it has to be the very
+        # one the renderer samples - not a copy - or the sprite would
+        # not change as it is drawn on.
+        self._vram = bytearray(vram_bytes) if vram_bytes is not None else None
+        self._vram_original = bytes(self._vram) if self._vram else None
+        self.editor.cd_folder = (os.path.dirname(dat_file_path)
+                                 if dat_file_path else None)
+        self.editor.chunk_index = chunk_index
+        # The bank's own bytes and the palettes its pieces already use -
+        # a recolour is nearly always to one of those.
+        with open(dat_file_path, "rb") as f:
+            f.seek(dat_start + offset)
+            self._blob = f.read(size)
+        self.editor.set_pool(sprt_edit.clut_pool(self.sprt_data), self._blob)
+        self.editor.set_piece(None, None)
+        if self._vram is not None:
             try:
-                self.textures = VRAMTextures(vram_bytes)
+                self.textures = VRAMTextures(self._vram)
                 vram_note = None
             except VRAMError as e:
                 vram_note = str(e)
@@ -454,7 +485,47 @@ class SPRTViewer(QWidget):
             item = self.piece_table.item(rows[0].row(), 0)
             self.canvas.highlighted_piece = item.data(Qt.ItemDataRole.UserRole)
             self._print_piece(item.data(Qt.ItemDataRole.UserRole))
+            self._edit_piece(item.data(Qt.ItemDataRole.UserRole))
         self.canvas.update()
+
+    def _edit_piece(self, piece_index):
+        """Hand the selected piece to the editor."""
+        data = self.sprt_data
+        if not data or self.current_index is None or piece_index is None:
+            self.editor.set_piece(None, None)
+            return
+        sprite = data.sprites[self.current_index]
+        piece = next((p for p in sprite.pieces if p.index == piece_index), None)
+        self.editor.set_piece(piece, self._vram, self._vram_original)
+
+    def _on_edited(self):
+        """A texel was painted - the cached images are stale."""
+        self._sprite_images.clear()
+        self._sheet_image = None
+        if self.textures is not None:
+            # The palettes are cached per CLUT and a painted texel can
+            # be inside one, so they go too.
+            self.textures._palettes.clear()
+        self._show_current()
+
+    def _on_clut_committed(self, blob):
+        """A piece was pointed at another palette: stage the SPRT blob
+        and redraw, since every cached image of it is now wrong."""
+        self._blob = blob
+        self._sprite_images.clear()
+        self._sheet_image = None
+        self._show_current()
+        self._populate_piece_table(
+            self.sprt_data.sprites[self.current_index])
+        if self.stage_edit is not None:
+            self.stage_edit(blob, "sprite palette changed")
+
+    def _on_saved_to_img(self):
+        """The editor rewrote TOMBA2.IMG. MainWindow has to know, or an
+        export ships the original IMG beside the rewritten IDX - see
+        MainWindow.img_dirty."""
+        if self.img_written is not None:
+            self.img_written()
 
     def _print_piece(self, piece_index):
         data = self.sprt_data
