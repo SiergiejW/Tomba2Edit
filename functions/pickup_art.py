@@ -37,9 +37,15 @@ That is the whole animation system. The orange crystal is sequence 1 and
 reads 6,5,4,3,2,1,2,3,4,5 at two ticks a frame before jumping back to
 the top - a ten-step loop that swings between frames 1 and 6.
 
-WHAT IS NOT HERE is the sprite bank the frames are numbered in. For a
-resident pickup that is the SPRT at the front of the DAT, the one every
-area shares.
+WHICH BANK THE FRAMES ARE NUMBERED IN
+
+Two of them. A clut of 1 means the reward is not a resident sprite: its
+frames come out of the AREA's own SPRT - SDAT file 10, which is where
+the routine's second resource base 0x800ECF80 points, ten entries into
+the file table at 0x800ECF58 - and its sequences out of a per-area table
+the overlay holds, addressed by 0x800A58FC[area]. Everything else uses
+the resident bank, the SPRT at the very front of the DAT that every area
+shares, and the sequence table above.
 """
 import struct
 from dataclasses import dataclass
@@ -67,6 +73,15 @@ REWARD_COUNT = 50
 REWARD_MASK = 0x7F
 
 SEQUENCE_TABLE = 0x80017334
+
+# The other bank: a pointer per area, into that area's own overlay, and
+# the SDAT id its sprites live in.
+AREA_SEQUENCES = 0x800A58FC
+AREA_SEQUENCE_COUNT = 22
+AREA_BANK_FILE = 10
+
+# Where an overlay lands, for reading a per-area sequence out of one.
+OVERLAY_BASE = 0x80108F9C
 STEP = struct.Struct("<HH")
 STEP_SIZE = 8                      # a jump step carries its target too
 
@@ -107,6 +122,13 @@ CHEST_KIND_COUNT = 4
 CHEST_PARTS = 2
 CHEST_FILE = 1
 
+# Where each of those two parts sits relative to the chest's own origin,
+# six bytes of x, y, z apiece. This is the whole of a chest's skeleton:
+# the body is at the origin and the lid is lifted off it. Without it the
+# two are drawn at the same point and grow through each other.
+CHEST_OFFSETS = 0x800A3B1C
+OFFSET = struct.Struct("<hhh")
+
 
 class PickupArtError(ValueError):
     """Raised when MAIN.EXE can't be read for any of this."""
@@ -132,6 +154,11 @@ class RewardArt:
     clut: int
     frames: tuple = ()      # the sequence, expanded
     loops: bool = False     # whether it runs forever or stops on the last
+
+    @property
+    def bank(self):
+        """Which sprite bank its frames are numbered in."""
+        return "resident" if self.resident else "area"
 
     @property
     def resident(self):
@@ -246,8 +273,62 @@ def chest_models(exe_path):
     return out
 
 
-def reward_art(exe_path, count=REWARD_COUNT):
-    """{reward: RewardArt} for every reward MAIN.EXE describes."""
+def chest_offsets(exe_path):
+    """((x, y, z), ...) for a chest's parts, in the game's own axes.
+
+    The same for every kind - only the models differ - so it is one
+    tuple rather than one per chest."""
+    data, base = _image(exe_path)
+    at = _at(data, base, CHEST_OFFSETS, CHEST_PARTS * OFFSET.size)
+    return tuple(OFFSET.unpack_from(data, at + i * OFFSET.size)
+                 for i in range(CHEST_PARTS))
+
+
+def _area_sequence(exe, exe_base, overlay, area, index):
+    """(frames, loops) for a sequence out of ONE AREA's own table.
+
+    Same steps as the resident sequences, but both the table of pointers
+    and the steps themselves live in the overlay - so the walk is over
+    the overlay's bytes, at the overlay's own load address."""
+    at = _at(exe, exe_base, AREA_SEQUENCES + area * 4, 4)
+    table = struct.unpack_from("<I", exe, at)[0]
+    if not table:
+        return (), False
+
+    def word(address):
+        off = address - OVERLAY_BASE
+        if off < 0 or off + 4 > len(overlay):
+            raise PickupArtError(f"0x{address:08X} is outside the overlay")
+        return struct.unpack_from("<I", overlay, off)[0]
+
+    address, frames, seen = word(table + index * 4), [], set()
+    while len(frames) < MAX_STEPS:
+        if address in seen:
+            return tuple(frames), True
+        seen.add(address)
+        off = address - OVERLAY_BASE
+        if off < 0 or off + 4 > len(overlay):
+            raise PickupArtError(f"0x{address:08X} is outside the overlay")
+        frame, control = STEP.unpack_from(overlay, off)
+        frames.append(Frame(frame=frame, ticks=control & TICKS))
+        opcode = control & OPCODE
+        if opcode == STOP:
+            return tuple(frames), False
+        if opcode in (JUMP, JUMP_RELOAD):
+            address = word(address + 4)
+        elif opcode == GO_ON:
+            address += 4
+        else:
+            return tuple(frames), False
+    return tuple(frames), False
+
+
+def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
+    """{reward: RewardArt} for every reward MAIN.EXE describes.
+
+    `overlay` and `area` are wanted only for the handful of rewards
+    drawn out of the area's own bank - without them those come back with
+    no frames rather than wrong ones."""
     data, base = _image(exe_path)
     out = {}
     for reward in range(count):
@@ -255,11 +336,14 @@ def reward_art(exe_path, count=REWARD_COUNT):
         sequence, clut, width, height, item = REWARD.unpack_from(data, at)
         art = RewardArt(reward=reward, width=width, height=height, item=item,
                         sequence=sequence, clut=clut)
-        if art.resident:
-            try:
+        try:
+            if art.resident:
                 art.frames, art.loops = _sequence(data, base, sequence)
-            except PickupArtError:
-                art.frames, art.loops = (), False
+            elif overlay and area is not None and 0 <= area < AREA_SEQUENCE_COUNT:
+                art.frames, art.loops = _area_sequence(data, base, overlay,
+                                                       area, sequence)
+        except PickupArtError:
+            art.frames, art.loops = (), False
         out[reward] = art
     return out
 

@@ -302,15 +302,25 @@ class LevelEditorPanel(QWidget):
         gui/level/pickup_sprites.py."""
         self.viewer.set_sprites(None, ())
         self._sprite_timer.stop()
-        entry = scene.resident.get(pickup_sprites.RESIDENT_SPRT_ID)
-        if entry is None or not vram:
+        if not vram:
             return
-        start, (offset, size) = entry
+        # Two banks: the one every area shares, and the area's own -
+        # a handful of rewards are drawn out of the second.
+        wheres = {"resident": scene.resident.get(
+                      pickup_sprites.RESIDENT_SPRT_ID)}
+        own = scene.by_id.get(pickup_sprites.AREA_SPRT_ID)
+        if own is not None:
+            wheres["area"] = (scene.dat_start, own)
         try:
-            bank = pickup_sprites.SpriteBank(scene.dat_path, start, offset,
-                                             size, vram)
+            banks = {}
+            for name, where in wheres.items():
+                if where is None:
+                    continue
+                start, (offset, size) = where
+                banks[name] = pickup_sprites.SpriteBank(
+                    scene.dat_path, start, offset, size, vram)
             wanted = pickup_sprites.wanted_frames(scene.instances)
-            atlas, placed = pickup_sprites.build_atlas(bank, wanted)
+            atlas, placed = pickup_sprites.build_atlas(banks, wanted)
             quads = pickup_sprites.billboards(scene.instances, placed)
         except Exception as e:
             scene.notes.append(f"couldn't cut the pickup sprites: {e}")

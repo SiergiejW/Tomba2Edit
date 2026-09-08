@@ -35,8 +35,10 @@ from gui.sprt import sprt_render
 from gui.sprt.sprt_parser import load_sprt
 
 # The bank every area shares - the first file of the resident chunk,
-# right at the front of the DAT.
+# right at the front of the DAT - and the one an area keeps to itself,
+# which is SDAT id 10 (see functions/pickup_art.py).
 RESIDENT_SPRT_ID = 0
+AREA_SPRT_ID = 10
 
 # The scale the pickup routine gives the actor, in the PSX's 4096ths.
 ACTOR_SCALE = 0x1300
@@ -102,16 +104,21 @@ class SpriteBank:
         return self._images[key]
 
 
-def build_atlas(bank, wanted):
-    """(atlas as an RGBA array, {(frame, clut): Placed}) for every frame
-    a level needs.
+def build_atlas(banks, wanted):
+    """(atlas as an RGBA array, {(bank, frame, clut): Placed}) for every
+    frame a level needs.
+
+    `banks` is {name: SpriteBank} - a level draws its pickups out of two,
+    the resident one and its own.
 
     Packed in rows rather than tightly: a level asks for a few dozen
     frames of at most fifty texels, so the simple shelf is small enough
     and the arithmetic is worth not getting wrong."""
     cut = []
     for key in sorted(set(wanted)):
-        made = bank.image(*key)
+        which, frame, clut = key
+        bank = banks.get(which)
+        made = bank.image(frame, clut) if bank is not None else None
         if made is None:
             continue
         image, origin_x, origin_y = made
@@ -194,11 +201,12 @@ def billboards(instances, placed):
     out = []
     for instance in instances:
         art = getattr(instance, "art", None)
-        if art is None or not art.frames or not art.resident:
+        if art is None or not art.frames:
             continue
         key_clut = art.clut if art.recolored else None
-        steps = tuple((placed[(f.frame, key_clut)], f.ticks)
-                      for f in art.frames if (f.frame, key_clut) in placed)
+        steps = tuple((placed[(art.bank, f.frame, key_clut)], f.ticks)
+                      for f in art.frames
+                      if (art.bank, f.frame, key_clut) in placed)
         if not steps:
             continue
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
@@ -207,14 +215,14 @@ def billboards(instances, placed):
 
 
 def wanted_frames(instances):
-    """{(frame, clut or None)} - every picture a level needs cut."""
+    """{(bank, frame, clut or None)} - every picture a level needs cut."""
     out = set()
     for instance in instances:
         art = getattr(instance, "art", None)
-        if art is None or not art.resident:
+        if art is None:
             continue
         clut = art.clut if art.recolored else None
-        out.update((f.frame, clut) for f in art.frames)
+        out.update((art.bank, f.frame, clut) for f in art.frames)
     return out
 
 

@@ -54,6 +54,11 @@ ASSET_PACK_ID = 12
 # the chests are models out of it.
 RESIDENT_CHUNK = 1
 
+# The first chunk that is an area. The game numbers its areas from 0
+# while the IDX numbers its chunks from here, and a couple of tables -
+# the per-area sprite sequences among them - are indexed the game's way.
+FIRST_AREA_CHUNK = 4
+
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
 
@@ -90,6 +95,11 @@ class Instance:
     # and the ones that are really variations read better overlapping
     # than they would as a bare marker.
     sources: tuple = ()
+    # Where each of those sits relative to the instance's own origin, in
+    # VIEW axes, one per source. A chest's lid is lifted off its body
+    # this way (see functions/pickup_art.chest_offsets); everything else
+    # draws its parts on the spot.
+    offsets: tuple = ()
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -102,6 +112,10 @@ class Instance:
     # world_placed(). Such a part is drawn as it is; a transform would
     # move it a second time.
     authored: bool = False
+
+    # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
+    # the instance's origin - filled by build().
+    parts: list = None
 
     first_vertex: int = 0
     vertex_count: int = 0
@@ -140,7 +154,7 @@ class Instance:
         a sprite out of the shared bank - so it is drawn its own way and
         must not get a marker on top of it."""
         art = self.art
-        return bool(art is not None and art.resident and art.frames)
+        return bool(art is not None and art.frames)
 
     @property
     def marker_class(self):
@@ -308,6 +322,15 @@ def instance_key(instance):
     return None
 
 
+def view_offset(offset):
+    """A displacement in the game's axes, in the viewers'.
+
+    The same swap view_position() does, without the move: X and Z change
+    places and Y flips."""
+    x, y, z = offset
+    return (z, -y, x)
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -380,6 +403,8 @@ class LevelScene:
         # {chest kind: ((file, group), ...)} - a chest's body and lid,
         # which unlike a crystal's sprite are models we can just draw.
         self.chest_models = {}
+        # Where a chest's body and lid sit, already in view axes.
+        self.chest_offsets = ()
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
         self.resident = {}
@@ -438,8 +463,14 @@ class LevelScene:
                 self.pickups = placement_module.load_pickups(overlay_path,
                                                              exe_path)
                 try:
-                    self.reward_art = pickup_art.reward_art(exe_path)
+                    with open(overlay_path, "rb") as f:
+                        raw = f.read()
+                    self.reward_art = pickup_art.reward_art(
+                        exe_path, overlay=raw, area=self.area_index)
                     self.chest_models = pickup_art.chest_models(exe_path)
+                    self.chest_offsets = tuple(
+                        view_offset(o)
+                        for o in pickup_art.chest_offsets(exe_path))
                 except pickup_art.PickupArtError as e:
                     self.notes.append(f"couldn't read the reward table: {e}")
         else:
@@ -449,6 +480,14 @@ class LevelScene:
 
         self._build_instances()
         return self
+
+    @property
+    def area_index(self):
+        """This area's number the way the game counts them, which is not
+        the way the IDX does - see FIRST_AREA_CHUNK."""
+        if self.chunk_index is None:
+            return None
+        return self.chunk_index - FIRST_AREA_CHUNK
 
     def _bind(self, overlay_path, exe_path):
         """Work out what each object is drawn with, best source first.
@@ -574,12 +613,15 @@ class LevelScene:
             _model, group = self.group(sources[0] if sources else None)
             art = (None if record.chest
                    else self.reward_art.get(record.art_reward))
+            offsets = ()
             if record.chest and not sources:
                 sources = self.chest_models.get(
                     record.reward & placement_module.PICKUP_REWARD_MASK, ())
+                offsets = self.chest_offsets
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
+                offsets=offsets,
                 x=x, y=y, z=z, pickup=record,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
@@ -642,11 +684,18 @@ class LevelScene:
                 instance.tris = room.get("tri_count", 0)
                 instance.quads = room.get("quad_count", 0)
             else:
-                for source in instance.sources:
+                instance.parts = []
+                for number, source in enumerate(instance.sources):
                     model, group = self.group(source)
                     if group is None:
                         continue
+                    at = len(scene["vertices"])
                     self._append(scene, model, group)
+                    shift = (instance.offsets[number]
+                             if number < len(instance.offsets) else None)
+                    if shift and any(shift):
+                        instance.parts.append(
+                            (at, len(scene["vertices"]) - at, shift))
                     instance.tris += group.tris
                     instance.quads += group.quads
                     instance.size, instance.offset = group.size, group.offset
@@ -690,6 +739,11 @@ class LevelScene:
                 continue
             at = instance.first_vertex
             block = verts[at:at + instance.vertex_count].astype(np.float64)
+            # A part that hangs off the origin is moved there first, so
+            # the instance's own turn carries it round with the rest.
+            for first, count, shift in instance.parts or ():
+                start = first - at
+                block[start:start + count] += shift
             moved = block @ instance.matrix().T
             moved += (instance.x, instance.y, instance.z)
             verts[at:at + instance.vertex_count] = moved.astype(np.float32)

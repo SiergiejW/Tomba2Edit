@@ -861,6 +861,12 @@ class LevelViewer(SMSTViewer):
         across the view after the clear and before anything else."""
         self._sync_background()
         if not self.show_background or self.background_texture is None:
+            # Nothing behind the level, so leave it black rather than
+            # the model viewer's grey: an area with no BGMP reads as a
+            # room in the dark, which is what it is, and the grey looks
+            # like a background that failed to load.
+            GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             return
         height, width = self._background_image.shape[:2]
         if not self.background_program.bind():
