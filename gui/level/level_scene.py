@@ -41,6 +41,7 @@ import numpy as np
 import gui.mdat.mdat as mdat
 from functions import format_detect
 from functions import handler_models
+from functions import pickup_art
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
 
@@ -91,6 +92,7 @@ class Instance:
     angle: float = 0.0              # degrees about Y
     placement: object = None        # the Placement record, for an object
     pickup: object = None           # the Pickup record, for a pickup
+    art: object = None              # its RewardArt, for a pickup
     room: int = None                # which of the scene's MDATs, for a room
     # Whether the geometry is already where it belongs - see
     # world_placed(). Such a part is drawn as it is; a transform would
@@ -190,7 +192,7 @@ class Instance:
                     f"{self.placement.table}, at 0x{self.placement.offset:X} "
                     f"in the overlay")
         if self.pickup is not None:
-            return (f"{self.pickup.describe()}<br>{model}, at {where}<br>"
+            return (f"{self.pickup.describe(self.art)}<br>{model}, at {where}<br>"
                     f"record {self.pickup.index} of pickup table "
                     f"{self.pickup.table}, at 0x{self.pickup.offset:X} "
                     f"in the overlay")
@@ -358,6 +360,9 @@ class LevelScene:
         self.rooms = []
         self.placements = []
         self.pickups = []               # the crystals and apples
+        # {reward: RewardArt} - what each pickup is and how it is
+        # drawn, out of MAIN.EXE. See functions/pickup_art.py.
+        self.reward_art = {}
         self.bindings = {}
         # Where each binding came from - "code", "savestate" or
         # "corrected" - and the reader that produced the code ones.
@@ -408,6 +413,10 @@ class LevelScene:
             if exe_path:
                 self.pickups = placement_module.load_pickups(overlay_path,
                                                              exe_path)
+                try:
+                    self.reward_art = pickup_art.reward_art(exe_path)
+                except pickup_art.PickupArtError as e:
+                    self.notes.append(f"couldn't read the reward table: {e}")
         else:
             self.notes.append(
                 "no overlay for this area, so nothing says where its objects "
@@ -533,9 +542,10 @@ class LevelScene:
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
+            art = self.reward_art.get(record.reward)
             instances.append(Instance(
                 index=len(instances), role="pickup",
-                label=record.name(), sources=tuple(sources),
+                label=record.name(art), art=art, sources=tuple(sources),
                 x=x, y=y, z=z, pickup=record,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))

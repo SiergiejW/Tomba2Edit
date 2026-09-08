@@ -348,12 +348,26 @@ class Pickup:
     def position(self):
         return self.x, self.y, self.z
 
-    def name(self):
-        return f"{'apple' if self.apple else 'item'} {self.bit}"
+    def name(self, art=None):
+        """What it is, then which one it is. `art` is this reward's entry
+        from functions.pickup_art, which is what says a reward 4 is a
+        hundred-AP crystal - without it the number has to do."""
+        what = art.label() if art is not None else f"reward {self.reward}"
+        return f"{what} #{self.bit}"
 
-    def describe(self):
-        return (f"reward {self.reward}, {'apple' if self.apple else 'chest'}"
-                f" bit {self.bit}")
+    def describe(self, art=None):
+        bits = [f"reward {self.reward}",
+                f"{'apple' if self.apple else 'chest'} bit {self.bit}"]
+        if art is not None:
+            bits.insert(0, art.grants)
+            frames = "/".join(str(f.frame) for f in art.frames)
+            if frames:
+                bits.append(f"sprite {frames}"
+                            + (" looping" if art.loops else ""))
+            where = art.clut_xy
+            if where:
+                bits.append(f"palette at VRAM {where[0]},{where[1]}")
+        return ", ".join(bits)
 
 
 def _pickup(data, offset):
