@@ -143,8 +143,11 @@ PICKUP_TABLE_COUNT = 42
 #     u8  reward    which pickup it is. 4 is the orange crystal
 #     i16 x, y, z
 #     i16 bit       which bit of the collected-items bitmap is its own
-#     u8  field2a
-#     u8  behaviour
+#     u8  plane     which of the area's collision planes it stands on -
+#                   the actor's +0x2A, which f_ResolveActorAreaPlanePosition
+#                   projects it onto
+#     u8  behaviour  1 drops it onto the ground; 0 leaves it where the
+#                   record says
 #     u16 config
 PICKUP = struct.Struct("<BBBBhhhhBBH")
 PICKUP_SIZE = PICKUP.size          # 16
@@ -350,6 +353,7 @@ class Pickup:
     persist: int
     reward: int             # which pickup it is - 4 is the orange crystal
     bit: int                # its own bit of the collected-items bitmap
+    plane: int              # which of the area's collision planes it is on
     behaviour: int
     config: int
 
@@ -409,10 +413,12 @@ class Pickup:
                                    f"chest kind {self.reward}")
             holds = (f"{art.grants} (reward {self.contents})"
                      if art is not None else f"reward {self.contents}")
+            ground = " dropped to the ground" if self.behaviour else ""
             return (f"{what}, holds {holds}, effect {self.effect}, "
-                    f"chest bit {self.bit}")
+                    f"chest bit {self.bit}, plane {self.plane}{ground}")
         bits = [f"reward {self.reward}",
-                f"{'apple' if self.apple else 'chest'} bit {self.bit}"]
+                f"{'apple' if self.apple else 'chest'} bit {self.bit}",
+                f"plane {self.plane}"]
         if art is not None:
             bits.insert(0, art.grants)
             frames = "/".join(str(f.frame) for f in art.frames)
@@ -429,7 +435,7 @@ def _pickup(data, offset):
     """The pickup record at `offset`, or None if what is there isn't one."""
     if offset < 0 or offset + PICKUP_SIZE > len(data):
         return None
-    kind, alloc, persist, reward, x, y, z, bit, _f2a, behaviour, config = \
+    kind, alloc, persist, reward, x, y, z, bit, plane, behaviour, config = \
         PICKUP.unpack_from(data, offset)
     # The type carries the same 0x80 flag a placement record's does - the
     # spawner hands it to the allocator whole and the handler tests the
@@ -445,7 +451,7 @@ def _pickup(data, offset):
         return None
     return Pickup(index=0, table=0, offset=offset, x=x, y=y, z=z, type=kind,
                   alloc=alloc, persist=persist, reward=reward, bit=bit,
-                  behaviour=behaviour, config=config)
+                  plane=plane, behaviour=behaviour, config=config)
 
 
 def pickup_addresses(exe_path):
@@ -599,6 +605,13 @@ def bindings_path():
 LEARNED = "overlays"
 CORRECTED = "corrections"
 
+# Where a pickup's pose is kept. A chest carries no angle in its record
+# and its height is only approximate - the game projects it onto the
+# area's collision plane and takes the heading from there, and drops it
+# to the ground when `behaviour` says so - so neither can be read off
+# the disc. What somebody aligns by eye is worth keeping instead.
+POSED = "pickup_poses"
+
 
 def _read_bindings(path=None):
     try:
@@ -636,6 +649,41 @@ def load_bindings(overlay_name, path=None, section=None):
     for name in sections:
         out.update(_rows_to_bindings((data.get(name) or {}).get(overlay_name)))
     return out
+
+
+def load_poses(overlay_name, path=None):
+    """{chest bit: {"angle": deg, "y": world y}} for one overlay."""
+    rows = (_read_bindings(path).get(POSED) or {}).get(overlay_name) or []
+    out = {}
+    for row in rows:
+        try:
+            out[int(row["bit"])] = {k: row[k] for k in ("angle", "y")
+                                    if k in row}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def save_poses(overlays, path=None):
+    """Rewrite the pickup-pose section, leaving the others alone.
+
+    `overlays` is {overlay name: {bit: {"angle": .., "y": ..}}}."""
+    path = path or bindings_path()
+    data = _read_bindings(path)
+    rows = {}
+    for name, poses in sorted(overlays.items()):
+        kept = []
+        for bit, pose in sorted(poses.items()):
+            row = {"bit": int(bit)}
+            row.update({k: int(round(v)) for k, v in pose.items()})
+            kept.append(row)
+        if kept:
+            rows[name] = kept
+    data[POSED] = rows
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+        f.write("\n")
+    return path
 
 
 def _bindings_to_rows(overlays):

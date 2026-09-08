@@ -324,6 +324,32 @@ def instance_key(instance):
     return None
 
 
+# A chest carries no angle of its own. The game projects it onto one of
+# the area's collision planes and takes the heading from that plane's
+# span - ratan2(z1 - z0, x1 - x0) over the plane descriptor's first four
+# halfwords, negated (f_ApplyAreaPlaneDirectionToActor, and the
+# `-DAT_1f8001a0` at the end of it). The record's `plane` byte numbers
+# the planes from one, so it is one past the SCLD entry it means.
+#
+# Measured against savestates: exact on all fourteen of AREA_04's chests
+# and on every AREA_05 chest whose actor had finished starting up.
+PLANE_BASE = 1
+
+# How far outside its own box a plane still counts as containing a
+# point - the slack f_SelectAreaPlaneContainingPosition allows on each
+# side when it has to find the plane rather than being told it.
+PLANE_SLACK = 0x80
+
+
+def plane_heading(entry):
+    """The heading a plane gives whatever stands on it, in degrees."""
+    across = entry.xxx2 - entry.xxx1
+    along = entry.yyy2 - entry.yyy1
+    if not across and not along:
+        return 0.0
+    return -math.degrees(math.atan2(along, across)) % 360.0
+
+
 def view_offset(offset):
     """A displacement in the game's axes, in the viewers'.
 
@@ -407,6 +433,11 @@ class LevelScene:
         self.chest_models = {}
         # Where a chest's body and lid sit, already in view axes.
         self.chest_offsets = ()
+        # {chest bit: {"angle":, "y":}} put right by hand - see
+        # functions.placement.load_poses.
+        self.poses = {}
+        # The area's collision planes, for the chests' headings.
+        self.planes = []
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
         self.resident = {}
@@ -464,6 +495,8 @@ class LevelScene:
             if exe_path:
                 self.pickups = placement_module.load_pickups(overlay_path,
                                                              exe_path)
+                self.poses = placement_module.load_poses(
+                    os.path.basename(overlay_path))
                 try:
                     with open(overlay_path, "rb") as f:
                         raw = f.read()
@@ -480,8 +513,48 @@ class LevelScene:
                 "no overlay for this area, so nothing says where its objects "
                 "stand")
 
+        # Wanted before the instances are built: a chest takes its
+        # heading off the plane it stands on.
+        self.planes = self._load_planes(idx_path, dat_path, chunk_index)
+
         self._build_instances()
         return self
+
+    @staticmethod
+    def _load_planes(idx_path, dat_path, chunk_index):
+        """The area's SCLD entries, or [] - it is only wanted for the
+        chests' headings, so a missing one costs nothing else."""
+        try:
+            from gui.scld.scld_parser import find_area_scld_location, load_scld
+            where = find_area_scld_location(idx_path, chunk_index)
+            if not where:
+                return []
+            return load_scld(dat_path, *where).entries
+        except Exception:
+            return []
+
+    def chest_heading(self, record):
+        """Which way a chest faces, out of the plane it stands on.
+
+        A record whose `plane` is 0 - or past the end of the area's
+        planes - is not told which one it is on, and the game looks for
+        the plane whose box the chest stands in. So does this."""
+        at = record.plane - PLANE_BASE
+        if not 0 <= at < len(self.planes):
+            at = self._plane_containing(record.x, record.z)
+        if at is None:
+            return 0.0
+        return plane_heading(self.planes[at])
+
+    def _plane_containing(self, x, z, slack=PLANE_SLACK):
+        """Which plane's box a world point falls in, or None."""
+        for at, entry in enumerate(self.planes):
+            x0, x1 = sorted((entry.xxx1, entry.xxx2))
+            z0, z1 = sorted((entry.yyy1, entry.yyy2))
+            if (x0 - slack <= x <= x1 + slack
+                    and z0 - slack <= z <= z1 + slack):
+                return at
+        return None
 
     @property
     def area_index(self):
@@ -615,6 +688,7 @@ class LevelScene:
             _model, group = self.group(sources[0] if sources else None)
             art = self.reward_art.get(
                 record.contents if record.chest else record.art_reward)
+            pose = self.poses.get(record.bit) or {}
             offsets = ()
             if record.chest and not sources:
                 sources = self.chest_models.get(
@@ -624,7 +698,9 @@ class LevelScene:
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
                 offsets=offsets,
-                x=x, y=y, z=z, pickup=record,
+                x=x, y=pose.get("y", y), z=z, pickup=record,
+                angle=float(pose.get("angle", self.chest_heading(record)
+                                      if record.chest else 0.0)),
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 

@@ -695,6 +695,42 @@ class LevelEditorPanel(QWidget):
         if keep == QMessageBox.StandardButton.Yes:
             self._store_bindings()
 
+    def _keep_poses(self):
+        """Write the pickups whose angle or height somebody has put right
+        into labels/placements.json, leaving every other area's alone.
+
+        A chest carries no angle at all and its height is only where the
+        record says before the game drops it onto the ground, so this is
+        the only place the corrected pose can live."""
+        if self.scene is None or not self.scene.overlay_path:
+            return 0
+        name = os.path.basename(self.scene.overlay_path)
+        poses = {}
+        for instance in self.scene.instances:
+            record = instance.pickup
+            if record is None:
+                continue
+            moved = {}
+            if round(instance.angle):
+                moved["angle"] = instance.angle
+            if round(instance.y) != -record.y:
+                moved["y"] = instance.y
+            if moved:
+                poses[record.bit] = moved
+        every = {}
+        for other in placement_module.load_poses(name):
+            every.setdefault(name, {})
+        every[name] = poses
+        # Every other overlay's poses are read back and written out
+        # unchanged, the way the bindings are.
+        data = placement_module._read_bindings()
+        for other, rows in (data.get(placement_module.POSED) or {}).items():
+            if other != name:
+                every[other] = {int(r["bit"]): {k: r[k] for k in ("angle", "y")
+                                                if k in r} for r in rows}
+        placement_module.save_poses(every)
+        return len(poses)
+
     def _keep_models(self):
         """Write the models the objects are set to into
         labels/placements.json.
@@ -712,6 +748,7 @@ class LevelEditorPanel(QWidget):
             key = instance_key(instance)
             if key is not None:
                 self.scene.bindings[key] = instance.sources
+        posed = self._keep_poses()
         if self._store_bindings():
             name = os.path.basename(self.scene.overlay_path)
             QMessageBox.information(
@@ -720,7 +757,10 @@ class LevelEditorPanel(QWidget):
                 f" correction(s) for this area are now in "
                 f"labels/placements.json, over the "
                 f"{len(placement_module.load_bindings(name, section=placement_module.LEARNED))}"
-                f" binding(s) read out of savestates.")
+                f" binding(s) read out of savestates."
+                + (f"\n\n{posed} pickup pose(s) kept too - the angle and "
+                   f"height a chest is aligned to, which its record does "
+                   f"not carry." if posed else ""))
 
     def _store_bindings(self):
         """Put this area's models in labels/placements.json, leaving
