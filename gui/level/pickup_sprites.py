@@ -16,16 +16,24 @@ and the atlas is keyed by (frame, clut) rather than by frame.
 
 WHAT SIZE THEY ARE
 
-Two numbers, both the game's own. f_BuildActorSpriteQuadVertices, which
-turns a frame into four vertices, multiplies every coordinate it writes
-by FIVE - so one texel is five world units before anything else. On top
-of that the pickup routine sets the actor's scale to 0x1300 in the PSX's
-4096ths. A texel is the two together, just under six units.
+f_BuildActorSpriteQuadVertices, which turns a frame into four vertices,
+multiplies every coordinate it writes by FIVE - so one texel is five
+world units, whatever is being drawn. A PICKUP then gets the actor scale
+of 0x1300 the pickup routine sets it to, in the PSX's 4096ths, which
+makes a texel just under six. A sprite OBJECT's handler sets no scale at
+all, so it keeps the five.
 
 The reward's own width and height are NOT this. They are a collision
 box - the routine doubles them into a second pair of fields - and using
 them would size a crystal by what it can be picked up from rather than
 by how big it is drawn.
+
+WHAT ELSE IS DRAWN THIS WAY
+
+Not only pickups: a handful of placed OBJECTS are sprites too - the
+jumpable fish, the torch that burns until it is put out. They come in
+through the same billboards() with art that
+functions/object_sprites.py builds, and out of the same area bank.
 """
 from dataclasses import dataclass, replace
 
@@ -48,7 +56,10 @@ ONE = 0x1000
 # by, before the actor's scale is applied.
 TEXEL_UNITS = 5
 
-UNITS_PER_TEXEL = TEXEL_UNITS * ACTOR_SCALE / ONE
+# A pickup's own scale on top of that; a sprite OBJECT sets none, so it
+# gets the five and nothing more.
+PICKUP_UNITS = TEXEL_UNITS * ACTOR_SCALE / ONE
+OBJECT_UNITS = float(TEXEL_UNITS)
 
 # A gap between packed frames, so filtering can't bleed one into the next.
 PAD = 1
@@ -56,15 +67,19 @@ PAD = 1
 
 @dataclass
 class Placed:
-    """Where one frame ended up in the atlas, and how big to draw it."""
+    """Where one frame ended up in the atlas, and how big it is.
+
+    Sizes are in TEXELS, not world units: what a texel is worth differs
+    between a pickup and a sprite object, and the frame itself does not
+    know which is asking for it."""
 
     u0: float
     v0: float
     u1: float
     v1: float
-    width: float            # in world units
+    width: float            # in texels
     height: float
-    # Where the sprite's own origin sits inside it, also in world units,
+    # Where the sprite's own origin sits inside it, also in texels,
     # measured from the top left - a sprite is hung by its origin, not
     # by its corner.
     origin_x: float
@@ -157,9 +172,8 @@ def build_atlas(banks, wanted):
             placed[key] = Placed(
                 u0=x / width, v0=y / height,
                 u1=(x + w) / width, v1=(y + h) / height,
-                width=w * UNITS_PER_TEXEL, height=h * UNITS_PER_TEXEL,
-                origin_x=origin_x * UNITS_PER_TEXEL,
-                origin_y=origin_y * UNITS_PER_TEXEL)
+                width=float(w), height=float(h),
+                origin_x=float(origin_x), origin_y=float(origin_y))
             x += w + PAD
         y += row_height
     return atlas, placed
@@ -176,6 +190,7 @@ class Billboard:
     # (Placed, ticks) per step of the animation, in order.
     steps: tuple = ()
     loops: bool = False
+    units: float = PICKUP_UNITS      # world units per texel
 
     def frame_now(self, tick):
         """Which frame is showing at `tick`, or None if it has none."""
@@ -210,7 +225,9 @@ def billboards(instances, placed):
         if not steps:
             continue
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
-                             z=instance.z, steps=steps, loops=art.loops))
+                             z=instance.z, steps=steps, loops=art.loops,
+                             units=(OBJECT_UNITS if instance.role == "object"
+                                    else PICKUP_UNITS)))
     return out
 
 

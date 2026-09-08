@@ -63,7 +63,7 @@ import os
 import struct
 
 from functions import clut_anim
-from functions.mips import Image
+from functions.mips import LOADS, STORES, Image
 
 # MAIN.EXE is a PS-EXE: a 0x800 header, then the body, loaded where the
 # header says.
@@ -86,6 +86,24 @@ OVERLAY_NUMBER = 0x800BF870
 # The object's slot is a byte at +3 of its record - every per-slot table
 # on the disc is indexed by that load.
 SLOT_FIELD = 3
+# The other identifying byte, which a class can branch on just as well,
+# and the lifecycle byte every handler opens by switching on. Models are
+# attached while the object is starting up, so that one is seeded to the
+# first state rather than left unknown.
+KIND_FIELD = 2
+LIFECYCLE_FIELD = 4
+FIRST_STATE = 0
+
+# How far into the actor a byte still counts as one of its identifying
+# fields. A handler can rewrite one before reading it back - AREA_0A's
+# mushrooms shift their slot right by four and store it over itself -
+# so those stores are followed too, and the stack is kept out by its
+# own register rather than by the offset.
+FIELD_SPAN = 0x10
+SP = 29
+ZERO = 0
+R_TYPES = frozenset(("addu", "subu", "and", "or"))
+SHIFTS = frozenset(("sll", "srl", "sra"))
 
 # How far back from a call to look for what put a value in a register,
 # and how far a walk of one handler may wander from where it started.
@@ -573,6 +591,41 @@ def calls_within(images, entry, targets, span=FUNCTION_SPAN,
     return found
 
 
+# How far to follow a handler when running it with one record's own
+# slot in hand, and how many branches it may resolve. Both generous:
+# the longest class that branches on its slot settles inside forty.
+WALK_STEPS = 400
+
+
+def _fold(name, a, b, shift):
+    """One arithmetic instruction on values that are both known."""
+    if name == "addiu":
+        return (a + b) & 0xFFFFFFFF
+    if name == "addu":
+        return (a + b) & 0xFFFFFFFF
+    if name == "subu":
+        return (a - b) & 0xFFFFFFFF
+    if name == "andi":
+        return a & (b & 0xFFFF)
+    if name == "ori":
+        return a | (b & 0xFFFF)
+    if name == "and":
+        return a & b
+    if name == "or":
+        return a | b
+    if name == "srl":
+        return (a & 0xFFFFFFFF) >> shift
+    if name == "sll":
+        return (a << shift) & 0xFFFFFFFF
+    if name == "sra":
+        return ((a if a < 0x80000000 else a - (1 << 32)) >> shift) & 0xFFFFFFFF
+    if name == "sltiu":
+        return int((a & 0xFFFFFFFF) < (b & 0xFFFFFFFF))
+    if name == "slti":
+        return int(a < b)
+    return None
+
+
 class CodeModels:
     """One disc's answer to "what does each object class draw with"."""
 
@@ -666,6 +719,140 @@ class CodeModels:
             return None
         return self.reader.read(table.address + index * table.stride,
                                 table.width, table.signed)
+
+    def run_for_slot(self, handler, slot, kind=None):
+        """The model a class attaches when its object's slot is `slot`,
+        or None.
+
+        Runs the handler forwards with that one byte known, folding what
+        it can and following the branches it can decide. A class that
+        picks between models by looking at its own slot - AREA_0A's
+        mushrooms read the top nibble of theirs and choose between three
+        - settles here, where models_for() can only list all three.
+
+        Only branches whose both sides are known are followed; anything
+        else stops the walk rather than guessing a way through it."""
+        image = self.reader.image_for(handler)
+        if image is None:
+            return None
+        fields = {SLOT_FIELD: slot, LIFECYCLE_FIELD: FIRST_STATE}
+        if kind is not None:
+            fields[KIND_FIELD] = kind
+        regs, at, seen = {ZERO: 0}, handler, set()
+        for _step in range(WALK_STEPS):
+            if at in seen or image.at(at) is None:
+                return None
+            seen.add(at)
+            instruction = image.at(at)
+            name = instruction.name
+            if name == "jal":
+                if instruction.target in self.attach:
+                    return self._attached(regs, image, at)
+                # Anything else: run its delay slot and carry on past.
+                self._step(regs, image.at(at + 4), fields)
+                at += 8
+                continue
+            if name in ("beq", "bne", "j", "jr"):
+                taken = self._branch(regs, instruction)
+                if taken is None:
+                    return None
+                self._step(regs, image.at(at + 4), fields)
+                at = taken if taken is not True else at + 8
+                continue
+            self._step(regs, instruction, fields)
+            at += 4
+        return None
+
+    def _attached(self, regs, image, at):
+        """(file, group) from the registers an attach call is reached
+        with - its delay slot included, which is where one of the two is
+        usually set."""
+        regs = dict(regs)
+        self._step(regs, image.at(at + 4), {})
+        file_id, group = regs.get(A1), regs.get(A2)
+        if file_id is None or group is None or not _is_file_id(file_id):
+            return None
+        return file_id, group
+
+    @staticmethod
+    def _stored(regs, instruction, fields):
+        """A write back over one of the record's own bytes."""
+        if instruction.rs == SP or regs.get(instruction.rs) is not None:
+            return
+        if not 0 <= instruction.imm < FIELD_SPAN:
+            return
+        value = regs.get(instruction.rt)
+        if value is None:
+            fields.pop(instruction.imm, None)
+        else:
+            fields[instruction.imm] = value & 0xFF
+
+    def _loaded(self, regs, instruction, fields):
+        """What a load reads: a real word where the address is known -
+        that is how a jump table is followed - and otherwise the field
+        of the record the offset names."""
+        base = regs.get(instruction.rs)
+        if base is not None:
+            width = {"lw": 4, "lhu": 2, "lh": 2}.get(instruction.name, 1)
+            signed = instruction.name in ("lb", "lh")
+            return self.reader.read(base + instruction.imm, width, signed)
+        return fields.get(instruction.imm)
+
+    def _branch(self, regs, instruction):
+        """Where a branch goes: an address, True to fall through, or
+        None when it cannot be decided."""
+        name = instruction.name
+        if name == "j":
+            return instruction.target
+        if name == "jr":
+            # The jump table every handler opens with lands here once
+            # its entry has been read.
+            return regs.get(instruction.rs)
+        left, right = regs.get(instruction.rs), regs.get(instruction.rt)
+        if left is None or right is None:
+            return None
+        hit = (left == right) if name == "beq" else (left != right)
+        return (instruction.address + 4 + instruction.imm * 4) if hit else True
+
+    def _step(self, regs, instruction, fields):
+        """Run one instruction for its effect on the registers."""
+        if instruction is None:
+            return
+        name = instruction.name
+        if name in STORES:
+            self._stored(regs, instruction, fields)
+            return
+        if name is None or name in ("jal", "j", "jr", "beq", "bne"):
+            return
+        if name == "lui":
+            regs[instruction.rt] = (instruction.imm & 0xFFFF) << 16
+            return
+        if name in LOADS:
+            regs[instruction.rt] = self._loaded(regs, instruction, fields)
+            if regs[instruction.rt] is None:
+                regs.pop(instruction.rt, None)
+            return
+        if name in SHIFTS:
+            # A shift's operand is rt and its amount is the shift field;
+            # rs has nothing to do with it.
+            value = regs.get(instruction.rt)
+            if value is None:
+                regs.pop(instruction.rd, None)
+            else:
+                regs[instruction.rd] = _fold(name, value, 0, instruction.shift)
+            return
+        target = instruction.rd if name in R_TYPES else instruction.rt
+        source = regs.get(instruction.rs)
+        other = (regs.get(instruction.rt) if name in R_TYPES
+                 else instruction.imm)
+        if source is None or other is None:
+            regs.pop(target, None)
+            return
+        value = _fold(name, source, other, instruction.shift)
+        if value is None:
+            regs.pop(target, None)
+        else:
+            regs[target] = value
 
     def choices(self, placement, cache=None):
         """Every model one record's object could be drawn with, as

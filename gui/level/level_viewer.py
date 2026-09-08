@@ -724,10 +724,11 @@ class LevelViewer(SMSTViewer):
             if placed is None:
                 continue
             x, y, z = quad.x / UNIT_SCALE, quad.y / UNIT_SCALE, quad.z / UNIT_SCALE
-            left = -placed.origin_x / UNIT_SCALE
-            right = (placed.width - placed.origin_x) / UNIT_SCALE
-            top = placed.origin_y / UNIT_SCALE
-            bottom = (placed.origin_y - placed.height) / UNIT_SCALE
+            units = quad.units / UNIT_SCALE
+            left = -placed.origin_x * units
+            right = (placed.width - placed.origin_x) * units
+            top = placed.origin_y * units
+            bottom = (placed.origin_y - placed.height) * units
             # Counter-clockwise seen from the camera, which is what GL
             # calls front-facing - wound the other way they are back
             # faces and vanish the moment culling is on.

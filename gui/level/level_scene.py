@@ -41,6 +41,7 @@ import numpy as np
 import gui.mdat.mdat as mdat
 from functions import format_detect
 from functions import handler_models
+from functions import object_sprites
 from functions import pickup_art
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
@@ -216,6 +217,15 @@ class Instance:
             return f"The room itself - {self.face_count} drawn triangles"
         model = (", ".join(f"id {f} group {g}" for f, g in self.sources)
                  or "no model known")
+        if self.placement is not None and self.art is not None:
+            frames = "/".join(str(f.frame) for f in self.art.frames)
+            return (f"{self.placement.describe()}<br>"
+                    f"a sprite, not a model: frames {frames}"
+                    f"{' looping' if self.art.loops else ''} of the area's "
+                    f"own bank, at {where}<br>"
+                    f"record {self.placement.index} of table "
+                    f"{self.placement.table}, at 0x{self.placement.offset:X} "
+                    f"in the overlay")
         if self.placement is not None:
             return (f"{self.placement.describe()}<br>{model}, at {where}<br>"
                     f"record {self.placement.index} of table "
@@ -438,6 +448,9 @@ class LevelScene:
         self.poses = {}
         # The area's collision planes, for the chests' headings.
         self.planes = []
+        # {handler: [Sequence, ...]} for the classes that are sprites
+        # rather than models - see functions/object_sprites.py.
+        self.sprite_classes = {}
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
         self.resident = {}
@@ -490,6 +503,12 @@ class LevelScene:
                     "the overlay holds no object table - a few small areas "
                     "place nothing")
             self._bind(overlay_path, exe_path)
+            try:
+                with open(overlay_path, "rb") as f:
+                    self.sprite_classes = object_sprites.by_handler(
+                        f.read(), [r.handler for r in self.placements])
+            except OSError:
+                pass
             # The crystals and the apples are a table of their own, and
             # MAIN.EXE is what says where it is.
             if exe_path:
@@ -669,7 +688,12 @@ class LevelScene:
         room_box = self.room_bounds()
         used = set()
         for record in self.placements:
-            sources = self.bindings.get(record.key()) or ()
+            states = self.sprite_classes.get(record.handler) or ()
+            art = object_sprites.first_state(states)
+            # A class drawn as a sprite has no model, and whatever
+            # handler_models found for it was something else the handler
+            # touched - so it is dropped rather than drawn.
+            sources = () if art else (self.bindings.get(record.key()) or ())
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
@@ -678,6 +702,7 @@ class LevelScene:
                 label=f"{record.kind}.{record.slot}",
                 sources=tuple(sources), x=x, y=y, z=z,
                 angle=float(record.angle), placement=record,
+                art=object_sprites.as_art(art) if art else None,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 
