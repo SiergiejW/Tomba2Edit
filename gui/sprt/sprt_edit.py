@@ -163,6 +163,68 @@ def image_from_indices(indices, colours):
                            bytes(out) or bytes(4))
 
 
+def to_bgr555(rgb, stp=False):
+    """An (r, g, b) as the halfword VRAM stores.
+
+    Five bits a channel, blue highest, and bit 15 is the
+    semi-transparency flag rather than colour - carried across rather
+    than invented, so editing a colour does not silently change whether
+    the hardware blends it."""
+    r, g, b = (min(255, max(0, int(v))) for v in rgb[:3])
+    return ((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3) | (0x8000 if stp
+                                                            else 0)
+
+
+def palette_entry(vram, address, index):
+    """(value, r, g, b, stp) of one palette entry."""
+    at = address + index * 2
+    value = vram[at] | (vram[at + 1] << 8)
+    return (value, (value & 0x1F) * 8, ((value >> 5) & 0x1F) * 8,
+            ((value >> 10) & 0x1F) * 8, bool(value & 0x8000))
+
+
+def set_palette_entry(vram, address, index, rgb, stp=None, transparent=False):
+    """Write one colour into a palette. `vram` must be mutable.
+
+    `transparent` writes the hardware's own nothing-at-all value, which
+    is a plain zero halfword - not a colour with an alpha, because the
+    PSX has no such thing. Every sprite's holes are that value, so it
+    has to be writable or a hole could never be made."""
+    at = address + index * 2
+    if transparent:
+        value = 0
+    else:
+        if stp is None:
+            stp = bool((vram[at] | (vram[at + 1] << 8)) & 0x8000)
+        value = to_bgr555(rgb, stp)
+    vram[at] = value & 0xFF
+    vram[at + 1] = (value >> 8) & 0xFF
+    return value
+
+
+def copy_palette(vram, source, destination):
+    """Duplicate a palette somewhere else in the same VRAM.
+
+    The way out of a shared palette: fork it, point one piece at the
+    copy, and edit that instead of the fifty others' colours."""
+    for i in range(32):
+        vram[destination + i] = vram[source + i]
+
+
+def clut_users(sprt, address):
+    """Which pieces of a bank draw through one palette.
+
+    Worth knowing before editing a colour: a palette fifty-one pieces
+    share is fifty-one sprites that change together, and nothing on
+    screen says so."""
+    out = []
+    for sprite in sprt.sprites:
+        for piece in sprite.pieces:
+            if piece.clut_address == address:
+                out.append((sprite.index, piece.index))
+    return out
+
+
 def clut_attribute(address, original=0):
     """A CLUT attribute pointing at `address`, keeping the stray bit 15.
 

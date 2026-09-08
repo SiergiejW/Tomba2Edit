@@ -26,11 +26,20 @@ that area's own. Red rectangles are where the textures would go. If a
 red rectangle sits on top of artwork, that artwork is what you would be
 destroying.
 
-Loading savestates makes this honest rather than optimistic. The shard
-tables do not mention the display buffers, the palettes the game uploads
-from the DAT, or its sprite art, and a texture put in any of those is
-overwritten the moment the game runs. A state is the only thing that
-knows - see functions/state_vram.py.
+WHAT IS KNOWN, AND WHAT IS NOT
+
+Known from the disc, and enforced: which chunks are resident (0, 1, 2
+plus the area), what every chunk writes, and where the display buffers
+are. A clash with any of those stops Apply.
+
+Not knowable from the disc: what the game uploads into VRAM itself
+while running. It is in no shard table and nothing references it -
+checked, 0 of 244 CLUT addresses used by the sprite banks land on it -
+so it can only be measured, and measuring it once gave about a thousand
+halfwords in two clusters. Loading a savestate folds that in and is
+worth doing when you have one, but it is a refinement rather than a
+permit: the tool says what it does not know instead of refusing to act
+on it.
 """
 import os
 
@@ -102,29 +111,18 @@ class MigrateDialog(QDialog):
         none_button = QPushButton("Untick all")
         none_button.clicked.connect(lambda: self._set_all(False))
 
-        self.states_label = QLabel("No savestate loaded - the free map is "
-                                   "optimistic.", self)
+        self.states_label = QLabel(
+            "No savestate loaded - the disc's own claims are all accounted "
+            "for; what the game writes at runtime is not.", self)
         self.states_label.setWordWrap(True)
         state_button = QPushButton("Add savestate(s)...")
         state_button.setToolTip(
-            "A savestate is the only thing that knows what the game puts "
-            "in VRAM that the IMG does not - the display buffers, the "
-            "palettes it uploads from the DAT, its sprite art. Add one "
-            "per area you care about and the free map accounts for them.")
+            "Optional. A savestate is the only thing that shows what the "
+            "game writes into VRAM itself while running - nothing on the "
+            "disc records it. Add one per area you care about and the "
+            "free map accounts for those writes too.")
         state_button.clicked.connect(self._add_states)
 
-        # Placing without a state is how a palette ends up under
-        # something the game uploads at runtime: the shard tables cannot
-        # see those writes, so the free map says yes and the colours
-        # come out wrong in game with nothing to explain it. Allowed,
-        # because not everyone has a state to hand, but not by default.
-        self.risky = QCheckBox("Place without a savestate (risky)", self)
-        self.risky.setToolTip(
-            "Without a savestate the free map cannot see what the game "
-            "uploads at runtime - its palettes and sprite art. Placing "
-            "a palette on top of one of those gives wrong colours and "
-            "no transparency, and nothing warns you until you play it.")
-        self.risky.toggled.connect(self._finish_or_replan)
 
         # The escape hatch when nothing fits. Deliberately worded as
         # destroying something, because that is what it does - and see
@@ -152,6 +150,11 @@ class MigrateDialog(QDialog):
         for box in (self.page_box, self.x_box, self.y_box):
             box.valueChanged.connect(self._manual_move)
         self.moving = QComboBox(self)
+        self.moving.setToolTip(
+            "Everything the plan has to place - each patch of texture AND "
+            "each palette. Pick one here and the Page/X/Y below move THAT "
+            "one; the red and blue boxes in the preview show where each "
+            "would land.")
         self.moving.currentIndexChanged.connect(self._show_current_move)
 
         auto = QPushButton("Auto-place")
@@ -165,6 +168,12 @@ class MigrateDialog(QDialog):
         place_form.addRow("X", self.x_box)
         place_form.addRow("Y", self.y_box)
         place_form.addRow("", auto)
+        hint = QLabel(
+            "Palettes are in the Moving list too - pick one to move it. "
+            "X steps by 4 for a texture and by 16 for a palette, which is "
+            "the only alignment a CLUT address can express.", self)
+        hint.setWordWrap(True)
+        place_form.addRow("", hint)
 
         self.destination = QComboBox(self)
         self.destination.addItem("AREA_01 - loaded in every area", 1)
@@ -196,7 +205,6 @@ class MigrateDialog(QDialog):
         left_layout.addLayout(row)
         left_layout.addWidget(state_button)
         left_layout.addWidget(self.states_label)
-        left_layout.addWidget(self.risky)
         left_layout.addWidget(self.overwrite)
         left_layout.addWidget(place_box)
         left_layout.addWidget(QLabel("Write the pixels into:", self))
@@ -380,9 +388,14 @@ class MigrateDialog(QDialog):
         self.moving.blockSignals(True)
         self.moving.clear()
         for n, move in enumerate(self.plan.moves):
-            self.moving.addItem(f"[{n}] {move.label()}", ("move", n))
+            w, h = move.src_rect[2], move.src_rect[3]
+            self.moving.addItem(
+                f"texture  [{n}] page {move.page}, {w}x{h} halfwords",
+                ("move", n))
         for old in sorted(self.plan.cluts):
-            self.moving.addItem(f"palette 0x{old:X}", ("clut", old))
+            self.moving.addItem(
+                f"palette  0x{old:X}  (16 halfwords, X steps by 16)",
+                ("clut", old))
         self.moving.blockSignals(False)
         self._show_current_move()
 
@@ -522,34 +535,27 @@ class MigrateDialog(QDialog):
             lines.append("Tick 'Overwrite art that is already there' to "
                          "place anyway and destroy it.")
         if self._occupied is None:
-            lines.append("No savestate loaded: the display buffers and "
-                         "anything the game uploads at runtime are NOT "
-                         "accounted for.")
+            lines.append(
+                "No savestate loaded. The display buffers and the resident "
+                "set ARE accounted for - those are known. What is not is "
+                "what the game uploads itself while running, which is not "
+                "written down anywhere on the disc: measured once it came "
+                "to about 1000 halfwords in two clusters. If a colour "
+                "comes out wrong in game, that is the thing to check.")
         lines.append(f"checked {checked} texel reads: "
                      + ("every one lands on the same texel it does now."
                         if not bad else f"{len(bad)} would change - not safe."))
-        # Placing blind is allowed, but only if it is asked for: without
-        # a state the runtime writes are invisible and a palette put on
-        # one of them comes out wrong in game with nothing to explain it.
-        blind = self._occupied is None and not self.risky.isChecked()
-        if blind:
-            lines.append("Apply is off until a savestate is loaded - or tick "
-                         "'Place without a savestate' to go ahead anyway.")
+        # A savestate is a refinement, not a permit. Everything it adds
+        # is said in the report; what stops Apply is a real clash or a
+        # verify that would change a texel, both of which are knowable
+        # from the disc alone.
         self._clashes, self._doomed = clashes, doomed
         allowed = (not clashes) or (self.overwrite.isChecked() and not doomed)
         self.report.setPlainText("\n".join(lines))
-        self.apply_button.setEnabled(bool(allowed) and not bad and not blind)
+        self.apply_button.setEnabled(bool(allowed) and not bad)
         self.refresh_preview()
 
     # --- preview ------------------------------------------------------
-
-    def _finish_or_replan(self):
-        """Re-evaluate after the risky box is toggled, without redoing
-        the search if a plan is already in hand."""
-        if self.plan:
-            self._finish_plan()
-        else:
-            self.replan()
 
     def refresh_preview(self):
         item = self.areas.currentItem()
