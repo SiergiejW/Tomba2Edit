@@ -18,6 +18,10 @@ of. One area, one table, terminated rather than counted:
 
     record (20 bytes, in a run of them):
 
+        u8  object_flags  the actor's type. 0xFF ends the table, and
+                          bit 0x80 is a flag the game keeps; the type
+                          itself is the low 4 bits (0 to 4 on the disc)
+        u8  alloc         which allocation list it goes on (2 to 9)
         i16 x, y, z   where the object stands, in the same world units
                       an MDAT's vertices are in
         u8  kind      which class of object it is, within this overlay
@@ -25,14 +29,14 @@ of. One area, one table, terminated rather than counted:
                       and not always dense: AREA_04's signposts are
                       slots 0, 1, 9 and 10
         i16 angle     how far it is turned about Y, IN DEGREES
-        u16 param, param2
-                      0 on all but a handful of records
+        i16 angle2    a second turn, in degrees; only five values are
+                      used on the whole disc
+        i16 condition when 1, skip this object in the purified area;
+                      when 2, skip it indoors. 0 on all but a few
         u32 handler   the routine that runs this object. Below the
                       overlay's own load address it is a routine in
                       MAIN.EXE, which is what a class shared by every
                       area looks like - the signpost is one
-        u8  flags     0xFF ends the table
-        u8  group
 
 WHAT IS NOT HERE is which part of the asset pack an object is drawn
 with. That binding lives in the handler's own code - it fetches its
@@ -43,7 +47,24 @@ below does, and what labels/placements.json holds the results of.
 
 HOW THIS WAS READ
 
-From PCSX savestates. An area's whole SDAT chunk is loaded verbatim
+The layout above is the one MAIN.EXE's own table walker uses - the
+routine at 0x80072A78, which picks a table out of the pointer array at
+0x800A4C28 (one entry per area, and a handful of areas that pick a
+second table by section) and steps it 20 bytes at a time until the byte
+at the front of a record is 0xFF. tables_from_exe() below reads that
+array; find_tables() finds the same 31 tables by shape alone, and
+agrees with it exactly on the retail disc.
+
+Before that walker was read the records were found by scanning, two
+bytes off from where they really start, which put a record's own
+object_flags and alloc bytes at the END of the record before it. Their
+old names were `flags` and `group`, and `group` in particular meant
+nothing: it belonged to the next object, not the one it was read with.
+The fields this editor actually uses - position, angle and handler -
+were right, and so is the (kind, slot, handler) a binding is keyed by,
+so labels/placements.json carried over unchanged.
+
+The rest was read from PCSX savestates. An area's whole SDAT chunk is loaded verbatim
 into RAM, so the model each live object points at says which file and
 which group it is; each live object also carries a PSX MATRIX - a 3x3
 rotation in 4096ths and three 32-bit translations - 0x30 into a 68-byte
@@ -60,8 +81,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-RECORD = struct.Struct("<hhhBBhHHIBB")
+RECORD = struct.Struct("<BBhhhBBhhhI")
 RECORD_SIZE = RECORD.size          # 20
+
+# Where a record's own fields sit, for writing changed ones back.
+POSITION_AT = 2
+ANGLE_AT = 10
 
 # Where an overlay's own addresses can point - the same window
 # functions/clut_anim.py uses, and for the same reason: the overlays
@@ -69,15 +94,48 @@ RECORD_SIZE = RECORD.size          # 20
 RAM_LOW = 0x80010000
 RAM_HIGH = 0x80200000
 
-# What the flags byte holds on the record that ends a table.
+# The object_flags byte a table ends on, where a record would start.
 END = 0xFF
 
-# A run has to be at least this long before it is called a table. Every
-# real one on the retail disc holds five or more.
-MIN_RECORDS = 4
+# What the identifying bytes hold on the disc - measured over all 689
+# records of all 31 tables, and what tells a record from a stretch of
+# some other array. The type is the low nibble because bit 0x80 is a
+# flag the game keeps and copies onto the object.
+TYPE_MASK = 0x7F
+MAX_TYPE = 8
+MIN_ALLOC, MAX_ALLOC = 2, 9
+MAX_CONDITION = 2
+
+# Where MAIN.EXE keeps the tables, for tables_from_exe(). A PS-EXE
+# holds its load address at 0x18 and its code from 0x800 on.
+EXE_MAGIC = b"PS-X EXE"
+EXE_BASE_AT = 0x18
+EXE_TEXT = 0x800
+
+# The array the walker at 0x80072A78 indexes by area, and the second
+# tables five areas pick by which section of themselves they are in.
+# AREA_03 is the only area with no table at all.
+AREA_TABLES = 0x800A4C28
+AREA_COUNT = 22
+SECTIONS = {
+    1: (0x80134918,),
+    5: (0x8013C1A4,),
+    6: (0x80143ACC, 0x80143AE0),
+    8: (0x801432B8, 0x80143470, 0x80143614),
+    21: (0x80115018, 0x801150F4, 0x80115180, 0x801151F8, 0x80115310),
+}
+
+# Where an overlay lands - the same address gui.main_window uses.
+OVERLAY_BASE = 0x80108F9C
+
+# A run has to be at least this long before it is called a table. Two,
+# because three of the real ones are that short - AREA_08's fourth and
+# AREA_17's hold three records and AREA_18's holds two - and with the
+# identifying bytes checked nothing else that short gets through.
+MIN_RECORDS = 2
 
 # An angle is in whole degrees, so anything outside a turn and a bit is
-# not one. Records on the disc stay within +/-180.
+# not one. Records on the disc run from -177 to 315.
 MAX_ANGLE = 400
 
 # One instance record in RAM, in a savestate: a model pointer, then a
@@ -138,21 +196,22 @@ class Placement:
     index: int              # which record of the table this is
     table: int              # which of the overlay's tables it is in
     offset: int             # where it sits in the overlay
+    object_flags: int       # the actor's type, and 0x80 kept as a flag
+    alloc: int              # which allocation list it goes on
     x: int
     y: int
     z: int
     kind: int
     slot: int
     angle: int              # degrees about Y
-    param: int
-    param2: int
+    angle2: int             # a second turn, in degrees
+    condition: int          # 1 skips it purified, 2 skips it indoors
     handler: int
-    flags: int
-    group: int
+    last: bool = False      # whether the 0xFF terminator follows it
 
     @property
-    def last(self):
-        return self.flags == END
+    def type(self):
+        return self.object_flags & TYPE_MASK
 
     @property
     def position(self):
@@ -174,15 +233,24 @@ def _record(data, offset):
     """The record at `offset`, or None if what is there isn't one."""
     if offset < 0 or offset + RECORD_SIZE > len(data):
         return None
-    x, y, z, kind, slot, angle, param, param2, handler, flags, group = \
-        RECORD.unpack_from(data, offset)
+    object_flags, alloc, x, y, z, kind, slot, angle, angle2, condition, \
+        handler = RECORD.unpack_from(data, offset)
+    if object_flags == END or object_flags & TYPE_MASK > MAX_TYPE:
+        return None
+    if not MIN_ALLOC <= alloc <= MAX_ALLOC:
+        return None
     if handler & 3 or not RAM_LOW <= handler < RAM_HIGH:
         return None
     if not -MAX_ANGLE <= angle <= MAX_ANGLE:
         return None
-    return Placement(index=0, table=0, offset=offset, x=x, y=y, z=z, kind=kind,
-                     slot=slot, angle=angle, param=param, param2=param2,
-                     handler=handler, flags=flags, group=group)
+    if not -MAX_ANGLE <= angle2 <= MAX_ANGLE:
+        return None
+    if not 0 <= condition <= MAX_CONDITION:
+        return None
+    return Placement(index=0, table=0, offset=offset,
+                     object_flags=object_flags, alloc=alloc, x=x, y=y, z=z,
+                     kind=kind, slot=slot, angle=angle, angle2=angle2,
+                     condition=condition, handler=handler)
 
 
 def find_tables(data):
@@ -190,14 +258,14 @@ def find_tables(data):
 
     Scanned on two-byte boundaries rather than four: the table is a run
     of 20-byte records and 20 is not a multiple of 4, so a table can and
-    does start halfway through a word - A00.BIN's is at 0x3DA22.
+    does start halfway through a word - A00.BIN's is at 0x3DA20.
 
-    A run only counts as a table if it ENDS in the 0xFF terminator.
-    That is what tells a real one from a stretch of some other array
-    that happens to hold plausible-looking words: every table on the
-    retail disc terminates, and the two runs on it that don't are an
-    animation's step list and a list of counters, both of which read as
-    objects standing at (0, 0, 0).
+    A run only counts as a table if the byte after it is the 0xFF a
+    record's object_flags would have been. That is what tells a real one
+    from a stretch of some other array that happens to hold
+    plausible-looking words, and with the identifying bytes read in the
+    right place it is enough on its own: this finds the 31 tables the
+    game itself uses, and nothing else - see tables_from_exe().
 
     An overlay usually holds several, back to back - A0L.BIN has five.
     They are what an area draws in each of its situations, which is how
@@ -207,20 +275,47 @@ def find_tables(data):
         if _record(data, at) is None:
             at += 2
             continue
-        run, end, closed = [], at, False
+        run, end = [], at
         while (record := _record(data, end)) is not None:
             run.append(record)
             end += RECORD_SIZE
-            if record.last:
-                closed = True
-                break
+        closed = end < len(data) and data[end] == END
         if closed and len(run) >= MIN_RECORDS:
+            run[-1].last = True
             for i, record in enumerate(run):
                 record.index = i
                 record.table = len(tables)
             tables.append(run)
         at = max(end, at + 2)
     return tables
+
+
+def tables_from_exe(exe_path, area):
+    """[overlay offset, ...] of the tables MAIN.EXE gives one area.
+
+    The walker at 0x80072A78 reads a pointer per area out of the array
+    at 0x800A4C28, and five areas pick a second table by which section
+    of themselves they are in - those are the addresses in SECTIONS,
+    which the walker holds as immediates. Returns them in the order the
+    walker would reach them.
+
+    find_tables() finds exactly these by shape, so this is a check on it
+    rather than the way in: it needs a MAIN.EXE, and the addresses only
+    hold for the retail build."""
+    try:
+        with open(exe_path, "rb") as f:
+            exe = f.read()
+    except OSError:
+        return []
+    if len(exe) < EXE_TEXT or exe[:8] != EXE_MAGIC:
+        return []
+    base = struct.unpack_from("<I", exe, EXE_BASE_AT)[0]
+    at = AREA_TABLES - base + EXE_TEXT + area * 4
+    if not 0 <= area < AREA_COUNT or at + 4 > len(exe):
+        return []
+    primary = struct.unpack_from("<I", exe, at)[0]
+    addresses = ([primary] if primary else []) + list(SECTIONS.get(area, ()))
+    return [address - OVERLAY_BASE for address in addresses]
 
 
 def load_placements(overlay_path):
@@ -245,9 +340,10 @@ def patch(data, placements):
     and none of it is this editor's to change."""
     out = bytearray(data)
     for placement in placements:
-        struct.pack_into("<hhh", out, placement.offset,
+        struct.pack_into("<hhh", out, placement.offset + POSITION_AT,
                          int(placement.x), int(placement.y), int(placement.z))
-        struct.pack_into("<h", out, placement.offset + 8, int(placement.angle))
+        struct.pack_into("<h", out, placement.offset + ANGLE_AT,
+                         int(placement.angle))
     return bytes(out)
 
 
