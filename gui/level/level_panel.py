@@ -33,6 +33,7 @@ from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
     ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, instance_key,
     room_entries)
+from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
 
@@ -68,6 +69,12 @@ class LevelEditorPanel(QWidget):
         self._phase = 0
         self._phase_timer = QTimer(self)
         self._phase_timer.timeout.connect(self._next_phase)
+
+        # The pickups animate on their own clock: their steps are in the
+        # game's own ticks, and unlike the background's phases every one
+        # of them is already on the card.
+        self._sprite_timer = QTimer(self)
+        self._sprite_timer.timeout.connect(self._next_sprite_tick)
 
         self.viewer = LevelViewer(self)
         self.viewer.selection_changed.connect(self._on_view_selection)
@@ -269,6 +276,7 @@ class LevelEditorPanel(QWidget):
         self.viewer.load_scene(scene)
         self.viewer.load_animations(overlay)
         self._load_background(scene, vram, overlay)
+        self._load_sprites(scene, vram)
         self._populate()
 
         placed = sum(1 for i in scene.instances
@@ -285,6 +293,36 @@ class LevelEditorPanel(QWidget):
                          f"own table, {drawn} of them with a known model.")
         lines.extend(scene.notes)
         self.summary.setText("\n".join(lines))
+
+    def _load_sprites(self, scene, vram):
+        """Cut every frame this level's pickups need and hang them.
+
+        A crystal is a sprite out of the bank every area shares, not a
+        model, so it cannot come through the scene's geometry - see
+        gui/level/pickup_sprites.py."""
+        self.viewer.set_sprites(None, ())
+        self._sprite_timer.stop()
+        entry = scene.resident.get(pickup_sprites.RESIDENT_SPRT_ID)
+        if entry is None or not vram:
+            return
+        start, (offset, size) = entry
+        try:
+            bank = pickup_sprites.SpriteBank(scene.dat_path, start, offset,
+                                             size, vram)
+            wanted = pickup_sprites.wanted_frames(scene.instances)
+            atlas, placed = pickup_sprites.build_atlas(bank, wanted)
+            quads = pickup_sprites.billboards(scene.instances, placed)
+        except Exception as e:
+            scene.notes.append(f"couldn't cut the pickup sprites: {e}")
+            return
+        if atlas is None or not quads:
+            return
+        self.viewer.set_sprites(atlas, quads)
+        if any(len(q.steps) > 1 for q in quads):
+            self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))
+
+    def _next_sprite_tick(self):
+        self.viewer.advance_sprites()
 
     def _load_background(self, scene, vram, overlay):
         """Render the area's BGMP, and every frame of it that moves.

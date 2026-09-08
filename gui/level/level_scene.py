@@ -133,6 +133,16 @@ class Instance:
         return self.role != "room"
 
     @property
+    def drawn_as_sprite(self):
+        """Whether the viewer hangs a picture here rather than geometry.
+
+        A crystal has no model to build into the scene's arrays - it is
+        a sprite out of the shared bank - so it is drawn its own way and
+        must not get a marker on top of it."""
+        art = self.art
+        return bool(art is not None and art.resident and art.frames)
+
+    @property
     def marker_class(self):
         """What its marker is coloured by - the object class for an
         object, the reward for a pickup, so a level's crystals read as
@@ -699,6 +709,8 @@ class LevelScene:
         positions, colors = [], []
         for instance in self.instances:
             if not instance.movable or instance.face_count:
+                continue
+            if instance.drawn_as_sprite:
                 continue
             x, y, z = instance.x, instance.y, instance.z
             r = MARKER_SIZE

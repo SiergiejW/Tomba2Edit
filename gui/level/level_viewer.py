@@ -21,7 +21,8 @@ import math
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QMatrix4x4, QVector2D, QVector4D
+from PyQt6.QtGui import (
+    QAction, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -114,6 +115,20 @@ class LevelViewer(SMSTViewer):
         self.background_action.toggled.connect(self._toggle_background)
         self.toolbar.insertAction(self.marker_action, self.background_action)
 
+        self.sprite_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
+            "Pickups", self)
+        self.sprite_action.setCheckable(True)
+        self.sprite_action.setChecked(True)
+        self.sprite_action.setToolTip(
+            "Draw the crystals and apples.\n\n"
+            "They are sprites out of the bank every area shares rather "
+            "than models, animated and recoloured per reward the way the "
+            "game does it - see gui/level/pickup_sprites.py. Chests are "
+            "models and are drawn with the rest of the level.")
+        self.sprite_action.toggled.connect(self._toggle_sprites)
+        self.toolbar.insertAction(self.background_action, self.sprite_action)
+
         # Line overlays, both built on the CPU and uploaded from paintGL
         # for the same reason everything else here is: an area can be
         # picked before Qt has given this widget a context.
@@ -135,6 +150,20 @@ class LevelViewer(SMSTViewer):
         self.background_vao = QOpenGLVertexArrayObject()
         self.background_vbo = QOpenGLBuffer()
         self.background_texture = None
+
+        # The pickups drawn as billboards - see gui/level/pickup_sprites.py.
+        self.show_sprites = True
+        self.sprite_vao = QOpenGLVertexArrayObject()
+        self.sprite_vbo = QOpenGLBuffer()      # centres
+        self.sprite_obo = QOpenGLBuffer()      # corner offsets
+        self.sprite_ubo = QOpenGLBuffer()      # texture coordinates
+        self.sprite_texture = None
+        self.sprite_count = 0
+        self._sprite_atlas = None       # RGBA array, None for none
+        self._sprite_atlas_dirty = False
+        self._sprite_quads = []         # see set_sprites()
+        self._sprite_tick = 0
+        self._sprite_dirty = False
         self._background_image = None       # (h, w, 3) uint8, or None
         self._background_dirty = False
 
@@ -178,6 +207,32 @@ class LevelViewer(SMSTViewer):
         array, or None for none."""
         self._background_image = image
         self._background_dirty = True
+        self.update()
+
+    def set_sprites(self, atlas, quads):
+        """Hang a set of billboards in the level.
+
+        `atlas` is one RGBA array holding every frame, `quads` a list of
+        (x, y, z, [Placed per tick-step], ticks per step, loops) in world
+        units - what gui/level/pickup_sprites.py builds."""
+        self._sprite_atlas = atlas
+        self._sprite_atlas_dirty = True
+        self._sprite_quads = list(quads)
+        self._sprite_tick = 0
+        self._sprite_dirty = True
+        self.update()
+
+    def advance_sprites(self, ticks=1):
+        """Move every pickup's animation on, and redraw if any of them
+        actually changed frame."""
+        if not self._sprite_quads:
+            return
+        self._sprite_tick += ticks
+        self._sprite_dirty = True
+        self.update()
+
+    def _toggle_sprites(self, checked):
+        self.show_sprites = checked
         self.update()
 
     def rebuild_markers(self):
@@ -593,6 +648,157 @@ class LevelViewer(SMSTViewer):
         GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self.background_vao.release()
 
+        self.sprite_program = QOpenGLShaderProgram()
+        self.sprite_program.addShaderFromSourceCode(
+            QOpenGLShader.ShaderTypeBit.Vertex,
+            """
+            #version 330 core
+            layout(location = 0) in vec3 centre;
+            layout(location = 1) in vec2 offset;
+            layout(location = 2) in vec2 corner;
+            out vec2 uv;
+            uniform mat4 modelViewProjection;
+            // The camera's own axes in world space, so a quad can be
+            // turned to face it without a matrix per sprite.
+            uniform vec3 right;
+            uniform vec3 up;
+            void main() {
+                uv = corner;
+                vec3 at = centre + right * offset.x + up * offset.y;
+                gl_Position = modelViewProjection * vec4(at, 1.0);
+            }
+            """)
+        self.sprite_program.addShaderFromSourceCode(
+            QOpenGLShader.ShaderTypeBit.Fragment,
+            """
+            #version 330 core
+            in vec2 uv;
+            out vec4 outColor;
+            uniform sampler2D atlas;
+            void main() {
+                vec4 texel = texture(atlas, uv);
+                // A sprite is a cutout, not a blend: the PSX draws these
+                // with the transparent index simply not written, so a
+                // hard test keeps the edges crisp and lets the depth
+                // buffer sort them against the room.
+                if (texel.a < 0.5) discard;
+                outColor = vec4(texel.rgb, 1.0);
+            }
+            """)
+        if not self.sprite_program.link():
+            print("Sprite shader failed:", self.sprite_program.log())
+        self.sprite_vao.create()
+
+    def _sync_sprite_atlas(self):
+        if not self._sprite_atlas_dirty:
+            return
+        self._sprite_atlas_dirty = False
+        if self.sprite_texture is not None:
+            GL.glDeleteTextures([self.sprite_texture])
+            self.sprite_texture = None
+        atlas = self._sprite_atlas
+        if atlas is None:
+            return
+        height, width = atlas.shape[:2]
+        self.sprite_texture = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, width, height, 0,
+                        GL.GL_RGBA, GL.GL_UNSIGNED_BYTE,
+                        np.ascontiguousarray(atlas).tobytes())
+        for name, value in ((GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST),
+                            (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
+                            (GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE),
+                            (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)):
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, name, value)
+
+    def _sync_sprites(self):
+        """Lay this tick's frame of every pickup out as two triangles."""
+        self._sync_sprite_atlas()
+        if not self._sprite_dirty:
+            return
+        self._sprite_dirty = False
+        rows = []
+        for quad in self._sprite_quads:
+            placed = quad.frame_now(self._sprite_tick)
+            if placed is None:
+                continue
+            x, y, z = quad.x / UNIT_SCALE, quad.y / UNIT_SCALE, quad.z / UNIT_SCALE
+            left = -placed.origin_x / UNIT_SCALE
+            right = (placed.width - placed.origin_x) / UNIT_SCALE
+            top = placed.origin_y / UNIT_SCALE
+            bottom = (placed.origin_y - placed.height) / UNIT_SCALE
+            # Counter-clockwise seen from the camera, which is what GL
+            # calls front-facing - wound the other way they are back
+            # faces and vanish the moment culling is on.
+            for ox, oy, u, v in ((left, top, placed.u0, placed.v0),
+                                 (left, bottom, placed.u0, placed.v1),
+                                 (right, bottom, placed.u1, placed.v1),
+                                 (left, top, placed.u0, placed.v0),
+                                 (right, bottom, placed.u1, placed.v1),
+                                 (right, top, placed.u1, placed.v0)):
+                rows.append((x, y, z, ox, oy, u, v))
+        if not rows:
+            self.sprite_count = 0
+            return
+        data = np.array(rows, dtype=np.float32)
+        if not self.sprite_vao.isCreated():
+            self.sprite_vao.create()
+        self.sprite_vao.bind()
+        for buffer, columns, location in ((self.sprite_vbo, (0, 3), 0),
+                                          (self.sprite_obo, (3, 5), 1),
+                                          (self.sprite_ubo, (5, 7), 2)):
+            first, last = columns
+            part = np.ascontiguousarray(data[:, first:last])
+            if not buffer.isCreated():
+                buffer.create()
+            buffer.bind()
+            buffer.allocate(part.tobytes(), part.nbytes)
+            GL.glEnableVertexAttribArray(location)
+            GL.glVertexAttribPointer(location, last - first, GL.GL_FLOAT,
+                                     GL.GL_FALSE, 0, None)
+        self.sprite_vao.release()
+        self.sprite_count = len(rows)
+
+    def _camera_axes(self):
+        """The camera's right and up, in world space.
+
+        The view turns the world by the pitch about X and then the
+        heading about Y, so its rows are where those axes point."""
+        h = math.radians(self.camera_controls.camera_angle_h)
+        v = math.radians(self.camera_controls.camera_angle_v)
+        right = (math.cos(h), 0.0, math.sin(h))
+        up = (math.sin(v) * math.sin(h), math.cos(v),
+              -math.sin(v) * math.cos(h))
+        return right, up
+
+    def draw_sprites(self):
+        """The pickups, after the room so they sort against it."""
+        self._sync_sprites()
+        if not (self.show_sprites and self.sprite_count
+                and self.sprite_texture is not None):
+            return
+        if not self.sprite_program.bind():
+            return
+        # A billboard is a picture, not a surface: it has no back to
+        # cull, and it is turned to the camera every frame anyway.
+        culling = GL.glIsEnabled(GL.GL_CULL_FACE)
+        GL.glDisable(GL.GL_CULL_FACE)
+        right, up = self._camera_axes()
+        self.sprite_program.setUniformValue("modelViewProjection",
+                                            self._model_view_projection())
+        self.sprite_program.setUniformValue("right", QVector3D(*right))
+        self.sprite_program.setUniformValue("up", QVector3D(*up))
+        self.sprite_program.setUniformValue("atlas", 0)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
+        self.sprite_vao.bind()
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, self.sprite_count)
+        self.sprite_vao.release()
+        self.sprite_program.release()
+        if culling:
+            GL.glEnable(GL.GL_CULL_FACE)
+
     @staticmethod
     def _upload_lines(arrays, vao, vbo, cbo):
         """Put one line overlay into its VAO, and say how many vertices
@@ -699,6 +905,7 @@ class LevelViewer(SMSTViewer):
     def paintGL(self):
         self._sync_lines()
         super().paintGL()
+        self.draw_sprites()
         if not (self.marker_count or self.selection_count):
             return
         if not self.shader_program.bind():

@@ -5,18 +5,20 @@ says only which REWARD it is - 0 is the one-heart apple, 4 the hundred-AP
 orange crystal - and one resident routine draws them all, looking the
 rest up by that reward. Two tables settle it.
 
-THE REWARD TABLE, at 0x800A29D0, eight bytes each:
+THE REWARD TABLE, at 0x800A29CC, eight bytes each - the base and the
+field order are the routine's own, read off the lui/addiu pair at
+0x8004A8A4 rather than guessed:
 
-    u8  width, height     the pickup's box, in world units
-    i16 item              which inventory item it grants, -1 for the
-                          ones that are health or AP rather than a thing
-    u16 sequence          which animation to play - an index into the
+    i16 sequence          which animation to play - an index into the
                           sequence table below
     u16 clut              the palette to draw it with, as a PSX CLUT
                           attribute. 1 means "not a resident sprite":
                           the pickup comes out of the area's own bank
                           instead, and both the sequence table and the
                           file it indexes are different ones
+    u8  width, height     the pickup's box, in world units
+    i16 item              which inventory item it grants, -1 for the
+                          ones that are health or AP rather than a thing
 
 THE SEQUENCE TABLE, at 0x80017334: a pointer per sequence, each to a run
 of four-byte steps -
@@ -50,8 +52,8 @@ EXE_MAGIC = b"PS-X EXE"
 EXE_BASE_AT = 0x18
 EXE_TEXT = 0x800
 
-REWARD_TABLE = 0x800A29D0
-REWARD = struct.Struct("<BBhHH")
+REWARD_TABLE = 0x800A29CC
+REWARD = struct.Struct("<hHBBh")
 REWARD_SIZE = REWARD.size          # 8
 
 # The table has no terminator, so it is read to a length. Fifty is where
@@ -250,7 +252,7 @@ def reward_art(exe_path, count=REWARD_COUNT):
     out = {}
     for reward in range(count):
         at = _at(data, base, REWARD_TABLE + reward * REWARD_SIZE, REWARD_SIZE)
-        width, height, item, sequence, clut = REWARD.unpack_from(data, at)
+        sequence, clut, width, height, item = REWARD.unpack_from(data, at)
         art = RewardArt(reward=reward, width=width, height=height, item=item,
                         sequence=sequence, clut=clut)
         if art.resident:
