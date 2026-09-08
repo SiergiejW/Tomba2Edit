@@ -141,13 +141,25 @@ class SpritePiece:
 
     @property
     def u0(self):
-        """Left edge of the source rect, flips undone."""
-        return (self.tlX - self.ww) & 0xFF if self.hflip else self.tlX
+        """Left edge of the source rect, flips undone.
+
+        The far corner is one PAST the last texel, the same way trX is
+        one past it on an unflipped piece: tl=24 tr=48 ww=24 covers
+        24..47, so tl=47 tr=23 ww=24 covers 24..47 as well, read the
+        other way about. Hence trX + 1, not tlX - ww.
+
+        That one texel is visible. Sprite 8 of AREA_01's bank is a
+        health-gauge sphere built from a half and its mirror; reading
+        the mirror from tlX - ww shifts it a texel left, so it stops
+        being the mirror of its partner and drags in a column of the
+        neighbouring art - a stray line of pixels down the right-hand
+        edge, which is what gave this away."""
+        return (self.trX + 1) & 0xFF if self.hflip else self.tlX
 
     @property
     def v0(self):
-        """Top edge of the source rect, flips undone."""
-        return (self.tlY - self.hh) & 0xFF if self.vflip else self.tlY
+        """Top edge of the source rect, flips undone. See u0."""
+        return (self.blY + 1) & 0xFF if self.vflip else self.tlY
 
     @property
     def is_axis_aligned(self):
