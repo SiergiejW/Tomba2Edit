@@ -355,6 +355,12 @@ class MoviePanel(QWidget):
         self.movie = self.movies[row]
         self._current = 0
         self._wav = None
+        # Nothing of the movie being left may stay on screen. Holding
+        # the last picture while the next one decodes is what keeps
+        # scrubbing from flickering, but across a change of movie it
+        # means the timeline says LOGO frame 51 over a frame of the
+        # opening - which reads as the wrong movie having been decoded.
+        self.screen.show_message(f"Decoding {self.movie.name}...")
         self.timeline.blockSignals(True)
         self.timeline.setRange(0, max(len(self.movie.frames) - 1, 0))
         self.timeline.setValue(0)

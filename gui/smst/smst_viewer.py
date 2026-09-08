@@ -809,8 +809,13 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def polygons(self):
         return (self.model_data or {}).get("polygons") or ()
 
-    def selected(self):
-        """The picked polygon's record, or None."""
+    def picked_polygon(self):
+        """The picked polygon's record, or None.
+
+        Not called `selected`: LevelViewer subclasses this and keeps the
+        instance it has selected in `self.selected`, which shadowed the
+        method and turned every call into "int is not callable" the
+        moment anything was picked in the level editor."""
         if self.selected_polygon is None:
             return None
         return self.polygons[self.selected_polygon]
@@ -830,7 +835,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def describe_selection(self):
         """The picked polygon as one addressable line, or None."""
-        polygon = self.selected()
+        polygon = self.picked_polygon()
         if polygon is None:
             return None
         model = self.model_data
@@ -900,7 +905,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         """The line segments the selection is drawn with. Left on the
         CPU - there may be no GL context yet - and uploaded by paintGL."""
         positions, colors = [], []
-        polygon = self.selected()
+        polygon = self.picked_polygon()
         if polygon is not None:
             verts = (self._pick_vertices if self._pick_vertices is not None
                      else self._positions())

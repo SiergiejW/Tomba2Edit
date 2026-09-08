@@ -354,7 +354,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.update()
         self.selection_changed.emit(entry, polygon)
 
-    def selected(self):
+    def picked_polygon(self):
         """The selected polygon's record, or None."""
         polygons = (self.model_data or {}).get("polygons") or ()
         if self.selected_polygon is None:
@@ -458,7 +458,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def describe_selection(self):
         """The picked polygon as one addressable line, or None."""
-        polygon = self.selected()
+        polygon = self.picked_polygon()
         if polygon is None:
             return None
         entries = (self.model_data or {}).get("entries") or ()

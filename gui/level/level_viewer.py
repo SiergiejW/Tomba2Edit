@@ -162,6 +162,10 @@ class LevelViewer(SMSTViewer):
         self.pose_pivots = None
         self.model_data = scene.build() if scene is not None else None
         self._face_instance = None
+        # A drag in progress refers to the instance list being replaced,
+        # so it cannot survive the reload - dragging on into the new
+        # scene indexes a list that may be shorter.
+        self._drag = None
         self.prepare_buffers()
         self.rebuild_markers()
         self._build_selection()
@@ -309,6 +313,17 @@ class LevelViewer(SMSTViewer):
             return None
         return near, direction / length
 
+    def _invalidate_pick_cache(self):
+        """Clear the face->instance map along with the vertex arrays.
+
+        SMSTViewer.prepare_buffers() invalidates the arrays the ray test
+        uses; this class derives one more thing from them, and pick()
+        rebuilds on _face_instance alone. Without this override the
+        arrays go to None while _face_instance stays set, so the rebuild
+        is skipped and the ray test subscripts None."""
+        super()._invalidate_pick_cache()
+        self._face_instance = None
+
     def _build_face_index(self):
         """Which instance each triangle belongs to, and the arrays the
         ray test needs."""
@@ -337,7 +352,7 @@ class LevelViewer(SMSTViewer):
 
         hit_instance, hit_distance = None, np.inf
         if len(self.model_data.get("faces") or ()):
-            if self._face_instance is None:
+            if self._face_instance is None or self._pick_vertices is None:
                 self._build_face_index()
             vertices, faces = self._pick_vertices, self._pick_faces
             a = vertices[faces[:, 0]]
@@ -446,6 +461,9 @@ class LevelViewer(SMSTViewer):
             super().mouseMoveEvent(event)
             return
         index, normal, offset, vertical = self._drag
+        if index >= len(self.instances):
+            self._drag = None
+            return
         instance = self.instances[index]
         point = event.position().toPoint()
         where = self._plane_point(point.x(), point.y(),
