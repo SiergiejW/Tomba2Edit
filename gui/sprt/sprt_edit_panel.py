@@ -128,6 +128,14 @@ class SpriteEditPanel(QGroupBox):
             "previews it; Apply writes it into the piece.")
         self.clut_box.activated.connect(self._clut_chosen)
         self.clut_box.lineEdit().returnPressed.connect(self._clut_typed)
+        self.copy_clut = QPushButton("From another area...", self)
+        self.copy_clut.setToolTip(
+            "Take a palette out of another area, copy it somewhere every "
+            "area can reach, and point this piece at the copy.\n\nTyping "
+            "the other area's address alone does not work: the address "
+            "means whatever THIS area loaded there, which is usually "
+            "nothing.")
+        self.copy_clut.clicked.connect(self._copy_clut_from_area)
         self.apply_clut = QPushButton("Apply palette", self)
         self.apply_clut.setToolTip(
             "Point this piece at the previewed palette. Two bytes of the "
@@ -138,6 +146,7 @@ class SpriteEditPanel(QGroupBox):
         clut_row.setContentsMargins(0, 0, 0, 0)
         clut_row.addWidget(QLabel("CLUT:", self))
         clut_row.addWidget(self.clut_box, 1)
+        clut_row.addWidget(self.copy_clut)
         clut_row.addWidget(self.apply_clut)
 
         self.info = QLabel("Pick a piece to edit it.", self)
@@ -185,7 +194,7 @@ class SpriteEditPanel(QGroupBox):
     def _enable(self, on):
         for button in (self.undo_button, self.import_button,
                        self.export_button, self.save_button,
-                       self.apply_clut):
+                       self.apply_clut, self.copy_clut):
             button.setEnabled(on)
         self.clut_box.setEnabled(on)
 
@@ -291,6 +300,24 @@ class SpriteEditPanel(QGroupBox):
             f"previewing CLUT 0x{address:X}"
             + ("  (this piece's own)" if same else
                "  -  Apply to point the piece at it"))
+
+    def _copy_clut_from_area(self):
+        """Bring a palette over from another area and use it."""
+        from gui.sprt.palette_dialog import PaletteImportDialog
+        if self.piece is None or not self.cd_folder:
+            return
+        dialog = PaletteImportDialog(self.cd_folder,
+                                     self.chunk_index or 1, self)
+        if not dialog.exec() or dialog.address is None:
+            return
+        # The IMG on disc has the palette now, so the VRAM in hand needs
+        # it too or the preview would still show the old colours.
+        for i, byte in enumerate(dialog._data):
+            self.vram[dialog.address + i] = byte
+        self.original = bytes(self.vram)
+        self._preview_clut(dialog.address)
+        self._commit_clut()
+        self.saved_to_img()
 
     def _commit_clut(self):
         """Write the previewed palette into the piece's record."""

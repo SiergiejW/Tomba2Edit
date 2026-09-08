@@ -414,7 +414,16 @@ class SPRTViewer(QWidget):
             table.selectRow(0)
 
     def _populate_piece_table(self, sprite):
+        """Refill the piece list, keeping whichever piece was selected.
+
+        The selection has to be restored by PIECE, not by row, and the
+        editor driven explicitly afterwards. Leaving it to the signal
+        does not work: the rows are rebuilt with signals blocked, so
+        row 0 stays "selected" from the previous sprite and clicking it
+        emits nothing - which is why a piece would sometimes refuse to
+        open at all."""
         table = self.piece_table
+        was = self._selected_piece()
         table.blockSignals(True)
         pieces = sprite.pieces if sprite else []
         table.setRowCount(len(pieces))
@@ -445,7 +454,24 @@ class SPRTViewer(QWidget):
                     r, g, b = piece_color(piece.index)
                     item.setForeground(QColor(r, g, b))
                 table.setItem(row, col, item)
+        table.clearSelection()
+        wanted = was if any(p.index == was for p in pieces) else (
+            pieces[0].index if pieces else None)
+        for row, piece in enumerate(pieces):
+            if piece.index == wanted:
+                table.selectRow(row)
+                break
         table.blockSignals(False)
+        self.canvas.highlighted_piece = wanted
+        self._edit_piece(wanted)
+
+    def _selected_piece(self):
+        """Which piece index is selected, or None."""
+        rows = self.piece_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.piece_table.item(rows[0].row(), 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _on_sprite_row_changed(self):
         rows = self.sprite_table.selectionModel().selectedRows()
@@ -506,7 +532,7 @@ class SPRTViewer(QWidget):
             # The palettes are cached per CLUT and a painted texel can
             # be inside one, so they go too.
             self.textures._palettes.clear()
-        self._show_current()
+        self._show_current(keep_pieces=True)
 
     def _on_clut_committed(self, blob):
         """A piece was pointed at another palette: stage the SPRT blob
@@ -568,7 +594,11 @@ class SPRTViewer(QWidget):
             self._sprite_images[index] = cached
         return cached
 
-    def _show_current(self):
+    def _show_current(self, keep_pieces=False):
+        """Redraw. `keep_pieces` skips rebuilding the piece list, which
+        is what painting wants: a texel changes the picture and nothing
+        about the pieces, and rebuilding the list mid-stroke would move
+        the selection out from under the brush."""
         if not self.sprt_data or not self.sprt_data.sprites:
             self.canvas.clear()
             self.piece_table.setRowCount(0)
@@ -576,7 +606,8 @@ class SPRTViewer(QWidget):
 
         index = self.current_index if self.current_index is not None else 0
         sprite = self.sprt_data.sprites[index]
-        self._populate_piece_table(sprite)
+        if not keep_pieces:
+            self._populate_piece_table(sprite)
         self.canvas.selected = index
 
         if self.sheet_btn.isChecked():
