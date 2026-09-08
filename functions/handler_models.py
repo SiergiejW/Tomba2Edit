@@ -304,6 +304,11 @@ GROUP_TABLE = 4
 MAX_FILE_ID = 64
 
 
+def _is_file_id(value):
+    """Whether a number can be an SDAT id at all."""
+    return isinstance(value, int) and 0 <= value < MAX_FILE_ID
+
+
 class Reader:
     """Reads registers backwards from a point in the code."""
 
@@ -613,7 +618,7 @@ class CodeModels:
             if instruction.name != "lw":
                 continue
             value = self.reader.evaluate(instruction)
-            if isinstance(value, Model):
+            if isinstance(value, Model) and _is_file_id(value.file_id):
                 model = (value.file_id, value.group)
                 if model not in found:
                     found.append(model)
@@ -621,7 +626,11 @@ class CodeModels:
                                           self.attach, depth=self.depth):
             file_id = self.reader.argument(call, A1)
             group = self.reader.argument(call, A2)
-            if not isinstance(file_id, Const):
+            # An id is a small SDAT number. Anything else means the
+            # walk reached a call that only looks like an attach - a
+            # RAM address turning up here is the giveaway - and taking
+            # it on trust puts a model on an object that has none.
+            if not isinstance(file_id, Const) or not _is_file_id(file_id.n):
                 continue
             if isinstance(group, Table) and group.kind == BY_OVERLAY:
                 resolved = self.entry(group, self.overlay_index)

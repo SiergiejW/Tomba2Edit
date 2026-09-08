@@ -160,8 +160,10 @@ CONTENTS_BITS = 12
 CONTENTS_MASK = (1 << CONTENTS_BITS) - 1
 
 # Which chest is which, by the field that means `reward` on everything
-# else. Confirmed from savestates: the chest at A00 bit 0 is the red one.
-CHEST_KINDS = {0: "red chest", 1: "green chest"}
+# else. Red and green were confirmed from savestates, blue and white by
+# eye once the models were drawn.
+CHEST_KINDS = {0: "red chest", 1: "green chest",
+               2: "blue chest", 3: "white chest"}
 
 # What a pickup record holds on the disc, for telling a table from a
 # stretch of something else. The save-bit indices inside one table are
