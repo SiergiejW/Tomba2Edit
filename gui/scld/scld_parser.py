@@ -68,7 +68,7 @@ Each of the N pointers locates one entry - one plane:
                                   cells. Not decoded here.
     table3 [ptr3 .. ptr4)       : 8-byte records - the surfaces stacked in
                                   one cell: (u16 kind, s16 pos, s16 rise,
-                                  u16 profile).
+                                  u16 normal).
                                     kind  - low nibble is a surface type
                                     pos   - the surface's height; height
                                             in the viewers is -pos
@@ -76,11 +76,15 @@ Each of the N pointers locates one entry - one plane:
                                             gets across the cell; the
                                             game tests an actor against
                                             pos .. pos + max(rise, 0)
-                                    profile - which tail record applies
-    tail   [ptr4 .. next_base)  : 3-byte records, padded to a word. The
-                                  last two bytes are a signed vector of
-                                  magnitude ~64 (1.0 == 64); the first is
-                                  a separate signed scalar. Not used.
+                                    normal - which tail record this
+                                            surface faces along
+    tail   [ptr4 .. next_base)  : 3-byte records, padded to a word - the
+                                  surface normals, (x, y, z) signed, 64
+                                  to the unit. f_QueryActorTerrainSurface
+                                  turns one into the yaw and pitch it
+                                  stands an actor at:
+                                      yaw   = -atan2(z, x)
+                                      pitch =  atan2(y, hypot(x, z))
 
 World placement (SCLDEntry.trace()):
         col, row  from the column index
@@ -148,7 +152,7 @@ class PathPoint:
     kind: int
     pos: int
     elevation: int
-    seg_index: int
+    normal: int          # which tail record this surface faces along
     record_offset: int
 
 
@@ -341,8 +345,8 @@ def parse_scld(blob: bytes) -> SCLDFile:
             kind = _u16(blob, o)
             pos = _s16(blob, o + 2)
             elevation = _s16(blob, o + 4)
-            seg_index = _u16(blob, o + 6)
-            entry.path.append(PathPoint(kind, pos, elevation, seg_index, o))
+            normal = _u16(blob, o + 6)
+            entry.path.append(PathPoint(kind, pos, elevation, normal, o))
 
         entry.tail = bytes(blob[p4:next_base])
 
