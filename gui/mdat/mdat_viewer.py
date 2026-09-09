@@ -281,9 +281,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                              if self.model_data else None)
         entries = entries_in_bounds(entries, bounds)
 
-        verts, colors = build_lines(self.collision_data, entries,
-                                    bounds=bounds)
-        point_verts, point_colors, _ranges, _pos = build_points(
+        verts, colors = build_lines(entries, bounds=bounds)
+        point_verts, point_colors, _ranges, _pos, _ids = build_points(
             entries, bounds=bounds)
 
         self.makeCurrent()

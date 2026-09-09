@@ -21,7 +21,8 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton,
+    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
+    QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -150,6 +151,14 @@ class LevelEditorPanel(QWidget):
             "by eye, not by matching - so a correction made here is worth "
             "keeping.")
         self.keep_button.clicked.connect(self._keep_models)
+        self.name_button = QPushButton("Name model...", self)
+        self.name_button.setToolTip(
+            "Call the selected object's model something.\n\n"
+            "A whole character is named under its file id, so every "
+            "object drawn from it reads the same; a single part of an "
+            "asset pack is named under its own group. Kept in "
+            "labels/placements.json beside the bindings.")
+        self.name_button.clicked.connect(self._name_model)
         self.save_button = QPushButton("Save overlay as...", self)
         self.save_button.setToolTip(
             "Write a copy of this area's Axx.BIN with the positions and "
@@ -159,6 +168,7 @@ class LevelEditorPanel(QWidget):
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.learn_button)
         buttons.addWidget(self.keep_button)
+        buttons.addWidget(self.name_button)
         buttons.addWidget(self.save_button)
 
         top = QHBoxLayout()
@@ -798,6 +808,35 @@ class LevelEditorPanel(QWidget):
                                 f"labels/placements.json wouldn't save:\n\n{e}")
             return False
         return True
+
+    def _name_model(self):
+        """Put a name on what the selected object is drawn with."""
+        instance = self._instance(self.viewer.selected)
+        if instance is None or not instance.sources:
+            QMessageBox.information(
+                self, "Nothing to name",
+                "Pick something with a model first - a marker has none "
+                "to call anything.")
+            return
+        file_id, group = instance.sources[0]
+        whole = len({f for f, _g in instance.sources}) == 1 and len(instance.sources) > 1
+        key = str(file_id) if whole else f"{file_id}:{group}"
+        what = (f"every part of id {file_id}" if whole
+                else f"id {file_id} group {group}")
+        names = placement_module.load_model_names()
+        text, ok = QInputDialog.getText(
+            self, "Name this model", f"What is {what}?",
+            text=names.get(key, ""))
+        if not ok:
+            return
+        text = text.strip()
+        if text:
+            names[key] = text
+        else:
+            names.pop(key, None)
+        placement_module.save_model_names(names)
+        self.scene.model_names = names
+        self._rebuild()
 
     def _save_overlay(self):
         if self.scene is None or not self.scene.overlay_path:

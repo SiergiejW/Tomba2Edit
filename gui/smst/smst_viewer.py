@@ -41,7 +41,12 @@ from functions import gltf_export
 from gui import polygon_pick
 from gui.texture_panel import TexturePanel
 from gui.smst import smst_edit
+from functions import labels
+from functions import placement
 from gui.smst.smst_parser import load_smst, parse_smst
+
+# Which column of the part table holds the name somebody typed.
+NAME_COLUMN = 1
 
 # World units per GL unit. A level MDAT is thousands of units across and
 # is drawn at 1000 (gui/scld/scld_render.UNIT_SCALE); a character is
@@ -1307,9 +1312,15 @@ class SMSTPanel(QWidget):
         self.viewer = viewer
         self._filling = False
 
-        self.table = QTableWidget(0, 6, self)
+        self.table = QTableWidget(0, 7, self)
         self.table.setHorizontalHeaderLabels(
-            ["Part", "Tris", "Quads", "Size", "Offset", "Extent"])
+            ["Part", "Name", "Tris", "Quads", "Size", "Offset", "Extent"])
+        self.table.setToolTip(
+            "Double-click a Name to say what that part is.\n\n"
+            "Kept against the file's own bytes rather than its id, so a "
+            "model that appears in several areas is named once - see "
+            "functions/placement.py. The Level Editor reads the same "
+            "names.")
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1395,16 +1406,20 @@ class SMSTPanel(QWidget):
             name.setCheckState(Qt.CheckState.Checked)
             name.setData(Qt.ItemDataRole.UserRole, group.index)
             self.table.setItem(row, 0, name)
-            self.table.setItem(row, 1, QTableWidgetItem(str(group.tris)))
-            self.table.setItem(row, 2, QTableWidgetItem(str(group.quads)))
-            self.table.setItem(row, 3, QTableWidgetItem(str(group.size)))
-            self.table.setItem(row, 4, QTableWidgetItem(f"0x{group.offset:X}"))
+            named = QTableWidgetItem(self._name_of(group.index))
+            named.setFlags(named.flags() | Qt.ItemFlag.ItemIsEditable)
+            named.setData(Qt.ItemDataRole.UserRole, group.index)
+            self.table.setItem(row, 1, named)
+            self.table.setItem(row, 2, QTableWidgetItem(str(group.tris)))
+            self.table.setItem(row, 3, QTableWidgetItem(str(group.quads)))
+            self.table.setItem(row, 4, QTableWidgetItem(str(group.size)))
+            self.table.setItem(row, 5, QTableWidgetItem(f"0x{group.offset:X}"))
             if group.bounds:
                 x0, x1, y0, y1, z0, z1 = group.bounds
                 extent = f"{x1 - x0} x {y1 - y0} x {z1 - z0}"
             else:
                 extent = "-"
-            self.table.setItem(row, 5, QTableWidgetItem(extent))
+            self.table.setItem(row, 6, QTableWidgetItem(extent))
         self._filling = False
         self.table.clearSelection()
         self.viewer.set_hidden_groups(())
@@ -1412,10 +1427,43 @@ class SMSTPanel(QWidget):
         self._show_polygon(None)
 
     def _on_item_changed(self, item):
-        if self._filling or item.column() != 0:
+        if self._filling:
+            return
+        if item.column() == NAME_COLUMN:
+            self._rename(item.data(Qt.ItemDataRole.UserRole), item.text())
+            return
+        if item.column() != 0:
             return
         self.viewer.set_group_hidden(item.data(Qt.ItemDataRole.UserRole),
                                      item.checkState() != Qt.CheckState.Checked)
+
+    def _content(self):
+        """The identity of the model on screen - a hash of its own bytes,
+        which is what a name is filed under. Empty when nothing is
+        loaded, or when it came from somewhere with no bytes to hash."""
+        blob = getattr(self.viewer, "blob", None)
+        return labels.content_key(blob) if blob else ""
+
+    def _name_of(self, group):
+        content = self._content()
+        if not content:
+            return ""
+        return placement.model_name(placement.load_model_names(),
+                                    content, group)
+
+    def _rename(self, group, text):
+        """Write one part's name out, or clear it."""
+        content = self._content()
+        if not content or group is None:
+            return
+        names = placement.load_model_names()
+        key = placement.name_key(content, group)
+        text = (text or "").strip()
+        if text:
+            names[key] = text
+        else:
+            names.pop(key, None)
+        placement.save_model_names(names)
 
     def _on_selection_changed(self):
         rows = self.table.selectionModel().selectedRows()

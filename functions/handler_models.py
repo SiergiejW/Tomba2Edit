@@ -870,6 +870,17 @@ class CodeModels:
                     continue
             if (file_id, group) not in out:
                 out.append((file_id, group))
+        if len(out) > 1:
+            # A class that picks between its models by reading its own
+            # slot can be run with that slot in hand, which settles it.
+            # Only ever used to NARROW what the walk already found: on
+            # its own the run follows one path through a handler and can
+            # land on a part of a multi-part object rather than the
+            # object, so it is not evidence for a model nobody listed.
+            settled = self.run_for_slot(placement.handler, placement.slot,
+                                        placement.kind)
+            if settled in out:
+                return [settled]
         return out
 
     def bindings(self, placements):

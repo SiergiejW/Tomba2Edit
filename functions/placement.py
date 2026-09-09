@@ -612,6 +612,14 @@ CORRECTED = "corrections"
 # the disc. What somebody aligns by eye is worth keeping instead.
 POSED = "pickup_poses"
 
+# What things are called. Keyed by the file's CONTENT HASH, the same
+# identity functions/labels.py gives an entry: a file id is no good,
+# because every area's "file 12" is a different asset pack and every
+# evil pig is a different "file 18". A whole file is named under its
+# hash and one part of it under "hash:group", which is what an asset
+# pack wants since each of its groups is a different prop.
+NAMED = "model_names"
+
 
 def _read_bindings(path=None):
     try:
@@ -684,6 +692,42 @@ def save_poses(overlays, path=None):
         json.dump(data, f, indent=1)
         f.write("\n")
     return path
+
+
+def load_model_names(path=None):
+    """{"12:7": name} and {"36": name} - whatever has been named."""
+    rows = _read_bindings(path).get(NAMED) or {}
+    return {str(k): str(v) for k, v in rows.items() if v}
+
+
+def save_model_names(names, path=None):
+    """Rewrite the names, leaving every other section alone."""
+    path = path or bindings_path()
+    data = _read_bindings(path)
+    data[NAMED] = {str(k): str(v) for k, v in sorted(names.items()) if v}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+        f.write("\n")
+    return path
+
+
+def model_name(names, content, group=None):
+    """What to call one model, most specific first: the part's own name,
+    else the whole file's, else nothing.
+
+    `content` is the file's hash - see functions.labels.content_key."""
+    if not content:
+        return ""
+    if group is not None:
+        own = names.get(f"{content}:{group}")
+        if own:
+            return own
+    return names.get(str(content), "")
+
+
+def name_key(content, group=None):
+    """The key one name is stored under."""
+    return f"{content}:{group}" if group is not None else str(content)
 
 
 def _bindings_to_rows(overlays):

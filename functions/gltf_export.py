@@ -592,20 +592,24 @@ def _rig(gltf, buffer, bones, frames, fps, name):
                            "channels": channels}]
 
 
+POINTS = 0
 LINES = 1
 
 
-def write_lines_glb(path, vertices, colors, name="collision"):
-    """Write line geometry - what a SCLD is.
+def write_lines_glb(path, vertices, colors, name="collision", mode=LINES,
+                    extra=None):
+    """Write point or line geometry - what a SCLD is.
 
-    Collision is not a surface. It is the runs the game walks along and
-    the verticals it stops at, so it exports as glTF's LINES rather than
-    as triangles: consecutive vertex pairs, carrying the same colours
-    the viewer draws them in. Blender brings that in as a mesh with
-    edges and no faces, which is what it is.
+    Collision is not a surface. It is a grid of sample points, and the
+    verticals standing at them, so it exports as glTF's POINTS or LINES
+    rather than as triangles, carrying the same colours the viewer draws
+    them in. Blender brings that in as a mesh with no faces, which is
+    what it is.
 
-    `vertices` is a flat sequence of coordinates, two points per line,
-    exactly as gui/scld/scld_render.build_lines returns them."""
+    `vertices` is a flat sequence of coordinates - one point each for
+    POINTS, two per line for LINES - exactly as gui/scld/scld_render
+    returns them. `extra` adds a second primitive as (mode, vertices,
+    colors), for drawing points and lines out of one call."""
     points = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
     if not len(points):
         raise ValueError("no collision to export")
@@ -614,20 +618,31 @@ def write_lines_glb(path, vertices, colors, name="collision"):
         shades = np.ones((len(points), 3), dtype=np.float32)
 
     buffer = _Buffer()
-    attributes = {
-        "POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER,
-                               minmax=True),
-        "COLOR_0": buffer.add(np.clip(shades, 0.0, 1.0), "VEC3", FLOAT,
-                              ARRAY_BUFFER),
-    }
+
+    def primitive(verts, tints, kind):
+        return {"attributes": {
+            "POSITION": buffer.add(verts, "VEC3", FLOAT, ARRAY_BUFFER,
+                                   minmax=True),
+            "COLOR_0": buffer.add(np.clip(tints, 0.0, 1.0), "VEC3", FLOAT,
+                                  ARRAY_BUFFER)},
+            "mode": kind, "material": 0}
+
+    primitives = [primitive(points, shades, mode)]
+    if extra:
+        kind, verts, tints = extra
+        verts = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
+        if len(verts):
+            tints = np.asarray(tints, dtype=np.float32).reshape(-1, 3)
+            if len(tints) != len(verts):
+                tints = np.ones((len(verts), 3), dtype=np.float32)
+            primitives.append(primitive(verts, tints, kind))
     gltf = {
         "asset": {"version": "2.0", "generator": "Tomba310"},
         "extensionsUsed": ["KHR_materials_unlit"],
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"name": name, "mesh": 0}],
-        "meshes": [{"name": name, "primitives": [
-            {"attributes": attributes, "mode": LINES, "material": 0}]}],
+        "meshes": [{"name": name, "primitives": primitives}],
         # Lines have no normals and no facing, so lighting them means
         # nothing - this is the one place unlit is the honest answer.
         "materials": [{"name": "collision",

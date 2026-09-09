@@ -43,18 +43,17 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.origin_axes = OriginAxes()
         self._scene_points = ()
         self.show_markers = True
-        # Join each walkable surface into a line along the entry - see
-        # SCLDEntry.surfaces().
-        self.show_surfaces = True
         # Colour entries by their header's `unkn` value instead of by
         # index, to see whether entries sharing one have anything in
         # common on screen.
         self.color_by_unkn = False
-        # Draw every vertical pair at a station - candidate side walls,
+        # Draw every vertical pair in a cell - candidate side walls,
         # undecoded. See SCLDEntry.wall_candidates().
         self.show_walls = False
-        # entry.index -> [(x, y, z), ...] in record order, for those labels.
+        # entry.index -> [(x, y, z), ...] in record order, for those
+        # labels, and the table3 record number behind each.
         self.entry_record_pos = {}
+        self.entry_record_ids = {}
 
         # entry.index -> (start, count) into the point buffer, so a single
         # entry's points can be redrawn on their own for the highlight pulse.
@@ -133,25 +132,14 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.view_level_action.toggled.connect(self.toggle_level)
         self.toolbar.addAction(self.view_level_action)
 
-        self.surfaces_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
-            "Surfaces", self)
-        self.surfaces_action.setCheckable(True)
-        self.surfaces_action.setChecked(True)
-        self.surfaces_action.setToolTip(
-            "Join each (seg_index, kind) into a line along the entry - the "
-            "walkable surfaces - instead of leaving loose points")
-        self.surfaces_action.toggled.connect(self.toggle_surfaces)
-        self.toolbar.addAction(self.surfaces_action)
-
         self.walls_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
             "Walls?", self)
         self.walls_action.setCheckable(True)
         self.walls_action.setChecked(False)
         self.walls_action.setToolTip(
-            "UNDECODED: join every record at a station to the one above "
-            "it - candidate side walls, for checking by eye")
+            "UNDECODED: join every record in a cell to the one above it - "
+            "candidate side walls, for checking by eye")
         self.walls_action.toggled.connect(self.toggle_walls)
         self.toolbar.addAction(self.walls_action)
 
@@ -241,12 +229,6 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self.load_level_mesh()
         self.update()
 
-    def toggle_surfaces(self, checked):
-        self.show_surfaces = checked
-        if self.scld_data is not None:
-            self.prepare_buffers()
-        self.update()
-
     def toggle_walls(self, checked):
         self.show_walls = checked
         if self.scld_data is not None:
@@ -281,11 +263,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             print(f"Error loading level mesh: {e}")
 
     def export_to_gltf(self):
-        """Write the collision out, exactly as it is being shown.
-
-        The surface and wall toggles are honoured, so what lands in
-        Blender is what the toolbar has turned on rather than everything
-        the file holds."""
+        """Write the collision out, exactly as it is being shown - the
+        records as points, and the candidate walls when that toggle is
+        on."""
         if not self.scld_data:
             QMessageBox.warning(self, "Nothing to export",
                                 "No SCLD is loaded.")
@@ -295,11 +275,11 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             "glTF binary (*.glb)")
         if not path:
             return
-        verts, colors = build_lines(
-            self.scld_data, self.scld_data.entries,
-            surfaces=self.show_surfaces, seams=self.show_surfaces,
-            walls=self.show_walls,
-            color_by=unkn_color if self.color_by_unkn else None)
+        tint = unkn_color if self.color_by_unkn else None
+        pts, pt_colors, _r, _p, _ids = build_points(self.scld_data.entries,
+                                                    color_by=tint)
+        verts, colors = build_lines(self.scld_data.entries,
+                                    walls=self.show_walls)
         try:
             # Scaled by the exporter's unit, not this view's. The 3D
             # views do not share one: collision and level geometry are
@@ -307,17 +287,23 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             # while a character is drawn at 100. Exports have to agree
             # or a room and its collision land in Blender ten times
             # apart, so everything written out uses the exporter's.
+            scale = gltf_export.UNIT_SCALE
             gltf_export.write_lines_glb(
                 path,
-                np.array(verts, dtype=np.float32) / gltf_export.UNIT_SCALE,
-                colors, name=self.export_name or "collision")
+                np.array(pts, dtype=np.float32) / scale, pt_colors,
+                name=self.export_name or "collision",
+                mode=gltf_export.POINTS,
+                extra=((gltf_export.LINES,
+                        np.array(verts, dtype=np.float32) / scale, colors)
+                       if verts else None))
         except Exception as e:
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write it:\n\n{e}")
             return
         QMessageBox.information(
             self, "Exported",
-            f"Wrote {len(verts) // 2} collision lines.")
+            f"Wrote {len(pts)} collision points"
+            + (f" and {len(verts) // 2} candidate walls." if verts else "."))
 
     def _upload_mesh(self, model_data):
         vertices = model_data.get("vertices") or []
@@ -384,10 +370,10 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.update()
 
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
-        """Parse and load an SCLD blob. Every entry renders as one
-        connected line along its branch (see SCLDEntry.trace()).
-        `chunk_index` (the area's hex chunk number) is only needed for
-        load_level_mesh() to find this area's matching MDAT room."""
+        """Parse and load an SCLD blob. Every record is drawn where its
+        cell puts it (see SCLDEntry.trace()). `chunk_index` (the area's
+        hex chunk number) is only needed for load_level_mesh() to find
+        this area's matching MDAT room."""
         try:
             self.scld_data = load_scld(dat_file_path, dat_start, offset, size)
             self._dat_file_path = dat_file_path
@@ -413,11 +399,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.entry_label_pos = {}
         entries = self.scld_data.entries
         tint = unkn_color if self.color_by_unkn else None
-        line_verts, line_colors = build_lines(
-            self.scld_data, entries, surfaces=self.show_surfaces,
-            seams=self.show_surfaces, walls=self.show_walls, color_by=tint)
+        line_verts, line_colors = build_lines(entries, walls=self.show_walls)
         (point_verts, point_colors, self.entry_point_ranges,
-         self.entry_record_pos) = build_points(
+         self.entry_record_pos, self.entry_record_ids) = build_points(
             entries, color_by=tint)
         for index, pts in self.entry_record_pos.items():
             if pts:
@@ -443,9 +427,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.point_vertex_count = len(point_verts)
         self._upload(self.point_vao, self.point_vbo, self.point_cbo, parr, pcarr)
 
-        # What frame_collision() measures. The points are every path
-        # sample in the file, so they bound the collision whether or not
-        # the surfaces between them are being drawn.
+        # What frame_collision() measures. The points are every placed
+        # record in the file, so they bound the collision whether or not
+        # the candidate walls are being drawn.
         self._scene_points = parr if point_verts else arr
 
     def _upload(self, vao, vbo, cbo, vertices, colors):
@@ -659,9 +643,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self.grid_vao.release()
 
         if self.line_vertex_count:
-            # The surfaces are the thing being read; the records are only
-            # scaffolding under them, so the lines get the weight and full
-            # opacity and the points are drawn back at SCAFFOLD_ALPHA.
+            # Candidate walls are what's being looked at while they're on,
+            # so they get the weight and full opacity and the points are
+            # drawn back at SCAFFOLD_ALPHA.
             GL.glLineWidth(SURFACE_LINE_WIDTH)
             self.shader_program.setUniformValue("alpha", 1.0)
             self.line_vao.bind()
@@ -763,11 +747,13 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
     def _draw_point_ids(self, mvp):
         """Record index beside every point of the selected entry, so a
         specific one can be named. Only the selected entry is numbered -
-        all of them at once is unreadable, and these are the records
-        SCLDEntry.trace() returns, in file order."""
+        all of them at once is unreadable. The number is the table3
+        record's own, which is not the point's position in the list: a
+        record no cell claims is not drawn."""
         recs = self.entry_record_pos.get(self.highlighted_entry)
         if not recs:
             return
+        ids = self.entry_record_ids.get(self.highlighted_entry) or []
         painter = QPainter(self)
         font = QFont("Consolas")
         font.setStyleHint(QFont.StyleHint.Monospace)
@@ -780,7 +766,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
                 continue
             sx = int((ndc.x() * 0.5 + 0.5) * self.width()) + 5
             sy = int((1.0 - (ndc.y() * 0.5 + 0.5)) * self.height()) - 3
-            text = str(i)
+            text = str(ids[i] if i < len(ids) else i)
             painter.setPen(QColor(0, 0, 0))
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 painter.drawText(sx + dx, sy + dy, text)
@@ -802,7 +788,8 @@ class SCLDDebugPanel(QWidget):
         self.viewer = viewer
 
         self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(["#", "Name (ls_into_le)", "Base", "Points", "unkn"])
+        self.table.setHorizontalHeaderLabels(
+            ["#", "Name (ls_into_le)", "Base", "Points", "Slope (unkn)"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -845,9 +832,9 @@ class SCLDDebugPanel(QWidget):
             points_item = QTableWidgetItem()
             points_item.setData(Qt.ItemDataRole.DisplayRole, len(e.path))
             self.table.setItem(row, 3, points_item)
-            # Sorts on the number while showing hex, so the column groups
-            # entries that share a value.
-            unkn_item = QTableWidgetItem(f"0x{e.unkn:04X}")
+            # The plane's gradient across its shorter axis - `unkn` is it
+            # in 2.14 fixed point. Sorts on the raw number.
+            unkn_item = QTableWidgetItem(f"{e.slope:+.4f}  (0x{e.unkn:04X})")
             unkn_item.setData(Qt.ItemDataRole.UserRole, e.unkn)
             self.table.setItem(row, 4, unkn_item)
         self.table.setSortingEnabled(True)

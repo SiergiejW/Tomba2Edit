@@ -40,7 +40,9 @@ import numpy as np
 
 import gui.mdat.mdat as mdat
 from functions import format_detect
+from functions import labels
 from functions import handler_models
+from functions import actor_models
 from functions import object_sprites
 from functions import pickup_art
 from functions import placement as placement_module
@@ -59,6 +61,12 @@ RESIDENT_CHUNK = 1
 # while the IDX numbers its chunks from here, and a couple of tables -
 # the per-area sprite sequences among them - are indexed the game's way.
 FIRST_AREA_CHUNK = 4
+
+# How many drawn parts a file needs before it is worth trying to stand
+# up as a character, and how far below its group count a skeleton may
+# be - a model can carry a spare part or two its bones do not.
+MIN_CHARACTER_PARTS = 3
+SKELETON_SLACK = 3
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -109,6 +117,7 @@ class Instance:
     pickup: object = None           # the Pickup record, for a pickup
     art: object = None              # its RewardArt, for a pickup
     room: int = None                # which of the scene's MDATs, for a room
+    name: str = ""                  # what somebody called this model
     # Whether the geometry is already where it belongs - see
     # world_placed(). Such a part is drawn as it is; a transform would
     # move it a second time.
@@ -215,8 +224,16 @@ class Instance:
         where = f"({self.x:.0f}, {self.y:.0f}, {self.z:.0f})"
         if self.role == "room":
             return f"The room itself - {self.face_count} drawn triangles"
-        model = (", ".join(f"id {f} group {g}" for f, g in self.sources)
-                 or "no model known")
+        files = {f for f, _g in self.sources}
+        if len(self.sources) > 2 and len(files) == 1:
+            # A whole character, which is every group of one file - too
+            # many to list, and listing them says nothing anyway.
+            model = f"the whole of id {self.sources[0][0]}, {len(self.sources)} parts"
+        else:
+            model = (", ".join(f"id {f} group {g}" for f, g in self.sources)
+                     or "no model known")
+        if self.name:
+            model = f"{self.name} - {model}"
         if self.placement is not None and self.art is not None:
             frames = "/".join(str(f.frame) for f in self.art.frames)
             return (f"{self.placement.describe()}<br>"
@@ -431,6 +448,9 @@ class LevelScene:
         self.by_id = {}                 # id -> (offset, size)
         # {file id: the parsed SMST}, filled as models are asked for.
         self.models = {}
+        # {file id: content hash} - what a name is filed under, since a
+        # file id means a different thing in every area.
+        self.content = {}
         # Every MDAT this area's level is made of - see room_entries().
         self.rooms = []
         self.placements = []
@@ -451,6 +471,16 @@ class LevelScene:
         # {handler: [Sequence, ...]} for the classes that are sprites
         # rather than models - see functions/object_sprites.py.
         self.sprite_classes = {}
+        # MAIN.EXE, kept for the skeletons a character is stood up on.
+        self.exe_path = None
+        # {file id: ([(file, group), ...], offsets)} - a whole character
+        # assembled, or None where the file is not one.
+        self._characters = {}
+        # {"12:7": name} - what things have been called by hand.
+        self.model_names = {}
+        # {handler: Build} for the classes the code builds whole - see
+        # functions/actor_models.py.
+        self.actor_builds = {}
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
         self.resident = {}
@@ -474,6 +504,7 @@ class LevelScene:
         self.dat_path = dat_path
         self.chunk_index = chunk_index
         self.overlay_path = overlay_path
+        self.exe_path = exe_path
 
         dat_start, files = area_files(idx_path, chunk_index)
         self.dat_start = dat_start
@@ -535,9 +566,83 @@ class LevelScene:
         # Wanted before the instances are built: a chest takes its
         # heading off the plane it stands on.
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
+        self.model_names = placement_module.load_model_names()
 
         self._build_instances()
         return self
+
+    def built_actor(self, handler):
+        """([(file, group), ...], offsets) for a class the code builds
+        whole, or None.
+
+        Every part, every offset and the file itself come out of the one
+        call that makes it - see functions/actor_models.py - so this is
+        preferred over standing a model up on a skeleton picked by fit,
+        and over a savestate binding that only ever saw one part."""
+        build = self.actor_builds.get(handler)
+        if build is None:
+            return None
+        model = self.model(build.file_id)
+        groups = (model or {}).get("groups") or ()
+        rest = actor_models.rest_offsets(build.bones)
+        parts, offsets = [], []
+        for index in range(min(build.parts, len(groups))):
+            if groups[index].empty:
+                continue
+            parts.append((build.file_id, index))
+            offsets.append(view_offset(rest[index]))
+        if not parts:
+            return None
+        return tuple(parts), tuple(offsets)
+
+    def character(self, file_id):
+        """([(file, group), ...], offsets) standing one whole character
+        up on its skeleton, or None if that file is not one.
+
+        A handler attaches ONE part of an enemy - the pig's head, a
+        shopkeeper's body - because the rest arrive with the animation
+        that drives it. Nothing here animates, so the whole model is put
+        up in its rest pose instead: every group of the file, each moved
+        to its own bone's joint. That is the same rest pose the ANMP
+        viewer opens on, and the offsets are in the model's own space,
+        so they need no axis swap the way a chest's do.
+
+        The area's asset pack is never a character: its groups are a
+        level's props, one thing each, and standing them on a skeleton
+        would pile them up."""
+        if file_id in self._characters:
+            return self._characters[file_id]
+        self._characters[file_id] = None
+        if file_id == ASSET_PACK_ID or not self.exe_path:
+            return None
+        model = self.model(file_id)
+        groups = (model or {}).get("groups") or ()
+        drawn = [g for g in groups if not g.empty]
+        if len(drawn) < MIN_CHARACTER_PARTS:
+            return None
+        try:
+            from gui.anmp import game_rest
+            sources = game_rest.load_sources(self.exe_path, self.overlay_path)
+            counts = list(range(max(3, len(groups) - SKELETON_SLACK),
+                                len(groups) + 1))
+            best = game_rest.best_for(sources, model, counts)
+            if best is None:
+                return None
+            _label, _offset, bones, _limbs, _grade, _tried = best
+            pivots = game_rest.joints(bones)
+        except Exception as e:
+            self.notes.append(f"id {file_id} wouldn't stand up: {e}")
+            return None
+        parts, offsets = [], []
+        for index in range(min(len(pivots), len(groups))):
+            if groups[index].empty:
+                continue
+            parts.append((file_id, index))
+            offsets.append(tuple(float(v) for v in pivots[index]))
+        if len(parts) < MIN_CHARACTER_PARTS:
+            return None
+        self._characters[file_id] = (tuple(parts), tuple(offsets))
+        return self._characters[file_id]
 
     @staticmethod
     def _load_planes(idx_path, dat_path, chunk_index):
@@ -623,6 +728,12 @@ class LevelScene:
         except Exception as e:
             self.notes.append(f"couldn't read the handlers' code: {e}")
             return {}
+        images = (self.code.exe, self.code.overlay)
+        for handler in {r.handler for r in self.placements}:
+            built = actor_models.builds_for(images, handler,
+                                            self.code.file_table)
+            if built:
+                self.actor_builds[handler] = built[0]
         out, cache = {}, {}
         for record in self.placements:
             found = self.code.choices(record, cache)
@@ -657,8 +768,9 @@ class LevelScene:
             try:
                 with open(self.dat_path, "rb") as f:
                     f.seek(start + offset)
-                    self.models[file_id] = parse_smst(
-                        f.read(size), address=start + offset)
+                    raw = f.read(size)
+                self.content[file_id] = labels.content_key(raw)
+                self.models[file_id] = parse_smst(raw, address=start + offset)
             except Exception as e:
                 self.notes.append(f"id {file_id} wouldn't read as an SMST: {e}")
         return self.models[file_id]
@@ -693,14 +805,25 @@ class LevelScene:
             # A class drawn as a sprite has no model, and whatever
             # handler_models found for it was something else the handler
             # touched - so it is dropped rather than drawn.
-            sources = () if art else (self.bindings.get(record.key()) or ())
+            sources, offsets = (), ()
+            if not art:
+                built = self.built_actor(record.handler)
+                if built is not None:
+                    sources, offsets = built
+                else:
+                    sources = self.bindings.get(record.key()) or ()
+                    if len(set(f for f, _g in sources)) == 1:
+                        whole = self.character(sources[0][0])
+                        if whole is not None:
+                            sources, offsets = whole
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
             instances.append(Instance(
                 index=len(instances), role="object",
                 label=f"{record.kind}.{record.slot}",
-                sources=tuple(sources), x=x, y=y, z=z,
+                sources=tuple(sources), offsets=offsets, x=x, y=y, z=z,
+                name=self.named(sources),
                 angle=float(record.angle), placement=record,
                 art=object_sprites.as_art(art) if art else None,
                 authored=bool(group is not None
@@ -722,7 +845,7 @@ class LevelScene:
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
-                offsets=offsets,
+                offsets=offsets, name=self.named(sources),
                 x=x, y=pose.get("y", y), z=z, pickup=record,
                 angle=float(pose.get("angle", self.chest_heading(record)
                                       if record.chest else 0.0)),
@@ -888,6 +1011,20 @@ class LevelScene:
 
     # --- what the panel offers ----------------------------------------
 
+    def named(self, sources):
+        """What the model behind a set of sources is called, if anything.
+
+        A whole character is many groups of one file, so its file's own
+        name is what fits; a single part takes its part name first."""
+        if not sources:
+            return ""
+        file_id, group = sources[0]
+        if len({f for f, _g in sources}) == 1 and len(sources) > 1:
+            group = None
+        self.model(file_id)          # so its hash is known
+        return placement_module.model_name(self.model_names,
+                                           self.content.get(file_id), group)
+
     def model_choices(self):
         """[(label, (file id, group)), ...] every part this area could
         draw an object with - the asset pack first, since that is where
@@ -900,7 +1037,10 @@ class LevelScene:
             for group in (model or {}).get("groups") or ():
                 if group.empty:
                     continue
+                named = placement_module.model_name(
+                    self.model_names, self.content.get(file_id), group.index)
                 out.append((f"id {file_id} group {group.index}  "
-                            f"({group.tris}t {group.quads}q)",
+                            f"({group.tris}t {group.quads}q)"
+                            + (f"  - {named}" if named else ""),
                             (file_id, group.index)))
         return out

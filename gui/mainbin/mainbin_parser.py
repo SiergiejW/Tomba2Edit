@@ -58,13 +58,23 @@ _GLYPH_BYTES = False
 
 
 def _claimed():
-    """{byte: letter} for the cells this translation has claimed, or
-    empty when nothing has been."""
-    if not _GLYPH_BYTES:
-        return {}
+    """({byte: letter}, {latin-1 byte the letter came from}).
+
+    Claims apply whatever mode the view is in. Gating them on
+    GLYPH-BYTE MODE meant a letter you had just drawn and named still
+    would not type, which reads exactly like the feature not working.
+
+    The second set is what keeps decode and encode inverse. If "o" is
+    claimed for cell 0xA5 then "o" has to mean 0xA5 when typed, so byte
+    0xF3 can no longer be shown as the Latin-1 "o" - it would type back
+    as 0xA5. Those bytes show as {$XX} instead, which is honest and
+    round-trips."""
     from gui.txtd import translation
-    return {code: char for code, char in translation.active().chars.items()
-            if char and len(char) == 1}
+    claimed = {code: char for code, char in translation.active().chars.items()
+               if char and len(char) == 1}
+    shadowed = {ord(char) for char in claimed.values()
+                if _LATIN1_FIRST <= ord(char) <= 0xFF}
+    return claimed, shadowed
 
 
 def glyph_bytes():
@@ -91,7 +101,7 @@ def decode_bytes(raw):
     if _japanese():
         from gui.txtd import jptext
         return jptext.decode_pool(raw)
-    claimed = _claimed()
+    claimed, shadowed = _claimed()
     out = []
     for b in raw:
         if b == 0x0A:
@@ -102,7 +112,7 @@ def decode_bytes(raw):
             out.append(claimed[b])
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
-        elif b >= _LATIN1_FIRST and not _GLYPH_BYTES:
+        elif b >= _LATIN1_FIRST and not _GLYPH_BYTES and b not in shadowed:
             out.append(chr(b))          # Latin-1 is code point == byte
         else:
             out.append(f"{{${b:02X}}}")
@@ -206,7 +216,7 @@ def encode_bytes(text):
             return jptext.encode_pool(text)
         except jptext.JapaneseTextError as exc:
             raise MainBinParseError(str(exc)) from exc
-    claimed = {char: code for code, char in _claimed().items()}
+    claimed = {char: code for code, char in _claimed()[0].items()}
     out = bytearray()
     i = 0
     n = len(text)

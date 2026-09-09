@@ -19,11 +19,11 @@ UNIT_SCALE = 1000.0
 # other the way index/count would with dozens of entries.
 GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
 
-# Records drop to this opacity when their surfaces are drawn over them.
+# Records drop to this opacity when lines are drawn over them.
 SCAFFOLD_ALPHA = 0.5
 
-# How heavily a walkable surface is drawn, in both the SCLD viewer and
-# the MDAT view's overlay - one number so the two agree. Wide enough to
+# How heavily collision lines are drawn, in both the SCLD viewer and the
+# MDAT view's overlay - one number so the two agree. Wide enough to
 # follow across a textured room, where a hairline disappears into the
 # artwork behind it.
 SURFACE_LINE_WIDTH = 3.0
@@ -31,10 +31,6 @@ SURFACE_LINE_WIDTH = 3.0
 # Undecoded candidate walls - deliberately unlike anything else on
 # screen, so a guess is never mistaken for decoded geometry.
 WALL_CANDIDATE_COLOR = (1.0, 0.35, 0.75)
-
-# Cross-entry joins, which belong to two entries at once and so take
-# neither entry's colour.
-SEAM_COLOR = (0.93, 0.93, 0.85)
 
 
 def entry_color(index, saturation=0.65, value=0.95):
@@ -95,16 +91,18 @@ def contains(bounds, point):
 
 
 def build_points(entries, bounds=None, color_by=None):
-    """One point per table3 record.
+    """One point per placed table3 record - see SCLDEntry.trace(). The
+    points are the whole of what the file says; nothing here is inferred.
 
     `color_by(entry)` overrides the per-entry colour.
 
-    Returns (verts, colors, ranges, positions):
+    Returns (verts, colors, ranges, positions, records):
         ranges[entry.index]    = (first vertex, count), for redrawing one
                                  entry on its own
         positions[entry.index] = that entry's points, scaled for display
+        records[entry.index]   = the table3 record behind each of them
     """
-    verts, colors, ranges, positions = [], [], {}, {}
+    verts, colors, ranges, positions, records = [], [], {}, {}, {}
     for entry in entries:
         rgb = color_by(entry) if color_by else entry_color(entry.index)
         pts = entry.trace()
@@ -117,39 +115,29 @@ def build_points(entries, bounds=None, color_by=None):
         ranges[entry.index] = (start, len(verts) - start)
         positions[entry.index] = [(p[0] / UNIT_SCALE, p[1] / UNIT_SCALE,
                                    p[2] / UNIT_SCALE) for p in pts]
-    return verts, colors, ranges, positions
+        records[entry.index] = entry.records()
+    return verts, colors, ranges, positions, records
 
 
-def build_lines(scld_file, entries, bounds=None,
-                surfaces=True, seams=True, walls=False, color_by=None):
+def build_lines(entries, bounds=None, walls=False):
     """Line geometry as consecutive vertex pairs, ready for GL_LINES.
 
-    `surfaces` draws each walkable surface along its entry, `seams` the
-    joins where one carries on into the next entry, `walls` the undecoded
-    candidate verticals.
+    Only the candidate walls are left here. The runs this used to join
+    records into - surfaces along an entry, seams from one entry to the
+    next - were guesses at an ordering the file does not store, made back
+    when a record's place was being fitted rather than read. Cells put
+    every record where the game puts it, so there is nothing left for a
+    guess to add.
 
     Returns (verts, colors)."""
     verts, colors = [], []
-
-    def add(run, rgb):
-        for a, b in zip(run, run[1:]):
-            if not (contains(bounds, a) and contains(bounds, b)):
-                continue
-            verts.append(a)
-            verts.append(b)
-            colors.append(rgb)
-            colors.append(rgb)
-
+    if not walls:
+        return verts, colors
     for entry in entries:
-        if surfaces:
-            rgb = (color_by(entry, saturation=0.70, value=1.0) if color_by
-                   else entry_color(entry.index, saturation=0.70, value=1.0))
-            for run in entry.surfaces():
-                add(run, rgb)
-        if walls:
-            for run in entry.wall_candidates():
-                add(run, WALL_CANDIDATE_COLOR)
-    if seams and scld_file is not None:
-        for run in scld_file.seams():
-            add(run, SEAM_COLOR)
+        for run in entry.wall_candidates():
+            for a, b in zip(run, run[1:]):
+                if not (contains(bounds, a) and contains(bounds, b)):
+                    continue
+                verts.extend((a, b))
+                colors.extend((WALL_CANDIDATE_COLOR, WALL_CANDIDATE_COLOR))
     return verts, colors
