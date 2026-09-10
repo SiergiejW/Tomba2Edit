@@ -394,8 +394,12 @@ class TXTDViewer(QWidget):
         voice_row.addWidget(self.export_voice_button)
         voice_row.addWidget(self.import_voice_button)
         voice_row.addWidget(self.autoplay_voice)
-        voice_row.addWidget(self.voice_note, 1)
+        voice_row.addStretch(1)
         right_layout.addLayout(voice_row)
+        # On its own line rather than crammed beside the buttons - a
+        # real status ("master 2, channel 9...") or the one-time resolve
+        # notice both run long enough to make that row wrap messily.
+        right_layout.addWidget(self.voice_note)
         self._edits = VoiceEditStore()
         self._resolve_thread = None
         # The budget line stays under both halves, where it reads as
@@ -428,22 +432,34 @@ class TXTDViewer(QWidget):
             return ""
         return " ".join(text.split())
 
-    def _entry_label_parts(self, entry):
+    def _entry_label_parts(self, entry, master_index=None):
         """Returns (address_str, preview, is_sentinel), the shared pieces
         used to build the tree label."""
         is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
-        addr_str = f"Entry {entry['adr']:04X}"
+        # extra is this line's own voice-clip index - 0xFFFF (or absent)
+        # means the line has no dialogue sound at all. That alone isn't
+        # "play ready" though: the marker is meant to mean a Play click
+        # would actually work right now, so it also needs a disc open
+        # and this master matched to it (dispatch or the fallback) -
+        # not shown at all with no disc open, which is what made it
+        # read as a claim the app couldn't back up.
+        voice = getattr(self, "_voice", None)
+        has_voice = (not is_sentinel
+                    and entry.get("extra") not in (None, 0xFFFF)
+                    and bool(voice) and voice.resolves(master_index))
+        addr_str = f"Entry{'♫' if has_voice else ''} {entry['adr']:04X}"
         if is_sentinel:
             return addr_str, None, True
 
         text = entry.get("text") or ""
         return addr_str, self._entry_preview_text(text), False
 
-    def _entry_label(self, entry):
+    def _entry_label(self, entry, master_index=None):
         """Plain-text tree label, e.g.
         'Entry 0000 (Hey! You scared me. What are you doing here?)'.
         END-marker sentinels (no text) get a simpler label."""
-        addr_str, preview, is_sentinel = self._entry_label_parts(entry)
+        addr_str, preview, is_sentinel = self._entry_label_parts(
+            entry, master_index)
         if is_sentinel:
             return f"{addr_str} (END marker)"
         if preview:
@@ -461,7 +477,7 @@ class TXTDViewer(QWidget):
         return None
 
     def _set_entry_item_label(self, item, entry, location):
-        item.setText(self._entry_label(entry))
+        item.setText(self._entry_label(entry, location[0]))
         color = self._entry_item_color(location)
         if color:
             item.setForeground(QBrush(QColor(color)))
@@ -691,16 +707,41 @@ class TXTDViewer(QWidget):
             masters = (self.current_data or {}).get("entries")
             total = self._voice.set_masters(masters)
         if problem:
-            self.voice_note.setText(problem)
+            self._set_voice_note(problem, warn=True)
         elif not total:
-            self.voice_note.setText("No clip tables in this area's overlay.")
+            self._set_voice_note("No clip tables in this area's overlay.",
+                                 warn=True)
         else:
             fallback = total - count
-            self.voice_note.setText(
+            self._set_voice_note(
                 f"Voice ready - {count} master(s) from the overlay's own "
                 "code" + (f", {fallback} more matched by clip count "
                          "(no code match)." if fallback else "."))
         self._refresh_voice_button()
+        self._refresh_voice_markers()
+
+    def _refresh_voice_markers(self):
+        """Re-check every entry's play-ready marker against the voice
+        link's current state - needed because the tree is built before
+        set_voice_source ever runs (see load_txtd_data), so its first
+        pass has no disc to check against yet, and a later disc/area
+        change has to update markers that were already drawn."""
+        if not self.current_data:
+            return
+        entry_groups = self.current_data.get("entries", [])
+        for (m_idx, e_idx), item in self._entry_items.items():
+            group = entry_groups[m_idx] if m_idx < len(entry_groups) else None
+            entries = group.get("entries", []) if group else []
+            if e_idx < len(entries):
+                item.setText(self._entry_label(entries[e_idx], m_idx))
+
+    def _set_voice_note(self, text, warn=False):
+        """The voice status line - orange for a warning or a "thinking"
+        notice (no disc, no clip tables, the one-time channel resolve),
+        the normal text color for an ordinary status like which master/
+        channel/clip just played."""
+        self.voice_note.setStyleSheet("color: #E08A2E;" if warn else "")
+        self.voice_note.setText(text)
 
     def _refresh_voice_button(self):
         voice = getattr(self, "_voice", None)
@@ -757,7 +798,7 @@ class TXTDViewer(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Export", f"Could not save: {exc}")
             return
-        self.voice_note.setText(f"Wrote {path.split(chr(92))[-1]}. {note}")
+        self._set_voice_note(f"Wrote {path.split(chr(92))[-1]}. {note}")
 
     def _import_voice_line(self):
         entry = self._selected_entry()
@@ -813,7 +854,7 @@ class TXTDViewer(QWidget):
             QMessageBox.critical(self, "Import",
                                  f"Could not stage that: {exc}")
             return
-        self.voice_note.setText(
+        self._set_voice_note(
             f"Staged this line ({count} sector(s)) - "
             f"{self._edits.count()} sector(s) staged in all. Use the "
             "Dialogues tab's Export patched BIN... to write them.")
@@ -844,15 +885,15 @@ class TXTDViewer(QWidget):
             callback()
             return
         if getattr(self, "_resolve_thread", None) is not None:
-            self.voice_note.setText(
+            self._set_voice_note(
                 "Still working out this area's voice channels - try "
-                "again in a moment.")
+                "again in a moment.", warn=True)
             return
         voice.mark_fallback_resolving()
-        self.voice_note.setText(
+        self._set_voice_note(
             "Working out this area's voice channels from the audio "
             "itself (no code match for this build) - one-time, can "
-            "take about a minute...")
+            "take about a minute...", warn=True)
         self.play_voice_button.setEnabled(False)
         self.export_voice_button.setEnabled(False)
         self.import_voice_button.setEnabled(False)
@@ -895,9 +936,10 @@ class TXTDViewer(QWidget):
         try:
             samples, rate, note = voice.clip_for(entry, master_index)
         except Exception as exc:
-            self.voice_note.setText(f"Could not play that line: {exc}")
+            self._set_voice_note(f"Could not play that line: {exc}",
+                                 warn=True)
             return
-        self.voice_note.setText(note)
+        self._set_voice_note(note, warn=not samples)
         if samples:
             self._voice_sink = _play_pcm(samples, rate)
 

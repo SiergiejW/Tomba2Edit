@@ -89,18 +89,21 @@ BACKGROUND = os.path.join(os.path.dirname(os.path.dirname(
 # fontpage.read_frame), as a nine-slice. Each piece is 18 wide with a
 # 3-pixel border either side.
 #
-# The art is stored upside down, so every piece is read bottom-up and
-# piece 2 is the top edge, piece 0 the bottom:
+# The art is stored upside down, so every piece is read bottom-up.
+# Piece 0 - the shallow one, FRAME_PIECES' first x-offset - is the top
+# edge; piece 2, the deep one, is the bottom:
 #
-#     piece 2   rows 4..0    the top
+#     piece 0   rows 4..0    the top    ("frame top" / shallow)
 #     piece 1   rows 7..0    the middle, stretched down the box
-#     piece 0   rows 7..3    the bottom
+#     piece 2   rows 7..3    the bottom ("frame bottom" / deep)
 #
-# Two things agree on that and neither does on any other arrangement.
-# The corners are inset on the outermost row at both ends, and the
-# interior greys come out monotonic - 57 at the top falling to 16 at the
-# bottom - with no step at either seam. Read the other way up the box is
-# darkest at the top and the seams jump.
+# Was read the other way around for a while - piece 2 as the top, piece
+# 0 as the bottom - which put the box on screen upside down: right the
+# right way up, the corners are inset on the outermost row at both
+# ends, and the interior greys come out monotonic - 57 at the top
+# falling to 16 at the bottom - with no step at either seam. The
+# flipped reading has both of those too, backwards, which is how it
+# passed for correct until it was checked against the game itself.
 FRAME_MARGIN = 10
 FRAME_SCALE = 2
 FRAME_BORDER = 3          # left and right border, in source pixels
@@ -159,7 +162,8 @@ class FontSheet:
         elif self.frame_upright:
             self.frame = fontpage.read_jp_frame(cd_folder, chosen["clut"])
         else:
-            self.frame = fontpage.read_frame(cd_folder, chosen["clut"])
+            self.frame = fontpage.read_frame(
+                cd_folder, chosen["clut"], frame_top=dicts.frame_top())
 
     def palette(self, row):
         """The palette a colour control selects, falling back to a plain
@@ -518,7 +522,7 @@ def _nine_slice(pieces, width, height, inner_alpha=128,
         return _upright_slice(pieces, width, height, inner_alpha, keep_alpha)
     if not pieces or len(pieces) < 3 or width < 8 or height < 12:
         return None
-    top, mid, bottom = pieces[2], pieces[1], pieces[0]
+    top, mid, bottom = pieces[0], pieces[1], pieces[2]
     b = FRAME_BORDER
     src_w = len(top[0])
     inner_w = src_w - 2 * b

@@ -166,6 +166,49 @@ def glyph_top(build=DEFAULT_BUILD):
     return GLYPH_TOP.get(build, 40)
 
 
+# Where the dialogue frame's three pieces sit in each build's font page
+# (see functions/fontpage.read_frame) - found the same way GLYPH_TOP
+# was, but by sliding the whole US piece (its raw palette indices, not
+# its rendered colours, since a piece's shape is shared art unlike the
+# glyphs around it) over each other page and keeping the best fit,
+# rather than assumed to move by whatever GLYPH_TOP itself moved by.
+# It doesn't: GLYPH_TOP shifts 24 rows from US to the PAL family, but
+# the frame shifts 72 - the menu artwork between the grid and the frame
+# grew by more than the grid itself did, which a delta from GLYPH_TOP
+# alone would have gotten wrong. Confirmed against both the German and
+# Spanish pages (208, exact pixel match) and assumed, not yet directly
+# checked, to hold for eu/fr/it-retail too - the same "PAL family lays
+# its page out identically" the accent block and GLYPH_TOP already rely
+# on (see _LATIN's own comment above).
+FRAME_TOP = {
+    "us-retail": 136,
+    "us-demo": 136,
+    "de-retail": 208,
+    "sp-retail": 208,
+    "eu-retail": 208,
+    "fr-retail": 208,
+    "it-retail": 208,
+    # Not used - the Japanese page's box is read by read_jp_frame(),
+    # an entirely different upright nine-slice with its own JP_FRAME_*
+    # constants, none of which are FRAME_Y-relative. Listed anyway so a
+    # caller that reads this table for every known build doesn't have
+    # to special-case the one build that isn't in it.
+    "jp-retail": 136,
+}
+
+
+def frame_top(build=None):
+    """Where that build's dialogue frame pieces start in its font page.
+
+    `build` defaults to the disc that is open right now - see
+    japanese_disc()'s own docstring for why that is asked here rather
+    than threaded through every caller."""
+    if build is None:
+        from gui.txtd import translation
+        build = translation.build()
+    return FRAME_TOP.get(build, 136)
+
+
 # Words only one language's executable has, used to tell the European
 # discs apart. Both carry the same font page layout, so the page cannot
 # say which language it is - the strings can.

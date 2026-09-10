@@ -39,8 +39,11 @@ PAGE_W = 256
 PAGE_H = 256
 
 # The dialogue frame, and the palette it is drawn with. Three 18x16
-# pieces sit side by side in the page: a shallow top, a section with the
-# two side edges, and a deeper top. The box is built from these.
+# pieces sit side by side in the page: the shallow one is the box's top
+# edge, the middle one carries the two side edges, and the deep one is
+# the bottom edge - see gui/txtd/font_preview.py's _nine_slice for how
+# they are actually read (bottom-up; getting that backwards puts the
+# box on screen upside down). The box is built from these three.
 FRAME_Y = 136
 FRAME_X = 176
 FRAME_PIECE_W = 18
@@ -501,7 +504,7 @@ def read_jp_frame(cd_folder, clut=FRAME_CLUT):
     return out
 
 
-def read_frame(cd_folder, clut=FRAME_CLUT):
+def read_frame(cd_folder, clut=FRAME_CLUT, frame_top=FRAME_Y):
     """The frame's three pieces as lists of (r, g, b, a) rows.
 
     In page order the pieces are the top, the sides and the bottom; the
@@ -513,7 +516,18 @@ def read_frame(cd_folder, clut=FRAME_CLUT):
     The art is the same for every box the game draws - only the palette
     changes, so `clut` picks the context: (255, 2) is the grey dialogue
     box, (255, 3) the pink one item notices use, (254, 3) the pale
-    yellow of the control hints."""
+    yellow of the control hints.
+
+    `frame_top` is FRAME_Y by default - where the pieces sit on the US
+    page - but a build whose page lays its menu artwork out differently
+    keeps them somewhere else entirely: the PAL family's is 72 rows
+    lower, at 208, found by sliding the US pieces' own raw indices over
+    the page and keeping the best pixel match rather than assumed to
+    move in step with the dialogue grid above it (see
+    gui/txtd/dicts.py's FRAME_TOP - it does not: the grid moves by 24
+    rows and the frame by 72). Reading FRAME_Y unadjusted on one of
+    those grabs ordinary glyphs instead of the border, which is why the
+    preview drew visible garbage there rather than a box."""
     page = read_page(cd_folder)
     palette = None
     for row, slot, pal in read_cluts(cd_folder):
@@ -528,7 +542,7 @@ def read_frame(cd_folder, clut=FRAME_CLUT):
         for y in range(FRAME_PIECE_H):
             line = []
             for x in range(FRAME_PIECE_W):
-                index = page[FRAME_Y + y][FRAME_X + x0 + x]
+                index = page[frame_top + y][FRAME_X + x0 + x]
                 line.append(palette[index])
             piece.append(line)
         out.append(piece)

@@ -293,6 +293,34 @@ class VoiceLink:
     def channels_known(self):
         return bool(self.tables) or bool(self._fallback_by_master)
 
+    def resolves(self, master_index):
+        """Whether this master's clip table is known at all - by
+        dispatch, the default table, or the fallback - without decoding
+        anything. What the TXTD tree's play-ready marker checks, so it
+        only lights up for a line a Play click would actually work on
+        right now, not just one that structurally carries a clip index."""
+        return bool(self.ready() and (
+            master_index in self.tables or self.default_table
+            or master_index in self._fallback_by_master))
+
+    def not_ready_note(self):
+        """Why ready() is False, precisely.
+
+        Conflating "no image opened at all" with "an image is open but
+        this area's masters were never matched to it" into one "No disc
+        yet" message is what made a disc that opened perfectly fine
+        still say that - reading as if the file itself hadn't opened,
+        when what was actually missing was a TXTD file from this area
+        having been selected (which is what calls set_masters)."""
+        if not self.image:
+            return ("No disc yet - open the data track (Track 1), the "
+                    "only place the voice survives.")
+        if not (self.tables or self.default_table or self._fallback_by_master):
+            return ("This disc is open, but this area's overlay has no "
+                    "voice matched to it yet - select a TXTD file from "
+                    "this area first.")
+        return "Not ready."
+
     def channel(self, table_index):
         return self._channels.get(table_index)
 
@@ -308,8 +336,7 @@ class VoiceLink:
         if extra is None or extra == 0xFFFF:
             return [], "This line has no voice."
         if not self.ready():
-            return [], ("No disc yet - open the data track (Track 1), "
-                        "the only place the voice survives.")
+            return [], self.not_ready_note()
         found = (self.tables.get(master_index) or self.default_table
                  or self._fallback_found(master_index))
         if found is None:
@@ -339,8 +366,7 @@ class VoiceLink:
         if extra is None or extra == NO_VOICE:
             return None, 0, "This line has no voice."
         if not self.ready():
-            return None, 0, ("No disc yet - open the data track (Track 1), "
-                             "the only place the voice survives.")
+            return None, 0, self.not_ready_note()
         found = (self.tables.get(master_index) or self.default_table
                  or self._fallback_found(master_index))
         if found is None:
