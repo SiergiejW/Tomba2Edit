@@ -371,6 +371,7 @@ class MigrateDialog(QDialog):
                     "samples is already present, byte for byte, in all "
                     f"{len(areas)} ticked area(s).")
                 self.moving.clear()
+                self.canvas.emphasis = None
                 self.apply_button.setEnabled(False)
                 self.refresh_preview()
                 return
@@ -384,6 +385,7 @@ class MigrateDialog(QDialog):
                 f"ticked areas means more free space; so does putting the "
                 f"art somewhere only some areas can see.")
             self.moving.clear()
+            self.canvas.emphasis = None
             self.apply_button.setEnabled(False)
             self.refresh_preview()
             return
