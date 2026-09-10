@@ -281,20 +281,34 @@ def pending_blob(address):
     return _pending_source(address) if _pending_source else None
 
 
+def read_smst_bytes(dat_file_path, address, size):
+    """The bytes an SMST at `address` would parse from right now - a
+    staged edit if there is one, otherwise what the disc holds.
+
+    The one place this is decided, so a viewer's own copy of the blob
+    (kept for copy/paste - see gui/smst/smst_edit.py) can never drift
+    from what load_smst() below builds the model out of. Read straight
+    from disk instead of through this and a second paste into the same
+    model discards whatever the first one did, because the part being
+    pasted onto is the stale, unedited bytes."""
+    data = pending_blob(address)
+    if data is not None:
+        return bytes(data)
+    if not size:
+        raise FormatError(
+            "no size for this entry, so there is no blob to read")
+    with open(dat_file_path, "rb") as f:
+        f.seek(address)
+        return f.read(size)
+
+
 def load_smst(dat_file_path, address, size):
     """Read and parse the SMST blob at `address` in the DAT.
 
     An edit staged but not yet saved wins over what the file holds, so
     what is on screen is what would be written."""
-    data = pending_blob(address)
-    if data is None:
-        if not size:
-            raise FormatError(
-                "no size for this entry, so there is no blob to read")
-        with open(dat_file_path, "rb") as f:
-            f.seek(address)
-            data = f.read(size)
-    return parse_smst(data, address=address)
+    return parse_smst(read_smst_bytes(dat_file_path, address, size),
+                      address=address)
 
 
 def model_bounds(model):

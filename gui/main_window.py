@@ -689,17 +689,6 @@ class MainWindow(QMainWindow):
                   f"{len(self._type_names)}")
         return self._type_names
 
-    def _stage_smst_edit(self, item, blob, label, address):
-        """Stage a pasted SMST and let every other view catch up.
-
-        Staging alone is enough for anything that loads the model
-        afterwards (see _pending_smst_blob), but the ANMP tab may
-        already be holding the old one, so it is told to read it
-        again."""
-        self._stage_file_edit(item, blob, label)
-        if self.anmp_viewer.reload_model(address):
-            print(f"ANMP: reloaded the model at 0x{address:X} with the edit")
-
     def _pending_smst_blob(self, address):
         """An SMST edit that is staged but not yet written to the disc.
 
@@ -1174,6 +1163,21 @@ class MainWindow(QMainWindow):
         self._colour_address(entry["address"],
                              "edited" if key in self.pending_file_edits else None)
         self._refresh_edit_status()
+        self._refresh_open_model_views(entry["address"], data)
+
+    def _refresh_open_model_views(self, address, data):
+        """Redraw any 3D view already open on the model at `address`,
+        for a staged edit that may have reached it from outside that
+        view itself - a swap, an imported replacement, a texture
+        migration. A paste or a clear made from inside the SMST tab
+        already shows itself the moment it happens; this is what stops
+        every OTHER way of changing the same bytes from leaving that
+        tab (or the ANMP tab, which can embed the same model) showing a
+        model that is no longer what is actually staged."""
+        if self.smst_panel.refresh_if_showing(address, data):
+            print(f"SMST: refreshed the model at 0x{address:X} with the edit")
+        if self.anmp_viewer.reload_model(address):
+            print(f"ANMP: reloaded the model at 0x{address:X} with the edit")
 
     def _confirm_replacement(self, item, data, source):
         """Ask before staging, saying what changes. A different size is
@@ -2517,15 +2521,29 @@ class MainWindow(QMainWindow):
         """Colour one address's rows - see _set_txtd_tree_item_state."""
         if state == "exported":
             self.exported_addresses.add(address)
+        # Every row this address reaches, of any kind - address_rows
+        # holds one per (area, slot) location regardless of filetype,
+        # txtd_item_lookup is folded in too in case something still
+        # reaches a TXTD row only that way. Deduplicated by identity:
+        # a TXTD row is in both, and coloring or aggregating it twice
+        # would just be wasted work, not wrong, but the dict below is
+        # keyed by id() rather than by (chunk_index, file_index) for a
+        # sharper reason - a TRAIL row and an ordinary SDAT row number
+        # their slots independently, so the same pair can name two
+        # completely different rows, and txtd_file_states has to tell
+        # them apart to aggregate an AREA folder's color correctly.
+        rows = {id(item): item
+                for item in getattr(self, "address_rows", {}).get(address, ())}
         for location in self.address_locations.get(address, []):
             file_item = self.txtd_item_lookup.get(location)
-            if file_item is None:
-                continue
+            if file_item is not None:
+                rows.setdefault(id(file_item), file_item)
 
+        for file_item in rows.values():
             if state:
-                self.txtd_file_states[location] = state
+                self.txtd_file_states[id(file_item)] = state
             else:
-                self.txtd_file_states.pop(location, None)
+                self.txtd_file_states.pop(id(file_item), None)
 
             self._apply_tree_item_state_color(file_item, state)
 
@@ -2543,45 +2561,77 @@ class MainWindow(QMainWindow):
         if dat_item is not None:
             self._apply_tree_item_state_color(dat_item, state)
 
-        # Everything else that reaches this address. address_locations
-        # above only knows the text files; a replaced model has rows to
-        # colour too, and a trail file has one under every area that
-        # lists it.
-        for row in getattr(self, "address_rows", {}).get(address, ()):
-            self._apply_tree_item_state_color(row, state)
+    @staticmethod
+    def _row_name_parts(item):
+        """(name without the unsaved-edit mark, its own ".EXT" if this
+        row is a file that has one).
+
+        Kept apart so the mark can go right before the extension rather
+        than after it. on_tree_selection_changed picks which viewer to
+        open by exactly that extension - item_name.endswith('.SMST'),
+        item_name.split('.')[-1] and the like - so a mark tacked on the
+        end would silently stop an edited row from opening a second
+        time; row_label_data's own filetype says where the real
+        extension is, so this doesn't have to guess at the text."""
+        text = item.text()
+        ext = ""
+        row = row_label_data(item)
+        if row:
+            suffix = f".{row[1]}"
+            if text.endswith(suffix):
+                text, ext = text[:-len(suffix)], suffix
+        # The mark itself sits just before the extension, so it has to
+        # come off AFTER the extension does - stripping it first (from
+        # text that still ends in ".SMST", not "*") would miss it and
+        # let a repeated color/recolor stack up "**", "***", ...
+        if text.endswith("*"):
+            text = text[:-1]
+        return text, ext
 
     @staticmethod
     def _apply_tree_item_state_color(item, state):
+        """Color a row (or a folder aggregating several) and, only while
+        it is "edited" - orange, unsaved - mark its text with a "*",
+        the same mark mainbin_viewer puts on a category folder and
+        MainWindow puts on a tab with unsaved edits. "exported" (green,
+        already written out) and the plain state both show the row's
+        bare name; only pending edits earn the mark, so it means the
+        same thing here as it does everywhere else it appears."""
+        base, ext = MainWindow._row_name_parts(item)
         if state == "edited":
             item.setForeground(QBrush(QColor(EDITED_TXTD_ITEM_COLOR)))
+            item.setText(f"{base}*{ext}")
         elif state == "exported":
             item.setForeground(QBrush(QColor(EXPORTED_TXTD_ITEM_COLOR)))
+            item.setText(f"{base}{ext}")
         else:
             item.setData(None, Qt.ItemDataRole.ForegroundRole)
+            item.setText(f"{base}{ext}")
 
     def _refresh_folder_state_color(self, folder_item):
         """Recomputes an NN_DATA or AREA_NN folder's color by aggregating
-        the edit/export state of every TXTD file anywhere underneath it:
-        orange if any of them still has pending edits, else green if any
-        of them has been edited-and-exported, else back to the tree's
-        normal color."""
+        the edit/export state of every file anywhere underneath it -
+        TXTD, SMST, trail, any of them: orange if any still has pending
+        edits, else green if any has been edited-and-exported, else back
+        to the tree's normal color."""
         self._apply_tree_item_state_color(folder_item, self._aggregate_txtd_state(folder_item))
 
     def _aggregate_txtd_state(self, item):
-        """"edited" if any TXTD file at or below `item` has pending edits,
+        """"edited" if any file at or below `item` has pending edits,
         else "exported" if any has been edited-and-exported, else None.
         Walks the tree itself (rather than needing a separate index of
-        "which files live under this folder"), using the (chunk_index,
-        file_index) tuple every TXTD file item already carries in
-        UserRole + 2 (see idx_parser.parse_idx_file)."""
+        "which files live under this folder"), using each row's own
+        identity as the key into txtd_file_states - not the
+        (chunk_index, file_index) pair UserRole + 2 carries, which an
+        SDAT row and a TRAIL row number independently and so does not
+        tell two different rows apart (see _colour_address)."""
         saw_exported = False
         for row in range(item.rowCount()):
             child = item.child(row)
             if child is None:
                 continue
 
-            location = child.data(Qt.ItemDataRole.UserRole + 2)
-            state = self.txtd_file_states.get(location) if location else None
+            state = self.txtd_file_states.get(id(child))
             if state is None and child.hasChildren():
                 state = self._aggregate_txtd_state(child)
 
@@ -3821,15 +3871,17 @@ class MainWindow(QMainWindow):
                                 # Let a pasted part be staged as an
                                 # ordinary whole-file replacement, so it
                                 # goes out through the same repack that
-                                # can resize a DAT entry.
+                                # can resize a DAT entry. _stage_file_edit
+                                # is also what catches up every other
+                                # open view of the same model - see
+                                # _refresh_open_model_views.
                                 self.smst_panel.cd_folder = os.path.dirname(
                                     self.dat_file)
                                 self.smst_panel.img_written = (
                                     self._note_img_written)
                                 self.smst_panel.stage_edit = (
-                                    lambda blob, label, item=selected_item,
-                                    at=dat_start + offset:
-                                    self._stage_smst_edit(item, blob, label, at))
+                                    lambda blob, label, item=selected_item:
+                                    self._stage_file_edit(item, blob, label))
                                 # So the VRAM view's CLUT list offers the
                                 # palettes this model actually samples,
                                 # rather than making the user find them.

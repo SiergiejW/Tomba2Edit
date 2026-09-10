@@ -43,10 +43,15 @@ from gui.texture_panel import TexturePanel
 from gui.smst import smst_edit
 from functions import labels
 from functions import placement
-from gui.smst.smst_parser import load_smst, parse_smst
+from gui.smst.smst_parser import parse_smst, read_smst_bytes
 
-# Which column of the part table holds the name somebody typed.
-NAME_COLUMN = 1
+# Which columns of the part table hold the name somebody typed and the
+# checkbox that shows or hides a part. Name leads, since that's what a
+# named model actually gets picked out by; the part number is what a
+# hex editor or a print statement still needs, so it stays right next
+# to it rather than disappearing.
+NAME_COLUMN = 0
+PART_COLUMN = 1
 
 # World units per GL unit. A level MDAT is thousands of units across and
 # is drawn at 1000 (gui/scld/scld_render.UNIT_SCALE); a character is
@@ -332,7 +337,18 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         rather than raising, so a mislabelled row can't take the window
         down with it."""
         try:
-            self.model_data = load_smst(dat_file_path, address, size)
+            # The same bytes twice over - once parsed for the model,
+            # once kept whole for copy/paste (see gui/smst/smst_edit.py)
+            # - so both come from read_smst_bytes() and neither can be
+            # the disc's copy while the other is a staged edit's. That
+            # split used to happen here: the model came from load_smst(),
+            # which does check a staged edit, but self.blob was read
+            # straight off disk regardless - so reselecting an edited
+            # model after looking at something else showed it correctly
+            # but pasted a SECOND part onto the pre-edit bytes, quietly
+            # dropping the first paste.
+            blob = read_smst_bytes(dat_file_path, address, size)
+            self.model_data = parse_smst(blob, address=address)
         except (FormatError, OSError, ValueError) as e:
             print(f"Error loading SMST data at 0x{address:X}: {e}")
             self.model_data = None
@@ -341,21 +357,39 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.blob = None
             self.update()
             return False
-        # The blob as it stands, kept for copy/paste - see
-        # gui/smst/smst_edit.py, which works on bytes rather than on
-        # the parsed model so nothing can be lost in a round trip.
         self.source = (dat_file_path, address, size)
-        with open(dat_file_path, "rb") as f:
-            f.seek(address)
-            self.blob = f.read(size)
+        self.blob = blob
 
         self._settle(reset_view=True)
-        print(f"selected: SMST @ 0x{address:X}  size 0x{size:X}  "
+        name = self._model_name()
+        named = f' "{name}"' if name else ""
+        print(f"selected: SMST @ 0x{address:X}{named}  size 0x{size:X}  "
               f"{len(self.model_data['groups'])} group(s)  "
               f"{self.model_data['tri_count']} tris  "
               f"{self.model_data['quad_count']} quads")
         self.frame_model()
         return True
+
+    def _model_name(self):
+        """This model's own name, if it has been given one - see
+        gui/smst/smst_viewer.SMSTPanel._name_of, which does the same
+        lookup for one of its parts."""
+        if not self.blob:
+            return ""
+        content = labels.content_key(self.blob)
+        if not content:
+            return ""
+        return placement.model_name(placement.load_model_names(), content)
+
+    def _part_name(self, group_index):
+        """One part's own name, the same way."""
+        if not self.blob:
+            return ""
+        content = labels.content_key(self.blob)
+        if not content:
+            return ""
+        return placement.model_name(placement.load_model_names(), content,
+                                    group_index)
 
     def show_blob(self, blob):
         """Draw an SMST that is in memory rather than on the disc.
@@ -846,7 +880,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         model = self.model_data
         where = f"SMST @ 0x{model['address']:X}"
         group = model["groups"][polygon["group"]]
-        owner = f"group {group.index} (@ 0x{model['address'] + group.offset:X})"
+        name = self._part_name(group.index)
+        label = f'group {group.index} ("{name}")' if name else f"group {group.index}"
+        owner = f"{label} (@ 0x{model['address'] + group.offset:X})"
         return f"{where}  {polygon_pick.describe_polygon(polygon, owner=owner)}"
 
     def _invalidate_pick_cache(self):
@@ -1314,7 +1350,7 @@ class SMSTPanel(QWidget):
 
         self.table = QTableWidget(0, 7, self)
         self.table.setHorizontalHeaderLabels(
-            ["Part", "Name", "Tris", "Quads", "Size", "Offset", "Extent"])
+            ["Name", "Part", "Tris", "Quads", "Size", "Offset", "Extent"])
         self.table.setToolTip(
             "Double-click a Name to say what that part is.\n\n"
             "Kept against the file's own bytes rather than its id, so a "
@@ -1323,7 +1359,14 @@ class SMSTPanel(QWidget):
             "names.")
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Double-click (or F2) to rename a part - NoEditTriggers here
+        # left the tooltip's own instructions unreachable: nothing could
+        # ever open the Name column's editor. Only that column is
+        # actually editable (see populate_table), so this doesn't open
+        # the Part column's checkbox cell up to being retyped too.
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents)
@@ -1401,15 +1444,19 @@ class SMSTPanel(QWidget):
         groups = self.viewer.groups
         self.table.setRowCount(len(groups))
         for row, group in enumerate(groups):
-            name = QTableWidgetItem(f"{group.index}" + ("  (empty)" if group.empty else ""))
-            name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            name.setCheckState(Qt.CheckState.Checked)
-            name.setData(Qt.ItemDataRole.UserRole, group.index)
-            self.table.setItem(row, 0, name)
+            part = QTableWidgetItem(f"{group.index}" + ("  (empty)" if group.empty else ""))
+            # Checkable, not editable - a double-click here toggles
+            # visibility (see _on_item_changed); it's the Name column
+            # that opens a text editor now that the table allows one.
+            part.setFlags((part.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                          & ~Qt.ItemFlag.ItemIsEditable)
+            part.setCheckState(Qt.CheckState.Checked)
+            part.setData(Qt.ItemDataRole.UserRole, group.index)
+            self.table.setItem(row, PART_COLUMN, part)
             named = QTableWidgetItem(self._name_of(group.index))
             named.setFlags(named.flags() | Qt.ItemFlag.ItemIsEditable)
             named.setData(Qt.ItemDataRole.UserRole, group.index)
-            self.table.setItem(row, 1, named)
+            self.table.setItem(row, NAME_COLUMN, named)
             self.table.setItem(row, 2, QTableWidgetItem(str(group.tris)))
             self.table.setItem(row, 3, QTableWidgetItem(str(group.quads)))
             self.table.setItem(row, 4, QTableWidgetItem(str(group.size)))
@@ -1432,7 +1479,7 @@ class SMSTPanel(QWidget):
         if item.column() == NAME_COLUMN:
             self._rename(item.data(Qt.ItemDataRole.UserRole), item.text())
             return
-        if item.column() != 0:
+        if item.column() != PART_COLUMN:
             return
         self.viewer.set_group_hidden(item.data(Qt.ItemDataRole.UserRole),
                                      item.checkState() != Qt.CheckState.Checked)
@@ -1470,11 +1517,18 @@ class SMSTPanel(QWidget):
         if not rows:
             self.viewer.set_highlighted_group(None)
             return
-        item = self.table.item(rows[0].row(), 0)
+        item = self.table.item(rows[0].row(), PART_COLUMN)
         index = item.data(Qt.ItemDataRole.UserRole)
         self.viewer.set_highlighted_group(index)
         if not self._filling:
             print(f"selected: {self._describe_group(index)}")
+
+    def _part_label(self, index):
+        """"part 3" or, once it's named, "part 3 (\"Left Leg\")" - the
+        one phrase every print and menu below builds its text from, so
+        a name shows up everywhere a part number used to stand alone."""
+        name = self._name_of(index)
+        return f'part {index} ("{name}")' if name else f"part {index}"
 
     def _describe_group(self, index):
         """One addressable line for a part: where it starts in the DAT,
@@ -1483,7 +1537,7 @@ class SMSTPanel(QWidget):
         if not model:
             return f"SMST group {index}"
         group = model["groups"][index]
-        return (f"SMST @ 0x{model['address']:X}  group {index} "
+        return (f"SMST @ 0x{model['address']:X}  {self._part_label(index)} "
                 f"@ 0x{model['address'] + group.offset:X} "
                 f"(+0x{group.offset:X})  {group.tris} tris  {group.quads} "
                 f"quads  size 0x{group.size:X}")
@@ -1499,21 +1553,23 @@ class SMSTPanel(QWidget):
         row = self.table.rowAt(position.y())
         if row < 0 or not self.viewer.blob:
             return
-        index = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        index = self.table.item(row, PART_COLUMN).data(Qt.ItemDataRole.UserRole)
+        label = self._part_label(index)
         menu = QMenu(self)
-        copy = menu.addAction(f"Copy part {index}")
+        copy = menu.addAction(f"Copy {label}")
         copy.triggered.connect(lambda: self._copy_part(index))
         clip = smst_edit.clipboard()
         if clip is None:
             paste = menu.addAction("Paste over this part")
             paste.setEnabled(False)
         else:
+            clip_name = f'"{clip["name"]}", ' if clip.get("name") else ""
             paste = menu.addAction(
-                f"Paste the copied part ({clip['tris']} tris, "
-                f"{clip['quads']} quads) over part {index}")
+                f"Paste the copied part ({clip_name}{clip['tris']} tris, "
+                f"{clip['quads']} quads) over {label}")
             paste.triggered.connect(lambda: self._paste_part(index))
         menu.addSeparator()
-        clear = menu.addAction(f"Clear part {index} (make it empty)")
+        clear = menu.addAction(f"Clear {label} (make it empty)")
         clear.setEnabled(not self.viewer.groups[index].empty
                          if index < len(self.viewer.groups) else False)
         clear.triggered.connect(lambda: self._clear_part(index))
@@ -1558,7 +1614,9 @@ class SMSTPanel(QWidget):
             QMessageBox.critical(self, "Copy failed", str(e))
             return
         model = self.viewer.model_data
-        clip["from"] = f"SMST @ 0x{model['address']:X} part {index}"
+        name = self._name_of(index)
+        clip["name"] = name
+        clip["from"] = f"SMST @ 0x{model['address']:X} {self._part_label(index)}"
         smst_edit.set_clipboard(clip)
         print(f"copied: {clip['from']}  {clip['tris']} tris  "
               f"{clip['quads']} quads  {len(clip['bytes'])} bytes")
@@ -1572,9 +1630,10 @@ class SMSTPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Paste failed", str(e))
             return
-        self._apply_edit(blob, note, f"Pasted over part {index}",
-                         f"pasted a part over part {index}",
-                         extra=f"{clip['from']} -> part {index}. ")
+        label = self._part_label(index)
+        self._apply_edit(blob, note, f"Pasted over {label}",
+                         f"pasted a part over {label}",
+                         extra=f"{clip['from']} -> {label}. ")
 
     def _clear_part(self, index):
         if not self.viewer.blob:
@@ -1584,8 +1643,43 @@ class SMSTPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Clear failed", str(e))
             return
-        self._apply_edit(blob, note, f"Cleared part {index}",
-                         f"cleared part {index}")
+        label = self._part_label(index)
+        self._apply_edit(blob, note, f"Cleared {label}", f"cleared {label}")
+
+    def _refresh_view(self, blob):
+        """Show `blob` and bring the part list up to date with it.
+
+        Shared by an edit made here and by refresh_if_showing() below,
+        which is the same thing done from outside this tab - a swap, an
+        imported replacement, anything else that can change the bytes
+        of a model this tab happens to already have open. Either way,
+        the parts that were hidden are put back afterwards: looking at
+        one isolated part and then editing it should not undo that."""
+        hidden = set(self.viewer.hidden_groups)
+        if not self.viewer.show_blob(blob):
+            return False
+        self.populate_table()
+        if hidden:
+            self._set_checks(lambda row: self.table.item(row, PART_COLUMN).data(
+                Qt.ItemDataRole.UserRole) not in hidden)
+        return True
+
+    def refresh_if_showing(self, address, blob):
+        """Redraw this tab if it already has the model at `address`
+        open and `blob` is not already what it is showing.
+
+        For an edit that reaches this model from outside the SMST tab -
+        MainWindow calls this after every staged file edit. A paste or
+        a clear made from inside the tab already shows itself through
+        _apply_edit(), and this stays a no-op for those: by the time
+        stage_edit() runs, the view is already showing `blob`, so the
+        blob check below skips the redundant rebuild."""
+        model = self.viewer.model_data
+        if not model or model.get("address") != address:
+            return False
+        if self.viewer.blob == blob:
+            return False
+        return self._refresh_view(blob)
 
     def _apply_edit(self, blob, note, heading, label, extra=""):
         """Show a rebuilt model, refresh the list, and stage the bytes.
@@ -1593,19 +1687,11 @@ class SMSTPanel(QWidget):
         No dialog on the way in: the point of an edit here is to look at
         it, and nothing reaches the disc until the ISO or the files are
         saved, so a confirmation would buy nothing but a click."""
-        # populate_table() re-ticks everything, so the parts that were
-        # hidden are put back afterwards - editing a model you had
-        # isolated a part of should not undo that.
-        hidden = set(self.viewer.hidden_groups)
-        if not self.viewer.show_blob(blob):
+        if not self._refresh_view(blob):
             QMessageBox.critical(
                 self, "Edit failed",
                 "The rebuilt model wouldn't parse, so nothing was changed.")
             return
-        self.populate_table()
-        if hidden:
-            self._set_checks(lambda row: self.table.item(row, 0).data(
-                Qt.ItemDataRole.UserRole) not in hidden)
         if self.stage_edit is not None:
             self.stage_edit(blob, label)
             staged = "staged - save the ISO or the files to keep it"
@@ -1630,7 +1716,7 @@ class SMSTPanel(QWidget):
             return
         self._filling = True
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
+            item = self.table.item(row, PART_COLUMN)
             if item.data(Qt.ItemDataRole.UserRole) == group:
                 self.table.selectRow(row)
                 break
@@ -1647,8 +1733,8 @@ class SMSTPanel(QWidget):
         model = self.viewer.model_data
         x, y = psx_vram.clut_address_xy(polygon["clut"])
         self.details.setText(
-            f"<b>{polygon['kind']} {polygon['slot']}</b> of part "
-            f"{polygon['group']}<br>"
+            f"<b>{polygon['kind']} {polygon['slot']}</b> of "
+            f"{self._part_label(polygon['group'])}<br>"
             f"packet at <b>0x{polygon['address']:X}</b>, draw type "
             f"{polygon['type']} "
             f"({'semi-transparent' if polygon['transparent'] else 'opaque'}, "
@@ -1677,7 +1763,7 @@ class SMSTPanel(QWidget):
         self._filling = True
         hidden = set()
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
+            item = self.table.item(row, PART_COLUMN)
             visible = keep(row)
             item.setCheckState(Qt.CheckState.Checked if visible
                                else Qt.CheckState.Unchecked)

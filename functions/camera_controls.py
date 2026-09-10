@@ -62,6 +62,18 @@ ZOOM_FRACTION = 0.10
 # How far WASD travels per frame, as a fraction of the scene radius.
 SPEED_FRACTION = 0.02
 
+# Middle-drag orbits about a point in front of the camera, the way every
+# modelling program does it, and shift+middle-drag slides that point
+# about. How close the camera may get to what it is circling, as a
+# fraction of the scene radius - past this an orbit turns into a spin on
+# the spot, because the thing being circled is behind the near plane.
+MIN_ORBIT = 1.0
+
+# The vertical field of view the views project with - see
+# smst_viewer._model_view_projection. Panning solves against it so the
+# scene stays exactly under the pointer instead of drifting.
+FIELD_OF_VIEW = 45.0
+
 # Freecam scrolling multiplies the speed rather than adding to it -
 # five notches double it, at any scale.
 SPEED_STEP = 1.15
@@ -69,7 +81,8 @@ SPEED_RANGE = 50.0
 
 # Shown in the corner of every 3D view. Here so the two views can't
 # describe the same controls differently.
-CONTROLS_HINT = ("Right-drag: look around\n"
+CONTROLS_HINT = ("Middle-drag: orbit | Shift + middle: pan\n"
+                 "Right-drag: look around\n"
                  "Hold right + WASD: move | Q/E: up/down\n"
                  "Shift: fast | Scroll: zoom, speed while looking")
 
@@ -121,6 +134,15 @@ class CameraControls:
         self.camera_mode = False
         self._restore_pos = None
 
+        # How far in front of the camera the point it orbits sits. Set
+        # by frame() to whatever it framed at, and kept in step by the
+        # wheel, so orbiting circles the thing on screen rather than
+        # some arbitrary distance. Held for the length of a drag in
+        # _orbit_pivot so the point cannot drift under the mouse.
+        self.orbit_distance = DEFAULT_SCENE_RADIUS
+        self.orbit_mode = None            # None, "orbit" or "pan"
+        self._orbit_pivot = None
+
         # Key states
         self.keys_pressed = {
             Qt.Key.Key_W: False,
@@ -165,7 +187,7 @@ class CameraControls:
 
         `lift` aims that far above the centre, as a fraction of the
         radius - see MODEL_LIFT."""
-        distance = max(radius * margin, 1e-6)
+        distance = max(radius * margin * 1.2, 1e-6)
         h, v = math.radians(heading), math.radians(pitch)
         aim_y = centre[1] + radius * lift
         self.camera_x = distance * math.cos(v) * math.sin(h) - centre[0]
@@ -174,6 +196,8 @@ class CameraControls:
         self.camera_angle_h = heading
         self.camera_angle_v = pitch
         self.set_scene_radius(radius)
+        # What a middle-drag will circle: exactly what was just framed.
+        self.orbit_distance = distance
 
     def status_text(self):
         """The camera's own two lines of the stats overlay."""
@@ -191,6 +215,89 @@ class CameraControls:
         return (-math.sin(h_rad) * math.cos(v_rad),
                 -math.sin(v_rad),
                 -math.cos(h_rad) * math.cos(v_rad))
+
+    def _eye(self):
+        """Where the camera actually is, in world units.
+
+        The views build their matrix as rotate * translate(camera), so
+        a world point p lands at R * (p + camera) and the camera is
+        wherever that comes out zero - which is -camera."""
+        return (-self.camera_x, -self.camera_y, -self.camera_z)
+
+    def _screen_axes(self):
+        """(right, up) in world units - the directions a drag moves in.
+
+        The view is Rx(pitch) * Ry(heading), so the world direction that
+        appears as screen +X is Ry(-heading) applied to it, and screen
+        +Y is that after Rx(-pitch)."""
+        h = math.radians(self.camera_angle_h)
+        v = math.radians(self.camera_angle_v)
+        right = (math.cos(h), 0.0, math.sin(h))
+        up = (math.sin(h) * math.sin(v), math.cos(v),
+              -math.cos(h) * math.sin(v))
+        return right, up
+
+    def look_at(self, aim, distance):
+        """Put the camera `distance` from `aim`, keeping its angles.
+
+        The same solve frame() does, without touching the scene radius -
+        which is what orbiting needs, since circling something does not
+        change how big it is."""
+        h, v = math.radians(self.camera_angle_h), math.radians(self.camera_angle_v)
+        self.camera_x = distance * math.cos(v) * math.sin(h) - aim[0]
+        self.camera_y = -distance * math.sin(v) - aim[1]
+        self.camera_z = -distance * math.cos(v) * math.cos(h) - aim[2]
+
+    def orbit_pivot(self):
+        """The point a middle-drag circles: straight ahead, at the
+        distance the view was last framed or zoomed to."""
+        eye = self._eye()
+        forward = self._forward()
+        return tuple(eye[i] + forward[i] * self.orbit_distance
+                     for i in range(3))
+
+    def begin_orbit(self, panning=False):
+        """Take the middle button. The pivot is worked out once, here,
+        so it stays put for the whole drag instead of creeping forward
+        as the camera moves."""
+        if self.camera_mode:
+            return                    # the freecam has the mouse
+        self.orbit_mode = "pan" if panning else "orbit"
+        self._orbit_pivot = self.orbit_pivot()
+        self.widget.setCursor(QCursor(
+            Qt.CursorShape.SizeAllCursor if panning
+            else Qt.CursorShape.ClosedHandCursor))
+
+    def end_orbit(self):
+        if self.orbit_mode is None:
+            return
+        self.orbit_mode = None
+        self._orbit_pivot = None
+        self.widget.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+
+    def orbit(self, dx, dy):
+        """Swing around the held pivot by a mouse delta."""
+        self.camera_angle_h += dx * self.mouse_sensitivity
+        self.camera_angle_v = max(-89.0, min(
+            89.0, self.camera_angle_v + dy * self.mouse_sensitivity))
+        self.look_at(self._orbit_pivot, self.orbit_distance)
+
+    def pan(self, dx, dy):
+        """Slide the view, and the point it orbits, with the mouse.
+
+        The scene follows the pointer exactly rather than at some chosen
+        rate: at the pivot's distance a viewport shows
+        2 * distance * tan(fov / 2) of world, so one pixel is that over
+        the widget's height. Whatever is under the cursor when the drag
+        starts is still under it when it ends, at any zoom."""
+        right, up = self._screen_axes()
+        height = max(self.widget.height(), 1)
+        span = 2.0 * self.orbit_distance * math.tan(math.radians(FIELD_OF_VIEW) / 2)
+        step = span / height
+        self.camera_x += (right[0] * dx - up[0] * dy) * step
+        self.camera_y += (right[1] * dx - up[1] * dy) * step
+        self.camera_z += (right[2] * dx - up[2] * dy) * step
+        self._orbit_pivot = self.orbit_pivot()
 
     def handle_key_movement(self):
         """Handle camera movement based on WASD keys"""
@@ -241,6 +348,14 @@ class CameraControls:
         else:
             forward_x, forward_y, forward_z = self._forward()
             step = scroll_amount * self.zoom_step
+            # Zooming walks the camera towards what it is orbiting, so
+            # the pivot has to stay where it is - otherwise it runs
+            # ahead of the camera and orbiting circles thin air. Held
+            # off the near plane, since a pivot behind the camera turns
+            # an orbit into a spin.
+            floor = self.scene_radius * MIN_ORBIT
+            step = min(step, self.orbit_distance - floor)
+            self.orbit_distance = max(floor, self.orbit_distance - step)
             self.camera_x -= forward_x * step
             self.camera_y -= forward_y * step
             self.camera_z -= forward_z * step
@@ -272,18 +387,24 @@ class CameraControls:
             self._restore_pos = None
 
     def mousePressEvent(self, event):
-        """The right button looks around, for as long as it is held.
+        """The right button looks around, for as long as it is held; the
+        middle button orbits, and pans with shift held.
 
         The left button is not touched here. A view with something to
         select uses it for that - see MDATViewer.mousePressEvent - and a
         view with nothing to select ignores it."""
         if event.button() == Qt.MouseButton.RightButton:
             self.begin_look()
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.begin_orbit(
+                panning=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
         self.last_pos = event.pos()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton:
             self.end_look()
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.end_orbit()
 
     def mouseMoveEvent(self, event):
         """Handle mouse movement"""
@@ -297,6 +418,19 @@ class CameraControls:
                                                  self.camera_angle_v + dy * self.mouse_sensitivity))
 
             QCursor.setPos(self.widget.mapToGlobal(QPoint(*self.display_center)))
+            self.widget.update()
+        elif self.orbit_mode is not None:
+            # Plain deltas here, and the pointer left where it is: a
+            # drag that circles something wants to be watched, unlike
+            # the freecam's look, which warps the cursor to the middle
+            # so it can turn forever.
+            pos = event.pos()
+            dx = pos.x() - self.last_pos.x()
+            dy = pos.y() - self.last_pos.y()
+            if self.orbit_mode == "pan":
+                self.pan(dx, dy)
+            else:
+                self.orbit(dx, dy)
             self.widget.update()
 
         self.last_pos = event.pos()
@@ -332,8 +466,10 @@ class CameraEventMixin:
 
     def focusOutEvent(self, event):
         # Alt-tabbing away with the button down would otherwise leave
-        # the pointer hidden and the view still turning.
+        # the pointer hidden and the view still turning - or, for the
+        # middle button, the drag cursor stuck on.
         self.camera_controls.end_look()
+        self.camera_controls.end_orbit()
         super().focusOutEvent(event)
 
     def mouseMoveEvent(self, event):
