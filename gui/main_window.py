@@ -1714,7 +1714,11 @@ class MainWindow(QMainWindow):
     # one of the 22 chunks carrying a TXTD lines up with an Axx.BIN this
     # way, and the four ids with no area (START, GAME, SOP, CRD) land on
     # exactly the four chunks that have no DAT range.
+    # AREA_03, the intro, runs on SOP.BIN - see functions.placement for
+    # what says so. It mapped to nothing before, so its characters had
+    # only MAIN.EXE to be posed from.
     OVERLAY_NAMES = {6: "START.BIN", 7: "DEMO.BIN", 8: "GAME.BIN",
+                     9: "SOP.BIN",
                      32: "SOP.BIN", 34: "OPN.BIN", 35: "CRD.BIN"}
     for _i in range(22):
         OVERLAY_NAMES[10 + _i] = f"A0{'0123456789ABCDEFGHIJKL'[_i]}.BIN"

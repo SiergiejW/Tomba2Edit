@@ -113,6 +113,14 @@ RECORD = 8              # a bone in the MAIN.EXE table
 ONE = 4096              # 1.0, in the fixed point the GTE works in
 IDENTITY = (ONE, 0, 0, 0, ONE, 0, 0, 0, ONE)
 
+# The biggest scale a live node may hold and still be believed. Taken
+# from the disc rather than picked: the largest value any animation
+# frame carries is 17128, in the sea anemone's - which is why 4 * ONE
+# was too tight. It rejected the anemone's own stretched segments, so
+# find_node_arrays could not see it and no savestate could settle its
+# pairing.
+MOST_SCALE = 5 * ONE
+
 # MAIN.EXE is linked to this address and carries a 2048-byte header, so
 # an address seen in RAM and an offset into the file convert both ways.
 EXE_LOAD = 0x80010000
@@ -351,7 +359,7 @@ def _is_node(ram, at):
     if pointer >> 24 != 0x80 or (pointer & 0x1FFFFF) >= len(ram):
         return False
     scale = struct.unpack_from("<3h", ram, at + 0x38)
-    if not all(0 < v <= 4 * ONE for v in scale):
+    if not all(0 < v <= MOST_SCALE for v in scale):
         return False
     matrix = struct.unpack_from("<9h", ram, at + 0x18)
     for row in range(3):

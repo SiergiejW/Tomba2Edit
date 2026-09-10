@@ -1141,7 +1141,14 @@ def bindings_from_state(state_path, dat_path, dat_start, dat_end,
 # gui.main_window.MainWindow.OVERLAY_NAMES, kept here so the command
 # line below runs without the GUI; the app itself uses MainWindow's.
 _PURIFIED_OFFSET = 22
+# AREA_03, the intro scene, has no Axx.BIN of its own and used to map to
+# nothing at all - so nothing was ever searched for its characters and
+# the intro Tabby could not be posed on her own skeleton. It runs on
+# SOP.BIN: that is the only overlay besides MAIN.EXE holding a 15-bone
+# humanoid table, and the one it holds is byte-for-byte the table Tabby
+# is already approved on in the Last Pig Boss level and the outro.
 _OVERLAYS = {6: "START.BIN", 7: "DEMO.BIN", 8: "GAME.BIN",
+             9: "SOP.BIN",
              32: "SOP.BIN", 34: "OPN.BIN", 35: "CRD.BIN"}
 for _i in range(22):
     _OVERLAYS[10 + _i] = f"A0{'0123456789ABCDEFGHIJKL'[_i]}.BIN"

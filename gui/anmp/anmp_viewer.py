@@ -100,8 +100,11 @@ class ANMPViewer(QWidget):
         self.limbs_table.setHorizontalHeaderLabels(["Limb", "X", "Y", "Z"])
         self.limbs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.limbs_table.verticalHeader().setVisible(False)
+        # NOT ResizeToContents. This table is rewritten once per frame,
+        # and that mode re-measures every column across every row on each
+        # cell written - see _fill_limbs for what it cost.
         self.limbs_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents)
+            QHeaderView.ResizeMode.Interactive)
         self.limbs_table.horizontalHeader().setStretchLastSection(True)
         self.limbs_table.itemSelectionChanged.connect(self._on_limb_selected)
         # The frame the limb rows were filled from, so a picked
@@ -852,37 +855,92 @@ class ANMPViewer(QWidget):
         frame = self.anmp.frames[index]
         following = (self.anmp.frames[index + 1]
                      if amount and index + 1 < len(self.anmp) else None)
-        rotations, translation = (blend(frame, following, amount) if amount
-                                  else (frame.rotations(), frame.translation()))
+        rotations, translation, scales = (
+            blend(frame, following, amount) if amount
+            else (frame.rotations(), frame.translation(), frame.scaling()))
         transforms = pose_transforms(rotations, translation,
-                                     self._hierarchy, self._pivots)
+                                     self._hierarchy, self._pivots,
+                                     scales=scales)
         self.viewer.set_pose(transforms, self._pivots)
         self._where = index + amount
         between = f" + {part}/{steps}" if part else ""
         self.frame_label.setText(f"{index + 1}{between} / {len(self.anmp)}")
-        self._fill_limbs(frame, rotations, translation)
+        self._fill_limbs(frame, rotations, translation, scales)
 
     def _on_steps_changed(self):
         self._rescale_slider()
         self._retime()
         self.show_position(self.slider.value())
 
-    def _fill_limbs(self, frame, rotations=None, translation=None):
+    def _fill_limbs(self, frame, rotations=None, translation=None,
+                    scales=None):
+        """The frame's angles, written into the table beside the model.
+
+        This runs once per displayed frame, so it has to be cheap, and it
+        was not. The header used to be on ResizeToContents, which
+        re-measures every column across every row each time a cell is
+        written - the square of the row count:
+
+            rows   ResizeToContents   Interactive
+               8         4.6 ms          0.4 ms
+              17        15.8 ms          0.5 ms
+              32        57.7 ms          0.7 ms
+              64       223.3 ms          0.9 ms
+
+        against 0.8 ms for the pose and all the vertices together. That
+        is what made the ghost guard fall off a cliff at frame 19, where
+        its frames go from 7 limbs to 16, on a machine with nothing
+        whatever wrong with it - and it would have been far worse on the
+        63-limb frames elsewhere on the disc.
+
+        So the header is Interactive and the columns are sized only when
+        the shape of the table changes. Reusing the cells rather than
+        building new ones saves the allocations on top, though it is the
+        header mode that was doing the damage: with ResizeToContents,
+        reuse alone still cost 13 ms a frame at 16 limbs."""
         import math
         rotations = frame.rotations() if rotations is None else rotations
         translation = frame.translation() if translation is None else translation
+        # A bit-6 frame carries a scale per limb as well, and that is
+        # half of what some animations do - the sea anemone stretches on
+        # 190 of its 192 frames and barely rotates - so it is shown
+        # rather than left invisible.
+        sizes = frame.scaling() if scales is None else scales
+        stretchy = bool(frame.scales)
+        columns = 7 if stretchy else 4
         rows = []
         if frame.root:
             x, y, z = translation
-            rows.append(("root (move)", f"{x:.1f}", f"{y:.1f}", f"{z:.1f}"))
+            rows.append(("root (move)", f"{x:.1f}", f"{y:.1f}", f"{z:.1f}")
+                        + (("", "", "") if stretchy else ()))
         for i, (x, y, z) in enumerate(rotations):
             name = self._hierarchy[i][0] if i < len(self._hierarchy) else f"limb {i}"
-            rows.append((name, f"{math.degrees(x):7.1f}",
-                         f"{math.degrees(y):7.1f}", f"{math.degrees(z):7.1f}"))
-        self.limbs_table.setRowCount(len(rows))
+            cells = (name, f"{math.degrees(x):7.1f}",
+                     f"{math.degrees(y):7.1f}", f"{math.degrees(z):7.1f}")
+            if stretchy:
+                sx, sy, sz = sizes[i] if i < len(sizes) else (1.0, 1.0, 1.0)
+                cells += (f"{sx:5.2f}", f"{sy:5.2f}", f"{sz:5.2f}")
+            rows.append(cells)
+        reshaped = (self.limbs_table.rowCount() != len(rows)
+                    or self.limbs_table.columnCount() != columns)
+        if reshaped:
+            self.limbs_table.setColumnCount(columns)
+            self.limbs_table.setHorizontalHeaderLabels(
+                ["Limb", "X", "Y", "Z"]
+                + (["SX", "SY", "SZ"] if stretchy else []))
+            self.limbs_table.setRowCount(len(rows))
         for r, cells in enumerate(rows):
             for c, text in enumerate(cells):
-                self.limbs_table.setItem(r, c, QTableWidgetItem(text))
+                item = self.limbs_table.item(r, c)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.limbs_table.setItem(r, c, item)
+                if item.text() != text:
+                    item.setText(text)
+        # The angles are all the same width frame to frame, so the
+        # columns only need measuring when the table changes shape.
+        if reshaped:
+            self.limbs_table.resizeColumnsToContents()
         # So a picked row can be named by where its angles live.
         self._limbs_frame = frame
 

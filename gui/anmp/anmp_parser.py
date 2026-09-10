@@ -151,10 +151,12 @@ def _shortest_step(a, b):
 
 
 def blend(first, second, amount):
-    """A pose part-way between two frames, as (rotations, translation).
+    """A pose part-way between two frames, as (rotations, translation,
+    scales).
 
     `amount` runs 0 at `first` to 1 at `second`. Rotations take the
-    short way round each axis; the root translation is a plain lerp.
+    short way round each axis; the root translation and the scales are
+    plain lerps.
 
     Frames of different shapes are not blended - the limbs would not
     line up - so a pair with different limb counts snaps to whichever
@@ -163,7 +165,7 @@ def blend(first, second, amount):
 
     if second is None or first.limb_count != second.limb_count:
         frame = first if amount < 0.5 or second is None else second
-        return frame.rotations(), frame.translation()
+        return frame.rotations(), frame.translation(), frame.scaling()
 
     turn = VALUE_MASK + 1
     rotations = []
@@ -177,7 +179,11 @@ def blend(first, second, amount):
 
     ta, tb = first.translation(), second.translation()
     translation = tuple(a + (b - a) * amount for a, b in zip(ta, tb))
-    return rotations, translation
+
+    sa, sb = first.scaling(), second.scaling()
+    scales = [tuple(a + (b - a) * amount for a, b in zip(pa, pb))
+              for pa, pb in zip(sa, sb)]
+    return rotations, translation, scales
 
 
 @dataclass

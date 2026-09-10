@@ -202,7 +202,7 @@ def _euler_matrix(rx, ry, rz):
 
 
 def pose_transforms(rotations, translation, hierarchy, pivots,
-                    translation_scale=1.0):
+                    translation_scale=1.0, scales=None):
     """(rotation, offset) per limb, so a vertex v of limb i in the rest
     model poses to `rotation @ (v - pivot) + offset`.
 
@@ -211,7 +211,18 @@ def pose_transforms(rotations, translation, hierarchy, pivots,
     (see anmp_parser.blend).
 
     Composed down the hierarchy: a limb carries its parent's rotation,
-    so bending an elbow takes the hand with it."""
+    so bending an elbow takes the hand with it.
+
+    `scales` is the per-limb scale a bit-6 frame carries, or None. It
+    goes INSIDE the limb's own matrix, exactly as
+    f_UpdateActorScaledPartTransforms builds it - R * S, then the parent
+    on the outside - which means a stretched limb carries its children
+    further out as well as being longer itself. That is what makes the
+    sea anemone a stalk that extends rather than a stack of segments:
+    190 of its 192 frames carry scales, from 0.77x to 4.18x.
+
+    A game scale is in the bone's own axes, so it permutes into the
+    viewer's the same way an offset does - see game_rest.joints."""
     # The frame's root move is in the game's axes like everything else,
     # so it takes the same turn game_rest.joints gives the joints.
     x, y, z = translation
@@ -225,6 +236,10 @@ def pose_transforms(rotations, translation, hierarchy, pivots,
             out[i] = (np.eye(3), pivots[i] + root)
             continue
         local = _euler_matrix(*rotations[i])
+        if scales is not None and i < len(scales):
+            sx, sy, sz = scales[i]
+            if (sx, sy, sz) != (1.0, 1.0, 1.0):
+                local = local @ np.diag((sz, sy, sx))
         parent = hierarchy[i][1]
         if parent is None:
             out[i] = (local, pivots[i] + root)

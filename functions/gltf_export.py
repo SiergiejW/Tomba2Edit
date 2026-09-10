@@ -559,6 +559,25 @@ def _rig(gltf, buffer, bones, frames, fps, name):
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": first_bone + i, "path": "rotation"}})
 
+    # Per-limb scale, where the frames carry it - bit 6 of the tag. A
+    # glTF node's scale carries its children the same way the game's
+    # does, so this needs no composing by hand. The sea anemone is 190
+    # frames of it; without this its stalk cannot extend.
+    if any(getattr(f, "scales", None) for f in frames):
+        for i in range(len(bones)):
+            stretch = np.ones((len(frames), 3), dtype=np.float32)
+            for f, frame in enumerate(frames):
+                sizes = frame.scaling()
+                if i < len(sizes):
+                    sx, sy, sz = sizes[i]
+                    stretch[f] = (sz, sy, sx)      # into these axes
+            samplers.append({"input": time_accessor,
+                             "output": buffer.add(stretch, "VEC3", FLOAT),
+                             "interpolation": "LINEAR"})
+            channels.append({"sampler": len(samplers) - 1,
+                             "target": {"node": first_bone + i,
+                                        "path": "scale"}})
+
     # Where the roots actually go. pose_transforms puts a root at
     # `pivots[root] + translation`, and the node already carries the
     # pivot as its own offset above, so the frame's translation is what
