@@ -194,6 +194,14 @@ class VoiceLink:
         needs = [(i, n) for i, n in needs if n]
         self._fallback_by_master = _align(needs, sizes)
 
+    def mark_fallback_resolving(self):
+        """Claim the one-time fallback resolve before it actually starts,
+        so a caller running it on a worker thread (see
+        gui/txtd/txtd_viewer.py's _ResolveFallbackChannels) can't be
+        asked to start a second one for a line picked while the first
+        is still decoding."""
+        self._fallback_tried = True
+
     def fallback_pending(self, master_index):
         """True if resolving this master's clip is about to pay the
         one-time cost of decoding every channel to find the fallback's

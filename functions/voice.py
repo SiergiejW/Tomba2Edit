@@ -293,13 +293,44 @@ def _sx(imm):
     return imm - 0x10000 if imm > 0x7FFF else imm
 
 
-def _parse_case(word, top, a3_at, base, overlay_path):
-    """One dispatch case, anchored on its channel instruction.
-
-    A case sets three things and jumps to a shared tail:
+def _case_anchor(word, a3_at):
+    """(channel, hi, lo) at a case's channel-setting instruction, or
+    None - the base-INDEPENDENT half of the pattern _parse_case looks
+    for:
 
         lui   v0, hi            (often in a branch delay slot above,
         addiu v0, v0, lo         and shared with the case beside it)
+        addiu a3, zero, n       <- the channel: the anchor
+
+    Split out from _parse_case so find_overlay_base can reuse the exact
+    same structural match to locate candidate table addresses without
+    already knowing the base those addresses are relative to."""
+    w = word(a3_at)
+    channel = w & 0xFFFF
+    if (w >> 26 != 0x09 or (w >> 16) & 31 != 7 or (w >> 21) & 31 != 0
+            or channel >= BLOCK):
+        return None
+    for back in range(1, 4):
+        u = word(a3_at - back * 4)
+        if u >> 26 == 0x09 and (u >> 16) & 31 == 2:      # addiu v0, v0, lo
+            lo = u & 0xFFFF
+            for further in range(back + 1, back + 14):
+                v = word(a3_at - further * 4)
+                if v >> 26 == 0x0F and (v >> 16) & 31 == 2:   # lui v0, hi
+                    return channel, v & 0xFFFF, lo
+            break
+    return None
+
+
+def _parse_case(word, top, a3_at, base, overlay_path):
+    """One dispatch case, anchored on its channel instruction - see
+    _case_anchor for the address half of the pattern.
+
+    A case sets three things and jumps to a shared tail; the last one
+    is the only part that needs a base at all:
+
+        lui   v0, hi
+        addiu v0, v0, lo         -> clip_table = (hi,lo) - base
         addiu a3, zero, n       <- the channel: the anchor
         addiu a2, zero, b       <- block offset, right after, sometimes
                                    past the jump in its delay slot
@@ -308,24 +339,12 @@ def _parse_case(word, top, a3_at, base, overlay_path):
     channel and the offset always ahead of it; looking backwards for the
     offset picks up the previous case's, which is how A0J's second
     master came out with offset 0 instead of 796."""
-    w = word(a3_at)
-    channel = w & 0xFFFF
-    if (w >> 26 != 0x09 or (w >> 16) & 31 != 7 or (w >> 21) & 31 != 0
-            or channel >= BLOCK):
+    found = _case_anchor(word, a3_at)
+    if found is None:
         return None
-
-    clip_table = None
-    for back in range(1, 4):
-        u = word(a3_at - back * 4)
-        if u >> 26 == 0x09 and (u >> 16) & 31 == 2:      # addiu v0, v0, lo
-            lo = u & 0xFFFF
-            for further in range(back + 1, back + 14):
-                v = word(a3_at - further * 4)
-                if v >> 26 == 0x0F and (v >> 16) & 31 == 2:   # lui v0, hi
-                    clip_table = ((v & 0xFFFF) << 16) + _sx(lo) - base
-                    break
-            break
-    if clip_table is None or not (0 <= clip_table < top):
+    channel, hi, lo = found
+    clip_table = (hi << 16) + _sx(lo) - base
+    if not (0 <= clip_table < top):
         return None
     if not read_clip_table(overlay_path, clip_table):
         return None
@@ -351,7 +370,61 @@ def _case_near(word, top, at, base, overlay_path):
     return None
 
 
-def read_dispatch(overlay_path, base=OVERLAY_BASE):
+def find_overlay_base(overlay_path):
+    """Where this overlay is actually loaded in RAM, worked out from
+    its own bytes rather than assumed.
+
+    OVERLAY_BASE was read off one savestate, and only that build's
+    overlays land exactly there - every other region's retail disc
+    (checked: DE, JP, SP) links its own overlays several kilobytes to
+    tens of kilobytes away from it, almost certainly because a
+    differently-sized MAIN.EXE (different embedded strings, different
+    language data) shifts where the free RAM the overlay loads into
+    actually starts. The CASE-DISPATCH CODE ITSELF is not what moves -
+    _case_anchor's instruction shape (lui/addiu building an address,
+    addiu a3 setting the channel) is exactly as present in every one of
+    those builds as it is in the one OVERLAY_BASE came from.
+
+    So rather than guess a base, this finds every place in the overlay
+    that looks like a case (_case_anchor, deliberately base-independent)
+    and asks what base would put its (hi, lo) address on top of one of
+    find_tables()'s own base-independent table positions. A handful of
+    real cases (this build uses the pattern at all) landing on the same
+    value settles it - a coincidental hit is easy once, converging
+    across several different case sites on one real disc essentially
+    never happens by chance.
+
+    None if nothing lines up - a build with no clip tables at all, or
+    one whose compiler didn't build addresses this way."""
+    from collections import Counter
+
+    data = open(overlay_path, "rb").read()
+    top = len(data) - 4
+
+    def word(at):
+        return struct.unpack_from("<I", data, at)[0] if 0 <= at < top else 0
+
+    tables = {offset for offset, _entries in find_tables(overlay_path)}
+    if not tables:
+        return None
+    votes = Counter()
+    for a3_at in range(0, top, 4):
+        found = _case_anchor(word, a3_at)
+        if found is None:
+            continue
+        _channel, hi, lo = found
+        addr = (hi << 16) + _sx(lo)
+        for t in tables:
+            base = addr - t
+            if 0x80000000 <= base < 0x80200000:
+                votes[base] += 1
+    if not votes:
+        return None
+    base, count = votes.most_common(1)[0]
+    return base if count >= 2 else None
+
+
+def read_dispatch(overlay_path, base=None):
     """{master: (clip table offset, channel, block offset)} from the code.
 
     The overlay picks a master's voice in a short run of instructions -
@@ -366,16 +439,13 @@ def read_dispatch(overlay_path, base=OVERLAY_BASE):
     This is the game's own mapping rather than a guess at it, so it
     needs no audio, no probing and no cache.
 
-    OVERLAY_BASE itself (where an overlay lands in RAM) does hold across
-    every build checked - a proto from months earlier and every other
-    region's retail disc all still have their clip tables sitting at
-    this same base plus some offset. What differs between them is the
-    surrounding CODE: different embedded strings reflow the compiler's
-    output around it, which is enough to move _parse_case's instruction
-    pattern out of the narrow window it looks in. That case is not
-    something a base guess can fix - see VoiceLink.set_masters's table-
-    size fallback in gui/txtd/voice_link.py, which sidesteps code
-    reading entirely for whatever this misses."""
+    `base` defaults to whatever find_overlay_base works out for this
+    exact file, falling back to the address one build's savestate
+    confirmed only when nothing lines up - so a different region or
+    proto build isn't stuck assuming it links its overlays where the US
+    retail disc does."""
+    if base is None:
+        base = find_overlay_base(overlay_path) or OVERLAY_BASE
     data = open(overlay_path, "rb").read()
     top = len(data) - 4
 

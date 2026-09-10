@@ -33,8 +33,11 @@ class ISOHandler:
         self.temp_dir = None
         self.extracted_files = {}
         # [{"name", "size"}, ...] for every file in the disc's BIN/
-        # folder (area overlays, SOP.BIN, etc.) - metadata only, not
-        # extracted to disk, since only SOP.BIN is ever actually read.
+        # folder (area overlays, SOP.BIN, etc.) - the bytes themselves
+        # are written into temp_dir/BIN/ too (see extract_iso), so
+        # anything that reads an area's own overlay - voice dispatch,
+        # level editing - works the same whether the disc was opened as
+        # an image or as an already-extracted folder.
         self.bin_overlays = []
 
     def extract_iso(self, iso_path):
@@ -82,11 +85,27 @@ class ISOHandler:
                 None,
             )
             if bin_dir is not None:
+                overlay_entries = [e for e in
+                                   reader.list_directory(bin_dir.lba, bin_dir.size)
+                                   if not e.is_dir]
                 self.bin_overlays = [
                     {"name": e.name.upper(), "size": e.size}
-                    for e in reader.list_directory(bin_dir.lba, bin_dir.size)
-                    if not e.is_dir
+                    for e in overlay_entries
                 ]
+                # Written to disk, not just listed: an area's overlay is
+                # where voice dispatch and the level editor's own object
+                # handlers are read from, and an ISO carries no
+                # already-extracted BIN/ folder to point either at.
+                overlay_dir = os.path.join(self.temp_dir, "BIN")
+                os.makedirs(overlay_dir, exist_ok=True)
+                for e in overlay_entries:
+                    try:
+                        data = reader.read_file(e.lba, e.size)
+                    except Exception:
+                        continue
+                    with open(os.path.join(overlay_dir, e.name.upper()),
+                             "wb") as out:
+                        out.write(data)
 
             return files_found
 

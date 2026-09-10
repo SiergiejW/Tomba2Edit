@@ -1776,7 +1776,12 @@ class MainWindow(QMainWindow):
         root = os.path.dirname(os.path.dirname(os.path.dirname(self.dat_file)))
         for folder in (os.path.join(root, "BIN"),
                        os.path.join(os.path.dirname(
-                           os.path.dirname(self.dat_file)), "BIN")):
+                           os.path.dirname(self.dat_file)), "BIN"),
+                       # An ISO opened directly (rather than an already-
+                       # extracted folder) has TOMBA2.DAT sitting flat in
+                       # its own temp dir, with BIN/ written beside it as
+                       # a sibling - see ISOHandler.extract_iso.
+                       os.path.join(os.path.dirname(self.dat_file), "BIN")):
             path = os.path.join(folder, name)
             if os.path.exists(path):
                 return path

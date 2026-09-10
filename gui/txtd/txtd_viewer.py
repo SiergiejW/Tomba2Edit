@@ -1,6 +1,6 @@
 import re
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import (
     QStandardItem, QStandardItemModel, QFont, QIcon, QBrush, QColor,
     QSyntaxHighlighter, QTextCharFormat,
@@ -25,6 +25,30 @@ from icons.icons import icon_TXTD_master, icon_TXTD_entry
 # Custom item-data role used to link a tree row back to its
 # (master_index, entry_index) position in self.current_data.
 ENTRY_LOCATION_ROLE = Qt.ItemDataRole.UserRole + 10
+
+
+class _ResolveFallbackChannels(QThread):
+    """Decoding every one of an overlay's 32 channels once, to work out
+    which one a fallback-matched master actually speaks through (see
+    VoiceLink.set_masters / _resolve_fallback_channels).
+
+    Off the GUI thread on purpose: it takes the better part of a minute,
+    and running it inline froze the window solid for that whole time on
+    a build whose code layout read_dispatch's pattern doesn't match -
+    the Japanese retail disc among them. Left unparented deliberately,
+    same as voice_panel.py's own _Decode: a QThread owned by a widget is
+    destroyed with it, and destroying one still running takes the
+    process down."""
+
+    done = pyqtSignal()
+
+    def __init__(self, voice_link):
+        super().__init__()
+        self.voice_link = voice_link
+
+    def run(self):
+        self.voice_link._resolve_fallback_channels()
+        self.done.emit()
 
 # --- Entry tree row colors -------------------------------------------------
 # Whole-row colors used in the *tree* to flag an entry's edit status. These
@@ -373,6 +397,7 @@ class TXTDViewer(QWidget):
         voice_row.addWidget(self.voice_note, 1)
         right_layout.addLayout(voice_row)
         self._edits = VoiceEditStore()
+        self._resolve_thread = None
         # The budget line stays under both halves, where it reads as
         # belonging to the entry rather than to the edit box.
         right_layout.addWidget(self.status_label)
@@ -706,7 +731,14 @@ class TXTDViewer(QWidget):
         if entry is None or voice is None:
             return
         master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
-        self._warn_fallback_cost(voice, master_index)
+        self._resolve_then(
+            master_index,
+            lambda: self._export_voice_line_now(entry, master_index))
+
+    def _export_voice_line_now(self, entry, master_index):
+        voice = getattr(self, "_voice", None)
+        if voice is None:
+            return
         try:
             samples, rate, note = voice.clip_for(entry, master_index)
         except Exception as exc:
@@ -740,7 +772,14 @@ class TXTDViewer(QWidget):
                 "original sectors have to be there to patch.")
             return
         master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
-        self._warn_fallback_cost(voice, master_index)
+        self._resolve_then(
+            master_index,
+            lambda: self._import_voice_line_now(entry, master_index))
+
+    def _import_voice_line_now(self, entry, master_index):
+        voice = getattr(self, "_voice", None)
+        if voice is None:
+            return
         try:
             abs_indices, note = voice.sectors_for(entry, master_index)
         except Exception as exc:
@@ -792,21 +831,50 @@ class TXTDViewer(QWidget):
         except (KeyError, IndexError):
             return None
 
-    def _warn_fallback_cost(self, voice, master_index):
-        """A master matched by clip count rather than by code (see
-        VoiceLink.set_masters) pays a one-time, tens-of-seconds cost the
-        first time it is actually played, exported or imported - working
-        out its channel from the audio itself, since nothing in the
-        code could be read to say so. Shown before that happens rather
-        than after, since otherwise it just looks like the tool froze."""
-        from PyQt6.QtWidgets import QApplication
-
-        if voice.fallback_pending(master_index):
+    def _resolve_then(self, master_index, callback):
+        """Run a master's one-time fallback channel resolution (see
+        VoiceLink.fallback_pending) off the GUI thread before calling
+        `callback` - used by Play/Export/Import line so a build with no
+        code match for its dispatch doesn't freeze the window solid for
+        the better part of a minute. Calls `callback` right away if
+        nothing needs resolving, or if one is already running (a second
+        line picked mid-resolve is just dropped rather than queued)."""
+        voice = getattr(self, "_voice", None)
+        if voice is None or not voice.fallback_pending(master_index):
+            callback()
+            return
+        if getattr(self, "_resolve_thread", None) is not None:
             self.voice_note.setText(
-                "Working out this area's voice channels from the audio "
-                "itself (no code match for this build) - one-time, can "
-                "take about a minute...")
-            QApplication.processEvents()
+                "Still working out this area's voice channels - try "
+                "again in a moment.")
+            return
+        voice.mark_fallback_resolving()
+        self.voice_note.setText(
+            "Working out this area's voice channels from the audio "
+            "itself (no code match for this build) - one-time, can "
+            "take about a minute...")
+        self.play_voice_button.setEnabled(False)
+        self.export_voice_button.setEnabled(False)
+        self.import_voice_button.setEnabled(False)
+        self._resolve_thread = _ResolveFallbackChannels(voice)
+        self._resolve_thread.done.connect(
+            lambda: self._resolve_done(callback))
+        self._resolve_thread.start()
+
+    def _resolve_done(self, callback):
+        self._resolve_thread = None
+        self._refresh_voice_button()
+        callback()
+
+    def _stop_resolve(self):
+        # Same trade-off as voice_panel.py's own _stop_decode: this can't
+        # be interrupted mid-decode, so closing doesn't wait for the
+        # whole thing out - it gives it a few seconds and then just lets
+        # go, same as an unparented QThread is meant to be left.
+        thread = getattr(self, "_resolve_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.wait(5000)
+        self._resolve_thread = None
 
     def _play_voice(self):
         entry = self._selected_entry()
@@ -817,7 +885,13 @@ class TXTDViewer(QWidget):
         # sink leaves the first one running and reading its own buffer.
         self._stop_voice()
         master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
-        self._warn_fallback_cost(voice, master_index)
+        self._resolve_then(
+            master_index, lambda: self._play_voice_now(entry, master_index))
+
+    def _play_voice_now(self, entry, master_index):
+        voice = getattr(self, "_voice", None)
+        if voice is None:
+            return
         try:
             samples, rate, note = voice.clip_for(entry, master_index)
         except Exception as exc:
@@ -837,6 +911,7 @@ class TXTDViewer(QWidget):
 
     def closeEvent(self, event):
         self._stop_voice()
+        self._stop_resolve()
         super().closeEvent(event)
 
     def _on_text_changed(self):
