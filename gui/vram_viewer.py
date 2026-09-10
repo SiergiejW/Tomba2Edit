@@ -302,14 +302,25 @@ class VRAMCanvas(QWidget):
             if label:
                 painter.drawText(where.adjusted(2, -14, 0, 0), label)
 
+    def center_on(self, rect):
+        """Pan - never zoom - so `rect`'s centre is in the middle of the
+        view. Leaves self.highlight and self.highlights alone, for a
+        caller (like the texture migration preview) whose own rings
+        already mark the spot and would rather not draw a second one."""
+        if rect is None or not self.pixmap:
+            return
+        self.origin = QPointF(
+            max(0.0, rect.center().x() - self.width() / (2 * self.zoom)),
+            max(0.0, rect.center().y() - self.height() / (2 * self.zoom)))
+        self._clamp()
+        self.update()
+
     def show_rect(self, rect):
-        """Ring a rectangle and bring it into view."""
+        """Ring a rectangle and bring it into view, or clear the ring
+        with rect=None - which still has to repaint even though there
+        is then nothing for center_on() to do."""
         self.highlight = rect
-        if rect is not None and self.pixmap:
-            self.origin = QPointF(
-                max(0.0, rect.center().x() - self.width() / (2 * self.zoom)),
-                max(0.0, rect.center().y() - self.height() / (2 * self.zoom)))
-            self._clamp()
+        self.center_on(rect)
         self.update()
 
     def _draw_grid(self, painter, source):

@@ -60,6 +60,12 @@ from gui.vram_viewer import VRAMCanvas, decode_vram_bytes, vram_index_image
 
 PLACED = QColor(255, 60, 60)
 PALETTE_MARK = QColor(120, 200, 255)
+# A page or palette this model already samples right where it is - no
+# move needed, so nothing has to go red. Still blue, as PALETTE_MARK is,
+# but a darker one, and always carries the "already here" label - the
+# two can appear in the same preview when part of a model moves and
+# part of it doesn't, and need to read as different things.
+ALREADY_HERE = QColor(60, 110, 220)
 
 
 class MigrateDialog(QDialog):
@@ -399,11 +405,25 @@ class MigrateDialog(QDialog):
         self.moving.blockSignals(False)
         self._show_current_move()
 
+    def _move_rect(self, kind, key):
+        """Where one entry of the Moving list lands, in canvas
+        coordinates - the same span-4 scaling refresh_preview()'s own
+        rings use, so this can sit directly among them."""
+        span = 4
+        if kind == "move":
+            x, y, w, h = self.plan.moves[key].dest_rect
+            return QRectF(x * span, y, w * span, h)
+        x, y = psx_vram.clut_address_xy(self.plan.cluts[key])
+        return QRectF(x * span, y, 16 * span, 1)
+
     def _show_current_move(self):
         data = self.moving.currentData()
         if not data or not self.plan:
             return
         kind, key = data
+        # Bring it into view before anything else - the whole point of
+        # picking an item here is to look at where it is landing.
+        self.canvas.center_on(self._move_rect(kind, key))
         for box in (self.page_box, self.x_box, self.y_box):
             box.blockSignals(True)
         if kind == "move":
@@ -454,6 +474,10 @@ class MigrateDialog(QDialog):
             self.report.setPlainText(f"That placement will not work: {e}")
             self.apply_button.setEnabled(False)
             return
+        # Follow it - typing a new X/Y is exactly the moment the point
+        # is to see where that lands, and refresh_preview() below defers
+        # to whatever this sets rather than deciding on its own.
+        self.canvas.center_on(self._move_rect(kind, key))
         self._finish_plan()
 
     def _finish_plan(self):
@@ -565,25 +589,52 @@ class MigrateDialog(QDialog):
         vram = self.loaded_vram(area)
         self.canvas.texels_per_halfword = 4
         self.canvas.set_image(vram_index_image(vram))
+        span = 4
         rings = []
+        focus = None       # first rect worth scrolling the view to
         if self.plan:
-            span = 4
             for n, move in enumerate(self.plan.moves):
                 x, y, w, h = move.dest_rect
-                rings.append((QRectF(x * span, y, w * span, h), PLACED,
-                              f"[{n}] page {move.page}"))
+                rect = QRectF(x * span, y, w * span, h)
+                rings.append((rect, PLACED, f"[{n}] page {move.page}"))
+                focus = focus or rect
             for old, new in sorted(self.plan.cluts.items()):
                 x, y = psx_vram.clut_address_xy(new)
-                rings.append((QRectF(x * span, y, 16 * span, 1),
-                              PALETTE_MARK, ""))
+                rect = QRectF(x * span, y, 16 * span, 1)
+                rings.append((rect, PALETTE_MARK, ""))
+                focus = focus or rect
+        # What this model already samples right where it is - no move
+        # needed for these, so nothing above marks them, but a page or
+        # palette that is fine as it stands is still worth being able to
+        # see: that is the only way to tell "already there" apart from
+        # "nobody checked".
+        keep_pages, keep_cluts = getattr(self, "_keep", (set(), set()))
+        if keep_pages or keep_cluts:
+            boxes, _cluts = texture_migrate.survey(self.blob)
+            for page in sorted(keep_pages):
+                x, y, w, h = texture_migrate.source_rect(page, boxes[page])
+                rect = QRectF(x * span, y, w * span, h)
+                rings.append((rect, ALREADY_HERE, f"page {page} already here"))
+                focus = focus or rect
+            for address in sorted(keep_cluts):
+                x, y = psx_vram.clut_address_xy(address)
+                rect = QRectF(x * span, y, 16 * span, 1)
+                rings.append((rect, ALREADY_HERE, "already here"))
+                focus = focus or rect
         self.canvas.highlights = rings
+        # Whatever is picked in the Moving list wins over the default -
+        # _show_current_move() has already centred on it, and rebuilding
+        # the rings here must not undo that.
+        if not (self.plan and self.moving.currentData()):
+            self.canvas.center_on(focus)
         self.canvas.update()
         loaded = ", ".join(f"{a:02X}" for a in
                            tuple(vram_map.ALWAYS_RESIDENT) + (area,))
         self.preview_label.setText(
             f"AREA_{area:02X} as the game has it - chunks {loaded} together. "
-            f"Red is where the textures would go; blue is a palette. "
-            f"Anything under a red box is what you would overwrite.")
+            f"Red is where the textures would go; light blue is a new "
+            f"palette; dark blue is already there, unmoved. Anything under "
+            f"a red box is what you would overwrite.")
 
     # --- applying -----------------------------------------------------
 

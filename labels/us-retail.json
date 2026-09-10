@@ -1475,7 +1475,7 @@
    "start": "271BCC",
    "end": "272DD7",
    "type": "____",
-   "name": "Toradako Animation"
+   "name": "Toradako Enemy Animation"
   },
   {
    "content": "a7f6779117bb3cb5",
@@ -3141,7 +3141,7 @@
    "start": "6F0288",
    "end": "6F29D7",
    "type": "SMST",
-   "name": "Toradako enemy"
+   "name": "Toradako Enemy"
   },
   {
    "content": "24c50bba14f30e04",

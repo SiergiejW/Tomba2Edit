@@ -1418,6 +1418,27 @@
   ]
  },
  "model_names": {
+  "23d40929855a29ac:0": "torso",
+  "23d40929855a29ac:1": "head_0",
+  "23d40929855a29ac:10": "calf L",
+  "23d40929855a29ac:11": "foot L",
+  "23d40929855a29ac:12": "thigh R",
+  "23d40929855a29ac:13": "calf R",
+  "23d40929855a29ac:14": "foot R",
+  "23d40929855a29ac:15": "ponytail start",
+  "23d40929855a29ac:16": "ponytail end",
+  "23d40929855a29ac:17": "mouth open",
+  "23d40929855a29ac:18": "mouth half open",
+  "23d40929855a29ac:19": "hand open L",
+  "23d40929855a29ac:2": "arm L",
+  "23d40929855a29ac:20": "hand open R",
+  "23d40929855a29ac:3": "forearm L",
+  "23d40929855a29ac:4": "hand closed L",
+  "23d40929855a29ac:5": "arm R",
+  "23d40929855a29ac:6": "forearm R",
+  "23d40929855a29ac:7": "hand closed R",
+  "23d40929855a29ac:8": "hip",
+  "23d40929855a29ac:9": "thigh L",
   "6bb510ccfd2cc3a7:8": "test"
  }
 }

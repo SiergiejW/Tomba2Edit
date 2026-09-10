@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from functions import labels, placement
 from functions.psx_vram import VRAMError
 from gui import panel_title
 from gui.pixel_canvas import PixelCanvas, fit_zoom, zoom_label
@@ -26,6 +27,12 @@ from gui.sprt.sprt_edit_panel import SpriteEditPanel
 from gui.sprt.sprt_parser import SPRTError, load_sprt
 from gui.sprt.sprt_render import (
     VRAMTextures, draw_cell_borders, piece_color, render_sheet, render_sprite)
+
+# Which columns of the sprite table hold the name somebody typed and the
+# sprite's own index - see gui/smst/smst_viewer.py's NAME_COLUMN/
+# PART_COLUMN, the same split for the same reason.
+NAME_COLUMN = 0
+INDEX_COLUMN = 1
 
 # Sprites are small, so a view opens zoomed to fit rather than at 1:1,
 # where a 24x24 sprite would be a speck in a 900px pane. The caps keep
@@ -182,11 +189,23 @@ class SPRTViewer(QWidget):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.canvas)
 
-        self.sprite_table = QTableWidget(0, 6)
+        self.sprite_table = QTableWidget(0, 7)
         self.sprite_table.setHorizontalHeaderLabels(
-            ["#", "Pieces", "W", "H", "Pages", "At"])
+            ["Name", "#", "Pieces", "W", "H", "Pages", "At"])
         self._prepare_table(self.sprite_table)
+        # Double-click (or F2) a Name to say what that sprite is - the
+        # only editable column; _prepare_table's NoEditTriggers is
+        # overridden here rather than there, so the piece table below
+        # stays view-only.
+        self.sprite_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.sprite_table.setToolTip(
+            "Double-click a Name to say what that sprite is.\n\n"
+            "Kept against the bank's own bytes rather than its position, "
+            "so a bank shared by several areas is named once.")
         self.sprite_table.itemSelectionChanged.connect(self._on_sprite_row_changed)
+        self.sprite_table.itemChanged.connect(self._on_sprite_item_changed)
 
         self.piece_table = QTableWidget(0, 13)
         self.piece_table.setHorizontalHeaderLabels(
@@ -403,16 +422,60 @@ class SPRTViewer(QWidget):
         for row, sprite in enumerate(sprites):
             x0, y0, x1, y1 = sprite.extent(include_origin=False)
             pages = ",".join(str(p) for p in sorted({p.texpage for p in sprite.pieces}))
+            named = QTableWidgetItem(self._name_of(sprite.index))
+            named.setFlags(named.flags() | Qt.ItemFlag.ItemIsEditable)
+            named.setData(Qt.ItemDataRole.UserRole, sprite.index)
+            table.setItem(row, NAME_COLUMN, named)
             cells = [str(sprite.index), str(len(sprite.pieces)), str(x1 - x0),
                      str(y1 - y0), pages, f"0x{sprite.offset:X}"]
-            for col, text in enumerate(cells):
+            for offset, text in enumerate(cells):
+                col = INDEX_COLUMN + offset
                 item = QTableWidgetItem(text)
-                if col == 0:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col == INDEX_COLUMN:
                     item.setData(Qt.ItemDataRole.UserRole, sprite.index)
                 table.setItem(row, col, item)
         table.blockSignals(False)
         if sprites:
             table.selectRow(0)
+
+    def _content(self):
+        """The identity of the bank on screen - a hash of its own bytes,
+        which is what a sprite's name is filed under. Empty when nothing
+        is loaded."""
+        return labels.content_key(self._blob) if self._blob else ""
+
+    def _name_of(self, sprite_index):
+        content = self._content()
+        if not content:
+            return ""
+        return placement.model_name(placement.load_model_names(),
+                                    content, sprite_index)
+
+    def _rename_sprite(self, sprite_index, text):
+        """Write one sprite's name out, or clear it."""
+        content = self._content()
+        if not content or sprite_index is None:
+            return
+        names = placement.load_model_names()
+        key = placement.name_key(content, sprite_index)
+        text = (text or "").strip()
+        if text:
+            names[key] = text
+        else:
+            names.pop(key, None)
+        placement.save_model_names(names)
+
+    def _sprite_label(self, index):
+        """"sprite 3" or, once it's named, "sprite 3 (\"Jump Arrow\")" -
+        the phrase every print below builds its text from."""
+        name = self._name_of(index)
+        return f'sprite {index} ("{name}")' if name else f"sprite {index}"
+
+    def _on_sprite_item_changed(self, item):
+        if item.column() != NAME_COLUMN:
+            return
+        self._rename_sprite(item.data(Qt.ItemDataRole.UserRole), item.text())
 
     def _populate_piece_table(self, sprite):
         """Refill the piece list, keeping whichever piece was selected.
@@ -478,7 +541,7 @@ class SPRTViewer(QWidget):
         rows = self.sprite_table.selectionModel().selectedRows()
         if not rows or not self.sprt_data:
             return
-        item = self.sprite_table.item(rows[0].row(), 0)
+        item = self.sprite_table.item(rows[0].row(), INDEX_COLUMN)
         index = item.data(Qt.ItemDataRole.UserRole)
         if index is None or index == self.current_index:
             return
@@ -500,7 +563,7 @@ class SPRTViewer(QWidget):
             return
         sprite = data.sprites[index]
         base = self._base_address()
-        print(f"selected: SPRT @ 0x{base:X}  sprite {index} "
+        print(f"selected: SPRT @ 0x{base:X}  {self._sprite_label(index)} "
               f"@ 0x{base + sprite.offset:X} (+0x{sprite.offset:X})  "
               f"{len(sprite.pieces)} piece(s)  extent {sprite.extent()}")
 
@@ -563,7 +626,7 @@ class SPRTViewer(QWidget):
         if piece is None:
             return
         base = self._base_address()
-        print(f"selected: SPRT @ 0x{base:X}  sprite {self.current_index} "
+        print(f"selected: SPRT @ 0x{base:X}  {self._sprite_label(self.current_index)} "
               f"piece {piece.index} @ 0x{base + piece.offset:X} "
               f"(+0x{piece.offset:X})  page {piece.pg}  clut 0x{piece.clut:X}  "
               f"{piece.ww}x{piece.hh} at ({piece.pX}, {piece.pY})")

@@ -67,7 +67,7 @@ SPEED_FRACTION = 0.02
 # about. How close the camera may get to what it is circling, as a
 # fraction of the scene radius - past this an orbit turns into a spin on
 # the spot, because the thing being circled is behind the near plane.
-MIN_ORBIT = 1.0
+MIN_ORBIT = 2.0
 
 # The vertical field of view the views project with - see
 # smst_viewer._model_view_projection. Panning solves against it so the
