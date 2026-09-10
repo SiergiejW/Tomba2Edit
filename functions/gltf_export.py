@@ -524,14 +524,7 @@ def _rig(gltf, buffer, bones, frames, fps, name):
             children.setdefault(parent, []).append(first_bone + i)
 
     for i, (parent, x, y, z) in enumerate(bones):
-        # A root's own offset is not where it goes: skeleton.assemble
-        # starts every root at the origin and ignores the three numbers
-        # stored with it, so a character with a second root - Tomba's
-        # pelvis at bone 8 - has both roots stacked at 0 and the pelvis
-        # placed by the animation rather than by the table. Using the
-        # stored offset here instead put his lower half 78 units away
-        # from where the viewer has it.
-        local = (z, -y, x) if parent >= 0 else (0.0, 0.0, 0.0)
+        local = (z, -y, x)
         node = {"name": f"bone_{i}",
                 "translation": [c / UNIT_SCALE for c in local]}
         if i in children:
@@ -567,10 +560,11 @@ def _rig(gltf, buffer, bones, frames, fps, name):
                          "target": {"node": first_bone + i, "path": "rotation"}})
 
     # Where the roots actually go. pose_transforms puts a root at
-    # `pivots[root] + translation`, and every root's pivot is the origin
-    # (skeleton.assemble starts them all there), so the frame's
-    # translation is the whole of it - already in the axes the pivots
-    # are in, which is why it needs no swap here.
+    # `pivots[root] + translation`, and the node already carries the
+    # pivot as its own offset above, so the frame's translation is what
+    # is left - turned the same way the joints are, because the game
+    # applies it exactly as it applies a bone's own offset (it lands in
+    # actor+0x88 unchanged and is rotated by the actor's matrix).
     #
     # It goes on EVERY root, not just the first. A character with a
     # separate pelvis root - Tomba - otherwise walks off leaving his
@@ -578,7 +572,8 @@ def _rig(gltf, buffer, bones, frames, fps, name):
     if any(getattr(f, "root", False) for f in frames):
         moves = np.zeros((len(frames), 3), dtype=np.float32)
         for f, frame in enumerate(frames):
-            moves[f] = np.array(frame.translation(),
+            mx, my, mz = frame.translation()
+            moves[f] = np.array((mz, -my, mx),
                                 dtype=np.float32) / UNIT_SCALE
         samplers.append({"input": time_accessor,
                          "output": buffer.add(moves, "VEC3", FLOAT),

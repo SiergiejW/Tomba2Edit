@@ -166,26 +166,39 @@ def rest_pivots(groups, hierarchy):
     return np.array(pivots)
 
 
-# The rest pose was measured in Blender's Z-up axes and turned into the
-# viewer's Y-up ones by this (a -90 degree turn about x, which keeps the
-# handedness a plain axis swap would flip). The animation's angles are in
-# those same Z-up axes, so a rotation has to be conjugated by it -
-# S @ R @ S.T - rather than just used as it stands, or the limbs turn
-# about the wrong axes and come apart from each other.
-AXIS_CHANGE = np.array([[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]])
-
-
 def _euler_matrix(rx, ry, rz):
-    """Rotation about x, then y, then z, in the viewer's axes. The signs
-    follow the Blender scripts that were used to check this format by
-    eye: x as read, y and z negated."""
-    cx, sx = np.cos(rx), np.sin(rx)
+    """A limb's local rotation, in the viewer's axes.
+
+    The game builds it with RotMatrixX, then RotMatrixY, then RotMatrixZ
+    onto an identity - Rx(x) * Ry(y) * Rz(z), the three angles in the
+    order the frame stores them (see
+    f_UpdateActorSequentialAxisPartTransforms, and functions/skeleton.py
+    for how that was measured).
+
+    The viewer's axes are the game's turned by T: (x, y, z) -> (z, -y, x),
+    which game_rest.joints explains and which is a rotation, so the
+    game's matrix can simply be conjugated by it. T sends x to z, y to
+    -y and z to x, so
+
+        T Rx(a) T' = Rz(a)   T Ry(a) T' = Ry(-a)   T Rz(a) T' = Rx(a)
+
+    and the whole product becomes Rz(x) * Ry(-y) * Rx(z).
+
+    WHAT WAS WRONG BEFORE
+
+    The same three factors with the first two swapped - Ry(-y) * Rz(x) *
+    Rx(z). Rz and Ry commute only when one of them is identity, so a limb
+    turning about a single axis came out right and a limb turning about
+    two did not, which is why this was wrong for a minority of limbs
+    rather than all of them: the koma pig's ears, Tomba's forearms.
+    Worst case the two differ by a half turn."""
+    cx, sx = np.cos(rz), np.sin(rz)
     cy, sy = np.cos(-ry), np.sin(-ry)
-    cz, sz = np.cos(-rz), np.sin(-rz)
+    cz, sz = np.cos(rx), np.sin(rx)
     mx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
     my = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     mz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    return AXIS_CHANGE @ (mz @ my @ mx) @ AXIS_CHANGE.T
+    return mz @ my @ mx
 
 
 def pose_transforms(rotations, translation, hierarchy, pivots,
@@ -199,7 +212,10 @@ def pose_transforms(rotations, translation, hierarchy, pivots,
 
     Composed down the hierarchy: a limb carries its parent's rotation,
     so bending an elbow takes the hand with it."""
-    root = np.array(translation, dtype=np.float64) * translation_scale
+    # The frame's root move is in the game's axes like everything else,
+    # so it takes the same turn game_rest.joints gives the joints.
+    x, y, z = translation
+    root = np.array((z, -y, x), dtype=np.float64) * translation_scale
 
     out = [None] * len(hierarchy)
     order = sorted(range(len(hierarchy)),

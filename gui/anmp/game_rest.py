@@ -374,10 +374,112 @@ def hierarchy(bones):
 
 
 def joints(bones):
-    """Where every bone sits at rest, in the viewer's axes, as (n, 3)."""
+    """Where every bone sits at rest, in the viewer's axes, as (n, 3).
+
+    The game's (x, y, z) is the viewer's (z, -y, x). That is not the
+    [x, -y, z] gui/smst/smst_parser applies to a vertex, and the
+    difference is real rather than a slip: the meshes and the bone table
+    are a quarter turn apart on the disc itself.
+
+    Measured on the ghost guard's tongue, which settles it. The tongue is
+    nine segments chained 145 units apart along the table's x, and each
+    segment's own mesh sits ~97 units from its origin along the parser's
+    z. Under (z, -y, x) every segment's mesh lies along its own chain
+    step - 0.98 to 1.00 of it, so the segment spans the gap to the next
+    bone, which is what a tongue segment is for. Under [x, -y, z] it is
+    0.00: the mesh sticks out sideways and the tongue becomes a row of
+    blobs beside itself.
+
+    (z, -y, x) has determinant +1 - it is a half turn about (1, 0, 1),
+    a rotation and not a reflection - so skeleton._euler_matrix can
+    conjugate the game's rotation by it and keep the handedness."""
     placed = skeleton.assemble(bones)
     return np.array([(z, -y, x) for _matrix, (x, y, z) in placed],
                     dtype=np.float64)
+
+
+# How different a spare's cross-section may be from the part it stands
+# in for before it is not the same part at all. The choice below is made
+# by which candidate is NEAREST rather than by which ones clear this, so
+# this only has to keep a wildly wrong group out.
+CROSS_TOLERANCE = 0.10
+
+
+def spanning_groups(model, bones):
+    """{bone: group} wherever the default group cannot reach its joint.
+
+    A model can carry the same part at more than one length, and which
+    one is drawn is decided by code rather than by anything beside the
+    mesh. The ghost guard is the clear case: its tongue exists twice
+    over, entries 7-15 and 16-24, and f_SetActorPartModel in A06.BIN
+    swaps between them - along with the bone offsets, from a second run
+    of records at 0x39274 - so the segments are 80 units apart with the
+    short meshes and 145 apart with the long ones.
+
+    Pair the wrong two and the tongue comes apart on screen, which is
+    what posing the short meshes on the table at 0x391BC does.
+
+    Nothing in the model says which, but the geometry gives it away: a
+    part is modelled around its own bone's origin and has to reach the
+    next bone, or the two visibly separate. So where the default group
+    falls short of its own child's offset, look for a spare that does
+    reach it, and among those take the one whose cross-section is
+    nearest the part it replaces - the same part at another length,
+    rather than a different part that happens to be long enough.
+
+    That recovers all eight of the ghost guard's tongue bindings exactly
+    as the game's own code sets them, and leaves Tomba, the ghost enemy
+    and the koma pig untouched."""
+    blocks = mesh_blocks(model)
+    if not blocks:
+        return {}
+    children = {}
+    for i, (parent, x, y, z) in enumerate(bones):
+        if parent >= 0:
+            children.setdefault(parent, []).append((x, y, z))
+
+    picked = {}
+    for bone in range(min(len(bones), len(blocks))):
+        kids = children.get(bone)
+        if not kids or blocks[bone] is None:
+            continue
+        x, y, z = max(kids, key=lambda k: k[0] ** 2 + k[1] ** 2 + k[2] ** 2)
+        # the child's offset in the mesh's own axes - see joints()
+        want = np.array([z, -y, x], dtype=np.float64)
+        step = float(np.linalg.norm(want))
+        if step < 1:
+            continue
+        along = want / step
+        if float((blocks[bone] @ along).max()) >= step:
+            continue                     # the default already reaches
+
+        def across(block):
+            flat = block - np.outer(block @ along, along)
+            return flat.max(axis=0) - flat.min(axis=0)
+
+        mine = across(blocks[bone])
+        scale = max(float(np.linalg.norm(mine)), 1.0)
+        best = None
+        for other in range(len(bones), len(blocks)):
+            if blocks[other] is None:
+                continue
+            # The same part remodelled longer keeps its topology - every
+            # one of the ghost guard's eight pairs is 36 vertices to 36.
+            # Without this the koma pig's body, which is a little short
+            # of its own hip, picks up one of its spare HEADS.
+            if len(blocks[other]) != len(blocks[bone]):
+                continue
+            reach = float((blocks[other] @ along).max())
+            if reach < step:
+                continue                 # would leave a gap of its own
+            apart = float(np.linalg.norm(across(blocks[other]) - mine)) / scale
+            if apart > CROSS_TOLERANCE:
+                continue
+            if best is None or (apart, reach) < best[:2]:
+                best = (apart, reach, other)
+        if best:
+            picked[bone] = best[2]
+    return picked
 
 
 def rest_pose(model, bones, spares=None, first=0):

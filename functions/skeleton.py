@@ -32,18 +32,37 @@ savestate shows and what read_nodes reads:
 
     +0x00  SVECTOR  x, y, z, parent      the record above, copied in
     +0x08  SVECTOR  rotation             animation writes this
-    +0x10  SVECTOR  a second rotation    added while walking
+    +0x10  SVECTOR  tween step           added to +0x08 once a tick
     +0x18  MATRIX   3x3 rotation x4096, 2 bytes pad, 3 s32 translation
     +0x38  SVECTOR  scale, 4096 = 1.0
     +0x40  u32      pointer to this bone's sub-model
+
+f_InitializeMultiPartActorModel writes that layout: record halfword 0
+goes to +0x06 and 1..3 to +0x00, the scale is set to unit, and +0x40
+takes entry i of the sub-model archive - though f_SetActorPartModel can
+re-point a part afterwards, and the ghost guard's tongue is entries
+16..24 rather than 7..15.
 
 The rule that places a bone is the one every node in three savestates
 obeys to the unit, animated or not:
 
     t_child = t_parent + M_parent * local_translation / 4096
 
-so a rest pose needs nothing but the tree, and an animated pose needs
-only each bone's rotation matrix on top of it.
+which is f_UpdateActorUnscaledPartTransforms: MulMatrix0 leaves the
+parent's matrix in the GTE, and the ApplyRotMatrix straight after it
+turns the local offset by exactly that. A root bone is no exception -
+its offset is turned by the ACTOR's own matrix at +0x98 and added to the
+actor's position at +0xAC, so a root sits at its own offset rather than
+at the origin.
+
++0x10 IS A TWEEN STEP, NOT A SECOND ROTATION
+
+FUN_80075ff8 fills it: the shortest way round from where a limb is now
+to where the next frame wants it, divided by the number of ticks the
+move is given. FUN_80075f0c then adds it into +0x08 once a tick. So a
+state caught mid-move holds a rotation a step or two off the frame it
+is heading for, which is worth knowing before reading one as ground
+truth.
 
 SCALE NEEDS NO SEPARATE STEP
 
@@ -65,10 +84,25 @@ and so is not scale either. Stretch is something the game's own code
 does to a character at runtime, not something written into the
 animation.
 
-What is not worked out here is how the rotation SVECTOR at +0x08 encodes
-that matrix - it is not Euler angles in any axis order, in the usual
-4096-units-to-a-turn convention. Animation therefore still has to read
-the matrices rather than the angles.
+HOW +0x08 ENCODES THE MATRIX
+
+Plain Euler angles after all, 4096 units to a turn, applied about x,
+then y, then z:
+
+    R_local = Rx(vx) * Ry(vy) * Rz(vz)      M_child = M_parent * R_local
+
+which is f_UpdateActorSequentialAxisPartTransforms doing RotMatrixX,
+RotMatrixY, RotMatrixZ onto an identity. Measured against eleven
+savestates: peeling the parent off every posed bone and solving for the
+composition picks this one for 33 of 34 characters, worst element 14 in
+4096 - GTE rounding - where the next-best of the 48 orders and sign
+choices tried is 250 to 2150 out. The odd one out is an actor whose
+matrices had gone stale, and it fits in the two other states it appears
+in.
+
+The three values come off an ANMP frame in that same x, y, z order:
+frame 98 of the ghost guard's animation reproduces all sixteen live
+rotation SVECTORs value for value.
 """
 import array
 import struct
@@ -199,11 +233,27 @@ def tables_of_size(data, bones, words=None):
       - most bones are actually offset from their parent, which is what
         keeps a stretch of zero padding behind one stray -1 from
         reading as a skeleton of bones all in the same place
-      - the record just past the end is not another bone of this same
-        skeleton. It is either the root of the next one or not a record
-        at all - which is what pins the length down, since a table that
-        really runs longer carries on with a bone pointing back into
-        itself and is rejected here instead of being truncated to fit.
+
+    WHAT IS DELIBERATELY NOT CHECKED
+
+    Whether the table stops there. It used to be: a match was thrown
+    away if the record just past the end could be another bone of the
+    same skeleton, on the grounds that a real table would have ended.
+    That is not how the game reads one.
+    f_InitializeMultiPartActorModel is handed a part count by its
+    caller and copies that many records, so a block can hold more than
+    any one character takes - and the Donglin Forest koma pig is
+    exactly that case. Its four records at A06.BIN 0x392BC, confirmed
+    against a savestate, are followed by two more plausible ones, so
+    the test discarded the only correct answer and the pig could not be
+    paired at all.
+
+    The length has to come from the animation's limb count either way,
+    so nothing was being pinned down that the caller did not already
+    know. Dropping it costs about four times as many candidates - 685
+    against 176 over every overlay at five bone counts, worst case 44
+    in one overlay - which is a longer list to choose from, not the
+    thousands the roots cap is there to prevent.
     """
     # Two records is not evidence of a skeleton. A pair that passes
     # every test here is a coincidence rather than a find - A02.BIN
@@ -250,12 +300,6 @@ def tables_of_size(data, bones, words=None):
         else:
             if moved * 2 < bones:
                 continue                  # all-but-motionless: padding
-            after = start + span
-            if after + step <= len(words):
-                parent = words[after]
-                if 0 <= parent <= bones - 1 and all(
-                        abs(words[after + k]) <= REACH for k in (1, 2, 3)):
-                    continue              # the table carries on past here
             out.append(start * 2)
     return out
 
@@ -328,7 +372,10 @@ def assemble(bones, matrices=None, root=(0, 0, 0)):
     for i, (parent, x, y, z) in enumerate(bones):
         rotation = IDENTITY if matrices is None else tuple(matrices[i])
         if parent < 0:
-            placed.append((rotation, tuple(root)))
+            # A root's own offset counts too - the game turns it by the
+            # actor's matrix and adds it to the actor's position, which
+            # with no actor is the offset itself.
+            placed.append((rotation, (root[0] + x, root[1] + y, root[2] + z)))
             continue
         upper, origin = placed[parent]
         here = tuple(

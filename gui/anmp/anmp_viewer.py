@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from functions import gltf_export, pairings, skeleton
 from gui import panel_title
 from gui.anmp.anmp_parser import (
-    BITS_PER_VALUE, VALUES_PER_LIMB, ANMPError, blend, load_anmp)
+    BITS_PER_VALUE, VALUES_PER_LIMB, WIDE_SLOT_BYTES, ANMPError, blend,
+    load_anmp)
 from gui.anmp.skeleton import (
     SPARES, hierarchy_for, pose_transforms, rest_pivots, rest_pose)
 from gui.anmp import game_rest
@@ -60,6 +61,7 @@ class ANMPViewer(QWidget):
         # the overlays - see functions/pairings.py.
         self._approvals = {}
         self._variations = {}         # spare group -> the limb it replaces
+        self._spanning = {}           # bone -> the group long enough for it
         self._hierarchy = ()
         self._named_hierarchy = False
         self._measured_rest = False
@@ -336,8 +338,8 @@ class ANMPViewer(QWidget):
             tag = f"0x{f.tag:02X}" + ("  *" if f.flagged else "")
             item = QTableWidgetItem(tag)
             if f.flagged:
-                item.setToolTip("bit 6 is set on this frame's pointer - what "
-                                "it means isn't decoded")
+                item.setToolTip("bit 6 is set: this frame carries a scale "
+                                "for every limb as well as a rotation")
             self.frames_table.setItem(row, 2, item)
             self.frames_table.setItem(row, 3, QTableWidgetItem(f"0x{f.offset:X}"))
         self.frames_table.blockSignals(False)
@@ -613,9 +615,14 @@ class ANMPViewer(QWidget):
             x0, x1, y0, y1, z0, z1 = g.bounds
             return (x1 - x0, y1 - y0, z1 - z0)
 
+        # A spare that spanning_groups already spoke for is that limb's,
+        # measured against the bone table rather than guessed from shape.
+        chosen = {group: bone for bone, group in
+                  getattr(self, "_spanning", {}).items()}
+
         for spare in spares:
-            best, score = None, None
-            for limb in groups[:animated]:
+            best, score = chosen.get(spare.index), None
+            for limb in groups[:animated] if best is None else ():
                 if not limb.vertex_count or not limb.bounds:
                     continue
                 gap = (sum(abs(a - b) for a, b in zip(spare.centre, limb.centre))
@@ -628,11 +635,26 @@ class ANMPViewer(QWidget):
             name = (self._hierarchy[best][0]
                     if best < len(self._hierarchy) else f"limb {best}")
             self._variations[spare.index] = best
+            if spare.index in chosen:
+                continue        # already drawn - it is this limb's part
             self.variation_box.addItem(
                 f"part {spare.index} instead of {name}", spare.index)
         self.variation_box.setEnabled(self.variation_box.count() > 1)
         self.variation_box.setCurrentIndex(0)
         self.variation_box.blockSignals(False)
+
+    def _keep_groups(self, first):
+        """Which groups are drawn: one per animated bone.
+
+        Normally bone i is group first+i, but where the model carries the
+        same part at another length and only the longer one reaches the
+        next joint, that one is drawn instead - see
+        game_rest.spanning_groups."""
+        keep = set()
+        for bone in range(len(self._hierarchy)):
+            spanning = getattr(self, "_spanning", {}).get(bone)
+            keep.add(first + bone if spanning is None else spanning)
+        return keep
 
     def _on_first_group_changed(self, first):
         """Re-pose with the animation driving a different run of parts."""
@@ -653,7 +675,7 @@ class ANMPViewer(QWidget):
         spare = self.variation_box.itemData(index)
         total = len(self.model["groups"])
         first = self.viewer.pose_first_group
-        keep = set(range(first, first + len(self._hierarchy)))
+        keep = self._keep_groups(first)
         if spare is not None:
             keep.add(spare)
             keep.discard(first + self._variations[spare])
@@ -678,6 +700,11 @@ class ANMPViewer(QWidget):
         # The spare parts - Tomba's mouth-open head and open hands - stand
         # in for a limb rather than joining it, so the game draws one or
         # the other. Hidden here, and switchable from the Variation box.
+        # A model can carry the same part at two lengths and only one of
+        # them fits this skeleton - the ghost guard's tongue. Where the
+        # default cannot reach its own joint, take the one that can.
+        self._spanning = (game_rest.spanning_groups(model, bones)
+                          if bones is not None else {})
         self._fill_variations(model, len(self._hierarchy))
         # Only the run of parts the animation actually drives is shown.
         # With no offset that is the front of the model and the spares
@@ -693,7 +720,7 @@ class ANMPViewer(QWidget):
         first = self.first_group_box.value()
         self.viewer.pose_first_group = first
         self.viewer.pose_spares = dict(self._variations)
-        keep = set(range(first, first + len(self._hierarchy)))
+        keep = self._keep_groups(first)
         self.viewer.hidden_groups = set(range(total)) - keep
         if bones is not None:
             # The spare-to-limb map is worked out from the model rather
@@ -866,14 +893,21 @@ class ANMPViewer(QWidget):
         A slot is three 12-bit values - 36 bits - packed back to back
         from the frame's own offset, so slot n starts 4.5 bytes in and
         lands on a nibble boundary every other limb. The root, when the
-        tag bit says there is one, is slot 0 and the limbs follow it."""
+        tag bit says there is one, is slot 0 and the limbs follow it.
+
+        A frame with bit 6 set carries a scale beside each rotation, six
+        values to a slot, which comes to a whole nine bytes - so those
+        never land on a nibble."""
         frame = getattr(self, "_limbs_frame", None)
         rows = self.limbs_table.selectionModel().selectedRows()
         if frame is None or not self.anmp or not rows:
             return
         row = rows[0].row()
         name = self.limbs_table.item(row, 0)
-        bit = row * VALUES_PER_LIMB * BITS_PER_VALUE
+        if frame.flagged:
+            bit = row * WIDE_SLOT_BYTES * 8
+        else:
+            bit = row * VALUES_PER_LIMB * BITS_PER_VALUE
         at = self.anmp.address + frame.offset + bit // 8
         # Which SMST part this limb drives, which is the number that
         # makes it addressable against the model rather than the ANMP.
@@ -929,7 +963,7 @@ class ANMPViewer(QWidget):
         flagged = sum(1 for f in self.anmp.frames if f.flagged)
         parts = [f"{len(self.anmp)} frames", shape]
         if flagged:
-            parts.append(f"{flagged} with the undecoded bit 6 set")
+            parts.append(f"{flagged} carrying a per-limb scale")
         if self.model:
             parts.append(f"{len(self.model['groups'])} groups in the model")
             if self._measured_rest:
