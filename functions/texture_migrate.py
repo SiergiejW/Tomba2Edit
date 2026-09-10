@@ -514,6 +514,21 @@ def cut(vram, rect):
     return bytes(out)
 
 
+def patch(vram, shards):
+    """`vram` with every shard's own pixels written in - what it would
+    look like once shards_for()'s work has actually landed there.
+
+    Used both to prove a plan is safe (verify() samples this) and to
+    show it, in the migration dialog's own preview - one patch, so
+    neither can show something the other would disagree with."""
+    out = bytearray(vram)
+    for x, y, w, h, pixels in shards:
+        for row in range(h):
+            at = (y + row) * psx_vram.VRAM_STRIDE + x * 2
+            out[at:at + w * 2] = pixels[row * w * 2:(row + 1) * w * 2]
+    return out
+
+
 def shards_for(plan_, vram):
     """[(x, y, w, h, pixels), ...] to add to a destination chunk.
 

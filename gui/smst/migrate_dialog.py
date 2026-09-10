@@ -61,11 +61,11 @@ from gui.vram_viewer import VRAMCanvas, decode_vram_bytes, vram_index_image
 PLACED = QColor(255, 60, 60)
 PALETTE_MARK = QColor(120, 200, 255)
 # A page or palette this model already samples right where it is - no
-# move needed, so nothing has to go red. Still blue, as PALETTE_MARK is,
-# but a darker one, and always carries the "already here" label - the
-# two can appear in the same preview when part of a model moves and
-# part of it doesn't, and need to read as different things.
-ALREADY_HERE = QColor(60, 110, 220)
+# move needed, so nothing has to go red, and blue is already taken by
+# PALETTE_MARK (a NEW palette destination) - the two can appear in the
+# same preview when part of a model moves and part of it doesn't, and
+# a third colour is what keeps them from reading as the same thing.
+ALREADY_HERE = QColor(90, 210, 110)
 
 
 class MigrateDialog(QDialog):
@@ -419,11 +419,17 @@ class MigrateDialog(QDialog):
     def _show_current_move(self):
         data = self.moving.currentData()
         if not data or not self.plan:
+            self.canvas.emphasis = None
+            self.canvas.update()
             return
         kind, key = data
         # Bring it into view before anything else - the whole point of
-        # picking an item here is to look at where it is landing.
-        self.canvas.center_on(self._move_rect(kind, key))
+        # picking an item here is to look at where it is landing - and
+        # ring it apart from every other box on screen, so which one is
+        # "this" is not a guessing game once there are several.
+        rect = self._move_rect(kind, key)
+        self.canvas.center_on(rect)
+        self.canvas.emphasis = rect
         for box in (self.page_box, self.x_box, self.y_box):
             box.blockSignals(True)
         if kind == "move":
@@ -477,7 +483,9 @@ class MigrateDialog(QDialog):
         # Follow it - typing a new X/Y is exactly the moment the point
         # is to see where that lands, and refresh_preview() below defers
         # to whatever this sets rather than deciding on its own.
-        self.canvas.center_on(self._move_rect(kind, key))
+        rect = self._move_rect(kind, key)
+        self.canvas.center_on(rect)
+        self.canvas.emphasis = rect
         self._finish_plan()
 
     def _finish_plan(self):
@@ -519,12 +527,9 @@ class MigrateDialog(QDialog):
                 doomed.append(((x, y, w, h), {"runtime": 0}))
 
         # The proof: sample both models against their own VRAM.
-        preview = bytearray(self.loaded_vram(
-            self.wanted_areas()[-1] if self.wanted_areas() else 1))
-        for x, y, w, h, pixels in self.shards:
-            for row in range(h):
-                at = (y + row) * psx_vram.VRAM_STRIDE + x * 2
-                preview[at:at + w * 2] = pixels[row * w * 2:(row + 1) * w * 2]
+        preview = texture_migrate.patch(
+            self.loaded_vram(self.wanted_areas()[-1] if self.wanted_areas() else 1),
+            self.shards)
         checked, bad = texture_migrate.verify(self.blob, self.new_blob,
                                               self.vram, bytes(preview))
 
@@ -587,6 +592,17 @@ class MigrateDialog(QDialog):
             return
         area = item.data(Qt.ItemDataRole.UserRole)
         vram = self.loaded_vram(area)
+        # Show what would actually be inside a red or blue box, not what
+        # is there now - the incoming pixels, patched in exactly the way
+        # they would land once Apply writes the destination chunk. Only
+        # where that chunk is one this area's own VRAM composites in
+        # (see vram_map.loaded_vram): previewing AREA_05 must not show
+        # art that was written into AREA_09's chunk, which this area
+        # never loads.
+        destination = self.destination.currentData()
+        if (self.plan and self.shards
+                and destination in tuple(vram_map.ALWAYS_RESIDENT) + (area,)):
+            vram = texture_migrate.patch(vram, self.shards)
         self.canvas.texels_per_halfword = 4
         self.canvas.set_image(vram_index_image(vram))
         span = 4
@@ -630,11 +646,18 @@ class MigrateDialog(QDialog):
         self.canvas.update()
         loaded = ", ".join(f"{a:02X}" for a in
                            tuple(vram_map.ALWAYS_RESIDENT) + (area,))
+        note = "Red is a texture, blue a new palette, green already there."
+        if self.plan and self.shards:
+            if destination in tuple(vram_map.ALWAYS_RESIDENT) + (area,):
+                note += (" Each box shows what would actually be IN it once "
+                        "written - not what it would overwrite.")
+            else:
+                note += (f" These still show what is there NOW: they land "
+                        f"in AREA_{destination:02X}'s own chunk, which this "
+                        f"area does not load.")
         self.preview_label.setText(
-            f"AREA_{area:02X} as the game has it - chunks {loaded} together. "
-            f"Red is where the textures would go; light blue is a new "
-            f"palette; dark blue is already there, unmoved. Anything under "
-            f"a red box is what you would overwrite.")
+            f"AREA_{area:02X} as the game has it - chunks {loaded} "
+            f"together. {note}")
 
     # --- applying -----------------------------------------------------
 

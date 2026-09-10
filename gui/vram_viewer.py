@@ -162,6 +162,11 @@ class VRAMCanvas(QWidget):
         # Several more, as (rect, QColor, label): what the migration
         # preview marks a proposed texture placement with.
         self.highlights = []
+        # One of those rects, drawn again with a thick dashed white
+        # ring on top - which one the migration preview's own "Moving"
+        # list currently has picked, so it stands out among however
+        # many other boxes are on screen. None draws nothing extra.
+        self.emphasis = None
         # How many image pixels one VRAM halfword column spans, so the
         # grid and the readout mean the same thing in every mode. At
         # 4bpp a halfword is FOUR texels - two per byte, two bytes to a
@@ -301,6 +306,18 @@ class VRAMCanvas(QWidget):
             painter.drawRect(where)
             if label:
                 painter.drawText(where.adjusted(2, -14, 0, 0), label)
+        if self.emphasis is not None:
+            where = QRectF((self.emphasis.x() - source.x()) * self.zoom,
+                           (self.emphasis.y() - source.y()) * self.zoom,
+                           self.emphasis.width() * self.zoom,
+                           self.emphasis.height() * self.zoom)
+            # A couple of pixels bigger all round, so this ring sits
+            # outside the coloured one rather than fighting it for the
+            # same pixels - both stay legible at once.
+            pen = QPen(QColor(255, 255, 255), 3)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawRect(where.adjusted(-3, -3, 3, 3))
 
     def center_on(self, rect):
         """Pan - never zoom - so `rect`'s centre is in the middle of the
