@@ -104,6 +104,14 @@ letters = {
 0xFA:"\n",
 0xFB:" ",
 0xFC:"{$PAUSE}",
+# The button icons' own control bytes - what the game's text actually
+# carries. Not to be confused with 0xA0/0xA2/0xA4/0xA6, the big-font
+# GRID CELLS these draw from (see font_preview.ICONS): a cell is where
+# the glyph lives on the page, the control byte below is what a message
+# spends to ask for it, and they are unrelated numbers that happen to
+# look alike. {$CROSS} and {$CIRCLE} are with the German/Spanish block
+# further down, since that is where they were confirmed from a capture,
+# but all four belong together here.
 0xD0:"{$SQUARE}",
 0xCF:"{$TRIANGLE}",
 
@@ -111,6 +119,11 @@ letters = {
 0x65:"{$LEFT}",
 0x66:"{$UP}",
 0x67:"{$DOWN}",
+
+# Grid cell 127 (0x7F) - unmapped otherwise, so the raw {$7F} fallback
+# would draw whatever sits in that cell, which is a fragment of the
+# dialogue frame's own border art, not a character. Blank like 0xFE.
+0x7F:"",
 
 0xFE:"",
 #0xC1:"{$END}\n\n",

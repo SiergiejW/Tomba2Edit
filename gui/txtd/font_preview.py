@@ -75,6 +75,58 @@ ICONS = {
     "{$SQUARE}": (166, 167),
 }
 
+# The tower levels' chant prompts - {$74} through {$7A}, seven codes in
+# a row with no name of their own (tombadict.py has no entry for any of
+# them, so they reach here exactly as the raw "{$XX}" fallback prints
+# them - see txtd.py's getText()). Not naming them doesn't mean not
+# drawing them: the game still shows a symbol for each, one glyph two
+# cells wide same as the button icons, at row 6 of the grid - cells
+# 200-201, 202-203, ... up to 212-213, in byte order.
+ICONS.update({f"{{${code:02X}}}": (200 + 2 * i, 201 + 2 * i)
+             for i, code in enumerate(range(0x74, 0x7B))})
+
+# Cells 96-103 turned out to be a smaller, single-width DUPLICATE set
+# (circle, cross, triangle, square, then four single-cell arrow blobs -
+# confirmed off a raw pixel dump), not what the game actually draws
+# Right/Left/Up/Down from. The real ones are double-width, right where
+# Circle/Cross/Triangle/Square's own row continues past them: 160-167
+# is those four, and 168 onward is Right, Left, Up, Down, then four
+# more (the diagonals) - confirmed on the page itself for Right (168)
+# and Left (170); Up/Down continue the same every-other-cell run.
+ICONS["{$60}"] = (96,)          # the single duplicate at 0x60 - unnamed,
+                                # only reachable as raw "{$60}"
+ICONS["{$RIGHT}"] = (168, 169)
+ICONS["{$LEFT}"] = (170, 171)
+ICONS["{$UP}"] = (172, 173)
+ICONS["{$DOWN}"] = (174, 175)
+
+# 0xFF is the terminator getText()'s own read loop stops on (see
+# txtd.py) - not in tombadict.py's table, so it always reaches here as
+# literal "{$FF}" text, always as the very last token of an entry. It
+# is not a glyph; without this it would draw whatever raw_cells finds
+# at cell 255, which is well past the grid and pure noise. An empty
+# tuple consumes the token and draws nothing, same trick as {$7F}
+# going to "" in tombadict.py - the byte stays visible in the text box,
+# it just paints nothing in the preview.
+ICONS["{$FF}"] = ()
+
+# The small (system, 8x8) font's own icons - a completely different
+# location from the big font's, single-width rather than double, and
+# confirmed off the page directly: Circle 99, Right 100, Left 101,
+# Up 102. Down is not confirmed but continues the same run at 103,
+# matching how the big font's own Up/Down follow Right/Left the same
+# way. Used for TXT1/TXT2-style small text, where these tokens
+# previously drew nothing at all - `icons` used to be turned off
+# entirely for the small font (see split_runs), on the wrong
+# assumption that it had no cells for them.
+SMALL_ICONS = {
+    "{$CIRCLE}": (99,),
+    "{$RIGHT}": (100,),
+    "{$LEFT}": (101,),
+    "{$UP}": (102,),
+    "{$DOWN}": (103,),
+}
+
 # The prompt the game puts at the end of a line of dialogue, waiting for
 # the player.
 MARKER_CELLS = ICONS["{$CIRCLE}"]
@@ -89,21 +141,18 @@ BACKGROUND = os.path.join(os.path.dirname(os.path.dirname(
 # fontpage.read_frame), as a nine-slice. Each piece is 18 wide with a
 # 3-pixel border either side.
 #
-# The art is stored upside down, so every piece is read bottom-up.
-# Piece 0 - the shallow one, FRAME_PIECES' first x-offset - is the top
-# edge; piece 2, the deep one, is the bottom:
+# The art is stored upside down, so every piece is read bottom-up and
+# piece 2 is the top edge, piece 0 the bottom:
 #
-#     piece 0   rows 4..0    the top    ("frame top" / shallow)
+#     piece 2   rows 4..0    the top
 #     piece 1   rows 7..0    the middle, stretched down the box
-#     piece 2   rows 7..3    the bottom ("frame bottom" / deep)
+#     piece 0   rows 7..3    the bottom
 #
-# Was read the other way around for a while - piece 2 as the top, piece
-# 0 as the bottom - which put the box on screen upside down: right the
-# right way up, the corners are inset on the outermost row at both
-# ends, and the interior greys come out monotonic - 57 at the top
-# falling to 16 at the bottom - with no step at either seam. The
-# flipped reading has both of those too, backwards, which is how it
-# passed for correct until it was checked against the game itself.
+# Two things agree on that and neither does on any other arrangement.
+# The corners are inset on the outermost row at both ends, and the
+# interior greys come out monotonic - 57 at the top falling to 16 at the
+# bottom - with no step at either seam. Read the other way up the box is
+# darkest at the top and the seams jump.
 FRAME_MARGIN = 10
 FRAME_SCALE = 2
 FRAME_BORDER = 3          # left and right border, in source pixels
@@ -368,15 +417,18 @@ def glyph_key(char):
     return None if char == " " else char
 
 
-def split_runs(text, icons=True, mapper=cell_for, raw_cells=False):
+def split_runs(text, icons=ICONS, mapper=cell_for, raw_cells=False):
     """Editor text as [(cells, colour)], with line breaks as None.
 
     Colour controls switch the tint and the button controls draw their
     icon; other {$...} tokens are skipped, since they tell the game to
     do something rather than to draw.
 
-    `icons` is off for the small font, whose grid has nothing at those
-    cells - the icons are drawn at the dialogue font's size only.
+    `icons` is the {token: cells} table to draw them from - ICONS for
+    the dialogue font, SMALL_ICONS for the system font (a different,
+    single-width set of cells for the same tokens), or a falsy value
+    (False/None) to skip icon lookup entirely, which is what the
+    Japanese console font uses.
 
     `mapper` turns one character into whatever the sheet draws it with -
     a grid cell by default, and the character itself for the console
@@ -413,9 +465,18 @@ def split_runs(text, icons=True, mapper=cell_for, raw_cells=False):
             elif text.startswith("{$", i) and "}" in text[i:i + 12]:
                 end = text.index("}", i) + 1
                 token = text[i:end]
-                icon = ICONS.get(token) if icons else None
-                if icon:
-                    cells.extend(icon)
+                icon = icons.get(token) if icons else None
+                if icon is not None:
+                    # Its own run, at a fixed colour, flushed apart from
+                    # whatever text colour is active - an icon's pixels
+                    # are not all in the palette-stable 7-15 range the
+                    # button icons were assumed to keep to, so drawing
+                    # it through {$ORANGE}'s own palette instead of a
+                    # fixed one showed the wrong colours entirely (once
+                    # visibly the wrong SHAPE, not just the wrong tint).
+                    flush()
+                    if icon:                        # () draws nothing at all
+                        runs.append((list(icon), DEFAULT_COLOR))
                 elif raw_cells and len(token) == 5:
                     body = token[2:4]
                     try:
@@ -522,7 +583,7 @@ def _nine_slice(pieces, width, height, inner_alpha=128,
         return _upright_slice(pieces, width, height, inner_alpha, keep_alpha)
     if not pieces or len(pieces) < 3 or width < 8 or height < 12:
         return None
-    top, mid, bottom = pieces[0], pieces[1], pieces[2]
+    top, mid, bottom = pieces[2], pieces[1], pieces[0]
     b = FRAME_BORDER
     src_w = len(top[0])
     inner_w = src_w - 2 * b
@@ -716,6 +777,16 @@ class FontPreview(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._scroll)
 
+    def set_big(self, big):
+        """Switch between the dialogue font and the system font - for
+        TXT2Viewer, which shows TXT1 (big) and TXT2 (small) files
+        through the one shared widget/preview instance, so which size
+        applies changes with whatever was just loaded. Call before
+        set_source(), since that is what actually picks FontSheet vs
+        BiosSheet for the Japanese disc, and that choice depends on
+        self.big too."""
+        self.big = big
+
     def _uses_console_font(self):
         """Whether this preview draws from the console's font rather
         than the page - the Japanese disc's big text, and its MAIN.EXE
@@ -748,7 +819,8 @@ class FontPreview(QWidget):
             runs = split_runs(text, icons=False, mapper=glyph_key)
             image = self.sheet.render(runs)
         else:
+            icon_set = ICONS if self.big else SMALL_ICONS
             image = self.sheet.render(
-                split_runs(text, self.big, raw_cells=self.raw_cells),
+                split_runs(text, icon_set, raw_cells=self.raw_cells),
                 self.big, marker=self.marker)
         self._canvas.set_pixmap(QPixmap.fromImage(image))

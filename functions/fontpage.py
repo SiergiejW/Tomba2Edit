@@ -39,11 +39,8 @@ PAGE_W = 256
 PAGE_H = 256
 
 # The dialogue frame, and the palette it is drawn with. Three 18x16
-# pieces sit side by side in the page: the shallow one is the box's top
-# edge, the middle one carries the two side edges, and the deep one is
-# the bottom edge - see gui/txtd/font_preview.py's _nine_slice for how
-# they are actually read (bottom-up; getting that backwards puts the
-# box on screen upside down). The box is built from these three.
+# pieces sit side by side in the page: a shallow top, a section with the
+# two side edges, and a deeper top. The box is built from these.
 FRAME_Y = 136
 FRAME_X = 176
 FRAME_PIECE_W = 18

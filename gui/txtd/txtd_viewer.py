@@ -337,7 +337,12 @@ class TXTDViewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=True, marker=True)
+        # raw_cells: an unnamed {$XX} - one with no entry in
+        # tombadict.py and no ICONS override - draws grid cell 0xXX
+        # directly instead of vanishing, which is where the big grid's
+        # own arrow/punctuation run and its mirrored single-cell icons
+        # (0x60-0x63 and on) actually live.
+        self.preview = FontPreview(big=True, marker=True, raw_cells=True)
         preview_side_layout.addWidget(self.preview)
 
         # For dialogue the rendering leads and the raw text sits under
@@ -447,7 +452,7 @@ class TXTDViewer(QWidget):
         has_voice = (not is_sentinel
                     and entry.get("extra") not in (None, 0xFFFF)
                     and bool(voice) and voice.resolves(master_index))
-        addr_str = f"Entry{'♫' if has_voice else ''} {entry['adr']:04X}"
+        addr_str = f"{entry['adr']:04X}{'♫' if has_voice else ''}"
         if is_sentinel:
             return addr_str, None, True
 
@@ -621,8 +626,13 @@ class TXTDViewer(QWidget):
             self._print_selection(m_idx, e_idx, master, entry, is_sentinel)
 
             self._current_entry_item = selected_item
-            self.text_edit.setPlainText(entry["text"])
-            self.preview.set_text(entry["text"])
+            # "END!" is this tool's own placeholder for a sentinel entry
+            # (adr == extra == 0xFFFF, see txtd.py's prepareText) - never
+            # text the disc actually carries, so it has no business in
+            # either the edit box or the in-game preview.
+            shown_text = "" if is_sentinel else entry["text"]
+            self.text_edit.setPlainText(shown_text)
+            self.preview.set_text(shown_text)
             self.text_edit.setReadOnly(is_sentinel)
             if is_sentinel:
                 self.status_label.setStyleSheet("color: gray;")

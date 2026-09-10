@@ -84,6 +84,7 @@ class VoiceLink:
         self.sectors = 0
         self.tables = []
         self.overlay = None
+        self.default_table = None
         self._channels = {}
         self._by_master = {}
         # The fallback for a build whose code layout has drifted too far

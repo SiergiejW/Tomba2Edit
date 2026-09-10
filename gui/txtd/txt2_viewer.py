@@ -127,7 +127,10 @@ class TXT2Viewer(QWidget):
         preview_side_layout.setContentsMargins(0, 0, 0, 0)
         preview_side_layout.addWidget(
             panel_title.make_panel_title("In-game preview"))
-        self.preview = FontPreview(big=False, style="notice")
+        # raw_cells: an unnamed {$XX} draws grid cell 0xXX directly
+        # instead of vanishing - see txtd_viewer.py's own copy of this
+        # for where that run of small-font cells actually lives.
+        self.preview = FontPreview(big=False, style="notice", raw_cells=True)
         preview_side_layout.addWidget(self.preview)
 
         edit_split = QSplitter(Qt.Orientation.Vertical)
@@ -385,8 +388,13 @@ class TXT2Viewer(QWidget):
             is_sentinel = (entry.get("adr") == 0xFFFF and entry.get("extra") == 0xFFFF)
 
             self._current_entry_item = selected_item
-            self.text_edit.setPlainText(entry["text"])
-            self.preview.set_text(entry["text"])
+            # "END!" is this tool's own placeholder for a sentinel entry
+            # (adr == extra == 0xFFFF) - never text the disc actually
+            # carries, so it has no business in the edit box or preview.
+            # See gui/txtd/txtd_viewer.py's own copy of this fix.
+            shown_text = "" if is_sentinel else entry["text"]
+            self.text_edit.setPlainText(shown_text)
+            self.preview.set_text(shown_text)
             self.text_edit.setReadOnly(is_sentinel)
             self.status_label.setStyleSheet("color: gray;")  # clear any warning color from the last entry
             self.status_label.setText(

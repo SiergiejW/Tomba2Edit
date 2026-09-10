@@ -3776,6 +3776,12 @@ class MainWindow(QMainWindow):
                                         txt2_chunk_index, txt2_file_index = txt2_chunk_info
                                     else:
                                         txt2_chunk_index, txt2_file_index = (0, 0)
+                                    # TXT1 is always the dialogue (big)
+                                    # font; TXT2 (id 3) is always the
+                                    # system (small) one - the same
+                                    # widget shows both, so which size
+                                    # applies has to be set per load.
+                                    self.txt2_viewer.preview.set_big(id != 3)
                                     self.txt2_viewer.preview.set_source(
                                         os.path.dirname(self.dat_file),
                                         self.preview_glyph_top())
