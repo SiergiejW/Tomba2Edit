@@ -20,12 +20,15 @@ audio for good.
 import os
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                             QPushButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog,
+                             QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                             QVBoxLayout, QWidget)
 
-from functions import audio_export, voice, xa
+from functions import audio_export, disc_library, voice, xa
+from functions.voice_edit import VoiceEditStore
 from gui.audio_transport import AudioTransport, clock
 from gui.name_store import NameStore
+from gui.voice_import import confirm_length
 
 
 class _Decode(QThread):
@@ -78,12 +81,21 @@ class VoicePanel(QWidget):
         self._cache = {}            # channel -> wav bytes
         self._pending_save = None   # (key, path) waiting on a decode
         self.names = NameStore("dialogue")
+        self._edits = VoiceEditStore()
 
         self.pick = QPushButton("Open BIN/IMG...")
         self.pick.setToolTip(
             "Only needed for a disc opened as a folder - opening a BIN "
             "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
+        self.known = QComboBox()
+        self.known.addItem("Known discs (iso/)...")
+        for label, path in disc_library.find_discs():
+            self.known.addItem(label, path)
+        self.known.setEnabled(self.known.count() > 1)
+        self.known.setToolTip(
+            "Data tracks already found under the project's iso/ folder")
+        self.known.activated.connect(self._open_known)
         self.extract = QPushButton("Extract VOICE.XA...")
         self.extract.setToolTip(
             "Write a VOICE.XA that actually works into a CD folder - the "
@@ -105,22 +117,57 @@ class VoicePanel(QWidget):
         self.export_all.clicked.connect(self._save_all)
         self.export_all.setEnabled(False)
 
+        self.import_btn = QPushButton("Import WAV into selected...")
+        self.import_btn.setToolTip(
+            "Replace the selected channel's own sectors with a WAV - "
+            "staged in memory until Export patched BIN writes it out")
+        self.import_btn.clicked.connect(self._import_selected)
+        self.import_btn.setEnabled(False)
+
+        self.export_patched = QPushButton("Export patched BIN...")
+        self.export_patched.setToolTip(
+            "Write every staged edit (from here and the TXTD tab) into a "
+            "copy of the data track")
+        self.export_patched.clicked.connect(self._export_patched)
+        self.export_patched.setEnabled(False)
+
         self.status = QLabel("No disc open - the voice track needs a raw "
                              "2352-byte data track, not a CD folder or ISO.")
         self.status.setWordWrap(True)
 
         top = QHBoxLayout()
         top.addWidget(self.pick)
+        top.addWidget(self.known)
         top.addWidget(self.extract)
         top.addStretch(1)
         top.addWidget(self.transport.save_wav)
         top.addWidget(self.transport.save_mp3)
         top.addWidget(self.export_all)
 
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.import_btn)
+        bottom.addWidget(self.export_patched)
+        bottom.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.transport, 1)
+        layout.addLayout(bottom)
         layout.addWidget(self.status)
+
+    def set_edit_store(self, store):
+        """Share one VoiceEditStore with the TXTD tab, so a per-line
+        import there and a per-channel one here both end up in the same
+        Export patched BIN. Keeps whatever is already staged in it."""
+        self._edits = store
+        if self.image:
+            self._edits.set_image(self.image)
+        self.export_patched.setEnabled(self._edits.count() > 0)
+
+    def _open_known(self, index):
+        path = self.known.itemData(index)
+        if path:
+            self.set_image(path)
 
     # --- opening ------------------------------------------------------
 
@@ -140,6 +187,9 @@ class VoicePanel(QWidget):
             return
         self.image = path
         self._cache.clear()
+        self._edits.set_image(path)
+        self.export_patched.setEnabled(self._edits.count() > 0)
+        self.import_btn.setEnabled((xa.framing(path) or xa.RAW) == xa.RAW)
         channels = voice.channels(path, self.lba, self.sectors)
         per_sector = xa.SAMPLES_PER_SECTOR
         disc = self.names.load(path)
@@ -280,6 +330,81 @@ class VoicePanel(QWidget):
                 self.status.setText(f"Stopped at {stem}: {exc}")
                 return
         self.status.setText(f"Wrote {total} channel(s) into {folder}.")
+
+    # --- importing ------------------------------------------------------
+
+    def _import_selected(self):
+        key = self.transport.current_key()
+        if not key or key not in self._by_key:
+            QMessageBox.information(self, "Import",
+                                    "Select a channel first.")
+            return
+        frame = xa.framing(self.image) or xa.RAW
+        if frame != xa.RAW:
+            QMessageBox.warning(
+                self, "Import", "Importing needs a raw disc track "
+                "(BIN/IMG) opened, not an extracted VOICE.XA - the "
+                "original sectors have to be there to patch.")
+            return
+        channel = self._channel_of(key)
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Replace channel {channel} with...", "",
+            "WAV audio (*.wav)")
+        if not path:
+            return
+        try:
+            pcm, rate, channels = audio_export.load_wav(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import",
+                                 f"Could not read that WAV: {exc}")
+            return
+        samples = audio_export.resample(
+            audio_export.to_mono(pcm, channels), rate, 18900)
+
+        with open(self.image, "rb") as f:
+            chans = xa.channel_map(f, self.lba, self.sectors, frame)
+        found = next((k for k in chans if k[1] == channel), None)
+        if found is None:
+            QMessageBox.warning(self, "Import",
+                                "That channel isn't in this track anymore.")
+            return
+        abs_indices = [self.lba + i for i in chans[found]]
+        needed = len(abs_indices) * xa.SAMPLES_PER_SECTOR
+        if not confirm_length(self, len(samples), needed):
+            return
+        try:
+            count = self._edits.stage_clip(self.image, abs_indices, samples)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import",
+                                 f"Could not stage that: {exc}")
+            return
+        self._cache.pop(channel, None)
+        self.export_patched.setEnabled(True)
+        self.status.setText(
+            f"Staged channel {channel} ({count} sector(s)) - "
+            f"{self._edits.count()} sector(s) staged in all. Export "
+            "patched BIN... writes them out.")
+
+    def _export_patched(self):
+        if not self._edits.count():
+            QMessageBox.information(self, "Export", "No edits staged yet.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Write the patched data track", "",
+            "Disc track (*.bin *.img)")
+        if not path:
+            return
+        self.status.setText("Writing patched track...")
+        QApplication.processEvents()
+        try:
+            n = self._edits.export(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export", f"Could not write: {exc}")
+            return
+        self.status.setText(
+            f"Wrote {os.path.basename(path)} with {n} patched sector(s). "
+            "Point your CUE/emulator at this file in place of the "
+            "original data track.")
 
     def _write(self, path, wav):
         try:

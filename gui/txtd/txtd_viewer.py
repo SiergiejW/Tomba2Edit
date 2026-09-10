@@ -7,11 +7,15 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
-    QLabel, QTextEdit, QHBoxLayout, QPushButton, QCheckBox,
+    QLabel, QTextEdit, QHBoxLayout, QPushButton, QCheckBox, QComboBox,
+    QFileDialog,
 )
 import gui.txtd.txtd as txtd
+from functions import audio_export, disc_library, xa
+from functions.voice_edit import VoiceEditStore
 from gui.margin_text_edit import MarginTextEdit
 from gui.txtd.font_preview import FontPreview
+from gui.voice_import import confirm_length
 from gui import panel_title
 
 
@@ -332,9 +336,30 @@ class TXTDViewer(QWidget):
             "survives there, not in a CD folder or an ISO")
         self.open_voice_button.clicked.connect(self._browse_voice)
         voice_row.addWidget(self.open_voice_button)
+        self.known_voice_disc = QComboBox()
+        self.known_voice_disc.addItem("Known discs (iso/)...")
+        for label, path in disc_library.find_discs():
+            self.known_voice_disc.addItem(label, path)
+        self.known_voice_disc.setEnabled(self.known_voice_disc.count() > 1)
+        self.known_voice_disc.setToolTip(
+            "Data tracks already found under the project's iso/ folder")
+        self.known_voice_disc.activated.connect(self._open_known_voice)
+        voice_row.addWidget(self.known_voice_disc)
         self.play_voice_button = QPushButton("Play voice")
         self.play_voice_button.clicked.connect(self._play_voice)
         self.play_voice_button.setEnabled(False)
+        self.export_voice_button = QPushButton("Export line...")
+        self.export_voice_button.setToolTip(
+            "Save this line's own voice clip(s) as a WAV")
+        self.export_voice_button.clicked.connect(self._export_voice_line)
+        self.export_voice_button.setEnabled(False)
+        self.import_voice_button = QPushButton("Import line...")
+        self.import_voice_button.setToolTip(
+            "Replace this line's own sectors with a WAV - staged in "
+            "memory until the Dialogues tab's Export patched BIN writes "
+            "it out")
+        self.import_voice_button.clicked.connect(self._import_voice_line)
+        self.import_voice_button.setEnabled(False)
         self.autoplay_voice = QCheckBox("Autoplay")
         self.autoplay_voice.setChecked(True)
         self.autoplay_voice.setToolTip(
@@ -342,9 +367,12 @@ class TXTDViewer(QWidget):
         self.voice_note = QLabel("")
         self.voice_note.setWordWrap(True)
         voice_row.addWidget(self.play_voice_button)
+        voice_row.addWidget(self.export_voice_button)
+        voice_row.addWidget(self.import_voice_button)
         voice_row.addWidget(self.autoplay_voice)
         voice_row.addWidget(self.voice_note, 1)
         right_layout.addLayout(voice_row)
+        self._edits = VoiceEditStore()
         # The budget line stays under both halves, where it reads as
         # belonging to the entry rather than to the edit box.
         right_layout.addWidget(self.status_label)
@@ -627,22 +655,129 @@ class TXTDViewer(QWidget):
         problem = (self._voice.set_image(image_path) if image_path
                    else "No disc yet - open the data track (Track 1).")
         count = self._voice.set_overlay(overlay_path) if overlay_path else 0
+        # Masters this area's TXTD data names, so a master the overlay's
+        # own code didn't give up can still be matched to a clip table by
+        # size alone - see VoiceLink.set_masters. A build whose code
+        # layout drifted from the one read_dispatch's pattern was proven
+        # against can leave every master unplaced that way even though
+        # the tables themselves are still there to find.
+        total = count
+        if overlay_path:
+            masters = (self.current_data or {}).get("entries")
+            total = self._voice.set_masters(masters)
         if problem:
             self.voice_note.setText(problem)
-        elif not count:
+        elif not total:
             self.voice_note.setText("No clip tables in this area's overlay.")
         else:
+            fallback = total - count
             self.voice_note.setText(
-                f"Voice ready - {count} masters have dialogue.")
+                f"Voice ready - {count} master(s) from the overlay's own "
+                "code" + (f", {fallback} more matched by clip count "
+                         "(no code match)." if fallback else "."))
         self._refresh_voice_button()
 
     def _refresh_voice_button(self):
         voice = getattr(self, "_voice", None)
         entry = self._selected_entry()
         extra = entry.get("extra") if entry else None
-        self.play_voice_button.setEnabled(
-            bool(voice and voice.ready() and voice.channels_known()
-                 and extra not in (None, 0xFFFF)))
+        ready = bool(voice and voice.ready() and voice.channels_known()
+                    and extra not in (None, 0xFFFF))
+        self.play_voice_button.setEnabled(ready)
+        self.export_voice_button.setEnabled(ready)
+        frame = xa.framing(getattr(self, "_voice_image", None) or "") \
+            if ready else None
+        self.import_voice_button.setEnabled(ready and frame == xa.RAW)
+
+    def set_edit_store(self, store):
+        """Share one VoiceEditStore with the Dialogues tab, so a
+        per-line import here ends up in the same Export patched BIN as
+        a per-channel one there."""
+        self._edits = store
+
+    def _open_known_voice(self, index):
+        path = self.known_voice_disc.itemData(index)
+        if path:
+            self.set_voice_source(path, self._voice_overlay)
+
+    def _export_voice_line(self):
+        entry = self._selected_entry()
+        voice = getattr(self, "_voice", None)
+        if entry is None or voice is None:
+            return
+        master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
+        self._warn_fallback_cost(voice, master_index)
+        try:
+            samples, rate, note = voice.clip_for(entry, master_index)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export", f"Could not read that "
+                                 f"line's voice: {exc}")
+            return
+        if not samples:
+            QMessageBox.information(self, "Export", note)
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save this line's voice", "", "WAV audio (*.wav)")
+        if not path:
+            return
+        try:
+            audio_export.save(path, xa.wav_bytes(samples, rate))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export", f"Could not save: {exc}")
+            return
+        self.voice_note.setText(f"Wrote {path.split(chr(92))[-1]}. {note}")
+
+    def _import_voice_line(self):
+        entry = self._selected_entry()
+        voice = getattr(self, "_voice", None)
+        if entry is None or voice is None:
+            return
+        frame = xa.framing(self._voice_image) or xa.RAW
+        if frame != xa.RAW:
+            QMessageBox.warning(
+                self, "Import", "Importing needs a raw disc track "
+                "(BIN/IMG) opened, not an extracted VOICE.XA - the "
+                "original sectors have to be there to patch.")
+            return
+        master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
+        self._warn_fallback_cost(voice, master_index)
+        try:
+            abs_indices, note = voice.sectors_for(entry, master_index)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import",
+                                 f"Could not locate that line: {exc}")
+            return
+        if not abs_indices:
+            QMessageBox.information(self, "Import",
+                                    note or "This line has no voice.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Replace this line's voice with...", "",
+            "WAV audio (*.wav)")
+        if not path:
+            return
+        try:
+            pcm, rate, channels = audio_export.load_wav(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import",
+                                 f"Could not read that WAV: {exc}")
+            return
+        samples = audio_export.resample(
+            audio_export.to_mono(pcm, channels), rate, 18900)
+        needed = len(abs_indices) * xa.SAMPLES_PER_SECTOR
+        if not confirm_length(self, len(samples), needed):
+            return
+        try:
+            count = self._edits.stage_clip(
+                self._voice_image, abs_indices, samples)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import",
+                                 f"Could not stage that: {exc}")
+            return
+        self.voice_note.setText(
+            f"Staged this line ({count} sector(s)) - "
+            f"{self._edits.count()} sector(s) staged in all. Use the "
+            "Dialogues tab's Export patched BIN... to write them.")
 
     def _selected_entry(self):
         item = getattr(self, "_current_entry_item", None)
@@ -657,6 +792,22 @@ class TXTDViewer(QWidget):
         except (KeyError, IndexError):
             return None
 
+    def _warn_fallback_cost(self, voice, master_index):
+        """A master matched by clip count rather than by code (see
+        VoiceLink.set_masters) pays a one-time, tens-of-seconds cost the
+        first time it is actually played, exported or imported - working
+        out its channel from the audio itself, since nothing in the
+        code could be read to say so. Shown before that happens rather
+        than after, since otherwise it just looks like the tool froze."""
+        from PyQt6.QtWidgets import QApplication
+
+        if voice.fallback_pending(master_index):
+            self.voice_note.setText(
+                "Working out this area's voice channels from the audio "
+                "itself (no code match for this build) - one-time, can "
+                "take about a minute...")
+            QApplication.processEvents()
+
     def _play_voice(self):
         entry = self._selected_entry()
         voice = getattr(self, "_voice", None)
@@ -666,6 +817,7 @@ class TXTDViewer(QWidget):
         # sink leaves the first one running and reading its own buffer.
         self._stop_voice()
         master_index = self._current_entry_item.data(ENTRY_LOCATION_ROLE)[0]
+        self._warn_fallback_cost(voice, master_index)
         try:
             samples, rate, note = voice.clip_for(entry, master_index)
         except Exception as exc:

@@ -29,6 +29,8 @@ checked, so the live copies are the second of each pair.
 import array
 import struct
 
+from functions import cdsector
+
 SECTOR = 2352
 SUBHEADER = 16          # after the 12-byte sync and 4-byte header
 PAYLOAD = 24            # Form 2 payload starts here
@@ -224,6 +226,106 @@ def decode_channel(image, lba, indices, limit=None, frame=RAW):
             raw[payload_at:payload_at + FORM2_LEN], state, speakers == 2)
         samples.extend(block)
     return samples, rate, speakers
+
+
+def _clamp16(v):
+    return -32768 if v < -32768 else (32767 if v > 32767 else v)
+
+
+def _encode_unit(samples, old, older):
+    """The (filter, shift, nibbles, old, older) that reproduces 28
+    samples best, simulating the decoder sample by sample so the state
+    handed back is exactly what a real decode would carry forward - a
+    naive encode-from-the-original-signal drifts, since decode_sector
+    always predicts from its own reconstructed history, not the source.
+
+    Tries all 4 filters and all 13 shifts and keeps the smallest total
+    squared error; correct but not fast, which is fine for something a
+    user runs once per replaced line rather than every frame."""
+    best = None
+    for filt, (k0, k1) in enumerate(FILTERS):
+        for shift in range(13):
+            o, ol = old, older
+            scale = 1 << (12 - shift)
+            nibbles = []
+            err = 0
+            for s in samples:
+                predicted = (o * k0 + ol * k1 + 32) >> 6
+                diff = s - predicted
+                nib = (diff + (scale >> 1)) // scale
+                nib = -8 if nib < -8 else (7 if nib > 7 else nib)
+                decoded = _clamp16((nib << (12 - shift)) + predicted)
+                err += (decoded - s) ** 2
+                nibbles.append(nib & 0x0F)
+                ol, o = o, decoded
+            if best is None or err < best[0]:
+                best = (err, filt, shift, nibbles, o, ol)
+                if err == 0:
+                    break
+        if best and best[0] == 0:
+            break
+    return best[1], best[2], best[3], best[4], best[5]
+
+
+def encode_sector(samples, state=None):
+    """SAMPLES_PER_SECTOR (4032) mono samples, padded with silence if
+    short, into one sector's worth of ADPCM groups - the exact inverse
+    of decode_sector's layout (same group/unit/sample order, same
+    doubled header), so what this writes decodes back through
+    decode_sector unchanged bar quantization.
+
+    Returns (2304-byte group data, new (old, older) state) - the caller
+    pads that out to a full Form 2 payload; the last 20 bytes of one are
+    reserved and left zero, same as a real sector's own."""
+    if len(samples) < SAMPLES_PER_SECTOR:
+        samples = list(samples) + [0] * (SAMPLES_PER_SECTOR - len(samples))
+    old, older = state or (0, 0)
+    payload = bytearray(GROUPS * GROUP_LEN)
+    pos = 0
+    for g in range(GROUPS):
+        base = g * GROUP_LEN
+        header = bytearray(16)
+        data = bytearray(112)
+        for pair in range(4):
+            pair_nibbles = [None, None]
+            for half in range(2):
+                unit = pair * 2 + half
+                chunk = samples[pos:pos + UNIT_SAMPLES]
+                pos += UNIT_SAMPLES
+                filt, shift, nibbles, old, older = _encode_unit(
+                    chunk, old, older)
+                param = (filt << 4) | shift
+                if unit < 4:
+                    header[unit] = param
+                    header[4 + unit] = param
+                else:
+                    header[8 + (unit - 4)] = param
+                    header[12 + (unit - 4)] = param
+                pair_nibbles[half] = nibbles
+            lo, hi = pair_nibbles
+            for s in range(UNIT_SAMPLES):
+                data[s * 4 + pair] = (hi[s] << 4) | lo[s]
+        payload[base:base + 16] = header
+        payload[base + 16:base + GROUP_LEN] = data
+    return bytes(payload), (old, older)
+
+
+def encode_full_sector(original_sector, samples, state=None):
+    """A raw 2352-byte Mode 2 Form 2 sector with fresh ADPCM audio in
+    place of `original_sector`'s own - same sync, header and subheader
+    (so it still names the same file, channel and coding), only the
+    payload and its checksum change.
+
+    `samples` should be exactly SAMPLES_PER_SECTOR long; shorter is
+    padded with silence by encode_sector, longer is silently cut by
+    slicing before this is called - the caller is the one that knows
+    whether the user should be asked about either."""
+    sector = bytearray(original_sector)
+    body, new_state = encode_sector(samples[:SAMPLES_PER_SECTOR], state)
+    payload = body + b"\0" * (FORM2_LEN - len(body))
+    sector[PAYLOAD:PAYLOAD + FORM2_LEN] = payload
+    sector = cdsector.rebuild_form2(sector)
+    return bytes(sector), new_state
 
 
 def wav_bytes_raw(pcm, rate, channels=1):

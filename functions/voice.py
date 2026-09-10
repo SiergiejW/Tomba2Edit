@@ -364,7 +364,18 @@ def read_dispatch(overlay_path, base=OVERLAY_BASE):
         appear in master order in the code.
 
     This is the game's own mapping rather than a guess at it, so it
-    needs no audio, no probing and no cache."""
+    needs no audio, no probing and no cache.
+
+    OVERLAY_BASE itself (where an overlay lands in RAM) does hold across
+    every build checked - a proto from months earlier and every other
+    region's retail disc all still have their clip tables sitting at
+    this same base plus some offset. What differs between them is the
+    surrounding CODE: different embedded strings reflow the compiler's
+    output around it, which is enough to move _parse_case's instruction
+    pattern out of the narrow window it looks in. That case is not
+    something a base guess can fix - see VoiceLink.set_masters's table-
+    size fallback in gui/txtd/voice_link.py, which sidesteps code
+    reading entirely for whatever this misses."""
     data = open(overlay_path, "rb").read()
     top = len(data) - 4
 

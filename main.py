@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 
-version = "0.3.7"
+version = "0.3.8"
 
 
 def _install_crash_report():

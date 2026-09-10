@@ -13,6 +13,10 @@ and lets the eye pick.
                 is how the hardware would draw them.
     direct      each halfword as one BGR555 pixel. What a 16bpp
                 background or a palette row really looks like.
+    textured    every patch this area's own MDAT room, SMST/SPRT/BGMP files are
+                known to sample, each through its own CLUT - see
+                functions/vram_preview.py for what that can and can't
+                know.
 
 A CLUT can be typed in, chosen from the list a loaded model supplies, or
 picked straight off the image - right-click any palette row and it is
@@ -23,8 +27,11 @@ the widget rather than by scaling a pixmap into a scroll area. At 8x a
 4096x512 image is a 130-megapixel pixmap, which is what made the old
 view stutter; this way the cost does not depend on the zoom at all.
 """
+import struct
+
 import numpy as np
 from PIL import Image
+from PIL.ImageQt import ImageQt
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
@@ -43,6 +50,7 @@ TEXEL_HEIGHT = psx_vram.VRAM_ROWS         # 512
 MODE_INDICES = "4bpp indices (grey)"
 MODE_PALETTE = "4bpp through CLUT"
 MODE_DIRECT = "16-bit direct (BGR555)"
+MODE_TEXTURED = "Textured (as used)"
 
 MIN_ZOOM, MAX_ZOOM = 0.1, 32.0
 
@@ -378,13 +386,24 @@ class VRAMViewer(QWidget):
         self.canvas.picked_clut.connect(self.set_clut_address)
 
         self.mode_box = QComboBox()
-        self.mode_box.addItems([MODE_INDICES, MODE_PALETTE, MODE_DIRECT])
+        self.mode_box.addItems(
+            [MODE_INDICES, MODE_PALETTE, MODE_DIRECT, MODE_TEXTURED])
         self.mode_box.setToolTip(
             "How to read the bytes. VRAM holds textures and palettes "
             "together with nothing marking which is which, so this is a "
             "choice about what you are looking for, not about what the "
-            "data is.")
+            "data is.\n\n\"Textured\" reconstructs this area's own art by "
+            "finding every SMST, SPRT and BGMP file that samples it and "
+            "painting each patch through its own CLUT - a best effort "
+            "from the disc's own data, not a guarantee (see "
+            "functions/vram_preview.py).")
         self.mode_box.currentTextChanged.connect(self._rerender)
+        # Set by MainWindow when a chunk is loaded for a specific area -
+        # what "Textured" needs to go looking for that area's own art.
+        # None means it wasn't told, which the mode explains rather than
+        # silently falling back to something else.
+        self._area_source = None        # (idx_path, dat_path, chunk_index)
+        self._region_cache = {}         # area_source -> [vram_preview.Patch]
 
         self.clut_box = QComboBox()
         self.clut_box.setEditable(True)
@@ -447,6 +466,13 @@ class VRAMViewer(QWidget):
         layout.addLayout(bottom)
 
     # --- loading ------------------------------------------------------
+
+    def set_area_source(self, idx_path, dat_path, chunk_index):
+        """Where "Textured" mode should go looking for this area's own
+        art. Call this before handing over the VRAM itself, so a viewer
+        already sitting in Textured mode picks the new area up on its
+        very next render rather than the one after."""
+        self._area_source = (idx_path, dat_path, chunk_index)
 
     def set_vram_bytes(self, vram_bytes, name="VRAM"):
         """Show a megabyte of VRAM that somebody else has decompressed."""
@@ -536,11 +562,15 @@ class VRAMViewer(QWidget):
         if self.vram_bytes is None:
             return
         mode = self.mode_box.currentText()
+        note = ""
         if mode == MODE_DIRECT:
             image = vram_direct_image(self.vram_bytes)
             self.canvas.texels_per_halfword = 1
         elif mode == MODE_PALETTE:
             image = vram_palette_image(self.vram_bytes, self.clut_address)
+            self.canvas.texels_per_halfword = 4
+        elif mode == MODE_TEXTURED:
+            image, note = self._textured_image()
             self.canvas.texels_per_halfword = 4
         else:
             image = vram_index_image(self.vram_bytes)
@@ -550,7 +580,37 @@ class VRAMViewer(QWidget):
         self.info_label.setText(
             f"{self.source_name}: {image.width()}x{image.height()}, {mode}"
             + (f", CLUT 0x{self.clut_address:X}" if mode == MODE_PALETTE
-               else ""))
+               else "") + note)
+
+    def _textured_image(self):
+        """(QImage, info-line suffix) for MODE_TEXTURED.
+
+        Region-gathering is cached per area - it parses every asset the
+        area's own SDAT and trailer name, which is not free - but the
+        composite itself is cheap enough to redo on every call, so a
+        recolour or a swap staged elsewhere shows up without needing a
+        separate cache to invalidate."""
+        from functions import vram_preview
+
+        if self._area_source is None:
+            return vram_index_image(self.vram_bytes), (
+                " - no area to search (opened from somewhere that "
+                "doesn't say which one)")
+        idx_path, dat_path, chunk_index = self._area_source
+        regions = self._region_cache.get(self._area_source)
+        if regions is None:
+            try:
+                regions = vram_preview.area_regions(
+                    idx_path, dat_path, chunk_index)
+            except (OSError, struct.error):
+                regions = []
+            self._region_cache[self._area_source] = regions
+        pil_image = vram_preview.render(self.vram_bytes, regions)
+        qimage = ImageQt(pil_image).copy()
+        return qimage, (
+            f" - {len(regions)} patch(es) found in AREA_{chunk_index:02X}'s "
+            f"own MDAT/SMST/SPRT/BGMP files" if regions else
+            f" - nothing found in AREA_{chunk_index:02X}'s own files")
 
     def _on_hover(self, x, y):
         """Say where the cursor is in the terms the file formats use."""

@@ -174,6 +174,33 @@ def patch_track(source, destination, replacements, progress=None):
     return notes
 
 
+def patch_sectors(source, destination, sectors, progress=None):
+    """Copy a data track and drop already-built sectors into the copy at
+    their own absolute positions.
+
+    Unlike patch_track, `sectors` is {absolute lba: raw 2352-byte
+    sector} rather than a filename - a VOICE.XA clip has no directory
+    record of its own to repoint, only the sector range its table
+    names. Each sector is expected to already carry its own correct
+    EDC (see functions/xa.encode_full_sector), so this only writes the
+    bytes; it does not touch cdsector itself."""
+    if os.path.abspath(source) == os.path.abspath(destination):
+        raise BinWriteError("Write the patched track to a new file, not "
+                            "over the one being read.")
+    if progress:
+        progress("copying the track", 0, 1)
+    shutil.copyfile(source, destination)
+    with open(destination, "r+b") as out:
+        for i, (lba, raw) in enumerate(sectors.items()):
+            if progress:
+                progress("writing voice sectors", i, len(sectors))
+            if len(raw) != SECTOR:
+                raise BinWriteError(f"Sector {lba} is not {SECTOR} bytes.")
+            out.seek(lba * SECTOR)
+            out.write(raw)
+    return len(sectors)
+
+
 def write_cue(cue_path, tracks):
     """A cue sheet for a patched track plus any audio tracks beside it.
 

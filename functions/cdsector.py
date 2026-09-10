@@ -85,6 +85,18 @@ def rebuild(sector):
     return sector
 
 
+FORM2_EDC_AT = 2348     # 16 (header+subheader) + 8 + 2324 payload
+
+
+def rebuild_form2(sector):
+    """Put a Mode 2 Form 2 sector's EDC back. Form 2 carries no parity -
+    only a checksum over the subheader and the 2324-byte payload,
+    bytes 16..2347 - so this is the whole fix, unlike Form 1's rebuild()."""
+    sector = bytearray(sector)
+    struct.pack_into("<I", sector, FORM2_EDC_AT, edc(sector[16:FORM2_EDC_AT]))
+    return bytes(sector)
+
+
 SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 
 

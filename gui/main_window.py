@@ -43,6 +43,7 @@ from functions import codeuse
 from functions import voice
 from gui.txtd.font_page_view import FontPageView
 from gui.txtd.voice_panel import VoicePanel
+from functions.voice_edit import VoiceEditStore
 from gui.music_panel import MusicPanel
 from gui.sfx_panel import SfxPanel
 from gui.movie.movie_panel import MoviePanel
@@ -329,6 +330,12 @@ class MainWindow(QMainWindow):
 
         self.setup_tree_view()
         self.setup_widgets()
+        # One store for both a per-channel import (Dialogues) and a
+        # per-line one (TXTD), so either can trigger the same Export
+        # patched BIN and neither loses the other's staged sectors.
+        self.voice_edits = VoiceEditStore()
+        self.voice_panel.set_edit_store(self.voice_edits)
+        self.txtd_viewer.set_edit_store(self.voice_edits)
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
         self.txtd_viewer.twin_edits_toggled.connect(self._set_twin_edits)
         self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)
@@ -707,7 +714,8 @@ class MainWindow(QMainWindow):
         folder = os.path.dirname(self.dat_file) if self.dat_file else None
         self.img_browser.load(folder)
 
-    def _push_clut_choices(self, model, vram_bytes, name=None):
+    def _push_clut_choices(self, model, vram_bytes, name=None,
+                           chunk_index=None):
         """Offer the VRAM view the palettes this model samples.
 
         Nothing in VRAM marks a palette as a palette, so a viewer left
@@ -723,6 +731,11 @@ class MainWindow(QMainWindow):
         choices = [(f"page {', '.join(str(p) for p in sorted(used))}", clut)
                    for clut, used in sorted(pages.items())]
         self.vram_viewer.set_clut_choices(choices)
+        # For the VRAM view's Textured mode - see functions/vram_preview.
+        if chunk_index is not None and self.dat_file:
+            self.vram_viewer.set_area_source(
+                os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"),
+                self.dat_file, chunk_index)
         if vram_bytes is not None:
             self.vram_viewer.set_vram_bytes(
                 vram_bytes, name or self.vram_viewer.source_name)
@@ -3603,6 +3616,17 @@ class MainWindow(QMainWindow):
                                                  f"Couldn't read TOMBA2.IMG:\n\n{e}")
                             return
                         self.widgets_area.setCurrentWidget(self.widgets["IMG"])
+                        # Lets the Textured toggle go looking for this
+                        # area's own SMST/SPRT/BGMP - see
+                        # functions/vram_preview.py. None (an id it
+                        # can't reach) is a fine fallback: the toggle
+                        # just says so instead of finding anything.
+                        area_chunk = self._area_chunk_index(selected_item)
+                        if area_chunk is not None and self.dat_file:
+                            self.img_viewer.set_area_source(
+                                os.path.join(os.path.dirname(self.dat_file),
+                                            "TOMBA2.IDX"),
+                                self.dat_file, area_chunk)
                         self.img_viewer.load_chunk(chunk, item_name, start)
                     return
 
@@ -3636,6 +3660,10 @@ class MainWindow(QMainWindow):
 
                                             # Show VRAM viewer
                                             self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                                            # For the Textured mode - see
+                                            # functions/vram_preview.py.
+                                            self.vram_viewer.set_area_source(
+                                                IDX_path, self.dat_file, chunk_index)
                                             self.vram_viewer.load_vram_data(imgdata)
                                             return
                                 except ValueError as e:
@@ -3667,6 +3695,8 @@ class MainWindow(QMainWindow):
 
                                     # Instead of decompressing, just load raw CVRAM
                                     self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                                    self.vram_viewer.set_area_source(
+                                        idx_path, self.dat_file, chunk_index)
                                     self.vram_viewer.load_cvrm_data(imgdata)  # <-- NEW FUNCTION
 
                     return
@@ -3805,7 +3835,7 @@ class MainWindow(QMainWindow):
                                         self.mdat_viewer.set_vram_image(qimage, vram_bytes)
                                         self._push_clut_choices(
                                             self.mdat_viewer.model_data,
-                                            vram_bytes, item_name)
+                                            vram_bytes, item_name, chunk_index)
 
                                 except Exception as e:
                                     print(f"❌ Could not load VRAM for AREA_{area_number}: {e}")
@@ -3887,7 +3917,7 @@ class MainWindow(QMainWindow):
                                 # rather than making the user find them.
                                 self._push_clut_choices(
                                     self.smst_viewer.model_data,
-                                    vram_bytes, item_name)
+                                    vram_bytes, item_name, chunk_index)
                                 # Find this model's skeleton now, so
                                 # exporting it writes a rigged file
                                 # rather than a bag of loose parts. It

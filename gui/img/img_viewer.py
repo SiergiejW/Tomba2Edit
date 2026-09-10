@@ -14,10 +14,11 @@ level's textures is stored where.
 """
 import struct
 
+from PIL.ImageQt import ImageQt
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QSplitter,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from functions import img_codec, psx_vram
@@ -43,6 +44,23 @@ class IMGViewer(QWidget):
         super().__init__(parent)
         self._shards = []
         self._name = "IMG"
+        self._vram = None
+        self._base_summary = ""
+        # Set by MainWindow when a chunk is loaded for a specific area -
+        # what the Textured toggle needs to go looking for that area's
+        # own art. See gui/vram_viewer.py's own copy of this pattern.
+        self._area_source = None        # (idx_path, dat_path, chunk_index)
+        self._region_cache = {}
+
+        self.textured_btn = QPushButton("Textured (as used)", self)
+        self.textured_btn.setCheckable(True)
+        self.textured_btn.setToolTip(
+            "Reconstruct this chunk by finding every SMST, SPRT and BGMP "
+            "file that samples it and painting each patch through its "
+            "own CLUT, instead of the flat grey index view - a best "
+            "effort from the disc's own data (see "
+            "functions/vram_preview.py), not a guarantee.")
+        self.textured_btn.toggled.connect(self._render)
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
@@ -72,6 +90,7 @@ class IMGViewer(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self.summary)
+        right_layout.addWidget(self.textured_btn)
         right_layout.addWidget(self.canvas, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -85,6 +104,12 @@ class IMGViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
 
+    def set_area_source(self, idx_path, dat_path, chunk_index):
+        """Where the Textured toggle should go looking for this chunk's
+        own art. Call before load_chunk() - see the same note on
+        gui/vram_viewer.py's copy of this method."""
+        self._area_source = (idx_path, dat_path, chunk_index)
+
     def load_chunk(self, img_data, name="IMG", file_offset=0):
         """Show one chunk's worth of TOMBA2.IMG.
 
@@ -95,11 +120,13 @@ class IMGViewer(QWidget):
         try:
             shards, first = img_codec.read_chunk_header(img_data)
             decoded = img_codec.decompress_chunk(img_data)
-            vram = decode_vram_bytes(img_data)
+            self._vram = decode_vram_bytes(img_data)
         except Exception as e:
-            self.summary.setText(f"Couldn't read this chunk: {e}")
+            self._base_summary = f"Couldn't read this chunk: {e}"
+            self.summary.setText(self._base_summary)
             self.table.setRowCount(0)
             self.canvas.set_image(None)
+            self._vram = None
             return False
 
         self._shards = []
@@ -117,7 +144,11 @@ class IMGViewer(QWidget):
             at += packed
 
         packed_total = sum(s[4] for s in self._shards)
-        self.summary.setText(
+        # Kept apart from the note _render() adds for Textured mode -
+        # appending straight onto self.summary's own text would compound
+        # every time the button is toggled, and never come off again
+        # once it was toggled back off.
+        self._base_summary = (
             f"{name}: {len(shards)} shard(s) @ 0x{file_offset:X}, "
             f"{packed_total} packed bytes covering "
             f"{sum(w * h * 2 for _, _, w, h, _ in shards)} bytes of VRAM.")
@@ -126,10 +157,50 @@ class IMGViewer(QWidget):
 
         self.canvas.texels_per_halfword = 4
         self.canvas.highlight = None
-        self.canvas.set_image(vram_index_image(vram))
+        self._render()
         self.canvas.fit()
         self.table.clearSelection()
         return True
+
+    def _render(self):
+        """The flat index view, or the Textured reconstruction if the
+        button is down - shared so toggling it and loading a fresh
+        chunk both go through one place."""
+        if self._vram is None:
+            return
+        if not self.textured_btn.isChecked():
+            self.canvas.set_image(vram_index_image(self._vram))
+            self.summary.setText(self._base_summary)
+            return
+        image, note = self._textured_image()
+        self.canvas.set_image(image)
+        self.summary.setText(self._base_summary + note)
+
+    def _textured_image(self):
+        """(QImage, note) for the Textured toggle - see
+        gui/vram_viewer.py's own copy of this, which this mirrors."""
+        from functions import vram_preview
+
+        if self._area_source is None:
+            return vram_index_image(self._vram), (
+                "  [Textured: no area to search - this chunk wasn't "
+                "opened from an AREA_NN row]")
+        idx_path, dat_path, chunk_index = self._area_source
+        regions = self._region_cache.get(self._area_source)
+        if regions is None:
+            try:
+                regions = vram_preview.area_regions(
+                    idx_path, dat_path, chunk_index)
+            except (OSError, struct.error):
+                regions = []
+            self._region_cache[self._area_source] = regions
+        pil_image = vram_preview.render(self._vram, regions)
+        qimage = ImageQt(pil_image).copy()
+        note = (f"  [Textured: {len(regions)} patch(es) from "
+                f"AREA_{chunk_index:02X}'s own MDAT/SMST/SPRT/BGMP]" if regions
+                else f"  [Textured: nothing found in AREA_{chunk_index:02X}'s "
+                     f"own files]")
+        return qimage, note
 
     def _on_shard_selected(self):
         rows = self.table.selectionModel().selectedRows()

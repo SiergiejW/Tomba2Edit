@@ -31,6 +31,50 @@ def parse_wav(data):
                 w.getnchannels())
 
 
+def load_wav(path):
+    """([int16 samples...], rate, channels) from a WAV file on disk -
+    the read side of parse_wav, for importing a replacement clip."""
+    import array
+
+    with open(path, "rb") as f:
+        pcm, rate, channels = parse_wav(f.read())
+    samples = array.array("h")
+    # A WAV can be 8-bit or float PCM too; only 16-bit is handled here,
+    # which is what every WAV this app writes and most tools default to.
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
+    samples.frombytes(pcm)
+    return list(samples), rate, channels
+
+
+def to_mono(samples, channels):
+    """Average multi-channel frames down to one - VOICE.XA is mono."""
+    if channels <= 1 or not samples:
+        return list(samples)
+    out = []
+    for i in range(0, len(samples) - channels + 1, channels):
+        out.append(sum(samples[i:i + channels]) // channels)
+    return out
+
+
+def resample(samples, from_rate, to_rate):
+    """Linear resample - good enough for a spoken line, not a music
+    mastering tool. A no-op when the rates already match."""
+    if from_rate == to_rate or not samples or from_rate <= 0:
+        return list(samples)
+    ratio = to_rate / from_rate
+    n = max(1, int(len(samples) * ratio))
+    last = len(samples) - 1
+    out = []
+    for i in range(n):
+        pos = i / ratio
+        lo = int(pos)
+        hi = min(lo + 1, last)
+        frac = pos - lo
+        out.append(int(samples[lo] * (1 - frac) + samples[hi] * frac))
+    return out
+
+
 def have_mp3():
     """Whether an MP3 encoder can be reached at all."""
     try:
