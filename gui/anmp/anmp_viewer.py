@@ -29,14 +29,36 @@ from gui.anmp import game_rest
 from gui.smst.smst_parser import load_smst
 from gui.smst.smst_viewer import SMSTViewer
 
-# The game runs at 30fps; the transport defaults there.
-DEFAULT_FPS = 30
-
-# Poses rendered per table frame. The game eases between frames rather
-# than snapping, but nothing in the file says by how much - the frames
-# are the whole of it - so this is a viewing aid with a mild default
-# rather than a measurement. 1 turns it off and shows exactly what is
-# stored.
+# HOW FAST AN ANIMATION REALLY RUNS
+#
+# There is no single answer, and the disc says so. An animation is a
+# sequence of 8-byte entries - a u16 frame index at +0, and at +6 a
+# halfword whose low 12 bits are how many TICKS to hold that frame.
+# f_AdvanceActorSkeletalAnimation counts that down one a tick, and while
+# it is above zero it steps the tween instead of loading a new pose. So
+# the game draws every vblank and varies only how long a frame is held.
+#
+# Read off the ghost guard's own table (A06.BIN 0x44B5C, the address its
+# code hands to f_StartActorSkeletalAnimationBlend), and off the other
+# characters' candidates:
+#
+#     hold  rate   where
+#      1t   60fps  the ghost guard's attacks - a new pose every vblank
+#      2t   30fps
+#      3t   20fps  Tabby, all 44 of her entries
+#      4t   15fps  the commonest by far - 117 of 130 in one table,
+#                  135 of 159 in the anemone's, 89 of 105 in a koma pig's
+#      6t   10fps  the ghost guard's slow idles
+#     8-12t        rare, long holds
+#
+# So the pair below is one point on a curve rather than a constant, and
+# what stays fixed is their PRODUCT: fps x blend = 60, because the blend
+# is spread across exactly the ticks the frame is held (FUN_80075ff8
+# divides the step by the tick count, FUN_80075f0c adds one a tick).
+# 15 x 4 is the disc's commonest hold, and renders at the 60Hz the game
+# does. 10 x 6 is right for a slow idle, 60 x 1 for an attack - and at a
+# 1-tick hold there is no tween at all.
+DEFAULT_FPS = 15
 DEFAULT_STEPS = 3
 
 # How much of an animation's limbs a model has to have parts for before
@@ -178,6 +200,14 @@ class ANMPViewer(QWidget):
         self.fps_box.setRange(1, 60)
         self.fps_box.setValue(DEFAULT_FPS)
         self.fps_box.setSuffix(" fps")
+        self.fps_box.setToolTip(
+            "Table frames a second - how often a NEW pose is loaded, not "
+            "how often the screen is drawn.\n\n"
+            "The game holds a frame for a whole number of vblanks, so the "
+            "real rates are 60 divided by that: 60, 30, 20, 15, 10. Its "
+            "commonest hold is 4 ticks, which is 15. Set blend to match "
+            "(fps x blend = 60) and playback runs at the speed and the "
+            "smoothness the game does.")
         self.fps_box.valueChanged.connect(self._retime)
 
         self.steps_box = QSpinBox()
@@ -186,9 +216,12 @@ class ANMPViewer(QWidget):
         self.steps_box.setPrefix("blend x")
         self.steps_box.setToolTip(
             "How many poses to render between one table frame and the next, "
-            "easing between them instead of snapping. The game does ease; "
-            "how much isn't in the file, so this is a choice. 1 shows the "
-            "frames exactly as stored.")
+            "easing between them instead of snapping.\n\n"
+            "The game holds each frame for a number of ticks written beside "
+            "it and eases across exactly those ticks, drawing every vblank - "
+            "so keep blend x fps = 60. 15fps x4 is the disc's commonest "
+            "hold, 10fps x6 a slow idle, 60fps x1 an attack (no easing at "
+            "all). 1 shows the frames exactly as stored.")
         self.steps_box.valueChanged.connect(self._on_steps_changed)
 
         self.frame_label = QLabel("-")

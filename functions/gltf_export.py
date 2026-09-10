@@ -109,7 +109,7 @@ SMOOTH_ANGLE = 80.0
 PAD = 1
 
 # The game runs at 30fps and the ANMP transport defaults there.
-DEFAULT_FPS = 30
+DEFAULT_FPS = 12
 
 # What the viewers divide raw game units by to get something sensibly
 # sized on screen (gui/smst/smst_viewer.UNIT_SCALE). Kept as a number
