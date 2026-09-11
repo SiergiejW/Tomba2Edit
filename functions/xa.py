@@ -201,11 +201,18 @@ def _decode_stereo(payload, state=None):
     return out, (oldl, olderl, oldr, olderr)
 
 
-def decode_channel(image, lba, indices, limit=None, frame=RAW):
+def decode_channel(image, lba, indices, limit=None, frame=RAW, overrides=None):
     """Decode one channel's sectors into (samples, rate).
 
     `indices` are sector numbers within the file, as channel_map gives
-    them, so the interleave is already gone."""
+    them, so the interleave is already gone.
+
+    `overrides` is {absolute lba: raw 2352-byte sector} - a voice edit
+    staged in functions/voice_edit.VoiceEditStore but not yet written
+    to any file. Checked ahead of the image itself, sector by sector,
+    so a line just imported plays back the replacement immediately -
+    including after navigating away and back - without needing the
+    disc image on disk to already carry it."""
     stride, payload_at, has_sub = frame
     samples = []
     state = None
@@ -214,8 +221,11 @@ def decode_channel(image, lba, indices, limit=None, frame=RAW):
     for n, index in enumerate(indices):
         if limit is not None and n >= limit:
             break
-        image.seek((lba + index) * stride)
-        raw = image.read(stride)
+        abs_lba = lba + index
+        raw = overrides.get(abs_lba) if overrides else None
+        if raw is None:
+            image.seek(abs_lba * stride)
+            raw = image.read(stride)
         if len(raw) < stride:
             break
         if has_sub:

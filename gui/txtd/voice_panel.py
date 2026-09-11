@@ -41,10 +41,14 @@ class _Decode(QThread):
 
     done = pyqtSignal(int, object, int)
 
-    def __init__(self, image, lba, sectors, channel):
+    def __init__(self, image, lba, sectors, channel, overrides=None):
         super().__init__()
         self.args = (image, lba, sectors, channel)
         self.channel = channel
+        # A snapshot, not a live reference - see VoicePanel._request's
+        # own note on why this has to be taken before the thread starts
+        # rather than read from inside run().
+        self.overrides = overrides
 
     def run(self):
         image, lba, sectors, channel = self.args
@@ -57,7 +61,7 @@ class _Decode(QThread):
                     self.done.emit(channel, None, 0)
                     return
                 samples, rate, speakers = xa.decode_channel(
-                    f, lba, chans[key], frame=frame)
+                    f, lba, chans[key], frame=frame, overrides=self.overrides)
             self.done.emit(channel,
                            xa.wav_bytes(samples, rate, speakers), rate)
         except Exception:
@@ -254,7 +258,17 @@ class VoicePanel(QWidget):
             return
         self._stop_decode()
         self.status.setText(f"Decoding channel {channel}...")
-        self._decode = _Decode(self.image, self.lba, self.sectors, channel)
+        # Taken now rather than read inside the thread: self._edits.sectors
+        # could gain a new import while this decode is still running, and
+        # a dict read concurrently with a write from the GUI thread is
+        # exactly the kind of thing to not do across threads. A snapshot
+        # is safe either way - it can only ever be a moment stale, and
+        # the cache is cleared on import besides (see _import_selected),
+        # so the next request starts a fresh decode with a fresh snapshot.
+        overrides = (dict(self._edits.sectors)
+                    if self._edits.image == self.image else None)
+        self._decode = _Decode(self.image, self.lba, self.sectors, channel,
+                               overrides=overrides)
         self._decode.done.connect(self._decoded)
         self._decode.start()
 
@@ -317,12 +331,15 @@ class VoicePanel(QWidget):
             try:
                 wav = self._cache.get(channel)
                 if wav is None:
+                    overrides = (self._edits.sectors
+                                if self._edits.image == self.image else None)
                     with open(self.image, "rb") as f:
                         frame = xa.framing(self.image) or xa.RAW
                         chans = xa.channel_map(f, self.lba, self.sectors, frame)
                         found = next((k for k in chans if k[1] == channel), None)
                         samples, rate, speakers = xa.decode_channel(
-                            f, self.lba, chans[found], frame=frame)
+                            f, self.lba, chans[found], frame=frame,
+                            overrides=overrides)
                     wav = xa.wav_bytes(samples, rate, speakers)
                     self._cache[channel] = wav
                 audio_export.save(os.path.join(folder, f"{stem}.wav"), wav)

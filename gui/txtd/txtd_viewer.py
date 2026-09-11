@@ -694,6 +694,7 @@ class TXTDViewer(QWidget):
 
         if getattr(self, "_voice", None) is None:
             self._voice = VoiceLink()
+            self._voice.set_edit_store(self._edits)
         if image_path:
             self._voice_image = image_path
         if overlay_path or replace_overlay:
@@ -768,8 +769,12 @@ class TXTDViewer(QWidget):
     def set_edit_store(self, store):
         """Share one VoiceEditStore with the Dialogues tab, so a
         per-line import here ends up in the same Export patched BIN as
-        a per-channel one there."""
+        a per-channel one there - and so a line just imported plays its
+        replacement back immediately, including after navigating away
+        and back, rather than the stale audio still on disk."""
         self._edits = store
+        if getattr(self, "_voice", None) is not None:
+            self._voice.set_edit_store(store)
 
     def _open_known_voice(self, index):
         path = self.known_voice_disc.itemData(index)

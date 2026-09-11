@@ -85,7 +85,25 @@ class MusicPanel(QWidget):
         self.pick.clicked.connect(self._browse)
         self.transport = AudioTransport(
             source="Music",
-            columns=["Index", "Length", "Stream", "Channel", "Track"])
+            columns=["Index", "Length", "Stream", "Channel", "Track"],
+            # Any piece of music can be repeated - there's no "this one
+            # loops, that one doesn't" the way an SFX sample has - and
+            # once Loop is checked it should keep the current song
+            # going rather than letting the advance checkbox hand off
+            # to the next one, so both flip from AudioTransport's
+            # SFX-shaped defaults.
+            #
+            # select_plays=False and the "Auto-advance" label matter
+            # together: this checkbox is only ever meant to mean "when
+            # the song I started finishes, play the next one" - not
+            # "selecting a row starts it playing", which is what
+            # select_plays governs elsewhere (SFX/Dialogues want that;
+            # Music doesn't - opening a disc landing on row 0 of a
+            # freshly built list must never start music playing on its
+            # own before anyone asked for anything).
+            autoplay_default=True, always_loopable=True,
+            loop_beats_autoplay=True, select_plays=False,
+            autoplay_label="Auto-advance")
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)

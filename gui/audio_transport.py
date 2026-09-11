@@ -91,7 +91,9 @@ class AudioTransport(QWidget):
     save_requested = pyqtSignal(str, str)   # key, path
 
     def __init__(self, parent=None, columns=None, pitch=False,
-                 source="Audio"):
+                 source="Audio", autoplay_default=False,
+                 always_loopable=False, loop_beats_autoplay=False,
+                 select_plays=True, autoplay_label="Autoplay"):
         super().__init__(parent)
         # Which list this is - Music, Dialogues or SFX - so a
         # printed selection says where it came from.
@@ -102,6 +104,29 @@ class AudioTransport(QWidget):
         self._looping = False
         self._extra_columns = list(columns or [])
         self._has_pitch = pitch
+        # SFX marks only specific rows as loop-worthy - a sample the
+        # game itself sustains rather than plays once through - so
+        # Loop only ever applies to those. Music has no such thing:
+        # any track can be repeated, so Music passes this True and
+        # every row qualifies regardless of its own LOOPS flag.
+        self._always_loopable = always_loopable
+        # SFX wants Autoplay to win while both are checked, so
+        # stepping through a list of samples with the arrow keys
+        # never gets stuck forever on one that loops. Music wants the
+        # opposite - once Loop is on, the playing track keeps
+        # repeating until Loop is switched off, Autoplay or not.
+        self._loop_beats_autoplay = loop_beats_autoplay
+        self._autoplay_default = autoplay_default
+        # SFX/Dialogues want selecting a row (a click, an arrow key, or
+        # even the list simply being (re)filled and landing on its own
+        # first row) to start playing it right away, so browsing a long
+        # list previews as you go. Music explicitly does not: the
+        # checkbox there only means "when the song I started finishes,
+        # move on" - selecting a row is never enough on its own, or
+        # opening a disc would start music playing on its own the
+        # moment the list is built, before anyone asked for anything.
+        self._select_plays = select_plays
+        self._autoplay_label = autoplay_label
 
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
@@ -153,19 +178,43 @@ class AudioTransport(QWidget):
         rename.setToolTip("Give this entry a name of your own (or press F2). "
                           "Names are saved per disc.")
         rename.clicked.connect(self.rename_current)
-        self.autoplay = QCheckBox("Autoplay")
-        self.autoplay.setToolTip(
-            "Play an entry as soon as it's selected, instead of only on "
-            "double-click or Play. Off by default so browsing the list "
-            "with the arrow keys doesn't talk over itself.")
+        self.autoplay = QCheckBox(self._autoplay_label)
+        self.autoplay.setChecked(self._autoplay_default)
+        if self._select_plays:
+            self.autoplay.setToolTip(
+                "Play an entry as soon as it's selected, instead of only "
+                "on double-click or Play, and move on to the next one "
+                "when it ends."
+                + (" On by default." if self._autoplay_default else
+                  " Off by default so browsing the list with the arrow "
+                  "keys doesn't talk over itself."))
+        else:
+            self.autoplay.setToolTip(
+                "When the song you started finishes, move on and play "
+                "the next one - selecting a row never starts it playing "
+                "on its own; only double-click, Play, or an entry this "
+                "already carries you into does that."
+                + (" On by default." if self._autoplay_default else
+                  " Off by default."))
         self.loop = QCheckBox("Loop")
-        self.loop.setChecked(True)
-        self.loop.setToolTip(
-            "Repeat an entry marked as a loop instead of playing it once. "
-            "On by default. Autoplay overrides it while both are checked - "
-            "browsing entry to entry would otherwise never move on from "
-            "one that loops. Unchecking it stops a loop already playing, "
-            "rather than waiting for the next one you pick.")
+        self.loop.setChecked(False)
+        if self._loop_beats_autoplay:
+            self.loop.setToolTip(
+                "Repeat whatever is currently playing instead of playing "
+                "it once. Off by default. Takes priority over Autoplay "
+                "while both are checked - a looping track keeps looping "
+                "rather than handing off to the next one. Unchecking it "
+                "lets the current pass finish and then, if Autoplay is "
+                "on, moves to the next entry; unchecking it doesn't cut "
+                "the loop off mid-playback.")
+        else:
+            self.loop.setToolTip(
+                "Repeat an entry marked as a loop instead of playing it "
+                "once. Off by default. Autoplay overrides it while both "
+                "are checked - browsing entry to entry would otherwise "
+                "never move on from one that loops. Unchecking it stops "
+                "a loop already playing, rather than waiting for the "
+                "next one you pick.")
         self.loop.toggled.connect(self._loop_toggled)
 
         self.save_wav = QPushButton("Save selected to WAV...")
@@ -418,20 +467,23 @@ class AudioTransport(QWidget):
         The buffer is kept on the instance: the player reads from it for
         as long as it plays, and letting it go collects it mid-play.
 
-        Loops if the currently selected row was marked as one - a sound
-        effect the game holds a button down to sustain rather than one
-        that plays once through - and the Loop checkbox agrees, and
-        Autoplay isn't on. Autoplay overriding it is deliberate: stepping
-        through entries with Autoplay is meant to move on, and a looping
-        entry would otherwise just keep answering forever on the row it
-        started on. This reads _current rather than taking a "should it
-        loop" argument because play_bytes is always answering the most
-        recent play_row/play_key, and that row already knows."""
+        Loops if the currently selected row is loop-eligible (always_
+        loopable, or marked as one - a sound effect the game holds a
+        button down to sustain rather than one that plays once through)
+        and the Loop checkbox agrees. Whether Autoplay also being
+        checked cancels that depends on loop_beats_autoplay: SFX wants
+        Autoplay to win, so stepping through a list of samples with the
+        arrow keys never gets stuck forever on one that loops; Music
+        wants Loop to win, so a looping track keeps repeating until
+        Loop is switched off rather than handing off on its own. This
+        reads _current rather than taking a "should it loop" argument
+        because play_bytes is always answering the most recent
+        play_row/play_key, and that row already knows."""
         self.stop()
         current = self.list.item(self._current, 0) if self._current >= 0 else None
-        self._looping = (bool(current and current.data(LOOPS))
-                         and self.loop.isChecked()
-                         and not self.autoplay.isChecked())
+        self._looping = self._row_loops(current) and self.loop.isChecked()
+        if not self._loop_beats_autoplay:
+            self._looping = self._looping and not self.autoplay.isChecked()
         self.player.setLoops(QMediaPlayer.Loops.Infinite if self._looping else 1)
         self._buffer = QBuffer(self)
         self._buffer.setData(QByteArray(data))
@@ -465,13 +517,22 @@ class AudioTransport(QWidget):
     # --- signals ------------------------------------------------------
 
     def _maybe_autoplay(self, row, _col, previous_row, _previous_col):
-        """Selecting a different row plays it, but only with Autoplay
-        on - and only for a genuinely new row: play_row() itself moves
-        the current cell to where it already is, which would otherwise
-        retrigger this and restart the same row it's mid-answering."""
+        """Selecting a different row plays it, but only where that's
+        what this checkbox is for (select_plays - off for Music, see
+        __init__) and only with it checked - and only for a genuinely
+        new row: play_row() itself moves the current cell to where it
+        already is, which would otherwise retrigger this and restart
+        the same row it's mid-answering.
+
+        Without select_plays, this still just prints the selection - a
+        row landing current because the list was (re)built, such as
+        the moment a disc is opened, must never start audio playing on
+        its own, which is exactly what selecting row 0 there would
+        otherwise do."""
         if row >= 0 and row != previous_row:
             self._print_selection(row)
-        if row >= 0 and row != previous_row and self.autoplay.isChecked():
+        if (row >= 0 and row != previous_row and self._select_plays
+                and self.autoplay.isChecked()):
             self.play_row(row)
 
     def _print_selection(self, row):
@@ -496,15 +557,25 @@ class AudioTransport(QWidget):
               + (f"  named '{shown}'" if shown and shown != description else "")
               + ("  " + "  ".join(extras) if extras else ""))
 
+    def _row_loops(self, item):
+        """Whether `item` is loop-eligible at all - every row, for a
+        transport built always_loopable (Music), or only rows the
+        owner explicitly marked (SFX's own per-row LOOPS flag)."""
+        return bool(item and (self._always_loopable or item.data(LOOPS)))
+
     def _loop_toggled(self, checked):
         """Applies live to whatever is already playing, not just to the
         next thing picked - unchecking Loop mid-loop should stop it
-        right there, not wait for the entry to be reselected. Only has
-        anything to do when the current row is a looping one and
-        Autoplay isn't on to begin with; otherwise nothing here was
-        looping regardless of this checkbox."""
+        right there (letting the current pass finish rather than
+        cutting it off - see setLoops), not wait for the entry to be
+        reselected. Only has anything to do when the current row is
+        loop-eligible, and - unless loop_beats_autoplay - only when
+        Autoplay isn't also on; otherwise nothing here was looping
+        regardless of this checkbox."""
         current = self.list.item(self._current, 0) if self._current >= 0 else None
-        if not (current and current.data(LOOPS)) or self.autoplay.isChecked():
+        if not self._row_loops(current):
+            return
+        if not self._loop_beats_autoplay and self.autoplay.isChecked():
             return
         self._looping = checked
         self.player.setLoops(QMediaPlayer.Loops.Infinite if checked else 1)

@@ -95,6 +95,28 @@ class VoiceLink:
         self._fallback_by_master = {}
         self._fallback_channels = {}
         self._fallback_tried = False
+        # Set via set_edit_store() - a voice import stages its
+        # replacement sectors here rather than writing them to disk
+        # right away, and a clip played back afterward has to prefer
+        # them over the image on disk or the old audio would keep
+        # answering until the next export.
+        self._edits = None
+
+    def set_edit_store(self, store):
+        """Share the VoiceEditStore edits are staged into (see
+        functions/voice_edit.py), so clip_for()/sectors_for() can play
+        a line's just-imported replacement immediately - including
+        after navigating to a different entry and back - rather than
+        the stale audio still sitting in the disc image on disk."""
+        self._edits = store
+
+    def _overrides(self):
+        """{absolute lba: raw sector} staged for this exact image, or
+        None - a store staged against a different disc entirely (or
+        nothing staged at all) has nothing relevant to offer."""
+        if self._edits and self._edits.image == self.image:
+            return self._edits.sectors
+        return None
 
     def ready(self):
         return bool(self.image and (self.tables or getattr(
@@ -380,6 +402,7 @@ class VoiceLink:
         samples = []
         played = []
         frame = xa.framing(self.image) or xa.RAW
+        overrides = self._overrides()
         with open(self.image, "rb") as f:
             for n in range(count):
                 index = first + n
@@ -388,7 +411,7 @@ class VoiceLink:
                 block = xa.decode_channel(
                     f, self.lba,
                     voice.clip_sectors(entries[index], channel, self.sectors),
-                    frame=frame)
+                    frame=frame, overrides=overrides)
                 if samples:
                     samples.extend([0] * int(GAP * block[1]))
                 samples.extend(block[0])
