@@ -236,9 +236,8 @@ Special thanks to everyone who contributed research, testing, documentation and 
 
 ## Links
 
-* **Tomba Club** - Tomba! 2 reverse-engineering research and technical documentation
-* **Tomba Club Discord** - discussion, research and collaboration
-* **Tomba2Edit source code** - this repository
+* **[Tomba Club](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)** - Tomba! 2 reverse-engineering research and technical documentation
+* **[Tomba Club Discord](https://discord.gg/7RPgnxrTt)** - discussion, research and collaboration
 
 ## Keywords
 
