@@ -2787,35 +2787,13 @@ class MainWindow(QMainWindow):
         self._refresh_edit_status()
 
     def _copy_audio_track(self, source, target):
-        """Bring the disc's audio track and a cue sheet along.
-
-        A bin/cue names its tracks in separate files, so the second one
-        needs copying beside the patched first and a cue written over
-        both - otherwise the music track is simply missing."""
-        import shutil
-
+        """Bring the disc's audio track and a cue sheet along - see
+        functions.bin_writer.copy_audio_track, which this now just
+        calls (also used by the Dialogues tab's own patched-BIN
+        export)."""
         from functions import bin_writer
 
-        folder = os.path.dirname(source)
-        stem = os.path.basename(source)
-        audio = None
-        if "Track 1" in stem:
-            candidate = os.path.join(folder, stem.replace("Track 1", "Track 2"))
-            if os.path.exists(candidate):
-                audio = candidate
-        out_dir = os.path.dirname(target)
-        out_stem = os.path.splitext(os.path.basename(target))[0]
-        tracks = [(os.path.basename(target), "MODE2/2352")]
-        note = ""
-        if audio:
-            copied = os.path.join(out_dir, out_stem + " (Track 2).bin")
-            if os.path.abspath(copied) != os.path.abspath(audio):
-                shutil.copyfile(audio, copied)
-            tracks.append((os.path.basename(copied), "AUDIO"))
-            note = "The audio track was copied beside it."
-        cue = bin_writer.write_cue(os.path.join(out_dir, out_stem + ".cue"),
-                                   tracks)
-        return (note + f" Cue sheet: {os.path.basename(cue)}").strip()
+        return bin_writer.copy_audio_track(source, target)
 
     def export_all_files(self):
         # all_edits(), not pending_edits() - every export runs against

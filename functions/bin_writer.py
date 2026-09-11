@@ -217,3 +217,34 @@ def write_cue(cue_path, tracks):
     with open(cue_path, "w", encoding="ascii") as f:
         f.write("\n".join(lines) + "\n")
     return cue_path
+
+
+def copy_audio_track(source, target):
+    """Bring a bin/cue's second (audio) track along, and write a cue
+    sheet over both - the piece missing when only a patched data track
+    gets written out, which otherwise leaves an orphan .bin with no cue
+    naming it and, if the original disc had one, no music track either.
+
+    `source` is the original data track a patch was made from (used
+    only to find its own Track 2, never read otherwise); `target` is
+    the patched copy already written. Returns a note about what was
+    done, for a status line to show."""
+    folder = os.path.dirname(source)
+    stem = os.path.basename(source)
+    audio = None
+    if "Track 1" in stem:
+        candidate = os.path.join(folder, stem.replace("Track 1", "Track 2"))
+        if os.path.exists(candidate):
+            audio = candidate
+    out_dir = os.path.dirname(target)
+    out_stem = os.path.splitext(os.path.basename(target))[0]
+    tracks = [(os.path.basename(target), "MODE2/2352")]
+    note = ""
+    if audio:
+        copied = os.path.join(out_dir, out_stem + " (Track 2).bin")
+        if os.path.abspath(copied) != os.path.abspath(audio):
+            shutil.copyfile(audio, copied)
+        tracks.append((os.path.basename(copied), "AUDIO"))
+        note = "The audio track was copied beside it."
+    cue = write_cue(os.path.join(out_dir, out_stem + ".cue"), tracks)
+    return (note + f" Cue sheet: {os.path.basename(cue)}").strip()

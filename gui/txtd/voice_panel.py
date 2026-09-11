@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog,
                              QHBoxLayout, QLabel, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
-from functions import audio_export, disc_library, voice, xa
+from functions import audio_export, bin_writer, disc_library, voice, xa
 from functions.voice_edit import VoiceEditStore
 from gui.audio_transport import AudioTransport, clock
 from gui.name_store import NameStore
@@ -418,10 +418,20 @@ class VoicePanel(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Export", f"Could not write: {exc}")
             return
+        # Without this, the patched Track 1 is orphaned: nothing that
+        # reads bin/cue discs (most emulators included) will touch a
+        # bare .bin with no .cue naming it, and a bin/cue disc's music
+        # lives in a whole separate Track 2 file the copy above never
+        # touched - silently dropping it would leave a disc that opens
+        # but plays no music at all.
+        try:
+            note = bin_writer.copy_audio_track(self._edits.image, path)
+        except Exception as exc:
+            note = f"Wrote the track, but could not write its cue: {exc}"
         self.status.setText(
             f"Wrote {os.path.basename(path)} with {n} patched sector(s). "
-            "Point your CUE/emulator at this file in place of the "
-            "original data track.")
+            f"{note} Open the .cue in your emulator - not the .bin "
+            "directly - in place of the original disc.")
 
     def _write(self, path, wav):
         try:
