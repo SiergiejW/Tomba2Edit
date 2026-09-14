@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox, QStyle
 from functions import gltf_export
 from functions.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
 from gui.smst.smst_viewer import SMSTViewer
+from gui import collision_overlay, export_dialog, theme
 
 # World units per GL unit. A room is thousands of units across, so it
 # gets the level scale gui/scld/scld_render.py uses rather than the
@@ -56,7 +57,8 @@ KIND_COLORS = {
 }
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
-COLLISION_WIDTH = 1.0
+# F frames the selection no closer than this, world units.
+FRAME_MIN_RADIUS = 150.0
 
 # What export groups each kind under.
 EXPORT_GROUPS = {
@@ -106,7 +108,7 @@ FIELD_OF_VIEW = 45.0
 BACKGROUND_PITCH_SPAN = 180.0
 
 CONTROLS = ("Left-click: select | click it again: the part under the "
-            "cursor\n" + CONTROLS_HINT)
+            "cursor | F: frame it\n" + CONTROLS_HINT)
 
 
 class LevelViewer(SMSTViewer):
@@ -208,11 +210,10 @@ class LevelViewer(SMSTViewer):
         self.selection_cbo = QOpenGLBuffer()
         self.selection_count = 0
         self._selection_arrays = None
-        self.collision_vao = QOpenGLVertexArrayObject()
-        self.collision_vbo = QOpenGLBuffer()
-        self.collision_cbo = QOpenGLBuffer()
-        self.collision_count = 0
-        self._collision_arrays = None
+        self.collision = collision_overlay.Overlay()
+        # What the panel's Show box is on: None the area, a scene number one
+        # room, "all" both. Collision and the background follow it.
+        self.view = None
 
         # The background: its own tiny program, since it is an ordinary
         # RGB picture rather than the index-and-palette pair everything
@@ -327,10 +328,65 @@ class LevelViewer(SMSTViewer):
 
     def _rebuild_collision(self):
         if not self.show_collision or self.scene is None:
-            self._collision_arrays = (np.zeros(0, np.float32),) * 2
+            self.collision.clear()
             return
-        positions, colors = self.scene.collision_lines()
-        self._collision_arrays = (positions / UNIT_SCALE, colors)
+        self.collision.set(self.scene.collision(self.view, self._room_bounds()),
+                           UNIT_SCALE)
+
+    def set_view(self, view):
+        """Follow the panel's Show box - see self.view."""
+        self.view = view
+        self._rebuild_collision()
+        self.update()
+
+    def _room_bounds(self):
+        """{scene: (low, high)} round each room's instances, world units."""
+        verts = self._positions() * UNIT_SCALE
+        found = {}
+        for instance in self.instances:
+            scene = getattr(instance, "scene", None)
+            if scene is None:
+                continue
+            if instance.vertex_count:
+                points = verts[instance.first_vertex:
+                               instance.first_vertex + instance.vertex_count]
+            else:
+                points = np.array([[instance.x, instance.y, instance.z]])
+            low, high = points.min(axis=0), points.max(axis=0)
+            if scene in found:
+                low = np.minimum(low, found[scene][0])
+                high = np.maximum(high, found[scene][1])
+            found[scene] = (low, high)
+        return found
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
+            self.frame_selection()
+            return
+        super().keyPressEvent(event)
+
+    def frame_selection(self):
+        """Ease the camera onto what is selected - the picked part of it if
+        there is one - keeping the angle it is looked at from."""
+        if self.selected is None or self.selected >= len(self.instances):
+            return
+        instance = self.instances[self.selected]
+        box = (self._part_box(instance, self.selected_part)
+               or self._instance_box(instance))
+        if box is None and instance.vertex_count:
+            verts = self._positions()[instance.first_vertex:
+                                      instance.first_vertex
+                                      + instance.vertex_count] * UNIT_SCALE
+            low, high = verts.min(axis=0), verts.max(axis=0)
+            box = (low[0], high[0], low[1], high[1], low[2], high[2])
+        if box is None:
+            return
+        x0, x1, y0, y1, z0, z1 = box
+        centre = ((x0 + x1) / 2 / UNIT_SCALE, (y0 + y1) / 2 / UNIT_SCALE,
+                  (z0 + z1) / 2 / UNIT_SCALE)
+        radius = max(math.dist((x0, y0, z0), (x1, y1, z1)) / 2,
+                     FRAME_MIN_RADIUS) / UNIT_SCALE
+        self.camera_controls.glide_to(centre, radius)
 
     def frame_visible(self):
         """Put the camera over what is showing - a room rather than the
@@ -686,15 +742,14 @@ class LevelViewer(SMSTViewer):
         if not self.model_data or not self.model_data.get("vertices"):
             QMessageBox.warning(self, "Nothing to export", "No level is loaded.")
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save level", (self.export_name or "level") + ".glb",
-            "glTF binary (*.glb)")
+        path, unlit = export_dialog.ask_model_path(
+            self, "Save level", self.export_name or "level", text=False)
         if not path:
             return
         try:
             written, groups = gltf_export.write_scene_glb(
                 path, self.export_parts(), self.vram_raw_bytes,
-                name=self.export_name or "level")
+                name=self.export_name or "level", unlit=unlit)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
@@ -740,9 +795,6 @@ class LevelViewer(SMSTViewer):
         self.selection_vao.create()
         self.selection_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.selection_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.collision_vao.create()
-        self.collision_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.collision_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
         self.background_program = QOpenGLShaderProgram()
         self.background_program.addShaderFromSourceCode(
@@ -990,11 +1042,6 @@ class LevelViewer(SMSTViewer):
                 self._selection_arrays, self.selection_vao, self.selection_vbo,
                 self.selection_cbo)
             self._selection_arrays = None
-        if self._collision_arrays is not None:
-            self.collision_count = self._upload_lines(
-                self._collision_arrays, self.collision_vao, self.collision_vbo,
-                self.collision_cbo)
-            self._collision_arrays = None
 
     def _sync_background(self):
         if not self._background_dirty:
@@ -1026,12 +1073,14 @@ class LevelViewer(SMSTViewer):
         """The SMST viewer's hook: the area's background, drawn flat
         across the view after the clear and before anything else."""
         self._sync_background()
-        if not self.show_background or self.background_texture is None:
-            # Nothing behind the level, so leave it black rather than
-            # the model viewer's grey: an area with no BGMP reads as a
-            # room in the dark, which is what it is, and the grey looks
-            # like a background that failed to load.
-            GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+        room = self.view is not None and self.view != "all"
+        if room or not self.show_background or self.background_texture is None:
+            # Nothing behind the level: black rather than the model viewer's
+            # grey, which looks like a background that failed to load - and
+            # a room is always black, the sky outside is not in it. The
+            # bright theme takes its light ground for an area.
+            GL.glClearColor(*(theme.ROOM_VIEW if room
+                              else theme.view_background((0.0, 0.0, 0.0))), 1.0)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             return
         height, width = self._background_image.shape[:2]
@@ -1078,8 +1127,8 @@ class LevelViewer(SMSTViewer):
         self._sync_lines()
         super().paintGL()
         self.draw_sprites()
-        if not (self.marker_count or self.selection_count
-                or self.collision_count):
+        collision = self.show_collision and self.collision.has_lines()
+        if not (self.marker_count or self.selection_count or collision):
             return
         if not self.shader_program.bind():
             return
@@ -1087,11 +1136,8 @@ class LevelViewer(SMSTViewer):
                                             self._model_view_projection())
         self.shader_program.setUniformValue("useTextures", False)
         self.shader_program.setUniformValue("alpha", 1.0)
-        if self.show_collision and self.collision_count:
-            GL.glLineWidth(COLLISION_WIDTH)
-            self.collision_vao.bind()
-            GL.glDrawArrays(GL.GL_LINES, 0, self.collision_count)
-            self.collision_vao.release()
+        if collision:
+            self.collision.draw(self.shader_program)
         if self.show_markers and self.marker_count:
             GL.glLineWidth(MARKER_WIDTH)
             self.marker_vao.bind()

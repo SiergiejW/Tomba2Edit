@@ -346,13 +346,14 @@ def _bone_of(groups, vertex, joints, spares=None):
 
 
 def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
-          fps=DEFAULT_FPS, name="model", spares=None, skip=None):
+          fps=DEFAULT_FPS, name="model", spares=None, skip=None, unlit=False):
     """The glTF document and its binary blob, as (dict, bytearray).
 
     `spares` maps a group past the end of the skeleton to the limb it
     stands in for, and `skip` names groups to leave out entirely - the
     viewer hides a model's alternates, and an export that matches what
-    is on screen beats one that ships two heads inside each other."""
+    is on screen beats one that ships two heads inside each other.
+    `unlit` marks every material KHR_materials_unlit."""
     vertices = np.asarray(model_data.get("vertices") or (), dtype=np.float32)
     if not len(vertices):
         raise ValueError("model has no vertices")
@@ -435,6 +436,7 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
             # is cut out rather than blended.
             "alphaMode": "BLEND" if transparent else "MASK",
             **({} if transparent else {"alphaCutoff": 0.5}),
+            **({"extensions": {UNLIT: {}}} if unlit else {}),
         })
 
         local_uv = np.empty_like(part_uv)
@@ -494,6 +496,8 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         "samplers": [{"magFilter": NEAREST, "minFilter": NEAREST,
                       "wrapS": CLAMP_TO_EDGE, "wrapT": CLAMP_TO_EDGE}],
     }
+    if unlit:
+        gltf["extensionsUsed"] = [UNLIT]
 
     if bones:
         _rig(gltf, buffer, bones, frames, fps, name)
@@ -608,6 +612,7 @@ def _rig(gltf, buffer, bones, frames, fps, name):
 
 POINTS = 0
 LINES = 1
+UNLIT = "KHR_materials_unlit"
 
 
 def write_lines_glb(path, vertices, colors, name="collision", mode=LINES,
@@ -687,11 +692,11 @@ def _write_glb(path, gltf, blob):
 
 def write_glb(path, model_data, vram_bytes, groups=None, bones=None,
               frames=None, fps=DEFAULT_FPS, name="model", spares=None,
-              skip=None):
+              skip=None, unlit=False):
     """Write a single-file .glb - one file with the textures inside it,
     which is what makes this drag-and-droppable into Blender."""
     gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
-                       name, spares, skip)
+                       name, spares, skip, unlit)
     gltf["buffers"] = [{"byteLength": len(blob)}]
 
     payload = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
@@ -710,11 +715,11 @@ def write_glb(path, model_data, vram_bytes, groups=None, bones=None,
 
 def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
                frames=None, fps=DEFAULT_FPS, name="model", spares=None,
-               skip=None):
+               skip=None, unlit=False):
     """Write a .gltf - JSON with the buffer and textures inlined, for
     when something downstream wants to read it as text."""
     gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
-                       name, spares, skip)
+                       name, spares, skip, unlit)
     gltf["buffers"] = [{
         "byteLength": len(blob),
         "uri": "data:application/octet-stream;base64,"
@@ -725,17 +730,19 @@ def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
     return True
 
 
-def write_scene_glb(path, parts, vram_bytes, name="level"):
+def write_scene_glb(path, parts, vram_bytes, name="level", unlit=False,
+                    lines=None):
     """One .glb holding many objects, each its own mesh and node, under a
     node per group - so Blender imports a chest as a chest and a pig as a
     pig rather than one welded level.
 
     `parts` is [(name, group, model_data)], each model standing where it
-    goes. A palette two parts share is baked once."""
+    goes. A palette two parts share is baked once. `lines` is
+    [(name, group, vertices, colours)] of line pairs in model units."""
     docs = []
     for part_name, group, data in parts:
         try:
-            doc, blob = build(data, vram_bytes, name=part_name)
+            doc, blob = build(data, vram_bytes, name=part_name, unlit=unlit)
         except ValueError:
             continue
         docs.append((part_name, group, doc, blob))
@@ -797,6 +804,40 @@ def write_scene_glb(path, parts, vram_bytes, name="level"):
         out["meshes"].append({"name": part_name, "primitives": primitives})
         groups.setdefault(group, []).append(len(out["nodes"]))
         out["nodes"].append({"name": part_name, "mesh": len(out["meshes"]) - 1})
+    for line_name, group, vertices, colors in lines or ():
+        points = np.asarray(vertices, dtype=np.float32).reshape(-1, 3) / UNIT_SCALE
+        if not len(points):
+            continue
+        tints = np.clip(np.asarray(colors, dtype=np.float32).reshape(-1, 3), 0, 1)
+        buffer = _Buffer()
+        attributes = {"POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER,
+                                             minmax=True),
+                      "COLOR_0": buffer.add(tints, "VEC3", FLOAT, ARRAY_BUFFER)}
+        blob += b"\x00" * (-len(blob) % 4)
+        offset = len(blob)
+        blob += buffer.data
+        first_view, first_accessor = len(out["bufferViews"]), len(out["accessors"])
+        for view in buffer.views:
+            view = dict(view)
+            view["buffer"] = 0
+            view["byteOffset"] = view.get("byteOffset", 0) + offset
+            out["bufferViews"].append(view)
+        for accessor in buffer.accessors:
+            accessor = dict(accessor)
+            accessor["bufferView"] += first_view
+            out["accessors"].append(accessor)
+        key = "lines"
+        if key not in materials:
+            materials[key] = len(out["materials"])
+            out["materials"].append({"name": "lines", "extensions": {UNLIT: {}},
+                                     "pbrMetallicRoughness": {"metallicFactor": 0.0}})
+        out["meshes"].append({"name": line_name, "primitives": [{
+            "attributes": {k: v + first_accessor for k, v in attributes.items()},
+            "mode": LINES, "material": materials[key]}]})
+        groups.setdefault(group, []).append(len(out["nodes"]))
+        out["nodes"].append({"name": line_name, "mesh": len(out["meshes"]) - 1})
+    if unlit or lines:
+        out["extensionsUsed"] = [UNLIT]
     roots = []
     for group, children in groups.items():
         roots.append(len(out["nodes"]))

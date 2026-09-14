@@ -93,6 +93,22 @@ def _bright_palette():
     return p
 
 
+def current_theme():
+    return _current_theme
+
+
+# A 3D view's ground under the bright theme; the dark theme keeps each
+# view's own dark grey. A room is always drawn on black - it is a room in
+# the dark in the game too.
+BRIGHT_VIEW = (0.9, 0.9, 0.92)
+ROOM_VIEW = (0.0, 0.0, 0.0)
+
+
+def view_background(dark=(0.1, 0.1, 0.1)):
+    """(r, g, b) to clear a 3D view to: `dark` unless the theme is bright."""
+    return BRIGHT_VIEW if _current_theme == "bright" else dark
+
+
 def apply_theme(app: QApplication, name: str):
     """Switches the app's color palette only. Call once at startup with
     the saved/default theme, and again whenever the user picks a

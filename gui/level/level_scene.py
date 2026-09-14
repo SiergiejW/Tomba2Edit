@@ -103,16 +103,9 @@ SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
 CHEST_AUTHORED = 4
 INTERIOR_FLAG = 0x80
 
-# Collision as lines: how long a SCLD sample's cross is, and what each kind
-# of town plane is drawn in.
-COLLISION_TICK = 12.0
-TOWN_COLORS = {
-    "floor": (0.3, 0.9, 0.4), "wall": (1.0, 0.35, 0.3),
-    "door": (1.0, 0.85, 0.2), "ladder": (0.3, 0.7, 1.0),
-    "net": (0.7, 0.5, 1.0), "camera": (0.6, 0.6, 0.6),
-    "foothold": (0.4, 1.0, 1.0), "ball": (1.0, 0.6, 1.0),
-    "other": (0.9, 0.9, 0.9),
-}
+# How far outside the box round a room's instances one of its town
+# collision planes may reach, in world units.
+ROOM_REACH = 400.0
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -1364,36 +1357,43 @@ class LevelScene:
                 instance.x, instance.y, instance.z = view_point(
                     sprites[number].position)
 
-    def collision_lines(self):
-        """(positions, colours) for the area's collision as lines, in view
-        axes: a SCLD's surface samples and the stacks standing on them, or
-        a town's prebuilt planes outlined (functions/town_collision.py)."""
-        from gui.scld import scld_render
-        positions, colors = [], []
+    def collision(self, view=None, rooms=None):
+        """gui.collision_overlay.Lines for what `view` shows: None the area,
+        a scene number that room, "all" everything.
 
-        def line(a, b, rgb):
-            positions.extend(a)
-            positions.extend(b)
-            colors.extend(rgb)
-            colors.extend(rgb)
-
-        tick = COLLISION_TICK
-        for entry in self.planes:
-            rgb = scld_render.entry_color(entry.index)
-            for a, b in entry.wall_candidates():
-                line(a, b, rgb)
-            for x, y, z in entry.trace():
-                line((x - tick, y, z), (x + tick, y, z), rgb)
-                line((x, y, z - tick), (x, y, z + tick), rgb)
+        A SCLD is the area's - rooms have none. A town keeps a dataset for
+        its streets and one or two for its rooms (functions/town_collision
+        .py): a dataset most of whose planes stand in no room is the area's,
+        and in the others each plane goes to the room whose box holds its
+        middle, `rooms` being {scene: (low, high)} round its instances in
+        world units. A room plane no box holds shows only under "all"."""
+        from gui import collision_overlay as overlay
+        lines = overlay.Lines()
+        if view in (None, "all"):
+            overlay.add_scld(lines, self.planes)
         for dataset in (town_collision.find(self.overlay_data)
                         if self.overlay_data else ()):
-            for plane in dataset.planes:
-                rgb = TOWN_COLORS.get(plane.kind, TOWN_COLORS["other"])
-                corners = [view_point(p) for p in plane.outline()]
-                for k in range(len(corners)):
-                    line(corners[k], corners[(k + 1) % len(corners)], rgb)
-        return (np.array(positions, dtype=np.float32),
-                np.array(colors, dtype=np.float32))
+            owners = [self._room_of(plane, rooms or {}) for plane in dataset.planes]
+            streets = sum(o is None for o in owners) * 2 > len(owners)
+            for plane, owner in zip(dataset.planes, owners):
+                where = None if streets else ("loose" if owner is None else owner)
+                if view == "all" or where == view:
+                    overlay.add_town(lines, (plane,), view_point)
+        return lines
+
+    @staticmethod
+    def _room_of(plane, rooms):
+        """The scene whose box holds a town plane's middle - the smallest
+        if several do - or None."""
+        middle = np.mean([view_point(p) for p in plane.outline()], axis=0)
+        best, size = None, None
+        for scene, (low, high) in rooms.items():
+            low, high = np.asarray(low), np.asarray(high)
+            if np.all(middle >= low - ROOM_REACH) and np.all(middle <= high + ROOM_REACH):
+                volume = float(np.prod(high - low + 1.0))
+                if size is None or volume < size:
+                    best, size = scene, volume
+        return best
 
     def markers(self, hidden=()):
         """Line geometry for the objects with no model, as

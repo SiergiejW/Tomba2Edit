@@ -528,6 +528,7 @@ class LevelEditorPanel(QWidget):
             if item.checkState() != Qt.CheckState.Checked:
                 unchecked.add(item.data(ROLE))
             self.table.setRowHidden(row, item.data(ROLE) in filtered)
+        self.viewer.set_view(view)
         self.viewer.set_hidden_groups(filtered | unchecked)
         if frame:
             if view is None:

@@ -76,6 +76,10 @@ FIELD_OF_VIEW = 45.0
 
 # Freecam scrolling multiplies the speed rather than adding to it -
 # five notches double it, at any scale.
+# Framing a selection eases there over this many steps rather than jumping.
+GLIDE_FRAMES = 12
+GLIDE_INTERVAL_MS = 16
+
 SPEED_STEP = 1.15
 SPEED_RANGE = 50.0
 
@@ -236,6 +240,40 @@ class CameraControls:
         up = (math.sin(h) * math.sin(v), math.cos(v),
               -math.cos(h) * math.sin(v))
         return right, up
+
+    def glide_to(self, centre, radius, margin=2.5, frames=GLIDE_FRAMES):
+        """frame() on `centre` without the jump: the camera eases there over
+        a few frames, keeping its angles and the scene's size."""
+        distance = max(radius * margin * 1.2, 1e-6)
+        h = math.radians(self.camera_angle_h)
+        v = math.radians(self.camera_angle_v)
+        target = (distance * math.cos(v) * math.sin(h) - centre[0],
+                  -distance * math.sin(v) - centre[1],
+                  -distance * math.cos(v) * math.cos(h) - centre[2])
+        self._glide = [(self.camera_x, self.camera_y, self.camera_z), target,
+                       0, max(int(frames), 1)]
+        self.orbit_distance = distance
+        if getattr(self, "_glide_timer", None) is None:
+            self._glide_timer = QTimer()
+            self._glide_timer.timeout.connect(self._glide_step)
+        self._glide_timer.start(GLIDE_INTERVAL_MS)
+
+    def _glide_step(self):
+        start, target, step, frames = self._glide
+        step += 1
+        t = step / frames
+        eased = t * t * (3.0 - 2.0 * t)
+        self.camera_x, self.camera_y, self.camera_z = (
+            a + (b - a) * eased for a, b in zip(start, target))
+        self._glide[2] = step
+        if step >= frames:
+            self.stop_glide()
+        self.widget.update()
+
+    def stop_glide(self):
+        timer = getattr(self, "_glide_timer", None)
+        if timer is not None:
+            timer.stop()
 
     def look_at(self, aim, distance):
         """Put the camera `distance` from `aim`, keeping its angles.
@@ -439,6 +477,8 @@ class CameraControls:
         """Handle key presses"""
         if event.key() in self.keys_pressed:
             self.keys_pressed[event.key()] = True
+            if event.key() != Qt.Key.Key_Shift:
+                self.stop_glide()
 
     def keyReleaseEvent(self, event):
         """Handle key releases"""
