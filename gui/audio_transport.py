@@ -137,33 +137,10 @@ class AudioTransport(QWidget):
         self.player.playbackStateChanged.connect(self._state_changed)
         self.player.mediaStatusChanged.connect(self._status_changed)
 
-        self.list = QTableWidget(0, 1 + len(self._extra_columns))
-        self.list.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows)
-        self.list.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection)
-        self.list.verticalHeader().setVisible(False)
-        self.list.setSortingEnabled(True)
-        header = self.list.horizontalHeader()
-        self.list.setHorizontalHeaderLabels(["Name"] + self._extra_columns)
-        # Interactive on every column - a person can drag any of them -
-        # but the name starts at a fixed, narrower width rather than
-        # Stretch's whole-remaining-space default: with extra columns
-        # to share room with, "SFX 214" does not need the width "Fire
-        # Pig Robe Model Animation Pointers" would. With none, it is
-        # still the only column, so this just becomes its starting size
-        # rather than a hard limit - the user can always drag it.
-        for i in range(self.list.columnCount()):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
-        self.list.setColumnWidth(0, NAME_COLUMN_WIDTH)
-        self.list.cellDoubleClicked.connect(
-            lambda row, _col: self.play_row(row))
-        self.list.currentCellChanged.connect(self._maybe_autoplay)
-        # F2 renames. Deliberately not SelectedClicked, which would start
-        # an edit whenever a chosen row is clicked again.
-        self.list.setEditTriggers(
-            QAbstractItemView.EditTrigger.EditKeyPressed)
-        self.list.itemChanged.connect(self._item_changed)
+        # Every list this transport plays from, and the one in use - the
+        # last one picked from. See add_list().
+        self.lists = []
+        self.list = self._make_list(self._extra_columns, source)
 
         self.play_button = QPushButton("Play")
         self.play_button.clicked.connect(self._toggle)
@@ -296,7 +273,48 @@ class AudioTransport(QWidget):
 
     # --- the list -----------------------------------------------------
 
-    def set_entries(self, entries, names=None):
+    def _make_list(self, columns, source):
+        table = QTableWidget(0, 1 + len(columns))
+        table.columns, table.source = list(columns), source
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.setSortingEnabled(True)
+        table.setHorizontalHeaderLabels(["Name"] + table.columns)
+        # Interactive on every column - a person can drag any of them -
+        # but the name starts at a fixed, narrower width rather than
+        # Stretch's whole-remaining-space default.
+        header = table.horizontalHeader()
+        for i in range(table.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+        table.setColumnWidth(0, NAME_COLUMN_WIDTH)
+        table.cellClicked.connect(lambda _row, _col, t=table: self._use(t))
+        table.cellDoubleClicked.connect(
+            lambda row, _col, t=table: self._play_from(t, row))
+        table.currentCellChanged.connect(
+            lambda row, col, previous, previous_col, t=table:
+            self._maybe_autoplay(t, row, col, previous, previous_col))
+        # F2 renames. Deliberately not SelectedClicked, which would start
+        # an edit whenever a chosen row is clicked again.
+        table.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)
+        table.itemChanged.connect(self._item_changed)
+        self.lists.append(table)
+        return table
+
+    def add_list(self, columns=None, source="Audio"):
+        """Another list playing through this same player, for the owner to
+        lay out beside the first. The controls serve whichever list was
+        picked from last; keys must not repeat across lists."""
+        return self._make_list(list(columns or []), source)
+
+    def _use(self, table):
+        self.list = table
+
+    def _play_from(self, table, row):
+        self._use(table)
+        self.play_row(row)
+
+    def set_entries(self, entries, names=None, table=None):
         """Fill the list.
 
         Each entry is (key, description), (key, description, values), or
@@ -308,12 +326,15 @@ class AudioTransport(QWidget):
 
         Sorting is turned off while the table is rebuilt: it applies to
         every insertion otherwise, which is pointless work here and
-        fights the row-by-row fill besides."""
+        fights the row-by-row fill besides. `table` is a list from
+        add_list(); the first list by default."""
+        table = table or self.lists[0]
         names = names or {}
-        self.stop()
-        self.list.setSortingEnabled(False)
-        self.list.blockSignals(True)
-        self.list.setRowCount(len(entries))
+        if table is self.list:
+            self.stop()
+        table.setSortingEnabled(False)
+        table.blockSignals(True)
+        table.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             key, description, *rest = entry
             values = rest[0] if rest else ()
@@ -324,29 +345,30 @@ class AudioTransport(QWidget):
             item.setData(LOOPS, bool(loops))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._show(item, names.get(key, ""))
-            self.list.setItem(row, 0, item)
+            table.setItem(row, 0, item)
             for col, value in enumerate(values, start=1):
                 cell = QTableWidgetItem()
                 cell.setData(Qt.ItemDataRole.DisplayRole, value)
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.list.setItem(row, col, cell)
-        self.list.blockSignals(False)
-        self.list.setSortingEnabled(True)
-        if self._extra_columns:
-            # Column 1 is "Index" on all three callers - the disc's own
+                table.setItem(row, col, cell)
+        table.blockSignals(False)
+        table.setSortingEnabled(True)
+        if table.columns:
+            # Column 1 is "Index" on every caller - the disc's own
             # order, and the one a freshly opened list should read in
             # regardless of however the table was last left sorted.
-            self.list.sortItems(1, Qt.SortOrder.AscendingOrder)
+            table.sortItems(1, Qt.SortOrder.AscendingOrder)
         if entries:
-            self.list.setCurrentCell(0, 0)
+            table.setCurrentCell(0, 0)
 
-    def apply_names(self, names):
+    def apply_names(self, names, table=None):
         """Redraw every row against a fresh set of names."""
-        self.list.blockSignals(True)
-        for row in range(self.list.rowCount()):
-            item = self.list.item(row, 0)
+        table = table or self.lists[0]
+        table.blockSignals(True)
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
             self._show(item, names.get(item.data(KEY), ""))
-        self.list.blockSignals(False)
+        table.blockSignals(False)
 
     @staticmethod
     def _show(item, name):
@@ -450,10 +472,13 @@ class AudioTransport(QWidget):
                 self.wanted.emit(key)
 
     def play_key(self, key):
-        """Select and request a row by key, wherever it currently sits."""
-        row = self._row_for_key(key)
-        if row >= 0:
-            self.play_row(row)
+        """Select and request a row by key, whichever list it sits in."""
+        for table in self.lists:
+            self._use(table)
+            row = self._row_for_key(key)
+            if row >= 0:
+                self.play_row(row)
+                return
 
     def play_url(self, url):
         self.stop()
@@ -516,7 +541,7 @@ class AudioTransport(QWidget):
 
     # --- signals ------------------------------------------------------
 
-    def _maybe_autoplay(self, row, _col, previous_row, _previous_col):
+    def _maybe_autoplay(self, table, row, _col, previous_row, _previous_col):
         """Selecting a different row plays it, but only where that's
         what this checkbox is for (select_plays - off for Music, see
         __init__) and only with it checked - and only for a genuinely
@@ -528,7 +553,12 @@ class AudioTransport(QWidget):
         row landing current because the list was (re)built, such as
         the moment a disc is opened, must never start audio playing on
         its own, which is exactly what selecting row 0 there would
-        otherwise do."""
+        otherwise do. A list other than the one in use only takes over
+        when the keyboard is in it - refilling it must not."""
+        if table is not self.list:
+            if not table.hasFocus():
+                return
+            self._use(table)
         if row >= 0 and row != previous_row:
             self._print_selection(row)
         if (row >= 0 and row != previous_row and self._select_plays
@@ -549,11 +579,11 @@ class AudioTransport(QWidget):
         for column in range(1, self.list.columnCount()):
             cell = self.list.item(row, column)
             if cell is not None:
-                extras.append(f"{self._extra_columns[column - 1]} "
+                extras.append(f"{self.list.columns[column - 1]} "
                               f"{cell.data(Qt.ItemDataRole.DisplayRole)}")
         shown = item.text()
         description = item.data(DESCRIPTION)
-        print(f"selected: {self.source}  key {item.data(KEY)}  {description}"
+        print(f"selected: {self.list.source}  key {item.data(KEY)}  {description}"
               + (f"  named '{shown}'" if shown and shown != description else "")
               + ("  " + "  ".join(extras) if extras else ""))
 

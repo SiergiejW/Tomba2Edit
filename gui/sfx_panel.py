@@ -34,6 +34,7 @@ class SfxPanel(QWidget):
         self.image = None
         self._by_key = {}           # "bank:index" -> (offset, length, loops)
         self._snd = None
+        self._rates = {}            # "bank:index" -> Hz, from MAIN.EXE's sound table
         self._cache = {}
         self.names = NameStore("sfx")
 
@@ -45,7 +46,7 @@ class SfxPanel(QWidget):
 
         self.transport = AudioTransport(
             source="SFX",
-            columns=["Index", "Bank", "Slot", "Length", "Loop"], pitch=True)
+            columns=["Index", "Bank", "Slot", "Length", "Loop", "Rate"], pitch=True)
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save_one)
@@ -99,6 +100,11 @@ class SfxPanel(QWidget):
             self.transport.set_entries([])
             return
         self._snd = data
+        try:
+            exe = voice.extract_file(path, "MAIN.EXE")
+            self._rates = sfx.default_rates(exe, data) if exe else {}
+        except Exception:
+            self._rates = {}
         slots = sfx.samples(data)
         self.image = path
         disc = self.names.load(path)
@@ -109,10 +115,12 @@ class SfxPanel(QWidget):
             held = sfx.loops(data, offset, size)
             key = f"{bank}:{index}"
             self._by_key[key] = (offset, size, held)
+            rate = self._rates.get(key)
             entries.append((
                 key, f"SFX {number}",
                 (number, bank, index,
-                 seconds(sfx.length(size), sfx.RATE), "loop" if held else ""),
+                 seconds(sfx.length(size), rate or sfx.RATE),
+                 "loop" if held else "", f"{rate} Hz" if rate else ""),
                 held,
             ))
         self.transport.set_entries(entries, self.names.names())
@@ -132,7 +140,9 @@ class SfxPanel(QWidget):
         if key not in self._cache:
             offset, length, _loops = self._by_key[key]
             samples = sfx.decode(self._snd, offset, length)
-            self._cache[key] = xa.wav_bytes(samples, sfx.RATE, 1)
+            # At the rate the game's own sound table plays it, where one
+            # names it; the reference rate otherwise.
+            self._cache[key] = xa.wav_bytes(samples, self._rates.get(key, sfx.RATE), 1)
         return self._cache[key]
 
     def _wanted(self, key):

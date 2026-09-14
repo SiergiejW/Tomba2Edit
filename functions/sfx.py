@@ -54,6 +54,20 @@ FILTERS = ((0, 0), (60, 0), (115, -52), (98, -55), (122, -60))
 # has already been catalogued.
 RATE = 22050
 
+# What each sound id plays: MAIN.EXE's g_ResidentSoundEffectDefinitions,
+# read by f_PlaySoundEffect - 8 bytes a sound: voice partition, priority,
+# program, tone (bit 7: the area's bank), note, fine pitch, volume, 0 -
+# keyed on by f_QueueSoundEffectVoice. Ghidra names the program and tone
+# parameters the other way round; the resident bank's four programs of
+# 16, 16, 16 and 12 tones, walked in order by sounds 0x00-0x3B, settle it.
+DEFINITIONS = 0x800A4D18
+DEFINITION_SIZE = 8
+RESIDENT_SOUNDS = 0x70
+AREA_TONE = 0x80
+EFFECTS_BANK = 0
+SPU_RATE = 44100            # a tone keyed on at its centre note
+EXE_HEADER = 0x800
+
 
 def find_banks(data):
     """Every VAB header in the container, in file order."""
@@ -147,6 +161,32 @@ def loops(data, offset, limit):
         if block[1] & END:
             return bool(block[1] & REPEAT)
     return False
+
+
+def default_rates(exe, data):
+    """{"bank:index": Hz} - the rate each resident effect waveform plays at,
+    from the first sound id that names its tone: 44100 Hz moved by how far
+    that sound's note is from the tone's centre."""
+    load = struct.unpack_from("<I", exe, 0x18)[0]
+    base = DEFINITIONS - load + EXE_HEADER
+    head = find_banks(data)[EFFECTS_BANK]["offset"]
+    programs = head + HEADER
+    used = [p for p in range(128) if data[programs + p * 16]]
+    out = {}
+    for sound in range(RESIDENT_SOUNDS):
+        entry = exe[base + sound * DEFINITION_SIZE:base + (sound + 1) * DEFINITION_SIZE]
+        if len(entry) < DEFINITION_SIZE:
+            break
+        _part, _priority, program, tone, note, fine, _volume, _spare = entry
+        if tone & AREA_TONE or program not in used or tone >= data[programs + program * 16]:
+            continue
+        at = programs + PROGRAM_TABLE + used.index(program) * TONE_TABLE + tone * 32
+        center, shift = data[at + 4], data[at + 5]
+        vag = struct.unpack_from("<h", data, at + 22)[0]
+        key = f"{EFFECTS_BANK}:{vag}"
+        if vag > 0 and key not in out:
+            out[key] = round(SPU_RATE * 2 ** ((note - center + fine / 128 - shift / 100) / 12))
+    return out
 
 
 def length(limit):

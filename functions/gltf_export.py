@@ -730,119 +730,176 @@ def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
     return True
 
 
-def write_scene_glb(path, parts, vram_bytes, name="level", unlit=False,
-                    lines=None):
-    """One .glb holding many objects, each its own mesh and node, under a
-    node per group - so Blender imports a chest as a chest and a pig as a
-    pig rather than one welded level.
+def write_scene_glb(path, objects, vram_bytes, name="level", unlit=False):
+    """One .glb holding many objects, each its own node standing on its own
+    origin, under a node per group - a chest imports as a chest, a pig as a
+    pig, a crystal as a card and a rope as edges.
 
-    `parts` is [(name, group, model_data)], each model standing where it
-    goes. A palette two parts share is baked once. `lines` is
-    [(name, group, vertices, colours)] of line pairs in model units."""
-    docs = []
-    for part_name, group, data in parts:
-        try:
-            doc, blob = build(data, vram_bytes, name=part_name, unlit=unlit)
-        except ValueError:
-            continue
-        docs.append((part_name, group, doc, blob))
-    if not docs:
-        raise ValueError("nothing to export")
+    `objects` is [dict] with "name", "group", "origin" (x, y, z, world units)
+    and at most one of
+
+        "model"   a model dict, its vertices where they stand, world units
+        "lines"   (vertices, colours): pairs of points, world units
+        "sprite"  (RGBA array, width, height, origin x, origin y): a card in
+                  the XY plane hung by its origin, world units
+
+    and none for an empty - a marker. A palette two objects share is baked
+    once. Returns (objects written, groups)."""
     out = {"asset": {"version": "2.0", "generator": "Tomba310"}, "scene": 0,
            "meshes": [], "materials": [], "textures": [], "images": [],
-           "samplers": docs[0][2]["samplers"], "bufferViews": [],
-           "accessors": [], "nodes": []}
+           "samplers": [{"magFilter": NEAREST, "minFilter": NEAREST,
+                         "wrapS": CLAMP_TO_EDGE, "wrapT": CLAMP_TO_EDGE}],
+           "bufferViews": [], "accessors": [], "nodes": []}
     blob = bytearray()
-    images, textures, materials, groups = {}, {}, {}, {}
-    for part_name, group, doc, part_blob in docs:
-        blob += b"\x00" * (-len(blob) % 4)
-        offset = len(blob)
-        blob += part_blob
-        first_view = len(out["bufferViews"])
-        for view in doc["bufferViews"]:
-            view = dict(view)
-            view["buffer"] = 0
-            view["byteOffset"] = view.get("byteOffset", 0) + offset
-            out["bufferViews"].append(view)
-        first_accessor = len(out["accessors"])
-        for accessor in doc["accessors"]:
-            accessor = dict(accessor)
-            accessor["bufferView"] += first_view
-            out["accessors"].append(accessor)
-        image_of = []
-        for image in doc["images"]:
-            if image["uri"] not in images:
-                images[image["uri"]] = len(out["images"])
-                out["images"].append(image)
-            image_of.append(images[image["uri"]])
-        texture_of = []
-        for texture in doc["textures"]:
-            source = image_of[texture["source"]]
-            if source not in textures:
-                textures[source] = len(out["textures"])
-                out["textures"].append({"sampler": 0, "source": source})
-            texture_of.append(textures[source])
-        material_of = []
-        for material in doc["materials"]:
-            material = json.loads(json.dumps(material))
-            colour = material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
-            if colour is not None:
-                colour["index"] = texture_of[colour["index"]]
-            key = json.dumps(material, sort_keys=True)
-            if key not in materials:
-                materials[key] = len(out["materials"])
-                out["materials"].append(material)
-            material_of.append(materials[key])
-        primitives = []
-        for primitive in doc["meshes"][0]["primitives"]:
-            primitive = dict(primitive)
-            primitive["attributes"] = {k: v + first_accessor for k, v
-                                       in primitive["attributes"].items()}
-            primitive["indices"] += first_accessor
-            primitive["material"] = material_of[primitive["material"]]
-            primitives.append(primitive)
-        out["meshes"].append({"name": part_name, "primitives": primitives})
-        groups.setdefault(group, []).append(len(out["nodes"]))
-        out["nodes"].append({"name": part_name, "mesh": len(out["meshes"]) - 1})
-    for line_name, group, vertices, colors in lines or ():
-        points = np.asarray(vertices, dtype=np.float32).reshape(-1, 3) / UNIT_SCALE
-        if not len(points):
-            continue
-        tints = np.clip(np.asarray(colors, dtype=np.float32).reshape(-1, 3), 0, 1)
-        buffer = _Buffer()
-        attributes = {"POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER,
-                                             minmax=True),
-                      "COLOR_0": buffer.add(tints, "VEC3", FLOAT, ARRAY_BUFFER)}
-        blob += b"\x00" * (-len(blob) % 4)
-        offset = len(blob)
-        blob += buffer.data
-        first_view, first_accessor = len(out["bufferViews"]), len(out["accessors"])
-        for view in buffer.views:
-            view = dict(view)
-            view["buffer"] = 0
-            view["byteOffset"] = view.get("byteOffset", 0) + offset
-            out["bufferViews"].append(view)
-        for accessor in buffer.accessors:
-            accessor = dict(accessor)
-            accessor["bufferView"] += first_view
-            out["accessors"].append(accessor)
-        key = "lines"
-        if key not in materials:
-            materials[key] = len(out["materials"])
-            out["materials"].append({"name": "lines", "extensions": {UNLIT: {}},
-                                     "pbrMetallicRoughness": {"metallicFactor": 0.0}})
-        out["meshes"].append({"name": line_name, "primitives": [{
-            "attributes": {k: v + first_accessor for k, v in attributes.items()},
-            "mode": LINES, "material": materials[key]}]})
-        groups.setdefault(group, []).append(len(out["nodes"]))
-        out["nodes"].append({"name": line_name, "mesh": len(out["meshes"]) - 1})
-    if unlit or lines:
-        out["extensionsUsed"] = [UNLIT]
+    cache = {"images": {}, "textures": {}, "materials": {}}
+    extension = {"extensions": {UNLIT: {}}} if unlit else {}
+    groups = {}
+    for item in objects:
+        origin = np.asarray(item.get("origin") or (0.0, 0.0, 0.0), dtype=np.float32)
+        mesh = None
+        if item.get("model"):
+            model = dict(item["model"])
+            model["vertices"] = (np.asarray(model["vertices"], dtype=np.float32)
+                                 - origin).tolist()
+            try:
+                doc, part = build(model, vram_bytes, name=item["name"], unlit=unlit)
+            except ValueError:
+                continue
+            mesh = _merge_document(out, blob, doc, part, cache)
+        elif item.get("lines"):
+            vertices, colors = item["lines"]
+            points = (np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+                      - origin) / UNIT_SCALE
+            if not len(points):
+                continue
+            tints = np.clip(np.asarray(colors, dtype=np.float32).reshape(-1, 3), 0, 1)
+            buffer = _Buffer()
+            attributes = {
+                "POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER, minmax=True),
+                "COLOR_0": buffer.add(tints, "VEC3", FLOAT, ARRAY_BUFFER)}
+            material = _shared_material(out, cache, {
+                "name": "lines", "extensions": {UNLIT: {}},
+                "pbrMetallicRoughness": {"metallicFactor": 0.0}})
+            mesh = _add_mesh(out, blob, buffer, item["name"], [
+                {"attributes": attributes, "mode": LINES, "material": material}])
+        elif item.get("sprite") is not None:
+            rgba, width, height, origin_x, origin_y = item["sprite"]
+            left, right = -origin_x, width - origin_x
+            top, bottom = origin_y, origin_y - height
+            corners = np.array([[left, top, 0], [left, bottom, 0],
+                                [right, bottom, 0], [right, top, 0]],
+                               dtype=np.float32) / UNIT_SCALE
+            buffer = _Buffer()
+            attributes = {
+                "POSITION": buffer.add(corners, "VEC3", FLOAT, ARRAY_BUFFER, minmax=True),
+                "NORMAL": buffer.add(np.tile(np.float32([0, 0, 1]), (4, 1)),
+                                     "VEC3", FLOAT, ARRAY_BUFFER),
+                "TEXCOORD_0": buffer.add(np.float32([[0, 0], [0, 1], [1, 1], [1, 0]]),
+                                         "VEC2", FLOAT, ARRAY_BUFFER)}
+            indices = buffer.add(np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32),
+                                 "SCALAR", UNSIGNED_INT, ELEMENT_ARRAY_BUFFER)
+            texture = _shared_texture(out, cache, {
+                "mimeType": "image/png", "name": item["name"],
+                "uri": "data:image/png;base64,"
+                       + base64.b64encode(_png(np.ascontiguousarray(rgba))).decode("ascii")})
+            material = _shared_material(out, cache, {
+                "name": "sprite",
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": texture},
+                                         "metallicFactor": 0.0, "roughnessFactor": 1.0},
+                "doubleSided": True, "alphaMode": "MASK", "alphaCutoff": 0.5,
+                **extension})
+            mesh = _add_mesh(out, blob, buffer, item["name"], [
+                {"attributes": attributes, "indices": indices, "mode": TRIANGLES,
+                 "material": material}])
+        node = {"name": item["name"],
+                "translation": [float(v) for v in origin / UNIT_SCALE]}
+        if mesh is not None:
+            node["mesh"] = mesh
+        groups.setdefault(item.get("group") or "Objects", []).append(len(out["nodes"]))
+        out["nodes"].append(node)
+    written = len(out["nodes"])
+    if not written:
+        raise ValueError("nothing to export")
     roots = []
     for group, children in groups.items():
         roots.append(len(out["nodes"]))
         out["nodes"].append({"name": group, "children": children})
     out["scenes"] = [{"name": name, "nodes": roots}]
     out["buffers"] = [{"byteLength": len(blob)}]
+    if any(UNLIT in m.get("extensions", {}) for m in out["materials"]):
+        out["extensionsUsed"] = [UNLIT]
     _write_glb(path, out, blob)
-    return len(docs), len(groups)
+    return written, len(groups)
+
+
+def _append_buffer(out, blob, data, views, accessors):
+    """One buffer's bytes, views and accessors onto the scene's; the index
+    its first accessor lands at."""
+    blob += b"\x00" * (-len(blob) % 4)
+    offset = len(blob)
+    blob += data
+    first_view = len(out["bufferViews"])
+    for view in views:
+        view = dict(view)
+        view["buffer"] = 0
+        view["byteOffset"] = view.get("byteOffset", 0) + offset
+        out["bufferViews"].append(view)
+    first_accessor = len(out["accessors"])
+    for accessor in accessors:
+        accessor = dict(accessor)
+        accessor["bufferView"] += first_view
+        out["accessors"].append(accessor)
+    return first_accessor
+
+
+def _add_mesh(out, blob, buffer, name, primitives):
+    first = _append_buffer(out, blob, buffer.data, buffer.views, buffer.accessors)
+    for primitive in primitives:
+        primitive["attributes"] = {k: v + first for k, v in primitive["attributes"].items()}
+        if "indices" in primitive:
+            primitive["indices"] += first
+    out["meshes"].append({"name": name, "primitives": primitives})
+    return len(out["meshes"]) - 1
+
+
+def _shared_texture(out, cache, image):
+    if image["uri"] not in cache["images"]:
+        cache["images"][image["uri"]] = len(out["images"])
+        out["images"].append(image)
+    source = cache["images"][image["uri"]]
+    if source not in cache["textures"]:
+        cache["textures"][source] = len(out["textures"])
+        out["textures"].append({"sampler": 0, "source": source})
+    return cache["textures"][source]
+
+
+def _shared_material(out, cache, material):
+    key = json.dumps(material, sort_keys=True)
+    if key not in cache["materials"]:
+        cache["materials"][key] = len(out["materials"])
+        out["materials"].append(material)
+    return cache["materials"][key]
+
+
+def _merge_document(out, blob, doc, data, cache):
+    """A build() document's one mesh into the scene, sharing its images and
+    materials with whatever is already there."""
+    first = _append_buffer(out, blob, data, doc["bufferViews"], doc["accessors"])
+    texture_of = [_shared_texture(out, cache, doc["images"][t["source"]])
+                  for t in doc["textures"]]
+    material_of = []
+    for material in doc["materials"]:
+        material = json.loads(json.dumps(material))
+        colour = material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+        if colour is not None:
+            colour["index"] = texture_of[colour["index"]]
+        material_of.append(_shared_material(out, cache, material))
+    primitives = []
+    for primitive in doc["meshes"][0]["primitives"]:
+        primitive = dict(primitive)
+        primitive["attributes"] = {k: v + first for k, v in primitive["attributes"].items()}
+        primitive["indices"] += first
+        primitive["material"] = material_of[primitive["material"]]
+        primitives.append(primitive)
+    out["meshes"].append({"name": doc["meshes"][0]["name"], "primitives": primitives})
+    return len(out["meshes"]) - 1

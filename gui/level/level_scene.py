@@ -187,6 +187,8 @@ class Instance:
     # Which room it is in - the scene index its area's spawner filled it
     # from, interior scene - 1 - or None for the area itself.
     scene: int = None
+    # A sprite object's picture, drawn beside the model its code also built.
+    object_sprite: bool = False
 
     # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
     # the instance's origin - filled by build().
@@ -757,14 +759,20 @@ class LevelScene:
         files = collections.Counter(f for f, _g in posed.sources)
         file_id, _n = files.most_common(1)[0]
         named = self.named(tuple(s for s in posed.sources if s[0] == file_id))
-        what = named or f"id {file_id}, {len(posed.sources)} parts"
+        where = (f"trail {file_id - actor_sim.TRAIL_ID:#x}"
+                 if file_id >= actor_sim.TRAIL_ID else f"id {file_id}")
+        what = named or f"{where}, {len(posed.sources)} parts"
         return f"{what} ({label})"
 
     def _posed(self, actors, anchor, position, yaw, name):
         """A Posed out of a group of simulated actors, or None if they
         drew nothing this scene can show."""
-        pieces = [p for a in actors for p in a.parts
-                  if self.group(p.source)[1] is not None]
+        pieces, owners = [], []
+        for number, a in enumerate(actors):
+            for p in a.parts:
+                if self.group(p.source)[1] is not None:
+                    pieces.append(p)
+                    owners.append((number, self.handler_name(a.handler), a.position))
         riders = []
         for a in actors:
             if a.parts:
@@ -781,7 +789,7 @@ class LevelScene:
         note = (f"built by running its own code: {len(pieces)} parts"
                 + (f", {spawned} spawned actor(s)" if spawned else "")
                 + f"<br>handler {self.handler_name(anchor.handler)}")
-        return actor_sim.Posed(name, note, pieces, riders, position, yaw)
+        return actor_sim.Posed(name, note, pieces, riders, position, yaw, owners)
     def built_actor(self, handler):
         """([(file, group), ...], offsets) for a class the code builds
         whole, or None.
@@ -967,6 +975,8 @@ class LevelScene:
         holds a dozen and a scene usually needs three."""
         if file_id in self.models:
             return self.models[file_id]
+        if file_id >= actor_sim.TRAIL_ID:
+            return self._trail_model(file_id)
         start, entry = self.dat_start, self.by_id.get(file_id)
         if entry is None:
             # Not one of this area's own. The resident chunk is loaded
@@ -984,6 +994,24 @@ class LevelScene:
                 self.models[file_id] = parse_smst(raw, address=start + offset)
             except Exception as e:
                 self.notes.append(f"id {file_id} wouldn't read as an SMST: {e}")
+        return self.models[file_id]
+
+    def _trail_model(self, file_id):
+        """An SMST an area loaded out of its IDX trail at run time - a room's
+        NPCs - named actor_sim.TRAIL_ID + its resource index."""
+        self.models[file_id] = None
+        trail = self.world.trail if self.world is not None else ()
+        index = file_id - actor_sim.TRAIL_ID
+        if index + 1 < len(trail) and trail[index + 1] > trail[index]:
+            try:
+                with open(self.dat_path, "rb") as f:
+                    f.seek(trail[index])
+                    raw = f.read(trail[index + 1] - trail[index])
+                self.content[file_id] = labels.content_key(raw)
+                self.models[file_id] = parse_smst(raw, address=trail[index])
+            except Exception as e:
+                self.notes.append(f"trail resource {index:#x} wouldn't read as "
+                                  f"an SMST: {e}")
         return self.models[file_id]
 
     def group(self, source):
@@ -1045,6 +1073,7 @@ class LevelScene:
             # touched - so it is dropped rather than drawn.
             sources, offsets = (), ()
             assembly = None
+            kept_sprite = None
             actor = by_record.get(id(record))
             # The sprite tables go by handler, and one handler can give a
             # slot a model instead (f_UpdateDonglinInteriorQuestObjectActor,
@@ -1062,8 +1091,8 @@ class LevelScene:
                     self.handler_name(record.handler))
                 if assembly is not None and not assembly.sources:
                     assembly = None
-                if assembly is not None:
-                    art = None
+                if assembly is not None and art:
+                    kept_sprite, art = art, None
             if assembly is None and not art:
                 assembly = actor_assembly.assemble(self.overlay_data, record)
                 if assembly is not None and not self._loads(assembly.sources):
@@ -1111,6 +1140,14 @@ class LevelScene:
                 assembled.append(instances[-1])
             if actor is not None:
                 take(actor_sim.subtree(world, actor), len(instances) - 1, None)
+            if kept_sprite:
+                # Its class's sprite state still shows, beside the model.
+                instances.append(Instance(
+                    index=len(instances), role="spawned",
+                    label=f"{record.kind}.{record.slot} sprite",
+                    art=object_sprites.as_art(kept_sprite), x=x, y=y, z=z,
+                    object_sprite=True,
+                    note=f"the sprite state of {record.kind}.{record.slot}'s class"))
 
         for record in self.pickups:
             sources = self.bindings.get(pickup_key(record)) or ()

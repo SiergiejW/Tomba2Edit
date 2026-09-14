@@ -227,6 +227,7 @@ def billboards(instances, placed):
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
                              z=instance.z, steps=steps, loops=art.loops,
                              units=(OBJECT_UNITS if instance.role == "object"
+                                    or getattr(instance, "object_sprite", False)
                                     else PICKUP_UNITS)))
     return out
 

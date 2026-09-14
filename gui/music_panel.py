@@ -137,15 +137,10 @@ class MusicPanel(QWidget):
         self._render = None
         self.seq_names = NameStore("sequence")
         self.sfx_names = NameStore("sfx")
-        self.sequences = AudioTransport(
-            source="Dialogue Music",
+        # A second list on the same player; keys tell the two apart.
+        self.sequence_list = self.transport.add_list(
             columns=["Index", "Length", "Slot", "From", "Use", "Instruments"],
-            autoplay_default=False, always_loopable=True,
-            loop_beats_autoplay=True, select_plays=False,
-            autoplay_label="Auto-advance")
-        self.sequences.wanted.connect(self._seq_wanted)
-        self.sequences.renamed.connect(self._seq_renamed)
-        self.sequences.save_requested.connect(self._seq_save)
+            source="Sequences")
 
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every piece of music into a "
@@ -161,28 +156,29 @@ class MusicPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
+        top.addWidget(self.transport.save_wav)
+        top.addWidget(self.transport.save_mp3)
+        top.addWidget(self.export_all)
 
-        def column(title, transport, extra=()):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"<b>{title}</b>"))
-            row.addStretch(1)
-            for widget in (transport.save_wav, transport.save_mp3, *extra):
-                row.addWidget(widget)
+        def column(title, table):
             holder = QWidget()
             inner = QVBoxLayout(holder)
             inner.setContentsMargins(0, 0, 0, 0)
-            inner.addLayout(row)
-            inner.addWidget(transport, 1)
+            inner.addWidget(QLabel(f"<b>{title}</b>"))
+            inner.addWidget(table, 1)
             return holder
 
+        # Two lists, one player: the controls under them play from
+        # whichever list was picked from last.
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(column("BGM", self.transport, (self.export_all,)))
-        split.addWidget(column("Dialogue Music", self.sequences))
+        split.addWidget(column("BGM", self.transport.lists[0]))
+        split.addWidget(column("Sequences", self.sequence_list))
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 1)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(split, 1)
+        layout.addWidget(self.transport)
         layout.addWidget(self.status)
 
     # --- opening ------------------------------------------------------
@@ -270,7 +266,10 @@ class MusicPanel(QWidget):
     # --- playing ------------------------------------------------------
 
     def _wanted(self, key):
-        self._request(key, play=True)
+        if key in self._seqs:
+            self._seq_wanted(key)
+        else:
+            self._request(key, play=True)
 
     def _request(self, key, play):
         """Make sure `key` is decoded; play it or save it when it is.
@@ -323,7 +322,8 @@ class MusicPanel(QWidget):
     # --- naming and saving --------------------------------------------
 
     def _renamed(self, key, name):
-        path = self.names.rename(key, name)
+        store = self.seq_names if key in self._seqs else self.names
+        path = store.rename(key, name)
         self.status.setText(
             (f"Named {key}." if name else f"Cleared the name for {key}.")
             + (f" Saved to {os.path.basename(path)}." if path else
@@ -333,6 +333,9 @@ class MusicPanel(QWidget):
         """Save a piece of music. Decoding one takes a few seconds, so
         if it is not in hand yet the write waits on the worker rather
         than freezing the window."""
+        if key in self._seqs:
+            self._seq_save(key, path)
+            return
         cached = self._cache.get(key)
         if cached is not None:
             self._write(path, cached)
@@ -404,7 +407,6 @@ class MusicPanel(QWidget):
 
     def _load_sequences(self, path):
         """List every SEQ: TOMBA2.SND's ten, then the overlays' own."""
-        self.sequences.stop()
         self._seqs, self._seq_cache = {}, {}
         try:
             snd = voice.extract_file(path, "TOMBA2.SND")
@@ -412,7 +414,7 @@ class MusicPanel(QWidget):
             snd = None
         self._snd = snd
         if not snd:
-            self.sequences.set_entries([])
+            self.transport.set_entries([], table=self.sequence_list)
             return
         self.sfx_names.load(path)
         instruments = self.sfx_names.names()
@@ -441,14 +443,15 @@ class MusicPanel(QWidget):
                 number, clock(int(length * 1000)), "" if slot is None else slot,
                 origin, use, ", ".join(named))))
         self.seq_names.load(path)
-        self.sequences.set_entries(entries, self.seq_names.names())
+        self.transport.set_entries(entries, self.seq_names.names(),
+                                   table=self.sequence_list)
 
     def _seq_wanted(self, key):
         if key not in self._seqs or self._snd is None:
             return
         cached = self._seq_cache.get(key)
         if cached is not None:
-            self.sequences.play_bytes(cached)
+            self.transport.play_bytes(cached)
             return
         self._stop_render()
         self.status.setText("Playing the sequence on its instruments...")
@@ -463,8 +466,8 @@ class MusicPanel(QWidget):
             return
         self._seq_cache[key] = wav
         self.status.setText(f"{note} - rendered once and kept.")
-        if self.sequences.current_key() == key:
-            self.sequences.play_bytes(wav)
+        if self.transport.current_key() == key:
+            self.transport.play_bytes(wav)
 
     def _seq_save(self, key, path):
         if key not in self._seqs or self._snd is None:
@@ -475,13 +478,6 @@ class MusicPanel(QWidget):
             self._seq_cache[key] = xa.wav_bytes_raw(seq.pcm(stereo), seq.RATE, 2)
         self._write(path, self._seq_cache[key])
 
-    def _seq_renamed(self, key, name):
-        path = self.seq_names.rename(key, name)
-        self.status.setText(
-            (f"Named {key}." if name else f"Cleared the name for {key}.")
-            + (f" Saved to {os.path.basename(path)}." if path else
-               " No disc serial found, so the name was not saved."))
-
     def _stop_render(self):
         if self._render is not None and self._render.isRunning():
             self._render.wait(10000)
@@ -489,7 +485,6 @@ class MusicPanel(QWidget):
 
     def closeEvent(self, event):
         self.transport.stop()
-        self.sequences.stop()
         self._stop_decode()
         self._stop_render()
         super().closeEvent(event)

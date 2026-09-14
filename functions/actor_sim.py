@@ -88,6 +88,20 @@ MAX_SCENES = 24
 PROLOGUE = 0x27BD
 EXE_END = 0x800F0000
 
+# A room's enter routine (ENTER_INTERIOR) starts a cooperative worker with
+# the room's resource index and waits for it: the worker loads that IDX
+# trail resource - the room's NPC models - into slot 15
+# (f_FinishA00InteriorEntryTransition and its twins). Run here at once, on
+# a worker record of its own; outside a room entry a start still fails.
+START_WORKER = 0x80044BD4           # f_StartCooperativeWorker
+TERMINATE_WORKER = 0x80051FB4       # f_TerminateCurrentCooperativeWorker
+CURRENT_WORKER = 0x1F800138         # g_CurrentCooperativeWorker
+WORKER_ARG = 0x6E
+WORKER_RECORD = 0x80
+# A model read out of a slot a trail resource was loaded into is named
+# (TRAIL_ID + resource index, group), not by the slot's own file id.
+TRAIL_ID = 0x1000
+
 # A purified area runs its cursed overlay with its bit set here.
 PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
 
@@ -226,7 +240,12 @@ class World:
             INIT_SINGLE_PART: self._init_single_part,
             PLAY_SOUND: lambda c: 0,
             YIELD: lambda c: 0,
+            START_WORKER: self._start_worker,
+            TERMINATE_WORKER: lambda c: 0,
         })
+        self.entering = False
+        # slot -> IDX trail index a resource load put there
+        self.trail_slots = {}
 
     # --- setup ----------------------------------------------------------
 
@@ -322,9 +341,35 @@ class World:
         try:
             self.mem.load(target, data)
             self.files[group] = (target, len(data))
+            self.trail_slots[group] = index
             self._map_cache = None
         except EmuError:
             pass
+        return 0
+
+    def _start_worker(self, cpu):
+        """f_StartCooperativeWorker, while a room is being entered: the
+        worker runs to its end now. Anywhere else it would wait forever on
+        a thread nobody runs, so it fails as it always did."""
+        entry, argument = cpu.r[4], cpu.r[5] & 0xFF
+        if not self.entering:
+            raise EmuError("started a cooperative worker")
+        if entry & 3 or not (0x80010000 <= entry < EXE_END
+                             or OVERLAY_BASE <= entry < AREA_BASE):
+            return 0
+        worker = self._alloc(WORKER_RECORD)
+        self.mem.write(worker + WORKER_ARG, 1, argument)
+        previous = self.mem.read(CURRENT_WORKER, 4)
+        registers, hi, lo = list(cpu.r), cpu.hi, cpu.lo
+        self.mem.write(CURRENT_WORKER, 4, worker)
+        try:
+            cpu.call(entry, (), budget=BUDGET, sp=(registers[29] - 0x400) & 0xFFFFFFFF)
+        except EmuError:
+            pass
+        finally:
+            cpu.r[:] = registers
+            cpu.hi, cpu.lo = hi, lo
+            self.mem.write(CURRENT_WORKER, 4, previous)
         return 0
 
     # --- running --------------------------------------------------------
@@ -446,16 +491,18 @@ class World:
         # changes on an actor is reassigned, never mutated in place.
         import copy
         return (bytes(self.mem.ram), bytes(self.mem.scratch),
-                [copy.copy(a) for a in self.actors], self.heap, dict(self.files))
+                [copy.copy(a) for a in self.actors], self.heap, dict(self.files),
+                dict(self.trail_slots))
 
     def restore(self, saved):
         import copy
-        ram, scratch, actors, heap, files = saved
+        ram, scratch, actors, heap, files, trail_slots = saved
         self.mem.ram[:] = ram
         self.mem.scratch[:] = scratch
         self.actors = [copy.copy(a) for a in actors]
         self.by_address = {a.address: a for a in self.actors}
         self.heap, self.files = heap, dict(files)
+        self.trail_slots = dict(trail_slots)
         self._map_cache = None
 
     def _code(self, address):
@@ -477,10 +524,13 @@ class World:
             write(TRANSITION, 1, 2)
             enter = read(ENTER_INTERIOR + area_number * 4, 4)
             if self._code(enter):
+                self.entering = True
                 try:
                     self.cpu.call(enter, (), budget=budget, sp=STACK)
                 except EmuError:
                     pass
+                finally:
+                    self.entering = False
         controller = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
         first = len(self.actors)
         self.running, self.running_scene = None, scene or None
@@ -593,11 +643,13 @@ class World:
             first = read(address + 4, 4)
             if first < 8 or first & 3 or first > size:
                 continue
+            source = (TRAIL_ID + self.trail_slots[file_id]
+                      if file_id in self.trail_slots else file_id)
             count = first // 4 - 1
             for group in range(count):
                 offset = read(address + 4 + group * 4, 4)
                 if 0 < offset < size:
-                    out.setdefault(address + offset, (file_id, group))
+                    out.setdefault(address + offset, (source, group))
         return out
 
     def banks(self):
@@ -708,7 +760,7 @@ class Posed:
     left them, moved rigidly with the actor from then on - turned about
     its own position by however far the editor turns it."""
 
-    def __init__(self, name, note, pieces, riders, position, yaw):
+    def __init__(self, name, note, pieces, riders, position, yaw, owners=None):
         from functions.actor_assembly import rot_y
         self._rot_y = rot_y
         self.name, self.note = name, note
@@ -717,6 +769,15 @@ class Posed:
         self.sources = tuple(p.source for p in self.pieces)
         self.origin = np.asarray(position, dtype=np.float64)
         self.yaw = yaw
+        # Per piece, who drew it: (actor number, handler name, position).
+        self.owners = list(owners or ())
+
+    def owner_position(self, state, number):
+        """Where the actor that drew piece `number` stands, moved with the
+        rest."""
+        turn, base = self._move(state)
+        return turn @ (np.asarray(self.owners[number][2], dtype=np.float64)
+                       - self.origin) + base
 
     def _move(self, state):
         turn = self._rot_y(state.yaw - self.yaw)

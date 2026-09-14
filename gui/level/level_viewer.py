@@ -366,30 +366,26 @@ class LevelViewer(SMSTViewer):
         self.show_lines = checked
         self.update()
 
-    def _visible_lines(self):
-        """(positions, colours) of the code-drawn lines that show, world
-        units: an owned line with its row, a loose one with its room."""
-        positions, colors = [], []
+    def _visible_line_records(self):
+        """The code-drawn lines that show: an owned line with its row, a
+        loose one with its room."""
+        out = []
         for line in getattr(self.scene, "lines", None) or ():
             if line.owner is not None:
                 if line.owner in self.hidden_groups:
                     continue
             elif not (self.view == "all" or line.scene == self.view):
                 continue
-            positions.extend((line.a, line.b))
-            colors.extend((line.color_a, line.color_b))
-        return positions, colors
+            out.append(line)
+        return out
 
     def rebuild_code_lines(self):
-        positions, colors = self._visible_lines()
+        lines = self._visible_line_records()
         self._code_line_arrays = (
-            np.array(positions, dtype=np.float32).reshape(-1, 3) / UNIT_SCALE,
-            np.array(colors, dtype=np.float32).reshape(-1, 3))
-
-    def export_lines(self):
-        """[(name, group, vertices, colours)] for the export, world units."""
-        positions, colors = self._visible_lines()
-        return [("lines", "Lines", positions, colors)] if positions else []
+            np.array([p for l in lines for p in (l.a, l.b)],
+                     dtype=np.float32).reshape(-1, 3) / UNIT_SCALE,
+            np.array([c for l in lines for c in (l.color_a, l.color_b)],
+                     dtype=np.float32).reshape(-1, 3))
 
     def _room_bounds(self):
         """{scene: (low, high)} round each room's instances, world units."""
@@ -410,6 +406,12 @@ class LevelViewer(SMSTViewer):
                 high = np.maximum(high, found[scene][1])
             found[scene] = (low, high)
         return found
+
+    def enterEvent(self, event):
+        # Keys go where the mouse is, so F frames a selection picked in the
+        # list without clicking the view first.
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().enterEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
@@ -800,42 +802,148 @@ class LevelViewer(SMSTViewer):
             return
         try:
             written, groups = gltf_export.write_scene_glb(
-                path, self.export_parts(), self.vram_raw_bytes,
-                name=self.export_name or "level", unlit=unlit,
-                lines=self.export_lines())
+                path, self.export_objects(), self.vram_raw_bytes,
+                name=self.export_name or "level", unlit=unlit)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
         QMessageBox.information(
             self, "Exported",
-            f"Wrote {written} object(s) in {groups} group(s). Sprites are "
-            f"pictures rather than geometry and are not in it.")
+            f"Wrote {written} object(s) in {groups} group(s), each on its own "
+            f"origin: models, sprites as cards, lines as edges, markers as "
+            f"empties.")
 
-    def export_parts(self):
-        """[(name, group, model)] for every visible instance with geometry,
-        its vertices where they stand."""
+    def export_objects(self):
+        """Everything showing, for gltf_export.write_scene_glb: each instance
+        on its own origin - split per actor and per file where its code
+        built it out of several - the sprites as cards of the frame showing,
+        the code-drawn lines per row, markers as empties, and the collision
+        when it is on."""
+        from gui.level.level_scene import game_state, view_point
         model = self.model_data or {}
-        if not model.get("vertices"):
-            return []
-        verts = self._positions() * UNIT_SCALE
+        verts = self._positions() * UNIT_SCALE if model.get("vertices") else None
         out = []
         for instance in self.instances:
-            if instance.index in self.hidden_groups or not instance.face_count:
+            if instance.index in self.hidden_groups:
                 continue
-            first, count = instance.first_vertex, instance.vertex_count
-            f0, fc = instance.first_face, instance.face_count
             kind = selection_kind(instance)
             scene = getattr(instance, "scene", None)
             group = (f"Room {scene}" if kind == "room" and scene is not None
                      else EXPORT_GROUPS.get(kind, "Objects"))
-            out.append((f"{instance.index:03d} {instance.label}", group, {
-                "vertices": verts[first:first + count].tolist(),
-                "vertex_colors": model["vertex_colors"][first:first + count],
-                "texture_coords": model["texture_coords"][first:first + count],
-                "faces": [[v - first for v in face]
-                          for face in model["faces"][f0:f0 + fc]],
-                "texture_info": model["texture_info"][f0:f0 + fc],
-            }))
+            label = f"{instance.index:03d} {instance.label}"
+            origin = ((0.0, 0.0, 0.0) if instance.role == "room"
+                      else (instance.x, instance.y, instance.z))
+            if instance.face_count and verts is not None:
+                for suffix, spans, where in self._export_pieces(
+                        instance, game_state, view_point):
+                    out.append({"name": label + suffix, "group": group,
+                                "origin": where or origin,
+                                "model": self._export_model(instance, verts, spans)})
+            elif instance.movable and not instance.drawn_as_sprite:
+                out.append({"name": label, "group": "Markers", "origin": origin})
+        out.extend(self._export_sprites())
+        out.extend(self._export_lines())
+        if self.show_collision and self.scene is not None:
+            lines = self.scene.collision(self.view, self._room_bounds())
+            for layer, points, colors in (
+                    ("surface", lines.surface, lines.surface_colors),
+                    ("vertical", lines.vertical, lines.vertical_colors)):
+                if points:
+                    out.append({"name": f"collision {layer}", "group": "Collision",
+                                "origin": (0.0, 0.0, 0.0), "lines": (points, colors)})
+        return out
+
+    def _export_pieces(self, instance, game_state, view_point):
+        """[(name suffix, [(first vertex, count)], origin or None)]: the
+        instance whole, or one piece per (actor, file) where it is several -
+        a creature and the block it is frozen in come out apart."""
+        whole = [("", [(instance.first_vertex, instance.vertex_count)], None)]
+        spans, sources = instance.spans or (), instance.sources
+        if not spans or len(spans) != len(sources):
+            return whole
+        owners = getattr(instance.assembly, "owners", None) or ()
+        pieces = {}
+        for number, span in enumerate(spans):
+            if not span:
+                continue
+            owner = owners[number][0] if number < len(owners) else 0
+            pieces.setdefault((owner, sources[number][0]), []).append((number, span))
+        if len(pieces) < 2:
+            return whole
+        state = game_state(instance) if owners else None
+        out = []
+        for (_owner, file_id), members in pieces.items():
+            number = members[0][0]
+            if number < len(owners):
+                suffix = f" / {owners[number][1]} id {file_id}"
+                where = view_point(instance.assembly.owner_position(state, number))
+            else:
+                suffix, where = f" / id {file_id}", None
+            out.append((suffix, [span for _n, span in members], where))
+        return out
+
+    def _export_model(self, instance, verts, spans):
+        """A model dict out of the scene arrays for the vertices in `spans`."""
+        model = self.model_data
+        keep = [v for first, count in spans for v in range(first, first + count)]
+        remap = {old: new for new, old in enumerate(keep)}
+        faces, info = [], []
+        for f in range(instance.first_face, instance.first_face + instance.face_count):
+            face = model["faces"][f]
+            if face[0] in remap:
+                faces.append([remap[v] for v in face])
+                info.append(model["texture_info"][f])
+        return {"vertices": verts[keep].tolist(),
+                "vertex_colors": [model["vertex_colors"][v] for v in keep],
+                "texture_coords": [model["texture_coords"][v] for v in keep],
+                "faces": faces, "texture_info": info}
+
+    def _export_sprites(self):
+        """Each pickup and sprite object as a card of the frame showing now."""
+        atlas = self._sprite_atlas
+        if atlas is None or not self.show_sprites:
+            return []
+        height, width = atlas.shape[:2]
+        instances, out = self.instances, []
+        for quad in self._sprite_quads:
+            if quad.index in self.hidden_groups:
+                continue
+            placed = quad.frame_now(self._sprite_tick)
+            if placed is None:
+                continue
+            at = instances[quad.index] if 0 <= quad.index < len(instances) else quad
+            x0, x1 = int(round(placed.u0 * width)), int(round(placed.u1 * width))
+            y0, y1 = int(round(placed.v0 * height)), int(round(placed.v1 * height))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            units = quad.units
+            out.append({
+                "name": f"{quad.index:03d} {getattr(at, 'label', 'sprite')}",
+                "group": "Items" if getattr(at, "pickup", None) is not None else "Sprites",
+                "origin": (at.x, at.y, at.z),
+                "sprite": (atlas[y0:y1, x0:x1], placed.width * units,
+                           placed.height * units, placed.origin_x * units,
+                           placed.origin_y * units)})
+        return out
+
+    def _export_lines(self):
+        """The code-drawn lines, one object per row that owns them."""
+        owned = {}
+        for line in self._visible_line_records():
+            owned.setdefault(line.owner, []).append(line)
+        out = []
+        for owner, lines in owned.items():
+            points = [p for line in lines for p in (line.a, line.b)]
+            colors = [c for line in lines for c in (line.color_a, line.color_b)]
+            instance = (self.instances[owner]
+                        if owner is not None and owner < len(self.instances) else None)
+            out.append({
+                "name": (f"{owner:03d} {instance.label} lines" if instance is not None
+                         else "lines"),
+                "group": "Lines",
+                "origin": ((instance.x, instance.y, instance.z)
+                           if instance is not None else points[0]),
+                "lines": (points, colors)})
         return out
 
     # --- GL -----------------------------------------------------------
