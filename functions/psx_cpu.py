@@ -19,6 +19,11 @@ STOP = 0xFFFFFFF0
 MASK = 0xFFFFFFFF
 GPU_STATUS = 0x1F801814
 GPU_READY = 0x1C000000
+# GTE.capture: projected vertices are named by screen position, walked in
+# a stride coprime to the screen's size so neighbours are far apart.
+CAPTURE_WIDTH, CAPTURE_HEIGHT = 320, 240
+CAPTURE_STRIDE = 7919
+CAPTURE_DEPTH = 1000
 
 
 class EmuError(RuntimeError):
@@ -79,6 +84,9 @@ class GTE:
     def __init__(self):
         self.d = [0] * 32
         self.c = [0] * 32
+        # A dict to name vertices: RTPS/RTPT then put out a screen position
+        # that is a key here, holding the vertex's camera-space point.
+        self.capture = None
 
     # --- register access ----------------------------------------------
 
@@ -214,9 +222,13 @@ class GTE:
         m = self._matrix(0)
         vec = self._vector(v)
         tr = self._translation(0)
-        mac = [(tr[k] * 0x1000 + sum(m[k][j] * vec[j] for j in range(3))) >> sf
-               for k in range(3)]
+        exact = [tr[k] * 0x1000 + sum(m[k][j] * vec[j] for j in range(3))
+                 for k in range(3)]
+        mac = [value >> sf for value in exact]
         self._set_mac_ir(mac, lm)
+        if self.capture is not None:
+            self._name(tuple(value / 4096.0 for value in exact))
+            return
         z = max(0, min(0xFFFF, mac[2] >> (12 - sf) if sf == 0 else mac[2]))
         d[16], d[17], d[18] = d[17], d[18], d[19]
         d[19] = z
@@ -229,6 +241,18 @@ class GTE:
         mac0 = s16(c[27]) * q + s32(c[28])
         d[24] = mac0 & MASK
         d[8] = max(0, min(0x1000, mac0 >> 12))
+
+    def _name(self, point):
+        """Project to a screen position that names `point` in capture."""
+        d = self.d
+        n = (len(self.capture) * CAPTURE_STRIDE + 1) % (CAPTURE_WIDTH * CAPTURE_HEIGHT)
+        sx, sy = n % CAPTURE_WIDTH, n // CAPTURE_WIDTH
+        self.capture[(sx, sy)] = point
+        d[16], d[17], d[18] = d[17], d[18], d[19]
+        d[19] = CAPTURE_DEPTH
+        d[12], d[13] = d[13], d[14]
+        d[14] = sx | sy << 16
+        d[8] = 0x1000
 
 
 class CPU:

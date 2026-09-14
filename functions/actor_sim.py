@@ -88,6 +88,28 @@ MAX_SCENES = 24
 PROLOGUE = 0x27BD
 EXE_END = 0x800F0000
 
+# A purified area runs its cursed overlay with its bit set here.
+PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
+
+# Lines. Nothing in an MDAT or SMST is one: ropes, chains and fishing lines
+# come out of an actor's draw routine (+0x18) straight into the primitive
+# buffer. They are read back there - the camera made identity, and every
+# vertex the GTE projects named by its screen position (psx_cpu GTE.capture).
+DRAW = 0x18
+PRIMITIVE_CURSOR = 0x800BF544       # g_UiPrimitiveCursor
+ORDERING_TABLE = 0x800ED8C8         # g_RenderOrderingTables
+CAMERA = 0x1F8000F8
+OT_SLOTS = 0x800
+PRIMITIVE_BYTES = 0x40000
+LINE_REACH = 8000                   # longer than this is a misread vertex
+TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
+
+# A scene controller retires through f_RetireSceneController and calls its
+# spawner twice (scene 0 as it starts, the next at each handoff); the
+# spawner allocates with f_AllocateActor.
+RETIRE_SCENE = 0x8007ADD0
+ALLOCATE_ACTOR = 0x80072DDC
+
 ACTOR_SIZE = 0xC0
 MAX_PARTS = 64
 PART_SIZE = 0x44
@@ -142,13 +164,16 @@ class Actor:
     blank: int = 0
     # Every (file, group) its code attached to a part, whatever became of it.
     loaded: frozenset = frozenset()
+    # Line primitives its draw routine put out: (a, b, colour a, colour b,
+    # blended), points in game axes - see capture_lines.
+    lines: tuple = ()
 
 
 class World:
     """RAM laid out the way an area is running, and the actors in it."""
 
     def __init__(self, exe_path, overlay_path, dat_path, idx_path, chunk,
-                 area_number, resident_chunks=(0, 1, 2)):
+                 area_number, resident_chunks=(0, 1, 2), purified=False):
         from gui.level.level_scene import area_files
         self.cpu = cpu = CPU()
         self.mem = mem = cpu.mem
@@ -180,6 +205,9 @@ class World:
             self.dat = dat_path
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
+        if purified:
+            mem.write(PURIFIED_AREAS, 2,
+                      mem.read(PURIFIED_AREAS, 2) | 1 << area_number)
         self.heap = HEAP
         self.actors = []
         self.by_address = {}
@@ -440,20 +468,22 @@ class World:
     def enter_scene(self, spawner, area_number, scene, budget=BUDGET):
         """Stand in the room whose scene index is `scene` the way the game
         arrives there, and spawn what its table holds. The actors made, or
-        None if there is no such table."""
+        None if there is no such table. Scene 0 is the area itself, for an
+        area whose spawner stands everything up (the outro)."""
         write, read = self.mem.write, self.mem.read
-        write(INTERIOR, 1, scene - 1)
-        write(INSIDE, 1, 1)
-        write(TRANSITION, 1, 2)
-        enter = read(ENTER_INTERIOR + area_number * 4, 4)
-        if self._code(enter):
-            try:
-                self.cpu.call(enter, (), budget=budget, sp=STACK)
-            except EmuError:
-                pass
+        if scene:
+            write(INTERIOR, 1, scene - 1)
+            write(INSIDE, 1, 1)
+            write(TRANSITION, 1, 2)
+            enter = read(ENTER_INTERIOR + area_number * 4, 4)
+            if self._code(enter):
+                try:
+                    self.cpu.call(enter, (), budget=budget, sp=STACK)
+                except EmuError:
+                    pass
         controller = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
         first = len(self.actors)
-        self.running, self.running_scene = None, scene
+        self.running, self.running_scene = None, scene or None
         try:
             self.cpu.call(spawner, (controller, scene), budget=budget, sp=STACK)
         except EmuError:
@@ -479,8 +509,70 @@ class World:
                      workers=False)
             self.harvest()
             rooms[scene] = [a for a in self.actors if a.scene == scene]
+            self.capture_lines(rooms[scene])
         self.restore(base)
         self.rooms = rooms
+
+    def capture_lines(self, actors=None, budget=BUDGET):
+        """Draw each actor once with the GTE naming its vertices and keep the
+        line primitives that come out, on the actor. Leaves RAM as it was."""
+        mem, cpu = self.mem, self.cpu
+        ram, scratch, heap, count = bytes(mem.ram), bytes(mem.scratch), self.heap, len(self.actors)
+        found = {}
+        try:
+            ot, primitives = self._alloc(OT_SLOTS * 4), self._alloc(PRIMITIVE_BYTES)
+            mem.load(CAMERA, struct.pack("<9h2x3i", 0x1000, 0, 0, 0, 0x1000, 0,
+                                         0, 0, 0x1000, 0, 0, 0))
+            mem.write(ORDERING_TABLE, 4, ot)
+            for actor in list(self.actors if actors is None else actors):
+                draw = mem.read(actor.address + DRAW, 4)
+                if not self._code(draw):
+                    continue
+                mem.load(ot, bytes(OT_SLOTS * 4))
+                mem.write(PRIMITIVE_CURSOR, 4, primitives)
+                cpu.gte.capture = {}
+                self.running = actor.address
+                try:
+                    cpu.call(draw, (actor.address, 0, 0), budget=budget, sp=STACK)
+                except EmuError:
+                    pass
+                finally:
+                    self.running = None
+                lines = self._read_lines(ot, cpu.gte.capture)
+                if lines:
+                    found[id(actor)] = (actor, lines)
+        except EmuError:
+            pass
+        finally:
+            cpu.gte.capture = None
+            mem.ram[:] = ram
+            mem.scratch[:] = scratch
+            self.heap = heap
+            for extra in self.actors[count:]:
+                self.by_address.pop(extra.address, None)
+            del self.actors[count:]
+            self._map_cache = None
+        for actor, lines in found.values():
+            actor.lines = tuple(lines)
+        return len(found)
+
+    def _read_lines(self, ot, points):
+        """Every line primitive linked into the ordering table."""
+        out = []
+        for head in struct.unpack(f"<{OT_SLOTS}I", self.mem.bytes(ot, OT_SLOTS * 4)):
+            address, walked = head & 0xFFFFFF, 0
+            while address and address != 0xFFFFFF and walked < 4096:
+                walked += 1
+                base = 0x80000000 | address
+                try:
+                    tag = self.mem.read(base, 4)
+                    length = tag >> 24
+                    words = struct.unpack(f"<{length}I", self.mem.bytes(base + 4, length * 4))
+                except EmuError:
+                    break
+                out.extend(line_primitives(words, points))
+                address = tag & 0xFFFFFF
+        return out
 
     # --- reading back ---------------------------------------------------
 
@@ -652,15 +744,83 @@ def subtree(world, actor, actors=None):
 
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
-             records, units, frames=FRAMES, spawner=None):
+             records, units, frames=FRAMES, spawner=None, purified=False):
     """The area as it opens - its placed actors and all they spawned - and,
-    given the area's scene spawner, every room it has."""
-    world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number)
+    given the area's scene spawner, every room it has. An area with no
+    placement records is its spawner's scene 0."""
+    world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
+                  purified=purified)
     world.start_workers()
     for record in records:
         world.place(record, units)
+    if not records and spawner:
+        world.enter_scene(spawner, area_number, 0)
     world.run(frames)
     world.harvest()
+    world.capture_lines()
     if spawner:
         world.run_rooms(spawner, area_number, frames)
     return world
+
+
+def line_primitives(words, points):
+    """[(a, b, colour a, colour b, blended)] for the line primitives in one
+    packet's words, joining the vertices `points` names."""
+    out, k = [], 0
+    while k < len(words):
+        code = words[k] >> 24
+        if code == 0 or 0xE1 <= code <= 0xE6:
+            k += 1
+            continue
+        if not 0x40 <= code <= 0x5F:
+            break
+        gouraud, poly, blended = code & 0x10, code & 0x08, bool(code & 0x02)
+        colour, k, vertices = words[k] & 0xFFFFFF, k + 1, []
+        while k < len(words):
+            if poly and (words[k] & TERMINATOR_MASK) == TERMINATOR:
+                k += 1
+                break
+            if gouraud and vertices:
+                colour, k = words[k] & 0xFFFFFF, k + 1
+                if k >= len(words):
+                    break
+            vertices.append((words[k], colour))
+            k += 1
+            if not poly and len(vertices) == 2:
+                break
+        known = [(points[_xy(w)], c) for w, c in vertices if _xy(w) in points]
+        for (a, ca), (b, cb) in zip(known, known[1:]):
+            if max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH:
+                out.append((a, b, _rgb(ca), _rgb(cb), blended))
+    return out
+
+
+def _xy(word):
+    return s16(word), s16(word >> 16)
+
+
+def _rgb(colour):
+    return tuple(((colour >> shift) & 0xFF) / 255.0 for shift in (0, 8, 16))
+
+
+def find_scene_spawner(overlay):
+    """An overlay's scene spawner found by what its controller does - see
+    RETIRE_SCENE - or None."""
+    count = len(overlay) // 4
+    words = struct.unpack_from(f"<{count}I", overlay)
+    starts = [n for n, w in enumerate(words) if w >> 16 == PROLOGUE and w & 0x8000]
+    bodies = {OVERLAY_BASE + s * 4: words[s:e]
+              for s, e in zip(starts, starts[1:] + [count])}
+
+    def calls(body):
+        return [(w & 0x3FFFFFF) << 2 | 0x80000000 for w in body if w >> 26 == 3]
+
+    for body in bodies.values():
+        called = calls(body)
+        if RETIRE_SCENE not in called:
+            continue
+        for target in sorted(set(called)):
+            if (called.count(target) >= 2 and target in bodies
+                    and ALLOCATE_ACTOR in calls(bodies[target])):
+                return target
+    return None
