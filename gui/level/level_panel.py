@@ -80,10 +80,24 @@ class LevelEditorPanel(QWidget):
         self.viewer = LevelViewer(self)
         self.viewer.selection_changed.connect(self._on_view_selection)
         self.viewer.instance_moved.connect(self._on_instance_moved)
+        self.viewer.part_changed.connect(self._on_part_selected)
 
         self.area_box = QComboBox(self)
         self.area_box.setMinimumWidth(240)
         self.area_box.currentIndexChanged.connect(self._on_area_changed)
+
+        # Area or one of its rooms. Inside, the game never draws the
+        # area's own mesh - a room is only the actors its scene table
+        # spawns (functions/actor_sim.py) - so a room is shown alone.
+        self._filling_views = False
+        self.view_box = QComboBox(self)
+        self.view_box.setMinimumWidth(160)
+        self.view_box.setToolTip(
+            "Which part of the area to show. The area is the level Tomba "
+            "walks around; a room is what the game draws once he walks "
+            "through a door - the actors its scene table spawns, and the "
+            "chests that only appear in there.")
+        self.view_box.currentIndexChanged.connect(self._apply_view)
 
         self.summary = QLabel("Open a disc to pick an area.", self)
         self.summary.setWordWrap(True)
@@ -175,6 +189,8 @@ class LevelEditorPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(QLabel("Area", self))
         top.addWidget(self.area_box, 1)
+        top.addWidget(QLabel("Show", self))
+        top.addWidget(self.view_box)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
@@ -196,9 +212,9 @@ class LevelEditorPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(make_panel_title(
-            "A whole area: its room, its background, and everything the "
-            "overlay places in it - click an object to select it, drag it "
-            "to move it"))
+            "A whole area and its rooms: the level, its background, and "
+            "everything the game stands in it - click an object to select "
+            "it, click again for the part under the cursor"))
         layout.addWidget(splitter, 1)
         self._enable(False)
 
@@ -301,6 +317,10 @@ class LevelEditorPanel(QWidget):
         if pickups:
             lines.append(f"{pickups} crystal(s) and apple(s) from MAIN.EXE's "
                          f"own table, {drawn} of them with a known model.")
+        rooms = {i.scene for i in scene.instances if i.scene is not None}
+        if rooms:
+            lines.append(f"{len(rooms)} room(s), found by running the area's "
+                         f"scene spawner - pick one under Show.")
         lines.extend(scene.notes)
         self.summary.setText("\n".join(lines))
 
@@ -460,6 +480,75 @@ class LevelEditorPanel(QWidget):
         self.viewer.set_hidden_groups(())
         self.model_box.clear()
         self._show_details(None)
+        self._fill_views()
+        self._apply_view(frame=False)
+
+    # --- area or room -------------------------------------------------
+
+    def _fill_views(self):
+        current = self.view_box.currentData()
+        self._filling_views = True
+        self.view_box.clear()
+        self.view_box.addItem("Area", None)
+        instances = self.scene.instances if self.scene else []
+        scenes = sorted({i.scene for i in instances if i.scene is not None})
+        for scene in scenes:
+            count = sum(1 for i in instances if i.scene == scene)
+            self.view_box.addItem(
+                f"Room {scene} (interior {scene - 1}) - {count}", scene)
+        if scenes:
+            self.view_box.addItem("Area and every room", "all")
+        for row in range(self.view_box.count()):
+            if self.view_box.itemData(row) == current:
+                self.view_box.setCurrentIndex(row)
+                break
+        self._filling_views = False
+
+    def _apply_view(self, *_args, frame=True):
+        """Hide what is not in the chosen area or room - rows and view both
+        - on top of whatever rows are unticked."""
+        if self.scene is None or self._filling_views:
+            return
+        view = self.view_box.currentData()
+        filtered = set()
+        for instance in self.scene.instances:
+            if view == "all":
+                shown = True
+            elif view is None:
+                shown = instance.scene is None
+            else:
+                shown = instance.scene == view
+            if not shown:
+                filtered.add(instance.index)
+        unchecked = set()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            if item.checkState() != Qt.CheckState.Checked:
+                unchecked.add(item.data(ROLE))
+            self.table.setRowHidden(row, item.data(ROLE) in filtered)
+        self.viewer.set_hidden_groups(filtered | unchecked)
+        if frame:
+            if view is None:
+                self.viewer.frame_level()
+            else:
+                self.viewer.frame_visible()
+
+    def _on_part_selected(self, index, part):
+        instance = self._instance(index)
+        if instance is None:
+            return
+        self._show_details(index)
+        if part is None or not 0 <= part < len(instance.sources):
+            return
+        file_id, group = instance.sources[part]
+        named = self.scene.named(((file_id, group),))
+        text = (f"<b>part {part}</b>: id {file_id} group {group}"
+                + (f" - {named}" if named else ""))
+        self.details.setText(text + "<br>" + self.details.text())
+        print(f"selected part: '{instance.label}' part {part} = id {file_id} "
+              f"group {group}")
 
     def _fill_row(self, row, instance):
         if instance.assembly is not None and len(instance.sources) > 1:
@@ -647,16 +736,20 @@ class LevelEditorPanel(QWidget):
         """Rebuild the scene around a change, leaving the camera, the
         selection and the hidden rows where the user had them."""
         selected = self.viewer.selected
-        hidden = set(self.viewer.hidden_groups)
+        unchecked = set()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.checkState() != Qt.CheckState.Checked:
+                unchecked.add(item.data(ROLE))
         self.viewer.load_scene(self.scene, frame=frame)
         self._populate()
-        self.viewer.set_hidden_groups(hidden)
         self._filling = True
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item.data(ROLE) in hidden:
+            if item.data(ROLE) in unchecked:
                 item.setCheckState(Qt.CheckState.Unchecked)
         self._filling = False
+        self._apply_view(frame=False)
         if selected is not None:
             self.viewer.select(selected)
 

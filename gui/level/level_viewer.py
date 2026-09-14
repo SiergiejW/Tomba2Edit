@@ -11,7 +11,7 @@ things a level has that a model does not:
     the background  the area's BGMP, drawn as a picture behind
                     everything, cycling its palettes if they cycle
     the markers     where an object stands whose model we don't know
-    picking         click an instance to select it, drag it to move it
+    picking         click an instance to select it, again for its part
 
 See gui/level/level_scene.py for how the scene is put together, and
 functions/placement.py for where the objects' positions come from.
@@ -41,6 +41,53 @@ UNIT_SCALE = 1000.0
 # The selected instance's box, and the marker an unbound object gets.
 SELECTION_COLOR = (1.0, 0.92, 0.15)
 SELECTION_WIDTH = 2.0
+
+# What a selection box is drawn in, by what was picked - see
+# selection_kind() - and the box round one part of it.
+KIND_COLORS = {
+    "object": SELECTION_COLOR,
+    "character": (1.0, 0.35, 0.3),
+    "chest": (1.0, 0.55, 0.1),
+    "item": (0.3, 0.9, 1.0),
+    "room": (0.85, 0.45, 1.0),
+    "prop": (0.45, 1.0, 0.45),
+    "scenery": (0.7, 0.7, 0.7),
+    "area": (0.9, 0.9, 0.9),
+}
+PART_COLOR = (1.0, 1.0, 1.0)
+PART_PAD = 6.0
+COLLISION_WIDTH = 1.0
+
+# What export groups each kind under.
+EXPORT_GROUPS = {
+    "object": "Objects", "character": "Characters", "chest": "Chests",
+    "item": "Items", "prop": "Spawned props", "scenery": "Scenery",
+    "area": "Area",
+}
+
+# A whole character is one file's many groups; the asset pack is props.
+CHARACTER_PARTS = 8
+ASSET_PACK = 12
+
+
+def selection_kind(instance):
+    """What an instance is, for its colour and its export group."""
+    if instance.role == "room":
+        return "area"
+    if instance.role == "pickup":
+        pickup = instance.pickup
+        return "chest" if pickup is not None and pickup.chest else "item"
+    if instance.drawn_as_sprite:
+        return "item"
+    files = {f for f, _g in instance.sources}
+    if (len(instance.sources) >= CHARACTER_PARTS and len(files) == 1
+            and ASSET_PACK not in files):
+        return "character"
+    if getattr(instance, "scene", None) is not None:
+        return "room"
+    if instance.role == "scenery":
+        return "scenery"
+    return "object" if instance.role == "object" else "prop"
 MARKER_WIDTH = 2.0
 
 # How near a click has to land, in pixels, to pick an object that has no
@@ -58,8 +105,8 @@ FIELD_OF_VIEW = 45.0
 # there is as much sky above as ground below.
 BACKGROUND_PITCH_SPAN = 180.0
 
-CONTROLS = ("Left-click: select | Left-drag: move it along the ground\n"
-            "Shift+drag: move it up and down\n" + CONTROLS_HINT)
+CONTROLS = ("Left-click: select | click it again: the part under the "
+            "cursor\n" + CONTROLS_HINT)
 
 
 class LevelViewer(SMSTViewer):
@@ -67,9 +114,12 @@ class LevelViewer(SMSTViewer):
 
     # The index of the selected instance, or None.
     selection_changed = pyqtSignal(object)
-    # An instance that has just been dragged somewhere, so the panel's
-    # position boxes can follow it.
+    # An instance that has just been moved, so the panel's position boxes
+    # can follow it.
     instance_moved = pyqtSignal(object)
+    # (instance, part) when a part of the selection is picked, part None
+    # when it goes back to the whole.
+    part_changed = pyqtSignal(object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -129,6 +179,22 @@ class LevelViewer(SMSTViewer):
         self.sprite_action.toggled.connect(self._toggle_sprites)
         self.toolbar.insertAction(self.background_action, self.sprite_action)
 
+        self.show_collision = False
+        self.collision_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon),
+            "Collision", self)
+        self.collision_action.setCheckable(True)
+        self.collision_action.setChecked(False)
+        self.collision_action.setToolTip(
+            "Draw the area's collision as lines.\n\n"
+            "A SCLD area shows each plane's surface samples and the stacks "
+            "standing on them. Coal Mining Town and Circus Village have no "
+            "SCLD: their streets and rooms are planes built into the "
+            "overlay, outlined here - green floor, red wall edge, yellow "
+            "door - see functions/town_collision.py.")
+        self.collision_action.toggled.connect(self._toggle_collision)
+        self.toolbar.insertAction(self.sprite_action, self.collision_action)
+
         # Line overlays, both built on the CPU and uploaded from paintGL
         # for the same reason everything else here is: an area can be
         # picked before Qt has given this widget a context.
@@ -142,6 +208,11 @@ class LevelViewer(SMSTViewer):
         self.selection_cbo = QOpenGLBuffer()
         self.selection_count = 0
         self._selection_arrays = None
+        self.collision_vao = QOpenGLVertexArrayObject()
+        self.collision_vbo = QOpenGLBuffer()
+        self.collision_cbo = QOpenGLBuffer()
+        self.collision_count = 0
+        self._collision_arrays = None
 
         # The background: its own tiny program, since it is an ordinary
         # RGB picture rather than the index-and-palette pair everything
@@ -172,6 +243,8 @@ class LevelViewer(SMSTViewer):
         self._pick_faces = None
         self._face_instance = None
         self._drag = None
+        self._last_face = None
+        self.selected_part = None
 
     # --- loading ------------------------------------------------------
 
@@ -195,8 +268,10 @@ class LevelViewer(SMSTViewer):
         # so it cannot survive the reload - dragging on into the new
         # scene indexes a list that may be shorter.
         self._drag = None
+        self.selected_part = None
         self.prepare_buffers()
         self.rebuild_markers()
+        self._rebuild_collision()
         self._build_selection()
         if frame:
             self.frame_level()
@@ -235,8 +310,56 @@ class LevelViewer(SMSTViewer):
         self.show_sprites = checked
         self.update()
 
+    def set_hidden_groups(self, hidden):
+        super().set_hidden_groups(hidden)
+        self._sprite_dirty = True
+        self.rebuild_markers()
+
+    def set_group_hidden(self, index, hidden):
+        super().set_group_hidden(index, hidden)
+        self._sprite_dirty = True
+        self.rebuild_markers()
+
+    def _toggle_collision(self, checked):
+        self.show_collision = checked
+        self._rebuild_collision()
+        self.update()
+
+    def _rebuild_collision(self):
+        if not self.show_collision or self.scene is None:
+            self._collision_arrays = (np.zeros(0, np.float32),) * 2
+            return
+        positions, colors = self.scene.collision_lines()
+        self._collision_arrays = (positions / UNIT_SCALE, colors)
+
+    def frame_visible(self):
+        """Put the camera over what is showing - a room rather than the
+        area around it."""
+        if not self.model_data:
+            return
+        verts = self._positions()
+        points = []
+        for instance in self.instances:
+            if instance.index in self.hidden_groups:
+                continue
+            if instance.vertex_count:
+                points.append(verts[instance.first_vertex:
+                                    instance.first_vertex + instance.vertex_count])
+            elif instance.role != "room":
+                points.append(np.array([[instance.x, instance.y, instance.z]],
+                                       dtype=np.float32) / UNIT_SCALE)
+        found = scene_of(np.concatenate(points)) if points else None
+        if found is None:
+            self.frame_level()
+            return
+        centre, radius = found
+        self.scene_radius = radius
+        self.camera_controls.frame(centre, radius, LEVEL_HEADING, LEVEL_PITCH)
+        self.update()
+
     def rebuild_markers(self):
-        self._marker_arrays = (self.scene.markers() if self.scene
+        self._marker_arrays = (self.scene.markers(self.hidden_groups)
+                               if self.scene
                                else (np.zeros(0, np.float32),) * 2)
         positions, colors = self._marker_arrays
         self._marker_arrays = (positions / UNIT_SCALE, colors)
@@ -284,12 +407,14 @@ class LevelViewer(SMSTViewer):
         if index is not None and not 0 <= index < len(self.instances):
             index = None
         self.selected = index
+        self.selected_part = None
         self._build_selection()
         self.update()
         self.selection_changed.emit(index)
 
     def _build_selection(self):
-        """A box round the selected instance. Drawn over everything: the
+        """A box round the selected instance, in its kind's colour, and a
+        white one round the picked part of it. Drawn over everything: the
         thing you are looking for is usually the one behind a wall."""
         positions, colors = [], []
         instance = (self.instances[self.selected]
@@ -298,19 +423,56 @@ class LevelViewer(SMSTViewer):
         if instance is not None:
             box = self._instance_box(instance)
             if box is not None:
-                (x0, x1, y0, y1, z0, z1) = box
-                corners = [(x, y, z) for x in (x0, x1)
-                           for y in (y0, y1) for z in (z0, z1)]
-                edges = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
-                         (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)]
-                for a, b in edges:
-                    positions.extend(corners[a])
-                    positions.extend(corners[b])
-                    colors.extend(SELECTION_COLOR)
-                    colors.extend(SELECTION_COLOR)
+                self._box_lines(box, KIND_COLORS[selection_kind(instance)],
+                                positions, colors)
+            part = self._part_box(instance, self.selected_part)
+            if part is not None:
+                self._box_lines(part, PART_COLOR, positions, colors)
         self._selection_arrays = (
             np.array(positions, dtype=np.float32) / UNIT_SCALE,
             np.array(colors, dtype=np.float32))
+
+    @staticmethod
+    def _box_lines(box, color, positions, colors):
+        (x0, x1, y0, y1, z0, z1) = box
+        corners = [(x, y, z) for x in (x0, x1)
+                   for y in (y0, y1) for z in (z0, z1)]
+        for a, b in ((0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
+                     (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)):
+            positions.extend(corners[a])
+            positions.extend(corners[b])
+            colors.extend(color)
+            colors.extend(color)
+
+    def _part_box(self, instance, part):
+        """The box round one source of an instance, or None."""
+        spans = instance.spans or ()
+        if part is None or not 0 <= part < len(spans) or not spans[part]:
+            return None
+        first, count = spans[part]
+        verts = self._positions()[first:first + count] * UNIT_SCALE
+        if not len(verts):
+            return None
+        low, high = verts.min(axis=0), verts.max(axis=0)
+        return (low[0] - PART_PAD, high[0] + PART_PAD, low[1] - PART_PAD,
+                high[1] + PART_PAD, low[2] - PART_PAD, high[2] + PART_PAD)
+
+    def select_part(self, part):
+        self.selected_part = part
+        self._build_selection()
+        self.update()
+        self.part_changed.emit(self.selected, part)
+
+    def _part_under(self, index):
+        """Which source of an instance the last picked face belongs to."""
+        instance = self.instances[index]
+        if self._last_face is None or not instance.spans:
+            return None
+        vertex = int(self._pick_faces[self._last_face][0])
+        for number, span in enumerate(instance.spans):
+            if span and span[0] <= vertex < span[0] + span[1]:
+                return number
+        return None
 
     def _instance_box(self, instance):
         """(x0, x1, y0, y1, z0, z1) round an instance in world units, or
@@ -407,6 +569,7 @@ class LevelViewer(SMSTViewer):
         origin, direction = ray
 
         hit_instance, hit_distance = None, np.inf
+        self._last_face = None
         if len(self.model_data.get("faces") or ()):
             if self._face_instance is None or self._pick_vertices is None:
                 self._build_face_index()
@@ -426,10 +589,14 @@ class LevelViewer(SMSTViewer):
             t = np.einsum("ij,ij->i", edge2, qvec) * inv
             hit = (live & (u >= -1e-6) & (v >= -1e-6)
                    & (u + v <= 1 + 1e-6) & (t > 1e-6))
+            if self.hidden_groups:
+                hit &= ~np.isin(self._face_instance,
+                                np.fromiter(self.hidden_groups, dtype=np.int64))
             if hit.any():
                 which = int(np.argmin(np.where(hit, t, np.inf)))
                 hit_instance = int(self._face_instance[which])
                 hit_distance = float(t[which])
+                self._last_face = which
 
         near = self._pick_marker(x, y, origin, direction)
         if near is not None:
@@ -437,6 +604,7 @@ class LevelViewer(SMSTViewer):
             # A marker in front of whatever the ray hit wins; one behind
             # it is something else's, standing further away.
             if hit_instance is None or distance < hit_distance:
+                self._last_face = None
                 return index
         return hit_instance
 
@@ -446,7 +614,8 @@ class LevelViewer(SMSTViewer):
         matrix = self._model_view_projection()
         best = None
         for instance in self.instances:
-            if not instance.movable or instance.face_count:
+            if (not instance.movable or instance.face_count
+                    or instance.index in self.hidden_groups):
                 continue
             point = matrix.map(QVector4D(instance.x / UNIT_SCALE,
                                          instance.y / UNIT_SCALE,
@@ -483,63 +652,20 @@ class LevelViewer(SMSTViewer):
         return (origin + direction * t) * UNIT_SCALE
 
     def mousePressEvent(self, event):
+        """Pick, never move: a click selects the instance under the
+        cursor, and a second click on it goes one deeper - the part under
+        the cursor - then back to the whole."""
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         point = event.position().toPoint()
         index = self.pick(point.x(), point.y())
-        if index != self.selected:
-            self.select(index)
-        instance = self.instances[index] if index is not None else None
-        if instance is not None and instance.movable and not instance.authored:
-            # Along the ground, or up and down with Shift - a level's
-            # objects stand on it, so the ground is what a drag means
-            # nearly every time.
-            up = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-            normal = (self._camera_plane_normal() if up
-                      else np.array([0.0, 1.0, 0.0]))
-            anchor = (instance.x, instance.y, instance.z)
-            grab = self._plane_point(point.x(), point.y(), anchor, normal)
-            if grab is not None:
-                self._drag = (index, normal, np.asarray(anchor, dtype=np.float64)
-                              - grab, bool(up))
-
-    def _camera_plane_normal(self):
-        """A plane facing the camera, for dragging up and down: upright,
-        so the drag stays vertical, and turned to face where the camera
-        is looking so it never goes edge-on."""
-        heading = math.radians(self.camera_controls.camera_angle_h)
-        return np.array([math.sin(heading), 0.0, -math.cos(heading)])
-
-    def mouseMoveEvent(self, event):
-        if self._drag is None:
-            super().mouseMoveEvent(event)
+        if index is not None and index == self.selected:
+            part = self._part_under(index)
+            self.select_part(None if part == self.selected_part else part)
             return
-        index, normal, offset, vertical = self._drag
-        if index >= len(self.instances):
-            self._drag = None
-            return
-        instance = self.instances[index]
-        point = event.position().toPoint()
-        where = self._plane_point(point.x(), point.y(),
-                                  (instance.x, instance.y, instance.z), normal)
-        if where is None:
-            return
-        where = where + offset
-        if vertical:
-            instance.y = float(where[1])
-        else:
-            instance.x, instance.z = float(where[0]), float(where[2])
-        instance.to_record()
-        self.refresh_instance(index)
-        self.instance_moved.emit(index)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self._drag is not None:
-            self._drag = None
-            return
-        super().mouseReleaseEvent(event)
+        self.select(index)
 
     # --- what the toolbar toggles -------------------------------------
 
@@ -552,34 +678,57 @@ class LevelViewer(SMSTViewer):
         self.update()
 
     def export_to_gltf(self):
-        """Write the level out with everything standing where it does.
-
-        The scene's own arrays hold each instance's geometry as it was
-        modelled; what goes out is a copy with the transforms baked in,
-        which is the thing on screen."""
+        """Write the level out with everything standing where it does, one
+        object per instance - the area, each placed object, each character
+        posed as it is here, each chest and item - grouped the way the
+        view colours them. What is hidden stays out, so a room exports on
+        its own."""
         if not self.model_data or not self.model_data.get("vertices"):
             QMessageBox.warning(self, "Nothing to export", "No level is loaded.")
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save level", (self.export_name or "level") + ".glb",
-            "glTF binary (*.glb);;glTF (*.gltf)")
+            "glTF binary (*.glb)")
         if not path:
             return
-        placed = dict(self.model_data)
-        placed["vertices"] = (self._positions() * UNIT_SCALE).tolist()
-        placed.pop("groups", None)
         try:
-            write = (gltf_export.write_gltf if path.lower().endswith(".gltf")
-                     else gltf_export.write_glb)
-            write(path, placed, self.vram_raw_bytes,
-                  name=self.export_name or "level")
+            written, groups = gltf_export.write_scene_glb(
+                path, self.export_parts(), self.vram_raw_bytes,
+                name=self.export_name or "level")
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
         QMessageBox.information(
             self, "Exported",
-            f"Wrote the room and {sum(1 for i in self.instances if i.face_count) - 1} "
-            f"placed object(s).")
+            f"Wrote {written} object(s) in {groups} group(s). Sprites are "
+            f"pictures rather than geometry and are not in it.")
+
+    def export_parts(self):
+        """[(name, group, model)] for every visible instance with geometry,
+        its vertices where they stand."""
+        model = self.model_data or {}
+        if not model.get("vertices"):
+            return []
+        verts = self._positions() * UNIT_SCALE
+        out = []
+        for instance in self.instances:
+            if instance.index in self.hidden_groups or not instance.face_count:
+                continue
+            first, count = instance.first_vertex, instance.vertex_count
+            f0, fc = instance.first_face, instance.face_count
+            kind = selection_kind(instance)
+            scene = getattr(instance, "scene", None)
+            group = (f"Room {scene}" if kind == "room" and scene is not None
+                     else EXPORT_GROUPS.get(kind, "Objects"))
+            out.append((f"{instance.index:03d} {instance.label}", group, {
+                "vertices": verts[first:first + count].tolist(),
+                "vertex_colors": model["vertex_colors"][first:first + count],
+                "texture_coords": model["texture_coords"][first:first + count],
+                "faces": [[v - first for v in face]
+                          for face in model["faces"][f0:f0 + fc]],
+                "texture_info": model["texture_info"][f0:f0 + fc],
+            }))
+        return out
 
     # --- GL -----------------------------------------------------------
 
@@ -591,6 +740,9 @@ class LevelViewer(SMSTViewer):
         self.selection_vao.create()
         self.selection_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.selection_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.collision_vao.create()
+        self.collision_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.collision_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
         self.background_program = QOpenGLShaderProgram()
         self.background_program.addShaderFromSourceCode(
@@ -722,6 +874,8 @@ class LevelViewer(SMSTViewer):
         rows = []
         instances = self.instances
         for quad in self._sprite_quads:
+            if quad.index in self.hidden_groups:
+                continue
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
                 continue
@@ -836,6 +990,11 @@ class LevelViewer(SMSTViewer):
                 self._selection_arrays, self.selection_vao, self.selection_vbo,
                 self.selection_cbo)
             self._selection_arrays = None
+        if self._collision_arrays is not None:
+            self.collision_count = self._upload_lines(
+                self._collision_arrays, self.collision_vao, self.collision_vbo,
+                self.collision_cbo)
+            self._collision_arrays = None
 
     def _sync_background(self):
         if not self._background_dirty:
@@ -919,7 +1078,8 @@ class LevelViewer(SMSTViewer):
         self._sync_lines()
         super().paintGL()
         self.draw_sprites()
-        if not (self.marker_count or self.selection_count):
+        if not (self.marker_count or self.selection_count
+                or self.collision_count):
             return
         if not self.shader_program.bind():
             return
@@ -927,6 +1087,11 @@ class LevelViewer(SMSTViewer):
                                             self._model_view_projection())
         self.shader_program.setUniformValue("useTextures", False)
         self.shader_program.setUniformValue("alpha", 1.0)
+        if self.show_collision and self.collision_count:
+            GL.glLineWidth(COLLISION_WIDTH)
+            self.collision_vao.bind()
+            GL.glDrawArrays(GL.GL_LINES, 0, self.collision_count)
+            self.collision_vao.release()
         if self.show_markers and self.marker_count:
             GL.glLineWidth(MARKER_WIDTH)
             self.marker_vao.bind()

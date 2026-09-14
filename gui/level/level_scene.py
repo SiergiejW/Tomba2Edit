@@ -35,6 +35,7 @@ import colorsys
 import json
 import math
 import os
+import re
 import struct
 from dataclasses import dataclass
 
@@ -47,6 +48,7 @@ from functions import handler_models
 from functions import actor_models
 from functions import actor_assembly
 from functions import actor_sim
+from functions import town_collision
 from functions import object_sprites
 from functions import pickup_art
 from functions import placement as placement_module
@@ -90,6 +92,27 @@ AREA_SPRITES = 10
 # decomp has been run through it.
 SYMBOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "decomp", "symbols_us.json")
+
+# An overlay's scene spawner, by its decomp name - what fills a room.
+SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
+
+# A persistent chest's record: orientation mode 4 turns it by the byte the
+# parser calls `plane`, shifted left 4 (FUN_8003fc78); an actor class with
+# bit 0x80 is only drawn inside the interior its `persist` byte names
+# (f_SpawnPersistentPickupPlacementTable, f_HandlePersistentChestActor).
+CHEST_AUTHORED = 4
+INTERIOR_FLAG = 0x80
+
+# Collision as lines: how long a SCLD sample's cross is, and what each kind
+# of town plane is drawn in.
+COLLISION_TICK = 12.0
+TOWN_COLORS = {
+    "floor": (0.3, 0.9, 0.4), "wall": (1.0, 0.35, 0.3),
+    "door": (1.0, 0.85, 0.2), "ladder": (0.3, 0.7, 1.0),
+    "net": (0.7, 0.5, 1.0), "camera": (0.6, 0.6, 0.6),
+    "foothold": (0.4, 1.0, 1.0), "ball": (1.0, 0.6, 1.0),
+    "other": (0.9, 0.9, 0.9),
+}
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -152,6 +175,9 @@ class Instance:
     # another instance's assembly.
     follow: tuple = None
     note: str = ""
+    # Which room it is in - the scene index its area's spawner filled it
+    # from, interior scene - 1 - or None for the area itself.
+    scene: int = None
 
     # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
     # the instance's origin - filled by build().
@@ -660,10 +686,24 @@ class LevelScene:
             return actor_sim.simulate(
                 self.exe_path, self.overlay_path, self.dat_path, idx_path,
                 self.chunk_index, number, self.placements,
-                actor_assembly.degrees_to_units, frames=SIM_FRAMES)
+                actor_assembly.degrees_to_units, frames=SIM_FRAMES,
+                spawner=self._scene_spawner())
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
+
+    def _scene_spawner(self):
+        """The overlay's scene spawner, or None."""
+        tag = os.path.basename(self.overlay_path or "")[:3].upper()
+        try:
+            with open(SYMBOLS) as f:
+                names = json.load(f)
+        except (OSError, ValueError):
+            return None
+        for name, (where, address) in names.items():
+            if where == tag and SPAWNER.match(name):
+                return address
+        return None
 
     def handler_name(self, handler):
         """What the decomp calls a handler, or its address."""
@@ -952,7 +992,7 @@ class LevelScene:
         for number, (where, _room) in enumerate(self.rooms):
             instances.append(Instance(
                 index=len(instances), role="room",
-                label=f"Room ({where})", room=number))
+                label=f"Area ({where})", room=number))
 
         room_box = self.room_bounds()
         used = set()
@@ -997,8 +1037,20 @@ class LevelScene:
                 assembly = actor_assembly.assemble(self.overlay_data, record)
                 if assembly is not None and not self._loads(assembly.sources):
                     assembly = None
+            # Its own code ran, allocated a part and left it without a
+            # model: it draws nothing, and whatever the handler's
+            # immediates name is the model it loads and then clears.
+            # Only when that model is exactly what its code was seen to load
+            # - anything else a guess named may still be real.
+            guessed = self.bindings.get(record.key()) or ()
+            invisible = (actor is not None and not actor.parts
+                         and actor.blank and not actor.frames and guessed
+                         and self.binding_source.get(record.key()) == "code"
+                         and {tuple(g) for g in guessed} <= set(actor.loaded))
             if assembly is not None:
                 sources = assembly.sources
+            elif invisible:
+                sources = ()
             elif not art:
                 built = self.built_actor(record.handler)
                 if built is not None:
@@ -1040,13 +1092,20 @@ class LevelScene:
                 sources = self.chest_models.get(
                     record.reward & placement_module.PICKUP_REWARD_MASK, ())
                 offsets = self.chest_offsets
+            heading = 0.0
+            scene = None
+            if record.chest:
+                heading = (record.plane * 360.0 / 256.0
+                           if record.behaviour == CHEST_AUTHORED
+                           else self.chest_heading(record))
+                if record.type & INTERIOR_FLAG:
+                    scene = record.persist + 1
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
                 offsets=offsets, name=self.named(sources),
                 x=x, y=pose.get("y", y), z=z, pickup=record,
-                angle=float(pose.get("angle", self.chest_heading(record)
-                                      if record.chest else 0.0)),
+                angle=float(pose.get("angle", heading)), scene=scene,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 
@@ -1112,6 +1171,39 @@ class LevelScene:
                     index=len(instances), role="spawned", label=rider.label,
                     art=rider.art, x=rx, y=ry, z=rz, follow=(index, number),
                     note=f"carried by {label}"))
+
+        # The rooms: every scene the area's spawner has a table for, run
+        # as the game runs it when Tomba walks in (functions/actor_sim.py).
+        for scene, actors in sorted((world.rooms if world is not None
+                                     else {}).items()):
+            within = {a.address for a in actors}
+            for root in actors:
+                if root.spawner in within or _at_origin(root.position):
+                    continue
+                tree = actor_sim.subtree(world, root, actors)
+                label = f"room {scene}: {self.handler_name(root.handler)}"
+                posed = self._posed(tree, root, root.position, 0, label)
+                if posed is None:
+                    continue
+                note = (f"room {scene} (interior {scene - 1}), from its scene "
+                        f"table<br>{posed.note}")
+                x, y, z = view_point(root.position)
+                follow = None
+                if posed.sources:
+                    follow = len(instances)
+                    instances.append(Instance(
+                        index=follow, role="spawned",
+                        label=self._spawn_label(label, posed),
+                        sources=posed.sources, x=x, y=y, z=z, assembly=posed,
+                        name=label, note=note, scene=scene))
+                    used.update(posed.sources)
+                for number, rider in enumerate(posed.riders):
+                    rx, ry, rz = view_point(rider.position)
+                    instances.append(Instance(
+                        index=len(instances), role="spawned",
+                        label=f"room {scene}: {rider.label}", art=rider.art,
+                        x=rx, y=ry, z=rz, note=note, scene=scene,
+                        follow=(follow, number) if follow is not None else None))
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
@@ -1272,7 +1364,38 @@ class LevelScene:
                 instance.x, instance.y, instance.z = view_point(
                     sprites[number].position)
 
-    def markers(self):
+    def collision_lines(self):
+        """(positions, colours) for the area's collision as lines, in view
+        axes: a SCLD's surface samples and the stacks standing on them, or
+        a town's prebuilt planes outlined (functions/town_collision.py)."""
+        from gui.scld import scld_render
+        positions, colors = [], []
+
+        def line(a, b, rgb):
+            positions.extend(a)
+            positions.extend(b)
+            colors.extend(rgb)
+            colors.extend(rgb)
+
+        tick = COLLISION_TICK
+        for entry in self.planes:
+            rgb = scld_render.entry_color(entry.index)
+            for a, b in entry.wall_candidates():
+                line(a, b, rgb)
+            for x, y, z in entry.trace():
+                line((x - tick, y, z), (x + tick, y, z), rgb)
+                line((x, y, z - tick), (x, y, z + tick), rgb)
+        for dataset in (town_collision.find(self.overlay_data)
+                        if self.overlay_data else ()):
+            for plane in dataset.planes:
+                rgb = TOWN_COLORS.get(plane.kind, TOWN_COLORS["other"])
+                corners = [view_point(p) for p in plane.outline()]
+                for k in range(len(corners)):
+                    line(corners[k], corners[(k + 1) % len(corners)], rgb)
+        return (np.array(positions, dtype=np.float32),
+                np.array(colors, dtype=np.float32))
+
+    def markers(self, hidden=()):
         """Line geometry for the objects with no model, as
         (positions, colours) - a diamond and an upright at each.
 
@@ -1285,7 +1408,8 @@ class LevelScene:
         the list and nothing at all in the view."""
         positions, colors = [], []
         for instance in self.instances:
-            if not instance.movable or instance.face_count:
+            if (not instance.movable or instance.face_count
+                    or instance.index in hidden):
                 continue
             if instance.drawn_as_sprite:
                 continue

@@ -54,6 +54,11 @@ VISIBILITY = 0x8007712C
 LOAD_GROUP = 0x80045258
 PLAY_SOUND = 0x80074590
 YIELD = 0x80051F80
+# The two routines that attach a model to a part. Done here rather than
+# run, only so each actor keeps a note of what its code loaded - the
+# decomp bodies are two and fifteen lines.
+SET_PART_MODEL = 0x80051B04         # f_SetActorPartModel
+INIT_SINGLE_PART = 0x80051B70       # f_InitializeSinglePartActorModel
 
 # The area's scene workers: FUN_800263e8 fills eight 0x4C-byte slots at
 # 0x80100400 from the id list MAIN.EXE keeps per area, and FUN_80026368
@@ -71,6 +76,17 @@ WORKER_COUNT = 8
 WORKER_TABLE = 0x8009D314
 # Ids every area runs: Tomba, the persistent pickups - drawn elsewhere.
 SHARED_WORKERS = frozenset((0, 1))
+
+# Interiors. The interior frame loop never draws the area's MDAT: a room
+# is only actors, spawned by the area's scene spawner with src_Interior + 1
+# (f_UpdateInteriorSceneHandoff, f_UpdateCircusInteriorSceneTransition).
+INSIDE = 0x800BF816                 # src_InsideWeaponlessInterior
+INTERIOR = 0x800BF817               # src_Interior
+TRANSITION = 0x800BF818             # src_InteriorTransition
+ENTER_INTERIOR = 0x800A4AF8         # per area: moves Tomba and the camera in
+MAX_SCENES = 24
+PROLOGUE = 0x27BD
+EXE_END = 0x800F0000
 
 ACTOR_SIZE = 0xC0
 MAX_PARTS = 64
@@ -119,6 +135,13 @@ class Actor:
     error: str = ""
     dead: bool = False
     revived: int = 0                # how often its code tried to destroy it
+    scene: int = None               # the room's scene index, None outside
+    # Parts it allocated and then left with no model - an invisible
+    # trigger, like A07's interior entrances, which load group 0 and clear
+    # the pointer straight after.
+    blank: int = 0
+    # Every (file, group) its code attached to a part, whatever became of it.
+    loaded: frozenset = frozenset()
 
 
 class World:
@@ -162,12 +185,17 @@ class World:
         self.by_address = {}
         self.running = None
         self.running_worker = None
+        self.running_scene = None
         self.worker_errors = []
+        self.rooms = {}                         # scene -> [Actor]
+        self.part_owner = {}                    # part address -> actor
         cpu.hooks.update({
             ALLOCATE_RECORD: self._allocate_record,
             ALLOCATE_PART: self._allocate_part,
             VISIBILITY: self._visible,
             LOAD_GROUP: self._load_group,
+            SET_PART_MODEL: self._set_part_model,
+            INIT_SINGLE_PART: self._init_single_part,
             PLAY_SOUND: lambda c: 0,
             YIELD: lambda c: 0,
         })
@@ -200,14 +228,53 @@ class World:
         address = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
         self.mem.write(address + 0x0A, 1, cpu.r[6])
         self.mem.write(address + 0x0C, 1, cpu.r[5])
+        parent = self.by_address.get(self.running)
         actor = Actor(address, 0, spawner=self.running,
-                      worker=None if self.running else self.running_worker)
+                      worker=None if self.running else self.running_worker,
+                      scene=parent.scene if parent is not None
+                      else self.running_scene)
         self.actors.append(actor)
         self.by_address[address] = actor
         return address
 
     def _allocate_part(self, cpu):
-        return self._alloc(PART_SIZE)
+        address = self._alloc(PART_SIZE)
+        self.part_owner[address] = self.running
+        return address
+
+    def _model_pointer(self, file_id, group):
+        table = self.mem.read(FILE_TABLE + file_id * 4, 4)
+        return table + self.mem.read(table + group * 4 + 4, 4) if table else 0
+
+    def _note_loaded(self, address, file_id, group):
+        actor = self.by_address.get(address)
+        if actor is not None:
+            actor.loaded = actor.loaded | {(file_id, group)}
+
+    def _set_part_model(self, cpu):
+        part, file_id, group = cpu.r[4], cpu.r[5], cpu.r[6]
+        self.mem.write(part + 0x40, 4, self._model_pointer(file_id, group))
+        self._note_loaded(self.part_owner.get(part) or self.running,
+                          file_id, group)
+        return 0
+
+    def _init_single_part(self, cpu):
+        actor, file_id, group = cpu.r[4], cpu.r[5], cpu.r[6]
+        write = self.mem.write
+        write(actor + PART_FRAME, 1, 1)
+        write(actor + PART_COUNT, 1, 1)
+        write(actor + 0x0D, 1, 0)
+        for at in (0xB8, 0xBA, 0xBC):
+            write(actor + at, 2, 0x1000)
+        part = self._alloc(PART_SIZE)
+        self.part_owner[part] = actor
+        write(actor + PARTS, 4, part)
+        write(part + 6, 2, 0xFFFF)
+        for at in (0x38, 0x3A, 0x3C):
+            write(part + at, 2, 0x1000)
+        write(part + 0x40, 4, self._model_pointer(file_id, group))
+        self._note_loaded(actor, file_id, group)
+        return 0
 
     def _visible(self, cpu):
         self.mem.write(cpu.r[4] + ACTIVE, 1, 1)
@@ -283,7 +350,7 @@ class World:
                 for n in range(WORKER_COUNT)
                 if read(WORKER_SLOTS + n * WORKER_SIZE, 1)]
 
-    def run(self, frames=FRAMES, budget=BUDGET):
+    def run(self, frames=FRAMES, budget=BUDGET, only=None, workers=True):
         """Every actor, every frame. Nothing is let go: an actor whose code
         asks to be destroyed is put back in the state it was in, and one
         whose code faults keeps what it had built - the editor shows what
@@ -291,9 +358,10 @@ class World:
         cpu, mem = self.cpu, self.mem
         read, write = mem.read, mem.write
         for _frame in range(frames):
-            self.run_workers(budget)
+            if workers:
+                self.run_workers(budget)
             for actor in list(self.actors):
-                if actor.dead:
+                if actor.dead or (only is not None and not only(actor)):
                     continue
                 handler = read(actor.address + CALLBACK, 4)
                 if not handler:
@@ -341,6 +409,78 @@ class World:
                 actor.parts = parts
                 self._sprite(actor, banks)
                 self._place(actor)
+
+    # --- rooms ----------------------------------------------------------
+
+    def snapshot(self):
+        # Shallow: an actor's record must stay the very Placement the scene
+        # holds - the scene finds its actor by that identity. What a run
+        # changes on an actor is reassigned, never mutated in place.
+        import copy
+        return (bytes(self.mem.ram), bytes(self.mem.scratch),
+                [copy.copy(a) for a in self.actors], self.heap, dict(self.files))
+
+    def restore(self, saved):
+        import copy
+        ram, scratch, actors, heap, files = saved
+        self.mem.ram[:] = ram
+        self.mem.scratch[:] = scratch
+        self.actors = [copy.copy(a) for a in actors]
+        self.by_address = {a.address: a for a in self.actors}
+        self.heap, self.files = heap, dict(files)
+        self._map_cache = None
+
+    def _code(self, address):
+        """Whether an address starts a routine that opens a stack frame."""
+        if address & 3 or not (0x80010000 <= address < EXE_END
+                               or OVERLAY_BASE <= address < AREA_BASE):
+            return False
+        return self.mem.read(address, 4) >> 16 == PROLOGUE
+
+    def enter_scene(self, spawner, area_number, scene, budget=BUDGET):
+        """Stand in the room whose scene index is `scene` the way the game
+        arrives there, and spawn what its table holds. The actors made, or
+        None if there is no such table."""
+        write, read = self.mem.write, self.mem.read
+        write(INTERIOR, 1, scene - 1)
+        write(INSIDE, 1, 1)
+        write(TRANSITION, 1, 2)
+        enter = read(ENTER_INTERIOR + area_number * 4, 4)
+        if self._code(enter):
+            try:
+                self.cpu.call(enter, (), budget=budget, sp=STACK)
+            except EmuError:
+                pass
+        controller = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
+        first = len(self.actors)
+        self.running, self.running_scene = None, scene
+        try:
+            self.cpu.call(spawner, (controller, scene), budget=budget, sp=STACK)
+        except EmuError:
+            return None
+        finally:
+            self.running_scene = None
+        made = self.actors[first:]
+        if not made or not all(self._code(read(a.address + CALLBACK, 4))
+                               for a in made):
+            return None
+        return made
+
+    def run_rooms(self, spawner, area_number, frames=FRAMES):
+        """Every room the area's scene spawner has a table for, each run
+        from the state the area opened in, into `rooms`."""
+        base = self.snapshot()
+        rooms = {}
+        for scene in range(1, MAX_SCENES):
+            self.restore(base)
+            if self.enter_scene(spawner, area_number, scene) is None:
+                continue
+            self.run(frames, only=lambda a, s=scene: a.scene == s,
+                     workers=False)
+            self.harvest()
+            rooms[scene] = [a for a in self.actors if a.scene == scene]
+        self.restore(base)
+        self.rooms = rooms
 
     # --- reading back ---------------------------------------------------
 
@@ -397,11 +537,13 @@ class World:
         root_t = np.array([s32(read(a + POSITION + k * 4, 4)) / 65536.0
                            for k in range(3)])
         out, poses = [], []
+        blank = 0
         for n in range(min(count, MAX_PARTS)):
             part = read(a + PARTS + n * 4, 4)
             if not part:
                 poses.append((root_m, root_t))
                 continue
+            blank += not read(part + 0x40, 4)
             raw = struct.unpack("<9h", mem.bytes(part + 0x18, 18))
             if any(raw):
                 matrix = np.array(raw, dtype=np.float64).reshape(3, 3) / 4096.0
@@ -418,6 +560,7 @@ class World:
             if source is not None:
                 out.append(Part(source, matrix, position, read(part + 0x3E, 2),
                             posed=any(raw)))
+        actor.blank = max(actor.blank, blank)
         return out
 
     def _sprite(self, actor, banks):
@@ -494,10 +637,10 @@ class Posed:
         return []
 
 
-def subtree(world, actor):
+def subtree(world, actor, actors=None):
     """The actor and everything it spawned, and they spawned."""
     children = {}
-    for other in world.actors:
+    for other in (world.actors if actors is None else actors):
         if other.spawner is not None:
             children.setdefault(other.spawner, []).append(other)
     out, queue = [], [actor]
@@ -509,12 +652,15 @@ def subtree(world, actor):
 
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
-             records, units, frames=FRAMES):
-    """[Actor, ...] for an area: its placed actors and all they spawned."""
+             records, units, frames=FRAMES, spawner=None):
+    """The area as it opens - its placed actors and all they spawned - and,
+    given the area's scene spawner, every room it has."""
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number)
     world.start_workers()
     for record in records:
         world.place(record, units)
     world.run(frames)
     world.harvest()
+    if spawner:
+        world.run_rooms(spawner, area_number, frames)
     return world

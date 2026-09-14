@@ -723,3 +723,85 @@ def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
     with open(path, "w", encoding="utf-8") as out:
         json.dump(gltf, out, indent=2)
     return True
+
+
+def write_scene_glb(path, parts, vram_bytes, name="level"):
+    """One .glb holding many objects, each its own mesh and node, under a
+    node per group - so Blender imports a chest as a chest and a pig as a
+    pig rather than one welded level.
+
+    `parts` is [(name, group, model_data)], each model standing where it
+    goes. A palette two parts share is baked once."""
+    docs = []
+    for part_name, group, data in parts:
+        try:
+            doc, blob = build(data, vram_bytes, name=part_name)
+        except ValueError:
+            continue
+        docs.append((part_name, group, doc, blob))
+    if not docs:
+        raise ValueError("nothing to export")
+    out = {"asset": {"version": "2.0", "generator": "Tomba310"}, "scene": 0,
+           "meshes": [], "materials": [], "textures": [], "images": [],
+           "samplers": docs[0][2]["samplers"], "bufferViews": [],
+           "accessors": [], "nodes": []}
+    blob = bytearray()
+    images, textures, materials, groups = {}, {}, {}, {}
+    for part_name, group, doc, part_blob in docs:
+        blob += b"\x00" * (-len(blob) % 4)
+        offset = len(blob)
+        blob += part_blob
+        first_view = len(out["bufferViews"])
+        for view in doc["bufferViews"]:
+            view = dict(view)
+            view["buffer"] = 0
+            view["byteOffset"] = view.get("byteOffset", 0) + offset
+            out["bufferViews"].append(view)
+        first_accessor = len(out["accessors"])
+        for accessor in doc["accessors"]:
+            accessor = dict(accessor)
+            accessor["bufferView"] += first_view
+            out["accessors"].append(accessor)
+        image_of = []
+        for image in doc["images"]:
+            if image["uri"] not in images:
+                images[image["uri"]] = len(out["images"])
+                out["images"].append(image)
+            image_of.append(images[image["uri"]])
+        texture_of = []
+        for texture in doc["textures"]:
+            source = image_of[texture["source"]]
+            if source not in textures:
+                textures[source] = len(out["textures"])
+                out["textures"].append({"sampler": 0, "source": source})
+            texture_of.append(textures[source])
+        material_of = []
+        for material in doc["materials"]:
+            material = json.loads(json.dumps(material))
+            colour = material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+            if colour is not None:
+                colour["index"] = texture_of[colour["index"]]
+            key = json.dumps(material, sort_keys=True)
+            if key not in materials:
+                materials[key] = len(out["materials"])
+                out["materials"].append(material)
+            material_of.append(materials[key])
+        primitives = []
+        for primitive in doc["meshes"][0]["primitives"]:
+            primitive = dict(primitive)
+            primitive["attributes"] = {k: v + first_accessor for k, v
+                                       in primitive["attributes"].items()}
+            primitive["indices"] += first_accessor
+            primitive["material"] = material_of[primitive["material"]]
+            primitives.append(primitive)
+        out["meshes"].append({"name": part_name, "primitives": primitives})
+        groups.setdefault(group, []).append(len(out["nodes"]))
+        out["nodes"].append({"name": part_name, "mesh": len(out["meshes"]) - 1})
+    roots = []
+    for group, children in groups.items():
+        roots.append(len(out["nodes"]))
+        out["nodes"].append({"name": group, "children": children})
+    out["scenes"] = [{"name": name, "nodes": roots}]
+    out["buffers"] = [{"byteLength": len(blob)}]
+    _write_glb(path, out, blob)
+    return len(docs), len(groups)
