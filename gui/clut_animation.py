@@ -23,7 +23,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QStyle
 
-from functions import clut_anim, uv_anim
+from functions import clut_anim, texture_window, uv_anim
 
 # How many of the game's animation ticks to play per second. The routine
 # that walks the tables counts calls, and how often it is called is in
@@ -66,6 +66,10 @@ class ClutAnimationMixin:
         self.anim_tick = 0
         self.anim_shown = {}        # VRAM address -> frame last put on screen
         self.uv_shown = {}          # VRAM address -> UV frame last put on screen
+        # Texture windows (functions/texture_window.py): the rules this
+        # model's area draws by, and each window's state now, by mode.
+        self.window_rules = ()
+        self.texture_windows = {}
         # Whether animation should start on its own when a model that
         # has some is opened. Turned off by unticking the toolbar
         # button, so a deliberately still view stays still from file to
@@ -128,7 +132,14 @@ class ClutAnimationMixin:
             print(f"Could not look for UV animations: {e}")
             self.uv_animations = {}
 
-        total = len(self.clut_animations) + len(self.uv_animations)
+        flags = set((model or {}).get("face_flags") or ())
+        self.window_rules = tuple(
+            rule for rule in texture_window.rules_for(overlay_path)
+            if any(value & rule.flag for value in flags))
+        self._apply_windows(0)
+
+        total = (len(self.clut_animations) + len(self.uv_animations)
+                 + len(self.window_rules))
         if self.animate_action is not None:
             self.animate_action.setEnabled(bool(total))
         if total and self.animate_wanted:
@@ -144,13 +155,16 @@ class ClutAnimationMixin:
         self.stop_animation()
         self.clut_animations = {}
         self.uv_animations = {}
+        self.window_rules = ()
+        self.texture_windows = {}
         self.anim_tick = 0
         if self.animate_action is not None:
             self.animate_action.setEnabled(False)
 
     def toggle_animation(self, checked):
         self.animate_wanted = checked
-        if checked and (self.clut_animations or self.uv_animations):
+        if checked and (self.clut_animations or self.uv_animations
+                        or self.window_rules):
             self.start_animation()
         else:
             self.stop_animation()
@@ -169,6 +183,8 @@ class ClutAnimationMixin:
         if self.uv_shown:
             shown, self.uv_shown = self.uv_shown, {}
             self.apply_uv_offsets({address: (0.0, 0.0) for address in shown})
+        if self.window_rules:
+            self._apply_windows(0)
 
     def _advance_animation(self):
         self.anim_tick += 1
@@ -200,6 +216,15 @@ class ClutAnimationMixin:
             moved[address] = animation.atlas_offset_at(frame)
         if moved:
             self.apply_uv_offsets(moved)
+        if self.window_rules:
+            self._apply_windows(self.anim_tick)
+
+    def _apply_windows(self, frame):
+        """Every texture window as it stands at game frame `frame` - one
+        animation tick is one frame."""
+        self.texture_windows = {rule.mode: texture_window.window_at(rule, frame)
+                                for rule in self.window_rules}
+        self.update()
 
     # --- what each viewer supplies -----------------------------------
 

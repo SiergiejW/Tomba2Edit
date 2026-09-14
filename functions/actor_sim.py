@@ -514,8 +514,11 @@ class World:
         self.rooms = rooms
 
     def capture_lines(self, actors=None, budget=BUDGET):
-        """Draw each actor once with the GTE naming its vertices and keep the
-        line primitives that come out, on the actor. Leaves RAM as it was."""
+        """Run each actor's draw routine (+0x18) and then its update handler
+        once with the GTE naming its vertices, and keep the line primitives
+        that come out, on the actor - A00's ropes come from the first, A06's
+        (f_UpdateLaughingCryingDoorTriggerActor) from the second. Leaves RAM
+        as it was."""
         mem, cpu = self.mem, self.cpu
         ram, scratch, heap, count = bytes(mem.ram), bytes(mem.scratch), self.heap, len(self.actors)
         found = {}
@@ -525,20 +528,25 @@ class World:
                                          0, 0, 0x1000, 0, 0, 0))
             mem.write(ORDERING_TABLE, 4, ot)
             for actor in list(self.actors if actors is None else actors):
-                draw = mem.read(actor.address + DRAW, 4)
-                if not self._code(draw):
-                    continue
-                mem.load(ot, bytes(OT_SLOTS * 4))
-                mem.write(PRIMITIVE_CURSOR, 4, primitives)
-                cpu.gte.capture = {}
-                self.running = actor.address
-                try:
-                    cpu.call(draw, (actor.address, 0, 0), budget=budget, sp=STACK)
-                except EmuError:
-                    pass
-                finally:
-                    self.running = None
-                lines = self._read_lines(ot, cpu.gte.capture)
+                lines = []
+                for offset in (DRAW, CALLBACK):
+                    routine = mem.read(actor.address + offset, 4)
+                    if not self._code(routine) or (offset == CALLBACK and actor.dead):
+                        continue
+                    mem.load(ot, bytes(OT_SLOTS * 4))
+                    mem.write(PRIMITIVE_CURSOR, 4, primitives)
+                    if offset == CALLBACK:
+                        mem.write(actor.address + ACTIVE, 1, 0)
+                        mem.write(PART_BUDGET, 2, PART_BUDGET_HELD)
+                    cpu.gte.capture = {}
+                    self.running = actor.address
+                    try:
+                        cpu.call(routine, (actor.address, 0, 0), budget=budget, sp=STACK)
+                    except EmuError:
+                        pass
+                    finally:
+                        self.running = None
+                    lines.extend(self._read_lines(ot, cpu.gte.capture))
                 if lines:
                     found[id(actor)] = (actor, lines)
         except EmuError:

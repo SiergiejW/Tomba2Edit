@@ -93,6 +93,9 @@ def exportMDAT(drwa_addr, datpath):
         'faces': [],
         'texture_coords': [],
         'texture_info': [],  # (page, clut_address, is_transparent, blend_mode)
+        # Per face: the top byte of the packet's second colour word, which
+        # an area's cell drawer reads as flags - functions/texture_window.py.
+        'face_flags': [],
         'tri_count': 0,
         'quad_count': 0,
         # What the drawmap says, kept so a viewer can show the geometry
@@ -234,6 +237,8 @@ def exportMDAT(drwa_addr, datpath):
                     model_data['faces'].append([base_idx + 2, base_idx + 1, base_idx])
                     model_data['texture_coords'].extend([uv1, uv2, uv3])
                     model_data['texture_info'].append(tex_info)
+                    model_data['face_flags'].append(char(rom, ind, 4))
+                    model_data['polygons'][-1]['flags'] = char(rom, ind, 4)
                     model_data['tri_count'] += 1
 
                     face += 3
@@ -289,6 +294,8 @@ def exportMDAT(drwa_addr, datpath):
                     model_data['texture_coords'].extend([uv1, uv2, uv3, uv4])
                     model_data['texture_info'].append(tex_info)
                     model_data['texture_info'].append(tex_info)
+                    model_data['face_flags'].extend([char(rom, ind, 4)] * 2)
+                    model_data['polygons'][-1]['flags'] = char(rom, ind, 4)
                     model_data['quad_count'] += 1
 
                     face += 4

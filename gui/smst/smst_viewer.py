@@ -15,7 +15,7 @@ import math
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QImage, QMatrix4x4, QVector2D
+from PyQt6.QtGui import QAction, QImage, QMatrix4x4, QVector2D, QVector4D
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLShader,
@@ -33,7 +33,7 @@ from functions.camera_controls import (
     CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
 )
-from functions import psx_vram
+from functions import psx_vram, texture_window
 from functions.format_detect import FormatError
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
@@ -128,6 +128,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.vertex_buffer = QOpenGLBuffer()
         self.color_buffer = QOpenGLBuffer()
         self.texcoord_buffer = QOpenGLBuffer()
+        self.window_buffer = QOpenGLBuffer()
         self.index_buffer = QOpenGLBuffer()
         self.shader_program = QOpenGLShaderProgram()
 
@@ -533,8 +534,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         if self._arrays is None:
             self.prepare_buffers()
             return
-        positions, colors, tex_coords, indices = self._arrays
-        self._arrays = (self._positions().flatten(), colors, tex_coords, indices)
+        positions, colors, tex_coords, indices, windows = self._arrays
+        self._arrays = (self._positions().flatten(), colors, tex_coords, indices,
+                        windows)
         self._positions_dirty = True
         # The vertices just moved, so the picking arrays and the outline
         # built off them are stale.
@@ -623,6 +625,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             np.array(self.model_data["vertex_colors"], dtype=np.float32).flatten(),
             np.array(self.model_data["texture_coords"], dtype=np.float32).flatten(),
             np.array(indices, dtype=np.uint32),
+            texture_window.vertex_modes(self.model_data),
         )
         self._geometry_dirty = True
 
@@ -689,7 +692,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.clut_map = {address: self._upload_clut(array)
                          for address, array in self._clut_arrays.items()}
 
-        positions, colors, tex_coords, indices = self._arrays
+        positions, colors, tex_coords, indices, windows = self._arrays
         if not self.index_buffer.isCreated():
             self.index_buffer.create()
         self.index_buffer.bind()
@@ -699,7 +702,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         for buffer, array, size, location in (
                 (self.vertex_buffer, positions, 3, 0),
                 (self.color_buffer, colors, 3, 1),
-                (self.texcoord_buffer, tex_coords, 2, 2)):
+                (self.texcoord_buffer, tex_coords, 2, 2),
+                (self.window_buffer, windows, 1, 3)):
             if not buffer.isCreated():
                 buffer.create()
             buffer.bind()
@@ -1096,13 +1100,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 layout(location = 0) in vec3 position;
                 layout(location = 1) in vec3 color;
                 layout(location = 2) in vec2 texCoord;
+                layout(location = 3) in float window;
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
+                flat out int fragWindow;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
                     fragColor = color;
                     fragTexCoord = texCoord;
+                    fragWindow = int(window + 0.5);
                 }
                 """):
             print("Vertex shader compilation failed:", self.shader_program.log())
@@ -1131,6 +1138,24 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 // Whole frames along the texture page, for the surfaces
                 // that animate by UV - see functions/uv_anim.py.
                 uniform vec2 uvOffset;
+                // Faces drawn through a texture window, and each window's
+                // (cell u, cell v, scroll u, scroll v) in texels - see
+                // functions/texture_window.py.
+                flat in int fragWindow;
+                uniform bool windowed;
+                uniform vec4 windowFast;
+                uniform vec4 windowSlow;
+
+                vec2 windowUv(vec2 uv) {
+                    if (!windowed || fragWindow == 0)
+                        return uv;
+                    vec4 w = fragWindow == 1 ? windowFast : windowSlow;
+                    vec2 size = vec2(4096.0, 512.0);
+                    vec2 texel = floor(uv * size);
+                    vec2 page = floor(texel / 256.0) * 256.0;
+                    vec2 local = w.xy + mod(texel - page + w.zw, 64.0);
+                    return (page + local + 0.5) / size;
+                }
 
                 void main() {
                     if (useTextures) {
@@ -1140,7 +1165,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         // read the MIDDLE of that palette entry. Sampling
                         // at index / 16.0 is the entry's own edge, and a
                         // whisker short of it is the entry before.
-                        float index = floor(texture(indexTexture, fragTexCoord + uvOffset).r * 15.0 + 0.5);
+                        float index = floor(texture(indexTexture, windowUv(fragTexCoord + uvOffset)).r * 15.0 + 0.5);
                         vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
@@ -1167,6 +1192,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.color_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.window_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
 
     def resizeGL(self, w, h):
@@ -1245,6 +1271,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture or 0)
         self.shader_program.setUniformValue("indexTexture", 0)
         self.shader_program.setUniformValue("clutTexture", 1)
+        windows = self.texture_windows
+        self.shader_program.setUniformValue("windowed", bool(windows))
+        self.shader_program.setUniformValue(
+            "windowFast", QVector4D(*windows.get(1, (0.0, 0.0, 0.0, 0.0))))
+        self.shader_program.setUniformValue(
+            "windowSlow", QVector4D(*windows.get(2, (0.0, 0.0, 0.0, 0.0))))
 
         self.vao.bind()
         self.shader_program.setUniformValue("texelClass", 0)

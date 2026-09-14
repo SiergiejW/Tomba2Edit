@@ -9,10 +9,10 @@ from PyQt6.QtOpenGL import (
     QOpenGLBuffer
 )
 from PyQt6.QtGui import (
-    QMatrix4x4, QImage, QIcon, QAction, QVector2D)
+    QMatrix4x4, QImage, QIcon, QAction, QVector2D, QVector4D)
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-from functions import gltf_export
+from functions import gltf_export, texture_window
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from gui import collision_overlay, export_dialog, polygon_pick, theme
@@ -56,6 +56,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.index_buffer = QOpenGLBuffer()
         self.shader_program = QOpenGLShaderProgram()
         self.texcoord_buffer = QOpenGLBuffer()
+        self.window_buffer = QOpenGLBuffer()
         self.vram_texture = None  # OpenGL texture ID
         # The palettes are read straight out of this at export time, and
         # a model can be exported before the view has ever been painted.
@@ -676,6 +677,14 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             GL.glEnableVertexAttribArray(2)
             GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
 
+            # Which texture window each vertex's face is drawn through.
+            windows = texture_window.vertex_modes(self.model_data)
+            self.window_buffer.create()
+            self.window_buffer.bind()
+            self.window_buffer.allocate(windows.tobytes(), windows.nbytes)
+            GL.glEnableVertexAttribArray(3)
+            GL.glVertexAttribPointer(3, 1, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
             # bind index buffer while VAO is bound
             self.index_buffer.bind()
 
@@ -701,14 +710,17 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 #version 330 core
                 layout(location = 0) in vec3 position;
                 layout(location = 1) in vec3 color;
-                layout(location = 2) in vec2 texCoord;  // new
+                layout(location = 2) in vec2 texCoord;
+                layout(location = 3) in float window;
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
-                out vec2 fragTexCoord;  // new
+                out vec2 fragTexCoord;
+                flat out int fragWindow;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
                     fragColor = color;
-                    fragTexCoord = texCoord;  // new
+                    fragTexCoord = texCoord;
+                    fragWindow = int(window + 0.5);
                 }
                 """
         ):
@@ -730,6 +742,23 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 // that animate by UV - see functions/uv_anim.py. Zero
                 // for everything else.
                 uniform vec2 uvOffset;
+                // Faces drawn through a texture window - see
+                // functions/texture_window.py and SMSTViewer's shader.
+                flat in int fragWindow;
+                uniform bool windowed;
+                uniform vec4 windowFast;
+                uniform vec4 windowSlow;
+
+                vec2 windowUv(vec2 uv) {
+                    if (!windowed || fragWindow == 0)
+                        return uv;
+                    vec4 w = fragWindow == 1 ? windowFast : windowSlow;
+                    vec2 size = vec2(4096.0, 512.0);
+                    vec2 texel = floor(uv * size);
+                    vec2 page = floor(texel / 256.0) * 256.0;
+                    vec2 local = w.xy + mod(texel - page + w.zw, 64.0);
+                    return (page + local + 0.5) / size;
+                }
 
                 void main() {
                     if (useTextures) {
@@ -737,7 +766,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         // encodes, then read the middle of that palette
                         // entry rather than its edge - same reasoning as
                         // functions.psx_vram.atlas_uv, one level down.
-                        float index = floor(texture(indexTexture, fragTexCoord + uvOffset).r * 15.0 + 0.5);
+                        float index = floor(texture(indexTexture, windowUv(fragTexCoord + uvOffset)).r * 15.0 + 0.5);
                         vec4 clutColor = texture(clutTexture, (index + 0.5) / 16.0);
                         if (clutColor.a < 0.01)
                             discard;
@@ -760,6 +789,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.color_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.window_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
     def resizeGL(self, w, h):
         """Handle window resize"""
@@ -858,6 +888,12 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         GL.glActiveTexture(GL.GL_TEXTURE1)
         self.shader_program.setUniformValue("clutTexture", 1)
+        windows = self.texture_windows
+        self.shader_program.setUniformValue("windowed", bool(windows))
+        self.shader_program.setUniformValue(
+            "windowFast", QVector4D(*windows.get(1, (0.0, 0.0, 0.0, 0.0))))
+        self.shader_program.setUniformValue(
+            "windowSlow", QVector4D(*windows.get(2, (0.0, 0.0, 0.0, 0.0))))
 
 
 

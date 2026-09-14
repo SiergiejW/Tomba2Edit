@@ -197,6 +197,20 @@ class LevelViewer(SMSTViewer):
         self.collision_action.toggled.connect(self._toggle_collision)
         self.toolbar.insertAction(self.sprite_action, self.collision_action)
 
+        self.show_lines = True
+        self.lines_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
+            "Lines", self)
+        self.lines_action.setCheckable(True)
+        self.lines_action.setChecked(True)
+        self.lines_action.setToolTip(
+            "Draw the lines the actors' own code draws - ropes, chains, "
+            "fishing lines.\n\nNo model holds them: they are read back out "
+            "of the primitives each actor's draw routine puts out when it is "
+            "run - see functions/actor_sim.py.")
+        self.lines_action.toggled.connect(self._toggle_lines)
+        self.toolbar.insertAction(self.collision_action, self.lines_action)
+
         # Line overlays, both built on the CPU and uploaded from paintGL
         # for the same reason everything else here is: an area can be
         # picked before Qt has given this widget a context.
@@ -214,6 +228,11 @@ class LevelViewer(SMSTViewer):
         # What the panel's Show box is on: None the area, a scene number one
         # room, "all" both. Collision and the background follow it.
         self.view = None
+        self.code_line_vao = QOpenGLVertexArrayObject()
+        self.code_line_vbo = QOpenGLBuffer()
+        self.code_line_cbo = QOpenGLBuffer()
+        self.code_line_count = 0
+        self._code_line_arrays = None
 
         # The background: its own tiny program, since it is an ordinary
         # RGB picture rather than the index-and-palette pair everything
@@ -272,6 +291,7 @@ class LevelViewer(SMSTViewer):
         self.selected_part = None
         self.prepare_buffers()
         self.rebuild_markers()
+        self.rebuild_code_lines()
         self._rebuild_collision()
         self._build_selection()
         if frame:
@@ -315,11 +335,13 @@ class LevelViewer(SMSTViewer):
         super().set_hidden_groups(hidden)
         self._sprite_dirty = True
         self.rebuild_markers()
+        self.rebuild_code_lines()
 
     def set_group_hidden(self, index, hidden):
         super().set_group_hidden(index, hidden)
         self._sprite_dirty = True
         self.rebuild_markers()
+        self.rebuild_code_lines()
 
     def _toggle_collision(self, checked):
         self.show_collision = checked
@@ -337,7 +359,37 @@ class LevelViewer(SMSTViewer):
         """Follow the panel's Show box - see self.view."""
         self.view = view
         self._rebuild_collision()
+        self.rebuild_code_lines()
         self.update()
+
+    def _toggle_lines(self, checked):
+        self.show_lines = checked
+        self.update()
+
+    def _visible_lines(self):
+        """(positions, colours) of the code-drawn lines that show, world
+        units: an owned line with its row, a loose one with its room."""
+        positions, colors = [], []
+        for line in getattr(self.scene, "lines", None) or ():
+            if line.owner is not None:
+                if line.owner in self.hidden_groups:
+                    continue
+            elif not (self.view == "all" or line.scene == self.view):
+                continue
+            positions.extend((line.a, line.b))
+            colors.extend((line.color_a, line.color_b))
+        return positions, colors
+
+    def rebuild_code_lines(self):
+        positions, colors = self._visible_lines()
+        self._code_line_arrays = (
+            np.array(positions, dtype=np.float32).reshape(-1, 3) / UNIT_SCALE,
+            np.array(colors, dtype=np.float32).reshape(-1, 3))
+
+    def export_lines(self):
+        """[(name, group, vertices, colours)] for the export, world units."""
+        positions, colors = self._visible_lines()
+        return [("lines", "Lines", positions, colors)] if positions else []
 
     def _room_bounds(self):
         """{scene: (low, high)} round each room's instances, world units."""
@@ -749,7 +801,8 @@ class LevelViewer(SMSTViewer):
         try:
             written, groups = gltf_export.write_scene_glb(
                 path, self.export_parts(), self.vram_raw_bytes,
-                name=self.export_name or "level", unlit=unlit)
+                name=self.export_name or "level", unlit=unlit,
+                lines=self.export_lines())
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
@@ -1042,6 +1095,11 @@ class LevelViewer(SMSTViewer):
                 self._selection_arrays, self.selection_vao, self.selection_vbo,
                 self.selection_cbo)
             self._selection_arrays = None
+        if self._code_line_arrays is not None:
+            self.code_line_count = self._upload_lines(
+                self._code_line_arrays, self.code_line_vao, self.code_line_vbo,
+                self.code_line_cbo)
+            self._code_line_arrays = None
 
     def _sync_background(self):
         if not self._background_dirty:
@@ -1128,7 +1186,8 @@ class LevelViewer(SMSTViewer):
         super().paintGL()
         self.draw_sprites()
         collision = self.show_collision and self.collision.has_lines()
-        if not (self.marker_count or self.selection_count or collision):
+        lines = self.show_lines and self.code_line_count
+        if not (self.marker_count or self.selection_count or collision or lines):
             return
         if not self.shader_program.bind():
             return
@@ -1138,6 +1197,11 @@ class LevelViewer(SMSTViewer):
         self.shader_program.setUniformValue("alpha", 1.0)
         if collision:
             self.collision.draw(self.shader_program)
+        if lines:
+            GL.glLineWidth(MARKER_WIDTH)
+            self.code_line_vao.bind()
+            GL.glDrawArrays(GL.GL_LINES, 0, self.code_line_count)
+            self.code_line_vao.release()
         if self.show_markers and self.marker_count:
             GL.glLineWidth(MARKER_WIDTH)
             self.marker_vao.bind()

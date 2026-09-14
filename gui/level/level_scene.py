@@ -107,6 +107,22 @@ INTERIOR_FLAG = 0x80
 # collision planes may reach, in world units.
 ROOM_REACH = 400.0
 
+# A purified area's chunk runs the cursed area's overlay, 22 chunks before,
+# with that area's bit set in src_PurifiedAreas.
+PURIFIED_CHUNKS = range(0x1B, 0x23)
+
+
+@dataclass
+class SceneLine:
+    """A line an actor's draw routine puts out (actor_sim.capture_lines),
+    in view axes."""
+    owner: int                      # instance index, or None
+    scene: int                      # room scene, None for the area
+    a: tuple
+    b: tuple
+    color_a: tuple
+    color_b: tuple
+
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
 
@@ -662,7 +678,7 @@ class LevelScene:
         # heading off the plane it stands on.
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
         self.model_names = placement_module.load_model_names()
-        if overlay_path and exe_path and self.placements:
+        if overlay_path and exe_path:
             self.world = self._simulate(idx_path)
 
         self._build_instances()
@@ -675,28 +691,33 @@ class LevelScene:
         number = handler_models.overlay_number(self.overlay_path)
         if number is None or number < 0:
             return None
+        spawner = self._scene_spawner()
+        if not self.placements and not spawner:
+            return None
         try:
             return actor_sim.simulate(
                 self.exe_path, self.overlay_path, self.dat_path, idx_path,
                 self.chunk_index, number, self.placements,
                 actor_assembly.degrees_to_units, frames=SIM_FRAMES,
-                spawner=self._scene_spawner())
+                spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS)
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
 
     def _scene_spawner(self):
-        """The overlay's scene spawner, or None."""
+        """The overlay's scene spawner, or None: by its decomp name, else by
+        what its scene controller does (actor_sim.find_scene_spawner)."""
         tag = os.path.basename(self.overlay_path or "")[:3].upper()
         try:
             with open(SYMBOLS) as f:
                 names = json.load(f)
         except (OSError, ValueError):
-            return None
+            names = {}
         for name, (where, address) in names.items():
             if where == tag and SPAWNER.match(name):
                 return address
-        return None
+        return (actor_sim.find_scene_spawner(self.overlay_data)
+                if self.overlay_data else None)
 
     def handler_name(self, handler):
         """What the decomp calls a handler, or its address."""
@@ -982,6 +1003,18 @@ class LevelScene:
 
     def _build_instances(self):
         instances = []
+        self.lines, drew = [], set()
+
+        def take(actors, owner, scene):
+            """The lines these actors drew, under `owner`'s row."""
+            for actor in actors:
+                if id(actor) in drew or not actor.lines:
+                    continue
+                drew.add(id(actor))
+                for a, b, color_a, color_b, _blended in actor.lines:
+                    self.lines.append(SceneLine(owner, scene, view_point(a),
+                                                view_point(b), color_a, color_b))
+
         for number, (where, _room) in enumerate(self.rooms):
             instances.append(Instance(
                 index=len(instances), role="room",
@@ -1013,7 +1046,10 @@ class LevelScene:
             sources, offsets = (), ()
             assembly = None
             actor = by_record.get(id(record))
-            if actor is not None and not art:
+            # The sprite tables go by handler, and one handler can give a
+            # slot a model instead (f_UpdateDonglinInteriorQuestObjectActor,
+            # slot 10) - what the code attached decides.
+            if actor is not None and (not art or actor.parts):
                 tree = actor_sim.subtree(world, actor)
                 near = [a for a in tree if a is actor or np.linalg.norm(
                     a.position - actor.position) <= CHILD_REACH]
@@ -1026,6 +1062,8 @@ class LevelScene:
                     self.handler_name(record.handler))
                 if assembly is not None and not assembly.sources:
                     assembly = None
+                if assembly is not None:
+                    art = None
             if assembly is None and not art:
                 assembly = actor_assembly.assemble(self.overlay_data, record)
                 if assembly is not None and not self._loads(assembly.sources):
@@ -1071,6 +1109,8 @@ class LevelScene:
                               and world_placed(group, room_box))))
             if assembly is not None:
                 assembled.append(instances[-1])
+            if actor is not None:
+                take(actor_sim.subtree(world, actor), len(instances) - 1, None)
 
         for record in self.pickups:
             sources = self.bindings.get(pickup_key(record)) or ()
@@ -1151,6 +1191,7 @@ class LevelScene:
                 assembly=posed if posed.sources else None,
                 name=label, note=posed.note))
             used.update(posed.sources)
+            take(actors, index, None)
             if not posed.sources:
                 for rider in posed.riders:
                     rx, ry, rz = view_point(rider.position)
@@ -1190,6 +1231,7 @@ class LevelScene:
                         sources=posed.sources, x=x, y=y, z=z, assembly=posed,
                         name=label, note=note, scene=scene))
                     used.update(posed.sources)
+                take(tree, follow, scene)
                 for number, rider in enumerate(posed.riders):
                     rx, ry, rz = view_point(rider.position)
                     instances.append(Instance(
@@ -1197,6 +1239,12 @@ class LevelScene:
                         label=f"room {scene}: {rider.label}", art=rider.art,
                         x=rx, y=ry, z=rz, note=note, scene=scene,
                         follow=(follow, number) if follow is not None else None))
+
+        # Lines whose actor got no row of its own still show, by room.
+        if world is not None:
+            take(world.actors, None, None)
+            for scene, actors in world.rooms.items():
+                take(actors, None, scene)
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
@@ -1249,7 +1297,7 @@ class LevelScene:
         `groups` holding instances instead of a model's parts."""
         scene = {
             "vertices": [], "vertex_colors": [], "faces": [],
-            "texture_coords": [], "texture_info": [],
+            "texture_coords": [], "texture_info": [], "face_flags": [],
             "tri_count": 0, "quad_count": 0, "groups": self.instances,
         }
         for instance in self.instances:
@@ -1302,9 +1350,11 @@ class LevelScene:
         scene["vertices"].extend(model["vertices"][first:first + count])
         scene["vertex_colors"].extend(model["vertex_colors"][first:first + count])
         scene["texture_coords"].extend(model["texture_coords"][first:first + count])
+        flags = model.get("face_flags") or ()
         for f in range(face_first, face_first + face_count):
             scene["faces"].append([v + shift for v in model["faces"][f]])
             scene["texture_info"].append(model["texture_info"][f])
+            scene["face_flags"].append(flags[f] if f < len(flags) else 0)
 
     def positions(self, scene):
         """Every vertex with its instance's transform applied.
@@ -1361,39 +1411,43 @@ class LevelScene:
         """gui.collision_overlay.Lines for what `view` shows: None the area,
         a scene number that room, "all" everything.
 
-        A SCLD is the area's - rooms have none. A town keeps a dataset for
-        its streets and one or two for its rooms (functions/town_collision
-        .py): a dataset most of whose planes stand in no room is the area's,
-        and in the others each plane goes to the room whose box holds its
-        middle, `rooms` being {scene: (low, high)} round its instances in
-        world units. A room plane no box holds shows only under "all"."""
+        A SCLD is the area's - rooms have none. A town's first dataset is
+        its streets, the one the game takes while
+        src_InsideWeaponlessInterior is 0 (FUN_A02__801258a4,
+        FUN_A07__8012ee08); the rest are the rooms', all of them in one
+        space, looked up by where Tomba stands. So each of those planes goes
+        to the room whose box holds its middle, `rooms` being
+        {scene: (low, high)} round its instances in world units; a plane no
+        box holds shows only under "all"."""
         from gui import collision_overlay as overlay
         lines = overlay.Lines()
         if view in (None, "all"):
             overlay.add_scld(lines, self.planes)
-        for dataset in (town_collision.find(self.overlay_data)
-                        if self.overlay_data else ()):
-            owners = [self._room_of(plane, rooms or {}) for plane in dataset.planes]
-            streets = sum(o is None for o in owners) * 2 > len(owners)
-            for plane, owner in zip(dataset.planes, owners):
-                where = None if streets else ("loose" if owner is None else owner)
-                if view == "all" or where == view:
+        datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
+        for number, dataset in enumerate(datasets):
+            for plane in dataset.planes:
+                if number == 0:
+                    shown = view in (None, "all")
+                else:
+                    shown = view == "all" or view in self._rooms_of(plane, rooms or {})
+                if shown:
                     overlay.add_town(lines, (plane,), view_point)
         return lines
 
     @staticmethod
-    def _room_of(plane, rooms):
-        """The scene whose box holds a town plane's middle - the smallest
-        if several do - or None."""
+    def _rooms_of(plane, rooms):
+        """The scenes whose box holds a town plane's middle - the smallest
+        such box, and any the same size - or an empty set."""
         middle = np.mean([view_point(p) for p in plane.outline()], axis=0)
-        best, size = None, None
+        sizes = {}
         for scene, (low, high) in rooms.items():
             low, high = np.asarray(low), np.asarray(high)
             if np.all(middle >= low - ROOM_REACH) and np.all(middle <= high + ROOM_REACH):
-                volume = float(np.prod(high - low + 1.0))
-                if size is None or volume < size:
-                    best, size = scene, volume
-        return best
+                sizes[scene] = float(np.prod(high - low + 1.0))
+        if not sizes:
+            return set()
+        least = min(sizes.values())
+        return {scene for scene, size in sizes.items() if size <= least * 1.0001}
 
     def markers(self, hidden=()):
         """Line geometry for the objects with no model, as

@@ -257,12 +257,11 @@ def _voice(samples, loop, step, frames):
     return samples[index] * (1.0 - fraction) + samples[np.minimum(following, n - 1)] * fraction
 
 
-def render(data, at, snd, bank):
-    """(stereo float32 (n, 2), {(bank, vag) played}) for the SEQ at `at`."""
+def perform(data, at):
+    """([start s, end s, key, velocity, channel state], length s) for every
+    note the SEQ plays - an endless loop LOOP_PASSES times."""
     resolution, tempo = header(data, at)
     track = events(data, at)
-    programs = instruments(snd, bank)
-    where = {(b, v): (o, s) for b, v, o, s in sfx.samples(snd)}
     channels = [{"program": 0, "volume": 127, "expression": 127, "pan": 64,
                  "bend": 8192} for _ in range(16)]
     per_tick = tempo / 1e6 / resolution
@@ -313,7 +312,23 @@ def render(data, at, snd, bank):
             state["bend"] = a | b << 7
     for note in sounding.values():
         note[1] = time
+    return notes, time
 
+
+def played(data, at, snd, bank):
+    """{(bank, vag)} of the waveforms the SEQ sounds."""
+    programs = instruments(snd, bank)
+    notes, _length = perform(data, at)
+    return {(bank, tone.vag) for _s, _e, key, _v, state in notes
+            for tone in programs.get(state["program"], (0, 0, ()))[2]
+            if tone.low <= key <= tone.high}
+
+
+def render(data, at, snd, bank):
+    """(stereo float32 (n, 2), {(bank, vag) played}) for the SEQ at `at`."""
+    notes, _length = perform(data, at)
+    programs = instruments(snd, bank)
+    where = {(b, v): (o, s) for b, v, o, s in sfx.samples(snd)}
     cache, used, pieces, length = {}, set(), [], 0
     for start, end, key, velocity, state in notes:
         volume, pan, tones = programs.get(state["program"], (127, 64, ()))

@@ -206,6 +206,10 @@ class GTE:
             d[24] = (p[0][0] * p[1][1] + p[1][0] * p[2][1] + p[2][0] * p[0][1]
                      - p[0][0] * p[2][1] - p[1][0] * p[0][1]
                      - p[2][0] * p[1][1]) & MASK
+        elif cmd in (0x2D, 0x2E) and self.capture is not None:
+            # Named vertices carry no depth; any ordering-table slot will do.
+            d[7] = CAPTURE_DEPTH >> 2
+            d[24] = d[7] << 12
         elif cmd == 0x2D:                                 # AVSZ3
             mac0 = s16(c[29]) * ((d[17] & 0xFFFF) + (d[18] & 0xFFFF) + (d[19] & 0xFFFF))
             d[24] = mac0 & MASK

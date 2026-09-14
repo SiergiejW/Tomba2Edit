@@ -19,11 +19,11 @@ takes a few seconds, so it happens on a worker thread and is kept.
 """
 import os
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                             QPushButton, QVBoxLayout, QWidget)
+                             QPushButton, QSplitter, QVBoxLayout, QWidget)
 
-from functions import audio_export, bgm, voice, xa
+from functions import audio_export, bgm, seq, voice, xa
 from gui.audio_transport import AudioTransport, clock
 from gui.name_store import NameStore
 
@@ -62,6 +62,26 @@ class _Decode(QThread):
             self.done.emit(self.key, xa.wav_bytes(samples, rate, speakers),
                            f"{rate} Hz "
                            f"{'stereo' if speakers == 2 else 'mono'}")
+        except Exception as exc:
+            self.done.emit(self.key, None, str(exc))
+
+
+class _Render(QThread):
+    """One SEQ played on its VAB's instruments, off the GUI thread."""
+
+    done = pyqtSignal(str, object, str)
+
+    def __init__(self, key, data, at, snd, bank):
+        super().__init__()
+        self.key = key
+        self.args = (data, at, snd, bank)
+
+    def run(self):
+        try:
+            stereo, _used = seq.render(*self.args)
+            self.done.emit(self.key,
+                           xa.wav_bytes_raw(seq.pcm(stereo), seq.RATE, 2),
+                           f"{seq.RATE} Hz stereo, played on its sound bank")
         except Exception as exc:
             self.done.emit(self.key, None, str(exc))
 
@@ -108,6 +128,25 @@ class MusicPanel(QWidget):
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)
 
+        # The sequenced music: SEQs played on the sound banks' instruments -
+        # event jingles, loading, and what dialogue scripts start
+        # (functions/seq.py).
+        self._snd = None
+        self._seqs = {}             # key -> (data, offset, bank)
+        self._seq_cache = {}
+        self._render = None
+        self.seq_names = NameStore("sequence")
+        self.sfx_names = NameStore("sfx")
+        self.sequences = AudioTransport(
+            source="Dialogue Music",
+            columns=["Index", "Length", "Slot", "From", "Use", "Instruments"],
+            autoplay_default=False, always_loopable=True,
+            loop_beats_autoplay=True, select_plays=False,
+            autoplay_label="Auto-advance")
+        self.sequences.wanted.connect(self._seq_wanted)
+        self.sequences.renamed.connect(self._seq_renamed)
+        self.sequences.save_requested.connect(self._seq_save)
+
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every piece of music into a "
                                    "folder, using the names given here")
@@ -122,12 +161,28 @@ class MusicPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
-        top.addWidget(self.transport.save_wav)
-        top.addWidget(self.transport.save_mp3)
-        top.addWidget(self.export_all)
+
+        def column(title, transport, extra=()):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"<b>{title}</b>"))
+            row.addStretch(1)
+            for widget in (transport.save_wav, transport.save_mp3, *extra):
+                row.addWidget(widget)
+            holder = QWidget()
+            inner = QVBoxLayout(holder)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.addLayout(row)
+            inner.addWidget(transport, 1)
+            return holder
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(column("BGM", self.transport, (self.export_all,)))
+        split.addWidget(column("Dialogue Music", self.sequences))
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
-        layout.addWidget(self.transport, 1)
+        layout.addWidget(split, 1)
         layout.addWidget(self.status)
 
     # --- opening ------------------------------------------------------
@@ -144,6 +199,7 @@ class MusicPanel(QWidget):
         self.transport.stop()
         self._cache.clear()
         self._by_key = {}
+        self._load_sequences(path)
         entries = []
         try:
             exe = voice.extract_file(path, "MAIN.EXE")
@@ -344,7 +400,96 @@ class MusicPanel(QWidget):
             self._decode.wait(8000)
         self._decode = None
 
+    # --- sequenced music ----------------------------------------------
+
+    def _load_sequences(self, path):
+        """List every SEQ: TOMBA2.SND's ten, then the overlays' own."""
+        self.sequences.stop()
+        self._seqs, self._seq_cache = {}, {}
+        try:
+            snd = voice.extract_file(path, "TOMBA2.SND")
+        except Exception:
+            snd = None
+        self._snd = snd
+        if not snd:
+            self.sequences.set_entries([])
+            return
+        self.sfx_names.load(path)
+        instruments = self.sfx_names.names()
+        found = [(slot, "TOMBA2.SND", snd, at, seq.MUSIC_BANK,
+                  seq.RESIDENT_USES.get(slot, ""))
+                 for slot, at in seq.resident(snd)]
+        for name in seq.OVERLAY_SLOTS:
+            try:
+                data = voice.extract_file(path, f"{name}.BIN")
+            except Exception:
+                data = None
+            for slot, at in seq.overlay(name, data or b""):
+                found.append((slot, name, data, at, seq.bank_for(name),
+                              seq.AREA_USES.get(slot, "")))
+        entries = []
+        for number, (slot, origin, data, at, bank, use) in enumerate(found, 1):
+            key = f"{origin}:{at:X}"
+            self._seqs[key] = (data, at, bank)
+            try:
+                _notes, length = seq.perform(data, at)
+                used = seq.played(data, at, snd, bank)
+            except Exception:
+                length, used = 0.0, set()
+            named = sorted({instruments.get(f"{b}:{v}", "") for b, v in used} - {""})
+            entries.append((key, f"SEQ {number}", (
+                number, clock(int(length * 1000)), "" if slot is None else slot,
+                origin, use, ", ".join(named))))
+        self.seq_names.load(path)
+        self.sequences.set_entries(entries, self.seq_names.names())
+
+    def _seq_wanted(self, key):
+        if key not in self._seqs or self._snd is None:
+            return
+        cached = self._seq_cache.get(key)
+        if cached is not None:
+            self.sequences.play_bytes(cached)
+            return
+        self._stop_render()
+        self.status.setText("Playing the sequence on its instruments...")
+        data, at, bank = self._seqs[key]
+        self._render = _Render(key, data, at, self._snd, bank)
+        self._render.done.connect(self._seq_rendered)
+        self._render.start()
+
+    def _seq_rendered(self, key, wav, note):
+        if wav is None:
+            self.status.setText(f"Could not render that sequence: {note}")
+            return
+        self._seq_cache[key] = wav
+        self.status.setText(f"{note} - rendered once and kept.")
+        if self.sequences.current_key() == key:
+            self.sequences.play_bytes(wav)
+
+    def _seq_save(self, key, path):
+        if key not in self._seqs or self._snd is None:
+            return
+        if key not in self._seq_cache:
+            data, at, bank = self._seqs[key]
+            stereo, _used = seq.render(data, at, self._snd, bank)
+            self._seq_cache[key] = xa.wav_bytes_raw(seq.pcm(stereo), seq.RATE, 2)
+        self._write(path, self._seq_cache[key])
+
+    def _seq_renamed(self, key, name):
+        path = self.seq_names.rename(key, name)
+        self.status.setText(
+            (f"Named {key}." if name else f"Cleared the name for {key}.")
+            + (f" Saved to {os.path.basename(path)}." if path else
+               " No disc serial found, so the name was not saved."))
+
+    def _stop_render(self):
+        if self._render is not None and self._render.isRunning():
+            self._render.wait(10000)
+        self._render = None
+
     def closeEvent(self, event):
         self.transport.stop()
+        self.sequences.stop()
         self._stop_decode()
+        self._stop_render()
         super().closeEvent(event)
