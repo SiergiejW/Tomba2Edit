@@ -2681,9 +2681,17 @@ class MainWindow(QMainWindow):
             return
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
+        # A voice edit only counts here when it was staged against this
+        # exact track - one staged against a different disc names
+        # sector positions that mean nothing on this one, and writing
+        # them in would corrupt whatever happens to sit there instead.
+        voice_edits = (self.voice_edits
+                       if self.voice_edits.image == source
+                       and self.voice_edits.count() else None)
+        voice_mismatch = bool(self.voice_edits.count() and not voice_edits)
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.img_dirty):
+                and not self.img_dirty and not voice_edits):
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
@@ -2747,6 +2755,10 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
             try:
                 notes = bin_writer.patch_track(source, target, replacements)
+                if voice_edits:
+                    bin_writer.write_sectors(target, voice_edits.sectors)
+                    notes.append(
+                        f"VOICE.XA: {voice_edits.count()} sector(s) patched")
             except Exception as exc:
                 QMessageBox.critical(self, "Save failed", str(exc))
                 self.statusBar().clearMessage()
@@ -2762,12 +2774,24 @@ class MainWindow(QMainWindow):
             extra = (f"The track was written, but its audio track and cue "
                      f"sheet were not: {exc}")
         self.statusBar().clearMessage()
+        untouched = (" Every other sector is byte for byte as it was."
+                    if voice_edits else
+                    "\n\nEvery other sector is byte for byte as it was, so "
+                    "the music and voice are untouched.")
+        mismatch_note = (
+            "\n\nNote: this disc also has voice edits staged, but against "
+            "a different data track, so they were NOT included here - "
+            "open that disc and Save BIN again to write them."
+            if voice_mismatch else "")
         QMessageBox.information(
             self, "Saved",
             "Wrote:\n" + target + "\n\n" + "\n".join(notes) +
-            ("\n\n" + extra if extra else "") +
-            "\n\nEvery other sector is byte for byte as it was, so the "
-            "music and voice are untouched.")
+            ("\n\n" + extra if extra else "") + untouched + mismatch_note)
+        # Left staged rather than cleared, same as the Dialogues tab's
+        # own Export patched BIN... - writing to a second destination
+        # without redoing the import is a reasonable thing to want, and
+        # nothing tracks an "exported" state for a voice edit the way
+        # pending_txtd_edits does for a text one.
         for address, info in self.pending_txtd_edits.items():
             self._set_txtd_tree_item_state(address, "exported")
             # Every area's occurrence of this address, not just one -

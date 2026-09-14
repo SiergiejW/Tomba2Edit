@@ -174,22 +174,20 @@ def patch_track(source, destination, replacements, progress=None):
     return notes
 
 
-def patch_sectors(source, destination, sectors, progress=None):
-    """Copy a data track and drop already-built sectors into the copy at
-    their own absolute positions.
+def write_sectors(destination, sectors, progress=None):
+    """Drop already-built sectors into a file that already exists, at
+    their own absolute positions - no copying, so this can run against
+    a track patch_track() (or a caller doing the equivalent by hand)
+    already wrote its own file replacements into, letting a text edit
+    and a voice edit land in the same output rather than each needing
+    its own separate copy of the whole track.
 
-    Unlike patch_track, `sectors` is {absolute lba: raw 2352-byte
-    sector} rather than a filename - a VOICE.XA clip has no directory
-    record of its own to repoint, only the sector range its table
-    names. Each sector is expected to already carry its own correct
-    EDC (see functions/xa.encode_full_sector), so this only writes the
-    bytes; it does not touch cdsector itself."""
-    if os.path.abspath(source) == os.path.abspath(destination):
-        raise BinWriteError("Write the patched track to a new file, not "
-                            "over the one being read.")
-    if progress:
-        progress("copying the track", 0, 1)
-    shutil.copyfile(source, destination)
+    `sectors` is {absolute lba: raw 2352-byte sector} rather than a
+    filename - a VOICE.XA clip has no directory record of its own to
+    repoint, only the sector range its table names. Each sector is
+    expected to already carry its own correct EDC (see
+    functions/xa.encode_full_sector), so this only writes the bytes;
+    it does not touch cdsector itself."""
     with open(destination, "r+b") as out:
         for i, (lba, raw) in enumerate(sectors.items()):
             if progress:
@@ -199,6 +197,20 @@ def patch_sectors(source, destination, sectors, progress=None):
             out.seek(lba * SECTOR)
             out.write(raw)
     return len(sectors)
+
+
+def patch_sectors(source, destination, sectors, progress=None):
+    """Copy a data track and drop already-built sectors into the copy -
+    see write_sectors, which does the actual writing once the copy
+    exists. The standalone case: nothing else has patched `destination`
+    yet, so it starts as a plain copy of `source`."""
+    if os.path.abspath(source) == os.path.abspath(destination):
+        raise BinWriteError("Write the patched track to a new file, not "
+                            "over the one being read.")
+    if progress:
+        progress("copying the track", 0, 1)
+    shutil.copyfile(source, destination)
+    return write_sectors(destination, sectors, progress)
 
 
 def write_cue(cue_path, tracks):
