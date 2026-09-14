@@ -30,7 +30,9 @@ room coordinates rather than around their own origin - AREA_04's four
 water surfaces, which are the width of the harbour - and those are put
 in the scene as they are. `world_placed()` is what tells them apart.
 """
+import collections
 import colorsys
+import json
 import math
 import os
 import struct
@@ -43,6 +45,8 @@ from functions import format_detect
 from functions import labels
 from functions import handler_models
 from functions import actor_models
+from functions import actor_assembly
+from functions import actor_sim
 from functions import object_sprites
 from functions import pickup_art
 from functions import placement as placement_module
@@ -67,6 +71,25 @@ FIRST_AREA_CHUNK = 4
 # be - a model can carry a spare part or two its bones do not.
 MIN_CHARACTER_PARTS = 3
 SKELETON_SLACK = 3
+
+# How many frames each actor's code runs for before its parts are read:
+# enough for the update routines to pose them.
+SIM_FRAMES = 8
+
+# How far from the actor that spawned it a child may stand and still be
+# drawn as part of it; further than this it gets a row of its own - the
+# harbour's sea plants belong to a seesaw but stand across the water.
+CHILD_REACH = 2500.0
+
+# The sprite banks a simulated actor can draw from - see
+# gui/level/pickup_sprites.py.
+RESIDENT_SPRITES = 0
+AREA_SPRITES = 10
+
+# Names for handlers, recovered by functions/decomp_symbols.py, if the
+# decomp has been run through it.
+SYMBOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "decomp", "symbols_us.json")
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -122,10 +145,19 @@ class Instance:
     # world_placed(). Such a part is drawn as it is; a transform would
     # move it a second time.
     authored: bool = False
+    # Built by its own code out of several parts, and posed afresh from
+    # wherever the instance stands - see functions/actor_assembly.py.
+    assembly: object = None
+    # (parent instance, which of its sprites) for a pickup riding
+    # another instance's assembly.
+    follow: tuple = None
+    note: str = ""
 
     # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
     # the instance's origin - filled by build().
     parts: list = None
+    # (first vertex, count) or None per source - filled by build().
+    spans: list = None
 
     first_vertex: int = 0
     vertex_count: int = 0
@@ -147,6 +179,7 @@ class Instance:
     @source.setter
     def source(self, value):
         self.sources = (value,) if value else ()
+        self.assembly = None
 
     @property
     def empty(self):
@@ -154,7 +187,8 @@ class Instance:
 
     @property
     def movable(self):
-        return self.role != "room"
+        # Something spawned is where its spawner puts it.
+        return self.role not in ("room", "spawned")
 
     @property
     def drawn_as_sprite(self):
@@ -232,8 +266,14 @@ class Instance:
         else:
             model = (", ".join(f"id {f} group {g}" for f, g in self.sources)
                      or "no model known")
+        if self.assembly is not None:
+            model = f"{len(self.sources)} parts"
         if self.name:
             model = f"{self.name} - {model}"
+        note = f"{self.note}<br>" if self.note else ""
+        if self.role == "spawned":
+            what = "a sprite" if self.drawn_as_sprite else model
+            return f"{note}{what}, at {where}"
         if self.placement is not None and self.art is not None:
             frames = "/".join(str(f.frame) for f in self.art.frames)
             return (f"{self.placement.describe()}<br>"
@@ -245,6 +285,7 @@ class Instance:
                     f"in the overlay")
         if self.placement is not None:
             return (f"{self.placement.describe()}<br>{model}, at {where}<br>"
+                    f"{note}"
                     f"record {self.placement.index} of table "
                     f"{self.placement.table}, at 0x{self.placement.offset:X} "
                     f"in the overlay")
@@ -386,6 +427,32 @@ def view_offset(offset):
     return (z, -y, x)
 
 
+# Game axes to view axes and back - its own inverse.
+VIEW_AXES = np.array([[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])
+
+
+def view_point(point):
+    """A world point in the game's axes, in the viewers'."""
+    return float(point[2]), float(-point[1]), float(point[0])
+
+
+def game_state(instance):
+    """Where an instance stands, the way an actor holds it."""
+    roll = instance.placement.angle2 if instance.placement is not None else 0
+    return actor_assembly.State(
+        np.array([instance.z, -instance.y, instance.x], dtype=np.float64),
+        actor_assembly.degrees_to_units(instance.angle),
+        actor_assembly.degrees_to_units(roll))
+
+
+# How close a spawned actor must stand to a pickup record to be it.
+PICKUP_MATCH = 100.0
+
+
+def _at_origin(position):
+    return position is None or (abs(position[0]) < 1 and abs(position[2]) < 1)
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -442,6 +509,10 @@ class LevelScene:
         self.chunk_index = None
         self.dat_path = None
         self.overlay_path = None
+        self.overlay_data = b""
+        # The area's actors, run - see functions/actor_sim.py.
+        self.world = None
+        self._symbols = None
         self.dat_start = 0
         self.dat_end = 0
         self.files = []                 # (index, id, offset, size)
@@ -528,6 +599,11 @@ class LevelScene:
             self.notes.append("this area has no room MDAT")
 
         if overlay_path:
+            try:
+                with open(overlay_path, "rb") as f:
+                    self.overlay_data = f.read()
+            except OSError:
+                pass
             self.placements = placement_module.load_placements(overlay_path)
             if not self.placements:
                 self.notes.append(
@@ -567,10 +643,91 @@ class LevelScene:
         # heading off the plane it stands on.
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
         self.model_names = placement_module.load_model_names()
+        if overlay_path and exe_path and self.placements:
+            self.world = self._simulate(idx_path)
 
         self._build_instances()
         return self
 
+    def _simulate(self, idx_path):
+        """Run every placed actor's own code - see functions/actor_sim.py.
+        None if it cannot be run; the scene falls back on reading models
+        out of the handlers."""
+        number = handler_models.overlay_number(self.overlay_path)
+        if number is None or number < 0:
+            return None
+        try:
+            return actor_sim.simulate(
+                self.exe_path, self.overlay_path, self.dat_path, idx_path,
+                self.chunk_index, number, self.placements,
+                actor_assembly.degrees_to_units, frames=SIM_FRAMES)
+        except Exception as e:
+            self.notes.append(f"couldn't run the objects' own code: {e}")
+            return None
+
+    def handler_name(self, handler):
+        """What the decomp calls a handler, or its address."""
+        if self._symbols is None:
+            self._symbols = {}
+            try:
+                with open(SYMBOLS) as f:
+                    for name, (tag, address) in json.load(f).items():
+                        if not name.startswith("FUN_"):
+                            self._symbols.setdefault((tag, address), name)
+            except (OSError, ValueError):
+                pass
+        tag = "MAIN" if handler < actor_sim.OVERLAY_BASE else os.path.basename(
+            self.overlay_path or "")[:3].upper()
+        return self._symbols.get((tag, handler), f"0x{handler:08X}")
+
+    def _sim_art(self, actor):
+        """A simulated sprite as art the billboards can draw."""
+        if not actor.frames:
+            return None
+        if actor.bank == RESIDENT_SPRITES:
+            return self.reward_art.get(actor.reward)
+        if actor.bank == AREA_SPRITES:
+            return pickup_art.RewardArt(
+                reward=-1, width=0, height=0, item=-1, sequence=-1,
+                clut=pickup_art.AREA_BANK,
+                frames=tuple(pickup_art.Frame(frame=f, ticks=t)
+                             for f, t in actor.frames),
+                loops=actor.loops, name="")
+        return None
+
+    def _spawn_label(self, label, posed):
+        """A spawned row's name: what its model is called, or which file
+        it is and how big, after what made it."""
+        if not posed.sources:
+            return label
+        files = collections.Counter(f for f, _g in posed.sources)
+        file_id, _n = files.most_common(1)[0]
+        named = self.named(tuple(s for s in posed.sources if s[0] == file_id))
+        what = named or f"id {file_id}, {len(posed.sources)} parts"
+        return f"{what} ({label})"
+
+    def _posed(self, actors, anchor, position, yaw, name):
+        """A Posed out of a group of simulated actors, or None if they
+        drew nothing this scene can show."""
+        pieces = [p for a in actors for p in a.parts
+                  if self.group(p.source)[1] is not None]
+        riders = []
+        for a in actors:
+            if a.parts:
+                continue
+            art = self._sim_art(a)
+            if art is not None and not _at_origin(a.position):
+                label = art.label() if art.name or art.reward >= 0 else ""
+                riders.append(actor_sim.Rider(
+                    label or self.handler_name(a.handler), a.reward,
+                    a.position, art))
+        if not pieces and not riders:
+            return None
+        spawned = len(actors) - 1
+        note = (f"built by running its own code: {len(pieces)} parts"
+                + (f", {spawned} spawned actor(s)" if spawned else "")
+                + f"<br>handler {self.handler_name(anchor.handler)}")
+        return actor_sim.Posed(name, note, pieces, riders, position, yaw)
     def built_actor(self, handler):
         """([(file, group), ...], offsets) for a class the code builds
         whole, or None.
@@ -799,6 +956,21 @@ class LevelScene:
 
         room_box = self.room_bounds()
         used = set()
+        assembled = []
+        world = self.world
+        by_record = {}
+        loose = []                  # [(label, [actors])] standing on their own
+        if world is not None:
+            for actor in world.actors:
+                if actor.record is not None:
+                    by_record[id(actor.record)] = actor
+            for actor in world.actors:
+                # The shared workers' spawns are Tomba and the persistent
+                # pickups, which the scene already draws from their tables.
+                if (actor.record is None and actor.spawner is None
+                        and actor.worker not in actor_sim.SHARED_WORKERS):
+                    loose.append((f"scene: {self.handler_name(actor.handler)}",
+                                  actor_sim.subtree(world, actor)))
         for record in self.placements:
             states = self.sprite_classes.get(record.handler) or ()
             art = object_sprites.first_state(states)
@@ -806,7 +978,28 @@ class LevelScene:
             # handler_models found for it was something else the handler
             # touched - so it is dropped rather than drawn.
             sources, offsets = (), ()
-            if not art:
+            assembly = None
+            actor = by_record.get(id(record))
+            if actor is not None and not art:
+                tree = actor_sim.subtree(world, actor)
+                near = [a for a in tree if a is actor or np.linalg.norm(
+                    a.position - actor.position) <= CHILD_REACH]
+                loose.extend((f"{record.kind}.{record.slot} spawned: "
+                              f"{self.handler_name(a.handler)}", [a])
+                             for a in tree if a not in near)
+                assembly = self._posed(
+                    near, actor, np.array(record.position, dtype=np.float64),
+                    actor_assembly.degrees_to_units(record.angle),
+                    self.handler_name(record.handler))
+                if assembly is not None and not assembly.sources:
+                    assembly = None
+            if assembly is None and not art:
+                assembly = actor_assembly.assemble(self.overlay_data, record)
+                if assembly is not None and not self._loads(assembly.sources):
+                    assembly = None
+            if assembly is not None:
+                sources = assembly.sources
+            elif not art:
                 built = self.built_actor(record.handler)
                 if built is not None:
                     sources, offsets = built
@@ -823,11 +1016,16 @@ class LevelScene:
                 index=len(instances), role="object",
                 label=f"{record.kind}.{record.slot}",
                 sources=tuple(sources), offsets=offsets, x=x, y=y, z=z,
-                name=self.named(sources),
+                name=(assembly.name if assembly is not None
+                      else self.named(sources)),
                 angle=float(record.angle), placement=record,
                 art=object_sprites.as_art(art) if art else None,
-                authored=bool(group is not None
+                assembly=assembly,
+                note=assembly.note if assembly is not None else "",
+                authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
+            if assembly is not None:
+                assembled.append(instances[-1])
 
         for record in self.pickups:
             sources = self.bindings.get(pickup_key(record)) or ()
@@ -852,6 +1050,69 @@ class LevelScene:
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 
+        # What the assembled objects spawn: pickups that ride them, and
+        # props that stand wherever their spawner's table says.
+        for parent in assembled:
+            spawner = f"spawned by {parent.label} ({parent.assembly.name})"
+            state = game_state(parent)
+            for number, sprite in enumerate(parent.assembly.sprites(state)):
+                x, y, z = view_point(sprite.position)
+                instances.append(Instance(
+                    index=len(instances), role="spawned", label=sprite.label,
+                    art=(getattr(sprite, "art", None)
+                         or self.reward_art.get(sprite.reward)),
+                    x=x, y=y, z=z,
+                    follow=(parent.index, number), note=spawner))
+            for prop in parent.assembly.props():
+                if not self._loads(prop.sources):
+                    continue
+                used.update(prop.sources)
+                x, y, z = view_point(prop.pieces[0][1])
+                instances.append(Instance(
+                    index=len(instances), role="spawned", label=prop.label,
+                    sources=prop.sources, x=x, y=y, z=z, assembly=prop,
+                    name=prop.name, note=spawner))
+
+        # Actors the scene's own workers made, and children that wandered
+        # off from their spawner: each a row of its own, where it stood.
+        # One standing on a pickup record is that pickup - the chests the
+        # scene already draws from their table - and one at the origin
+        # never found its place (Tomba himself, before he is put down).
+        taken = [view_position(p) for p in self.pickups]
+        for label, actors in loose:
+            head = actors[0]
+            if _at_origin(head.position):
+                continue
+            hx, hy, hz = view_point(head.position)
+            if any(abs(hx - px) < PICKUP_MATCH and abs(hz - pz) < PICKUP_MATCH
+                   and abs(hy - py) < PICKUP_MATCH * 4 for px, py, pz in taken):
+                continue
+            posed = self._posed(actors, head, head.position, 0, label)
+            if posed is None:
+                continue
+            label = self._spawn_label(label, posed)
+            x, y, z = view_point(head.position)
+            index = len(instances)
+            instances.append(Instance(
+                index=index, role="spawned", label=label,
+                sources=posed.sources, x=x, y=y, z=z,
+                assembly=posed if posed.sources else None,
+                name=label, note=posed.note))
+            used.update(posed.sources)
+            if not posed.sources:
+                for rider in posed.riders:
+                    rx, ry, rz = view_point(rider.position)
+                    instances[-1].art = rider.art
+                    instances[-1].x, instances[-1].y, instances[-1].z = rx, ry, rz
+                    break
+                continue
+            for number, rider in enumerate(posed.riders):
+                rx, ry, rz = view_point(rider.position)
+                instances.append(Instance(
+                    index=len(instances), role="spawned", label=rider.label,
+                    art=rider.art, x=rx, y=ry, z=rz, follow=(index, number),
+                    note=f"carried by {label}"))
+
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
             if group.empty or (ASSET_PACK_ID, group.index) in used:
@@ -863,6 +1124,11 @@ class LevelScene:
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
+
+    def _loads(self, sources):
+        """Whether every file a set of sources names reads as a model."""
+        return bool(sources) and all(self.model(f)
+                                     for f in {f for f, _g in sources})
 
     def apply_bindings(self):
         """Point each object at whatever `bindings` now says it is drawn
@@ -877,7 +1143,7 @@ class LevelScene:
         changed = 0
         for instance in self.instances:
             key = instance_key(instance)
-            if key is None:
+            if key is None or instance.assembly is not None:
                 continue
             sources = self.bindings.get(key)
             if not sources or tuple(sources) == instance.sources:
@@ -911,12 +1177,15 @@ class LevelScene:
                 instance.quads = room.get("quad_count", 0)
             else:
                 instance.parts = []
+                instance.spans = []
                 for number, source in enumerate(instance.sources):
                     model, group = self.group(source)
                     if group is None:
+                        instance.spans.append(None)
                         continue
                     at = len(scene["vertices"])
                     self._append(scene, model, group)
+                    instance.spans.append((at, len(scene["vertices"]) - at))
                     shift = (instance.offsets[number]
                              if number < len(instance.offsets) else None)
                     if shift and any(shift):
@@ -958,10 +1227,22 @@ class LevelScene:
         The room goes in as it is - an MDAT is already in world
         coordinates - and each object turns about its own Y and moves to
         where its record says."""
+        self._place_followers()
         verts = np.array(scene["vertices"], dtype=np.float32)
         for instance in self.instances:
             if (not instance.vertex_count or instance.role == "room"
                     or instance.authored):
+                continue
+            if instance.assembly is not None and instance.spans:
+                pieces = instance.assembly.pose(game_state(instance))
+                for span, (m, t) in zip(instance.spans, pieces):
+                    if span is None:
+                        continue
+                    first, count = span
+                    block = verts[first:first + count].astype(np.float64)
+                    moved = (block @ (VIEW_AXES @ m @ VIEW_AXES).T
+                             + VIEW_AXES @ t)
+                    verts[first:first + count] = moved.astype(np.float32)
                 continue
             at = instance.first_vertex
             block = verts[at:at + instance.vertex_count].astype(np.float64)
@@ -974,6 +1255,22 @@ class LevelScene:
             moved += (instance.x, instance.y, instance.z)
             verts[at:at + instance.vertex_count] = moved.astype(np.float32)
         return verts
+
+    def _place_followers(self):
+        """Put every riding pickup back where its parent now holds it."""
+        for instance in self.instances:
+            if instance.follow is None:
+                continue
+            parent_index, number = instance.follow
+            if not 0 <= parent_index < len(self.instances):
+                continue
+            parent = self.instances[parent_index]
+            if parent.assembly is None:
+                continue
+            sprites = parent.assembly.sprites(game_state(parent))
+            if number < len(sprites):
+                instance.x, instance.y, instance.z = view_point(
+                    sprites[number].position)
 
     def markers(self):
         """Line geometry for the objects with no model, as

@@ -462,9 +462,14 @@ class LevelEditorPanel(QWidget):
         self._show_details(None)
 
     def _fill_row(self, row, instance):
-        model = (" + ".join(f"id {f} g{g}" for f, g in instance.sources)
-                 if instance.sources else
-                 ("-" if instance.role == "room" else "unknown"))
+        if instance.assembly is not None and len(instance.sources) > 1:
+            model = f"{instance.name} ({len(instance.sources)} parts)"
+        elif instance.sources:
+            model = " + ".join(f"id {f} g{g}" for f, g in instance.sources)
+        elif instance.drawn_as_sprite:
+            model = "sprite"
+        else:
+            model = "-" if instance.role == "room" else "unknown"
         for column, text in ((1, model), (2, f"{instance.x:.0f}"),
                              (3, f"{instance.y:.0f}"), (4, f"{instance.z:.0f}"),
                              (5, f"{instance.angle:.0f}")):

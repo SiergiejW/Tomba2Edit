@@ -258,6 +258,7 @@ class LevelViewer(SMSTViewer):
         self.rebuild_markers()
         self._build_selection()
         self._face_instance = None
+        self._sprite_dirty = True
         self.update()
 
     def frame_level(self):
@@ -719,11 +720,16 @@ class LevelViewer(SMSTViewer):
             return
         self._sprite_dirty = False
         rows = []
+        instances = self.instances
         for quad in self._sprite_quads:
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
                 continue
-            x, y, z = quad.x / UNIT_SCALE, quad.y / UNIT_SCALE, quad.z / UNIT_SCALE
+            # Live, so a dragged pickup - or an apple riding a seesaw -
+            # takes its picture with it.
+            at = (instances[quad.index] if 0 <= quad.index < len(instances)
+                  else quad)
+            x, y, z = at.x / UNIT_SCALE, at.y / UNIT_SCALE, at.z / UNIT_SCALE
             units = quad.units / UNIT_SCALE
             left = -placed.origin_x * units
             right = (placed.width - placed.origin_x) * units
