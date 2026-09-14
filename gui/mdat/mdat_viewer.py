@@ -15,16 +15,13 @@ import gui.mdat.mdat as mdat
 from functions import gltf_export
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
-from gui import polygon_pick
+from gui import collision_overlay, export_dialog, polygon_pick, theme
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
 )
 from gui.scld.scld_parser import load_scld, find_area_scld_location
-from gui.scld.scld_render import (
-    UNIT_SCALE, SURFACE_LINE_WIDTH, build_points, build_lines, room_bounds,
-    entries_in_bounds,
-)
+from gui.scld.scld_render import UNIT_SCALE, room_bounds, entries_in_bounds
 import ctypes
 from PyQt6.QtWidgets import (
     QMainWindow, QTreeView, QWidget, QVBoxLayout, QLabel, QSplitter,
@@ -70,14 +67,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.camera_controls = CameraControls(self)
 
         self.collision_data = None
-        self.collision_vao = QOpenGLVertexArrayObject()
-        self.collision_vbo = QOpenGLBuffer()
-        self.collision_cbo = QOpenGLBuffer()
-        self.collision_vertex_count = 0
-        self.collision_point_vao = QOpenGLVertexArrayObject()
-        self.collision_point_vbo = QOpenGLBuffer()
-        self.collision_point_cbo = QOpenGLBuffer()
-        self.collision_point_count = 0
+        self.collision = collision_overlay.Overlay()
         self.show_collision = False
         self.clut_quad_tex = None
         self.clut_tri_tex = None
@@ -212,16 +202,15 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         if not self.model_data:
             QMessageBox.warning(self, "Nothing to export", "No model is loaded.")
             return
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save model", (self.export_name or "model") + ".glb",
-            "glTF binary (*.glb);;glTF (*.gltf)")
+        file_path, unlit = export_dialog.ask_model_path(
+            self, "Save model", self.export_name or "model")
         if not file_path:
             return
         try:
             write = (gltf_export.write_gltf if file_path.lower().endswith(".gltf")
                      else gltf_export.write_glb)
             write(file_path, self.model_data, self.vram_raw_bytes,
-                  name=self.export_name or "model")
+                  name=self.export_name or "model", unlit=unlit)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
@@ -253,8 +242,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         with no matching SCLD (e.g. an area that has none) - just clears
         any previous overlay."""
         self.collision_data = None
-        self.collision_vertex_count = 0
-        self.collision_point_count = 0
+        self.collision.clear()
         if dat_start is None:
             self.update()
             return False
@@ -268,69 +256,17 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             return False
 
     def _prepare_collision_buffers(self):
-        """Build the collision overlay for the room on screen.
-
-        Geometry comes from gui.scld.scld_render, the same builders the
-        SCLD viewer uses, so both draw whatever the parser currently
-        decodes. Only the room filtering is particular to this viewer:
-        one SCLD file covers more world than a single room, and a long
-        entry can pass through several, so entries are cut against the
-        room's bounds and then their points individually."""
+        """Build the collision overlay for the room on screen, the level
+        editor's way - gui/collision_overlay.py. One SCLD covers more world
+        than a room, and a long entry can pass through several, so entries
+        are cut against the room's bounds and then sample by sample."""
         entries = self.collision_data.entries if self.collision_data else []
         bounds = room_bounds(self.model_data.get("vertices")
                              if self.model_data else None)
-        entries = entries_in_bounds(entries, bounds)
-
-        verts, colors = build_lines(entries, bounds=bounds)
-        point_verts, point_colors, _ranges, _pos, _ids = build_points(
-            entries, bounds=bounds)
-
-        self.makeCurrent()
-        if verts:
-            arr = (np.array(verts, dtype=np.float32) / UNIT_SCALE).flatten()
-            carr = np.array(colors, dtype=np.float32).flatten()
-        else:
-            arr = np.zeros(0, dtype=np.float32)
-            carr = np.zeros(0, dtype=np.float32)
-        self.collision_vertex_count = len(verts)
-
-        if not self.collision_vbo.isCreated():
-            self.collision_vbo.create()
-        if not self.collision_cbo.isCreated():
-            self.collision_cbo.create()
-        self.collision_vao.bind()
-        self.collision_vbo.bind()
-        self.collision_vbo.allocate(arr.tobytes(), arr.nbytes)
-        GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
-        self.collision_cbo.bind()
-        self.collision_cbo.allocate(carr.tobytes(), carr.nbytes)
-        GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
-        self.collision_vao.release()
-
-        if point_verts:
-            parr = (np.array(point_verts, dtype=np.float32) / UNIT_SCALE).flatten()
-            pcarr = np.array(point_colors, dtype=np.float32).flatten()
-        else:
-            parr = np.zeros(0, dtype=np.float32)
-            pcarr = np.zeros(0, dtype=np.float32)
-        self.collision_point_count = len(point_verts)
-
-        if not self.collision_point_vbo.isCreated():
-            self.collision_point_vbo.create()
-        if not self.collision_point_cbo.isCreated():
-            self.collision_point_cbo.create()
-        self.collision_point_vao.bind()
-        self.collision_point_vbo.bind()
-        self.collision_point_vbo.allocate(parr.tobytes(), parr.nbytes)
-        GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
-        self.collision_point_cbo.bind()
-        self.collision_point_cbo.allocate(pcarr.tobytes(), pcarr.nbytes)
-        GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
-        self.collision_point_vao.release()
+        lines = collision_overlay.add_scld(
+            collision_overlay.Lines(), entries_in_bounds(entries, bounds),
+            bounds=bounds)
+        self.collision.set(lines, UNIT_SCALE)
 
     # --- picking out of the drawmap -----------------------------------
 
@@ -825,14 +761,6 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
-        self.collision_vao.create()
-        self.collision_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.collision_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-
-        self.collision_point_vao.create()
-        self.collision_point_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.collision_point_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-
     def resizeGL(self, w, h):
         """Handle window resize"""
         self.camera_controls.display_center = [w // 2, h // 2]
@@ -889,6 +817,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def paintGL(self):
         if self._outline_arrays is not None:
             self._sync_outline()
+        GL.glClearColor(*theme.view_background((0.1, 0.1, 0.1)), 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         if self.culling_enabled:
             GL.glEnable(GL.GL_CULL_FACE)
@@ -989,44 +918,11 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         self.vao.release()
 
-        if self.show_collision and (self.collision_vertex_count or self.collision_point_count):
-            # Two depth-tested passes instead of one depth-disabled x-ray:
-            # collision geometry genuinely sits inside the model (e.g. a
-            # spiral staircase inside its tower's solid walls), so the part
-            # behind a wall needs to stay visible somehow - full x-ray
-            # (depth test off) showed it at the same strength as the part
-            # that's actually unobstructed, which reads as noise. Instead,
-            # draw normally-depth-tested (GL_LESS) at full opacity for what
-            # isn't blocked, then again with the depth test reversed
-            # (GL_GREATER) at low alpha for the part a wall would otherwise
-            # hide completely - a ghost-through-geometry look rather than
-            # true x-ray.
+        if self.show_collision and self.collision.has_lines():
+            # Collision often sits inside the room's solid walls, so it is
+            # drawn again behind them, fainter - gui/collision_overlay.py.
             self.shader_program.setUniformValue("useTextures", False)
-            GL.glDepthMask(GL.GL_FALSE)
-
-            def draw_collision():
-                if self.collision_vertex_count:
-                    GL.glLineWidth(SURFACE_LINE_WIDTH)
-                    self.collision_vao.bind()
-                    GL.glDrawArrays(GL.GL_LINES, 0, self.collision_vertex_count)
-                    self.collision_vao.release()
-                if self.collision_point_count:
-                    GL.glPointSize(6.0)
-                    self.collision_point_vao.bind()
-                    GL.glDrawArrays(GL.GL_POINTS, 0, self.collision_point_count)
-                    self.collision_point_vao.release()
-
-            self.shader_program.setUniformValue("alpha", 1.0)
-            GL.glDepthFunc(GL.GL_LESS)
-            draw_collision()
-
-            self.shader_program.setUniformValue("alpha", 0.12)
-            GL.glDepthFunc(GL.GL_GREATER)
-            draw_collision()
-
-            GL.glDepthFunc(GL.GL_LESS)
-            GL.glDepthMask(GL.GL_TRUE)
-            self.shader_program.setUniformValue("alpha", 1.0)
+            self.collision.draw(self.shader_program)
 
         if self.outline_vertex_count:
             # Over everything, depth test off: a selected polygon is

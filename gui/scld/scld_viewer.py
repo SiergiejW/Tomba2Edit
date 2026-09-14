@@ -13,10 +13,8 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QAction, QVector3D, QPainter, QColor, QFont
 from OpenGL import GL
 from gui.scld.scld_parser import load_scld
-from gui.scld.scld_render import (
-    UNIT_SCALE, SCAFFOLD_ALPHA, SURFACE_LINE_WIDTH, build_points, build_lines,
-    unkn_color,
-)
+from gui.scld.scld_render import UNIT_SCALE, build_points, build_lines, unkn_color
+from gui import collision_overlay, theme
 from gui.mdat.mdat import exportMDAT, find_area_mdat_location
 from functions.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
@@ -49,7 +47,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.color_by_unkn = False
         # Draw every vertical pair in a cell - candidate side walls,
         # undecoded. See SCLDEntry.wall_candidates().
-        self.show_walls = False
+        self.show_walls = True
         # entry.index -> [(x, y, z), ...] in record order, for those
         # labels, and the table3 record number behind each.
         self.entry_record_pos = {}
@@ -67,12 +65,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self._highlight_timer.setInterval(33)
         self._highlight_timer.timeout.connect(self._tick_highlight)
 
-        self.line_vao = QOpenGLVertexArrayObject()
-        self.line_vbo = QOpenGLBuffer()
-        self.line_cbo = QOpenGLBuffer()
-        self.point_vao = QOpenGLVertexArrayObject()
-        self.point_vbo = QOpenGLBuffer()
-        self.point_cbo = QOpenGLBuffer()
+        # The collision itself, drawn the level editor's way.
+        self.collision = collision_overlay.Overlay()
         self.grid_vao = QOpenGLVertexArrayObject()
         self.grid_vbo = QOpenGLBuffer()
         self.grid_cbo = QOpenGLBuffer()
@@ -136,7 +130,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
             "Walls?", self)
         self.walls_action.setCheckable(True)
-        self.walls_action.setChecked(False)
+        self.walls_action.setChecked(True)
         self.walls_action.setToolTip(
             "UNDECODED: join every record in a cell to the one above it - "
             "candidate side walls, for checking by eye")
@@ -231,8 +225,6 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
     def toggle_walls(self, checked):
         self.show_walls = checked
-        if self.scld_data is not None:
-            self.prepare_buffers()
         self.update()
 
     def toggle_color_by_unkn(self, checked):
@@ -399,38 +391,23 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.entry_label_pos = {}
         entries = self.scld_data.entries
         tint = unkn_color if self.color_by_unkn else None
-        line_verts, line_colors = build_lines(entries, walls=self.show_walls)
-        (point_verts, point_colors, self.entry_point_ranges,
-         self.entry_record_pos, self.entry_record_ids) = build_points(
-            entries, color_by=tint)
+        lines = collision_overlay.add_scld(collision_overlay.Lines(), entries,
+                                           color_by=tint)
+        self.collision.set(lines, UNIT_SCALE)
+        # entry -> its crosses in the surface layer, for the highlight pulse.
+        self.entry_point_ranges = lines.ranges
+        (_points, _colors, _ranges, self.entry_record_pos,
+         self.entry_record_ids) = build_points(entries, color_by=tint)
         for index, pts in self.entry_record_pos.items():
             if pts:
                 self.entry_label_pos[index] = pts[len(pts) // 2]
+        self.point_vertex_count = len(lines.surface)
+        self.line_vertex_count = len(lines.vertical)
 
-        self.makeCurrent()
-
-        if line_verts:
-            arr = (np.array(line_verts, dtype=np.float32) / UNIT_SCALE).flatten()
-            carr = np.array(line_colors, dtype=np.float32).flatten()
-        else:
-            arr = np.zeros(0, dtype=np.float32)
-            carr = np.zeros(0, dtype=np.float32)
-        self.line_vertex_count = len(line_verts)
-        self._upload(self.line_vao, self.line_vbo, self.line_cbo, arr, carr)
-
-        if point_verts:
-            parr = (np.array(point_verts, dtype=np.float32) / UNIT_SCALE).flatten()
-            pcarr = np.array(point_colors, dtype=np.float32).flatten()
-        else:
-            parr = np.zeros(0, dtype=np.float32)
-            pcarr = np.zeros(0, dtype=np.float32)
-        self.point_vertex_count = len(point_verts)
-        self._upload(self.point_vao, self.point_vbo, self.point_cbo, parr, pcarr)
-
-        # What frame_collision() measures. The points are every placed
-        # record in the file, so they bound the collision whether or not
-        # the candidate walls are being drawn.
-        self._scene_points = parr if point_verts else arr
+        # What frame_collision() measures: every sample, whether or not the
+        # candidate walls are being drawn.
+        (surface, _sc), (vertical, _vc) = lines.arrays(UNIT_SCALE)
+        self._scene_points = (surface if len(surface) else vertical).flatten()
 
     def _upload(self, vao, vbo, cbo, vertices, colors):
         if not vbo.isCreated():
@@ -518,16 +495,10 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             print("SCLD shader program linking failed:", self.shader_program.log())
 
         for vao, vbo, cbo in (
-            (self.line_vao, self.line_vbo, self.line_cbo),
-            (self.point_vao, self.point_vbo, self.point_cbo),
             (self.grid_vao, self.grid_vbo, self.grid_cbo),
             (self.mesh_vao, self.mesh_vbo, self.mesh_cbo),
         ):
             vao.create()
-        self.line_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.line_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.point_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
-        self.point_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.grid_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.grid_cbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.mesh_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
@@ -576,6 +547,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
 
     def paintGL(self):
+        GL.glClearColor(*theme.view_background((0.08, 0.08, 0.1)), 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         # Defensive reset: the QPainter used to draw the 3D entry-number
         # label (at the end of the previous frame) does its own GL work
@@ -642,68 +614,23 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             GL.glDrawArrays(GL.GL_LINES, 0, self.grid_vertex_count)
             self.grid_vao.release()
 
-        if self.line_vertex_count:
-            # Candidate walls are what's being looked at while they're on,
-            # so they get the weight and full opacity and the points are
-            # drawn back at SCAFFOLD_ALPHA.
-            GL.glLineWidth(SURFACE_LINE_WIDTH)
-            self.shader_program.setUniformValue("alpha", 1.0)
-            self.line_vao.bind()
-            GL.glDrawArrays(GL.GL_LINES, 0, self.line_vertex_count)
-            self.line_vao.release()
-            GL.glLineWidth(1.0)
-
-        if self.show_markers and self.point_vertex_count:
-            pulsed = []
-            if self.highlighted_entry is not None:
-                for index in [self.highlighted_entry] + sorted(self.related_entries):
-                    rng = self.entry_point_ranges.get(index)
-                    if rng and rng[1] > 0:
-                        pulsed.append(rng)
-                pulsed.sort()
-
-            def draw_points(alpha_scale):
-                alpha_scale *= (SCAFFOLD_ALPHA if self.line_vertex_count else 1.0)
-                GL.glPointSize(6.0)
-                if not pulsed:
-                    self.shader_program.setUniformValue("alpha", alpha_scale)
-                    GL.glDrawArrays(GL.GL_POINTS, 0, self.point_vertex_count)
-                    return
-                # The same points redrawn: everything else at its usual
-                # opacity, then the pulsed ranges over it, larger and
-                # oscillating, rather than a second point stacked on top.
-                self.shader_program.setUniformValue("alpha", alpha_scale)
-                at = 0
-                for start, count in pulsed:
-                    if start > at:
-                        GL.glDrawArrays(GL.GL_POINTS, at, start - at)
-                    at = max(at, start + count)
-                if at < self.point_vertex_count:
-                    GL.glDrawArrays(GL.GL_POINTS, at, self.point_vertex_count - at)
-
+        if self.show_markers or self.show_walls:
+            self.shader_program.setUniformValue("useOverrideColor", False)
+            self.collision.draw(self.shader_program, surface=self.show_markers,
+                                vertical=self.show_walls)
+            if self.show_markers and self.highlighted_entry is not None:
+                # The selected entry, and any sharing its unkn, again over
+                # everything and pulsing, so it can be found among the rest.
                 pulse = 0.1 + 0.9 * (0.5 + 0.5 * math.sin(self._highlight_phase))
-                self.shader_program.setUniformValue("alpha", pulse * alpha_scale)
-                GL.glPointSize(9.0)
-                for start, count in pulsed:
-                    GL.glDrawArrays(GL.GL_POINTS, start, count)
-                GL.glPointSize(6.0)
-
-            GL.glPointSize(6.0)
-            self.point_vao.bind()
-            # Two depth-tested passes instead of always-on-top x-ray: full
-            # opacity where the level mesh doesn't block a point, and a
-            # dim ghost pass (reversed depth test) for points that are
-            # actually behind geometry - same technique as MDATViewer's
-            # collision overlay.
-            GL.glDepthMask(GL.GL_FALSE)
-            GL.glDepthFunc(GL.GL_LESS)
-            draw_points(1.0)
-            GL.glDepthFunc(GL.GL_GREATER)
-            draw_points(0.18)
-            GL.glDepthFunc(GL.GL_LESS)
-            GL.glDepthMask(GL.GL_TRUE)
-            self.shader_program.setUniformValue("alpha", 1.0)
-            self.point_vao.release()
+                GL.glDisable(GL.GL_DEPTH_TEST)
+                GL.glLineWidth(3.0)
+                self.shader_program.setUniformValue("alpha", pulse)
+                for index in [self.highlighted_entry] + sorted(self.related_entries):
+                    first, count = self.entry_point_ranges.get(index, (0, 0))
+                    self.collision.draw_surface(first, count)
+                GL.glLineWidth(1.0)
+                GL.glEnable(GL.GL_DEPTH_TEST)
+                self.shader_program.setUniformValue("alpha", 1.0)
 
         if self.show_origin:
             self.shader_program.setUniformValue("alpha", 1.0)

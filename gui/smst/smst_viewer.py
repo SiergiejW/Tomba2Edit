@@ -38,7 +38,7 @@ from functions.format_detect import FormatError
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from functions import gltf_export
-from gui import polygon_pick
+from gui import export_dialog, polygon_pick, theme
 from gui.texture_panel import TexturePanel
 from gui.smst import smst_edit
 from functions import labels
@@ -1043,9 +1043,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         if not self.model_data:
             QMessageBox.warning(self, "Nothing to export", "No SMST is loaded.")
             return
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save model", (self.export_name or "model") + ".glb",
-            "glTF binary (*.glb);;glTF (*.gltf)")
+        file_path, unlit = export_dialog.ask_model_path(
+            self, "Save model", self.export_name or "model")
         if not file_path:
             return
         try:
@@ -1054,7 +1053,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             write(file_path, self.model_data, self.vram_raw_bytes,
                   groups=self.groups, bones=self.export_bones,
                   name=self.export_name or "model",
-                  skip=self.hidden_groups)
+                  skip=self.hidden_groups, unlit=unlit)
         except Exception as e:
             QMessageBox.critical(self, "Export failed", f"Couldn't write it:\n\n{e}")
             return
@@ -1211,6 +1210,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def paintGL(self):
         self._sync_gl()
+        GL.glClearColor(*theme.view_background((0.1, 0.1, 0.1)), 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self.draw_backdrop()
         if self.culling_enabled:

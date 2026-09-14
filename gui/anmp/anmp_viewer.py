@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from functions import gltf_export, pairings, skeleton
-from gui import panel_title
+from gui import export_dialog, panel_title
 from gui.anmp.anmp_parser import (
     BITS_PER_VALUE, VALUES_PER_LIMB, WIDE_SLOT_BYTES, ANMPError, blend,
     load_anmp)
@@ -832,10 +832,8 @@ class ANMPViewer(QWidget):
                 "nothing to rig the animation to. The model can still be "
                 "exported on its own from the SMST view.")
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save animated model",
-            (self.export_name or "animation") + ".glb",
-            "glTF binary (*.glb);;glTF (*.gltf)")
+        path, unlit = export_dialog.ask_model_path(
+            self, "Save animated model", self.export_name or "animation")
         if not path:
             return
         try:
@@ -846,7 +844,7 @@ class ANMPViewer(QWidget):
                   frames=self.anmp.frames, fps=self.fps_box.value(),
                   name=self.model_box.currentText() or "model",
                   spares=self._variations,
-                  skip=self.viewer.hidden_groups)
+                  skip=self.viewer.hidden_groups, unlit=unlit)
         except Exception as e:
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write it:\n\n{e}")
