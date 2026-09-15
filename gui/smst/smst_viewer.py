@@ -33,7 +33,7 @@ from functions.camera_controls import (
     CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
 )
-from functions import psx_vram, texture_window
+from functions import draw_order, psx_vram, texture_window
 from functions.format_detect import FormatError
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
@@ -129,6 +129,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.color_buffer = QOpenGLBuffer()
         self.texcoord_buffer = QOpenGLBuffer()
         self.window_buffer = QOpenGLBuffer()
+        self.level_buffer = QOpenGLBuffer()
         self.index_buffer = QOpenGLBuffer()
         self.shader_program = QOpenGLShaderProgram()
 
@@ -534,9 +535,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         if self._arrays is None:
             self.prepare_buffers()
             return
-        positions, colors, tex_coords, indices, windows = self._arrays
+        positions, colors, tex_coords, indices, windows, levels = self._arrays
         self._arrays = (self._positions().flatten(), colors, tex_coords, indices,
-                        windows)
+                        windows, levels)
         self._positions_dirty = True
         # The vertices just moved, so the picking arrays and the outline
         # built off them are stale.
@@ -626,6 +627,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             np.array(self.model_data["texture_coords"], dtype=np.float32).flatten(),
             np.array(indices, dtype=np.uint32),
             texture_window.vertex_flags(self.model_data),
+            draw_order.vertex_levels(self.model_data),
         )
         self._geometry_dirty = True
 
@@ -692,7 +694,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.clut_map = {address: self._upload_clut(array)
                          for address, array in self._clut_arrays.items()}
 
-        positions, colors, tex_coords, indices, windows = self._arrays
+        positions, colors, tex_coords, indices, windows, levels = self._arrays
         if not self.index_buffer.isCreated():
             self.index_buffer.create()
         self.index_buffer.bind()
@@ -703,7 +705,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 (self.vertex_buffer, positions, 3, 0),
                 (self.color_buffer, colors, 3, 1),
                 (self.texcoord_buffer, tex_coords, 2, 2),
-                (self.window_buffer, windows, 1, 3)):
+                (self.window_buffer, windows, 1, 3),
+                (self.level_buffer, levels, 1, 4)):
             if not buffer.isCreated():
                 buffer.create()
             buffer.bind()
@@ -1101,12 +1104,17 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 layout(location = 1) in vec3 color;
                 layout(location = 2) in vec2 texCoord;
                 layout(location = 3) in float flags;
+                // How many coplanar faces this one is drawn over - see
+                // functions/draw_order.py; DEPTH_TIE is its step.
+                layout(location = 4) in float level;
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
                 flat out int fragFlags;
+                const float DEPTH_TIE = 4.76837158e-7;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
+                    gl_Position.z -= level * DEPTH_TIE * gl_Position.w;
                     fragColor = color;
                     fragTexCoord = texCoord;
                     fragFlags = int(flags + 0.5);
@@ -1219,6 +1227,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.color_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.window_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.level_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
 
     def resizeGL(self, w, h):

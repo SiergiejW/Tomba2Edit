@@ -59,11 +59,12 @@ MIN_FRAMES = 4
 class UVAnimation:
     """One face group's frame grid."""
 
-    def __init__(self, clut, texpage, cell, frames):
+    def __init__(self, clut, texpage, cell, frames, ticks=None):
         self.clut = clut
         self.texpage = texpage
         self.cell = cell
         self.frames = frames        # [(du, dv), ...] in texels, from the home cell
+        self.ticks = ticks          # ticks a frame holds; None: set by eye
 
     def __len__(self):
         return len(self.frames)

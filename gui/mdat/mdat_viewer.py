@@ -12,7 +12,7 @@ from PyQt6.QtGui import (
     QMatrix4x4, QImage, QIcon, QAction, QVector2D, QVector4D)
 from OpenGL import GL
 import gui.mdat.mdat as mdat
-from functions import gltf_export, texture_window
+from functions import draw_order, gltf_export, texture_window
 from gui.clut_animation import ClutAnimationMixin
 from gui.origin_axes import OriginAxes
 from gui import collision_overlay, export_dialog, polygon_pick, theme
@@ -57,6 +57,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.shader_program = QOpenGLShaderProgram()
         self.texcoord_buffer = QOpenGLBuffer()
         self.window_buffer = QOpenGLBuffer()
+        self.level_buffer = QOpenGLBuffer()
         self.vram_texture = None  # OpenGL texture ID
         # The palettes are read straight out of this at export time, and
         # a model can be exported before the view has ever been painted.
@@ -685,6 +686,14 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             GL.glEnableVertexAttribArray(3)
             GL.glVertexAttribPointer(3, 1, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
 
+            # Which coplanar faces each one is drawn over - functions/draw_order.py.
+            levels = draw_order.vertex_levels(self.model_data)
+            self.level_buffer.create()
+            self.level_buffer.bind()
+            self.level_buffer.allocate(levels.tobytes(), levels.nbytes)
+            GL.glEnableVertexAttribArray(4)
+            GL.glVertexAttribPointer(4, 1, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
             # bind index buffer while VAO is bound
             self.index_buffer.bind()
 
@@ -712,12 +721,16 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 layout(location = 1) in vec3 color;
                 layout(location = 2) in vec2 texCoord;
                 layout(location = 3) in float flags;
+                // See functions/draw_order.py.
+                layout(location = 4) in float level;
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
                 flat out int fragFlags;
+                const float DEPTH_TIE = 4.76837158e-7;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
+                    gl_Position.z -= level * DEPTH_TIE * gl_Position.w;
                     fragColor = color;
                     fragTexCoord = texCoord;
                     fragFlags = int(flags + 0.5);
@@ -816,6 +829,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
         self.texcoord_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.window_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.level_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
     def resizeGL(self, w, h):
         """Handle window resize"""

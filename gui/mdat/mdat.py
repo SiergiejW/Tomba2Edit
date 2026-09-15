@@ -1,7 +1,7 @@
 import struct
 import io
 
-from functions import psx_vram
+from functions import draw_order, psx_vram
 from functions.texture_window import QUAD
 
 
@@ -307,4 +307,5 @@ def exportMDAT(drwa_addr, datpath):
             eye += 2
 
         #print(f"Exported from 0x{drwa_addr:X}: {face} faces, {base_idx} base index")
+        model_data['face_levels'] = draw_order.face_levels(model_data, 'entry')
         return model_data

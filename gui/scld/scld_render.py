@@ -28,9 +28,8 @@ SCAFFOLD_ALPHA = 0.5
 # artwork behind it.
 SURFACE_LINE_WIDTH = 3.0
 
-# Undecoded candidate walls - deliberately unlike anything else on
-# screen, so a guess is never mistaken for decoded geometry.
-WALL_CANDIDATE_COLOR = (1.0, 0.35, 0.75)
+# Walls (SCLDEntry.walls), in the town planes' wall colour.
+WALL_COLOR = (1.0, 0.35, 0.3)
 
 
 def entry_color(index, saturation=0.65, value=0.95):
@@ -122,22 +121,17 @@ def build_points(entries, bounds=None, color_by=None):
 def build_lines(entries, bounds=None, walls=False):
     """Line geometry as consecutive vertex pairs, ready for GL_LINES.
 
-    Only the candidate walls are left here. The runs this used to join
-    records into - surfaces along an entry, seams from one entry to the
-    next - were guesses at an ordering the file does not store, made back
-    when a record's place was being fitted rather than read. Cells put
-    every record where the game puts it, so there is nothing left for a
-    guess to add.
+    Only the walls are left here - SCLDEntry.walls(), each a vertical
+    from its record's height to its top. The runs this used to join
+    records into were guesses at an ordering the file does not store.
 
     Returns (verts, colors)."""
     verts, colors = [], []
     if not walls:
         return verts, colors
     for entry in entries:
-        for run in entry.wall_candidates():
-            for a, b in zip(run, run[1:]):
-                if not (contains(bounds, a) and contains(bounds, b)):
-                    continue
+        for a, b in entry.walls():
+            if contains(bounds, a):
                 verts.extend((a, b))
-                colors.extend((WALL_CANDIDATE_COLOR, WALL_CANDIDATE_COLOR))
+                colors.extend((WALL_COLOR, WALL_COLOR))
     return verts, colors

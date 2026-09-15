@@ -164,7 +164,7 @@ class TexturePanel(QGroupBox):
         """(palette frame, UV frame) at `tick`, either None."""
         palette, uv = self._animations(polygon)
         return (palette.frame_at(tick) if palette else None,
-                (tick // UV_TICKS_PER_FRAME) % len(uv) if uv else None)
+                (tick // (uv.ticks or UV_TICKS_PER_FRAME)) % len(uv) if uv else None)
 
     def _palette_at(self, polygon, frame):
         """The 16 colours the polygon draws with on that frame."""

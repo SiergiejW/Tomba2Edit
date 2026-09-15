@@ -170,6 +170,12 @@ PART_DRAWERS = (0x8003CDD8,         # f_BuildActorModelPartPrimitives
                 0x8003C8F4,         # f_DrawActorSpriteParts
                 0x8003C464,         # f_DrawActorSpritePartsWithScaleAndZRotation
                 0x8003C2D4)         # f_DrawActorSpritePartsWithZRotation
+# src_SpriteAnimationFrame: the counter draw routines step their cells by
+# (A0E's waterfall: cell (frame >> 1) & 15). 0 while capturing - _uv_frames
+# draws the other values a probe says matter.
+ANIMATION_FRAME = 0x1F80017C
+FRAME_CYCLE = 64
+FRAME_PROBES = (1, 2, 4, 8, 16, 32)
 
 # A scene controller retires through f_RetireSceneController and calls its
 # spawner twice (scene 0 as it starts, the next at each handoff); the
@@ -208,6 +214,15 @@ FRAMES = 4
 BUDGET = 400_000
 # Extra passes for actors spawned too late in a run to have run at all.
 SETTLE_FRAMES = 2
+# A follower still closing on its target as the run ends - the koma pig's hands
+# (FUN_A06__8013560c) cut the gap by an eighth a frame - runs on alone until a
+# step is this short, and is read there.
+CONVERGE_FRAMES = 48
+CONVERGED = 0.5
+# Frames an actor with parts no run has drawn runs on while its state still
+# moves: a purified area's ice cube (FUN_A05__8012a0c8) goes to its release
+# state and is destroyed two frames on.
+TRANSIT_FRAMES = 4
 
 # A sprite sequence step: frame u16, then ticks and an opcode
 # (f_AdvanceActorTimedFrameSequence).
@@ -252,6 +267,11 @@ class Actor:
     error: str = ""
     dead: bool = False
     revived: int = 0                # how often its code tried to destroy it
+    shown: bool = False             # a run of it queued it to be drawn
+    # Destroyed by its code after building, before any run drew it: in a fresh
+    # game, not in the level as it opens.
+    discarded: bool = False
+    changed: bool = False           # its last run moved +0x04/+0x05
     scene: int = None               # the room's scene index, None outside
     # Parts it allocated and then left with no model - an invisible
     # trigger, like A07's interior entrances, which load group 0 and clear
@@ -265,6 +285,9 @@ class Actor:
     # Textured polygons they put out: (corners, uvs, colours, CLUT word,
     # blended, page word) - see textured_primitives.
     polys: tuple = ()
+    # {CLUT word: ((du, dv) per frame of ANIMATION_FRAME, ...)} for polygons
+    # whose UVs step together with it; None until probed.
+    uv_frames: dict = None
     # Per capture pass (DRAW, CALLBACK, None for the queue): how many
     # captures after it ran drew nothing, or None once one drew.
     silent: dict = field(default_factory=dict)
@@ -343,6 +366,7 @@ class World:
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
         self.purified = purified
+        self.finished = tuple(finished)
         if purified:
             mem.write(PURIFIED_AREAS, 2,
                       mem.read(PURIFIED_AREAS, 2) | 1 << area_number)
@@ -618,6 +642,7 @@ class World:
                     actor = self.by_address.get(actor.spawner)
                 return False
 
+        paths = {}                      # id(follower) -> [position per frame]
         for _frame in range(frames):
             if workers:
                 self.run_workers(budget)
@@ -625,6 +650,8 @@ class World:
                 if actor.dead or (only is not None and not only(actor)):
                     continue
                 self._run_actor(actor, budget)
+                if actor.spawner is not None:
+                    paths.setdefault(id(actor), []).append(self._position(actor.address))
             self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
@@ -636,6 +663,61 @@ class World:
             for actor in fresh:
                 self._run_actor(actor, budget)
             self._read()
+        chosen = [a for a in self.actors if not a.dead and (only is None or only(a))]
+        self._transit(chosen, budget)
+        self._converge(chosen, paths, budget)
+
+    def _transit(self, actors, budget):
+        """Actors with parts no run has drawn, their state still moving as the
+        run ends, run on until it holds - see TRANSIT_FRAMES."""
+        if self.finished:
+            return
+        for _frame in range(TRANSIT_FRAMES):
+            moving = [a for a in actors if a.ran and a.changed and a.parts
+                      and not (a.shown or a.dead or a.discarded)]
+            if not moving:
+                break
+            for actor in moving:
+                self._run_actor(actor, budget)
+
+    def _converge(self, actors, paths, budget):
+        """Followers whose last steps each came shorter, run on alone until
+        they arrive - their turn held too - and read there. One whose step
+        grows is wandering, not arriving, and keeps its reading."""
+        mem, moving, arrived = self.mem, {}, []
+        for actor in actors:
+            path = paths.get(id(actor)) or ()
+            if len(path) < 3 or not (actor.parts or actor.frames):
+                continue
+            last = np.abs(path[-1] - path[-2]).max()
+            if CONVERGED < last < np.abs(path[-2] - path[-3]).max():
+                moving[id(actor)] = (actor, last)
+        for _frame in range(CONVERGE_FRAMES):
+            if not moving:
+                break
+            for key, (actor, last) in list(moving.items()):
+                was, turn = self._position(actor.address), mem.bytes(actor.address + TURN, 6)
+                self._run_actor(actor, budget)
+                step = np.abs(self._position(actor.address) - was).max()
+                if actor.dead or step > last:
+                    del moving[key]
+                elif step <= CONVERGED and mem.bytes(actor.address + TURN, 6) == turn:
+                    arrived.append(actor)
+                    del moving[key]
+                else:
+                    moving[key] = (actor, step)
+        if arrived:
+            self._reread(arrived)
+
+    def _reread(self, actors):
+        """A fresh reading of these actors, and their lines."""
+        models, banks = self._maps()
+        for actor in actors:
+            actor.parts = self._parts(actor, models)
+            self._sprite(actor, banks)
+            self._place(actor)
+            actor.turns = self._turns(actor)
+        self.capture_lines(actors)
 
     def _run_actor(self, actor, budget):
         cpu, mem = self.cpu, self.mem
@@ -661,6 +743,7 @@ class World:
             actor.dead = True
         finally:
             self.running = None
+        actor.shown |= bool(read(actor.address + ACTIVE, 1))
         if read(actor.address + LIFECYCLE, 1) == DESTROY_STATE:
             actor.revived += 1
             state = before[LIFECYCLE]
@@ -672,7 +755,10 @@ class World:
                     mem.load(actor.address, before)
                 actor.dead = True
             else:
+                actor.discarded |= not actor.shown and not self.finished
                 mem.load(actor.address, before)
+        actor.changed = (mem.bytes(actor.address + LIFECYCLE, 2)
+                         != before[LIFECYCLE:LIFECYCLE + 2])
 
     def _snapshot(self):
         """Keep each actor's first complete reading - the pose it takes as
@@ -941,8 +1027,33 @@ class World:
             mem.load(CAMERA, struct.pack("<9h2x3i", 0x1000, 0, 0, 0, 0x1000, 0,
                                          0, 0, 0x1000, 0, 0, 0))
             mem.write(ORDERING_TABLE, 4, ot)
+            mem.write(ANIMATION_FRAME, 2, 0)
+
+            def draw(actor, offset, routine):
+                """([line], [textured polygon]) one pass puts out."""
+                mem.load(ot, bytes(OT_SLOTS * 4))
+                mem.write(PRIMITIVE_CURSOR, 4, primitives)
+                if offset == CALLBACK:
+                    mem.write(actor.address + ACTIVE, 1, 0)
+                    mem.write(PART_BUDGET, 2, PART_BUDGET_HELD)
+                elif offset is None:
+                    mem.write(queue, 4, actor.address)
+                    mem.write(actor.address + ACTIVE, 1, 1)
+                    mem.write(QUEUE_HELD, 1, 1)
+                    mem.write(QUEUE_COUNT, 2, 1)
+                    mem.write(QUEUE_LIST, 4, queue)
+                cpu.gte.capture = {}
+                self.running = actor.address
+                try:
+                    cpu.call(routine, (actor.address, 0, 0), budget=budget, sp=STACK)
+                except EmuError:
+                    pass
+                finally:
+                    self.running = None
+                return self._read_primitives(ot, cpu.gte.capture)
+
             for actor in list(self.actors if actors is None else actors):
-                lines, polys, passes = [], [], []
+                lines, polys, passes, painters = [], [], [], []
                 for offset in (DRAW, CALLBACK):
                     routine = mem.read(actor.address + offset, 4)
                     if self._code(routine) and not (offset == CALLBACK and actor.dead):
@@ -955,32 +1066,18 @@ class World:
                     quiet = actor.silent.get(offset, 0)
                     if quiet is not None and quiet >= QUIET_CAPTURES:
                         continue
-                    mem.load(ot, bytes(OT_SLOTS * 4))
-                    mem.write(PRIMITIVE_CURSOR, 4, primitives)
-                    if offset == CALLBACK:
-                        mem.write(actor.address + ACTIVE, 1, 0)
-                        mem.write(PART_BUDGET, 2, PART_BUDGET_HELD)
-                    elif offset is None:
-                        mem.write(queue, 4, actor.address)
-                        mem.write(actor.address + ACTIVE, 1, 1)
-                        mem.write(QUEUE_HELD, 1, 1)
-                        mem.write(QUEUE_COUNT, 2, 1)
-                        mem.write(QUEUE_LIST, 4, queue)
-                    cpu.gte.capture = {}
-                    self.running = actor.address
-                    try:
-                        cpu.call(routine, (actor.address, 0, 0), budget=budget, sp=STACK)
-                    except EmuError:
-                        pass
-                    finally:
-                        self.running = None
-                    drawn_lines, drawn_polys = self._read_primitives(ot, cpu.gte.capture)
+                    drawn_lines, drawn_polys = draw(actor, offset, routine)
                     lines.extend(drawn_lines)
                     polys.extend(drawn_polys)
+                    if drawn_polys:
+                        painters.append((offset, routine))
                     if drawn_lines or drawn_polys:
                         actor.silent[offset] = None
                     elif actor.ran and quiet is not None:
                         actor.silent[offset] = quiet + 1
+                if painters and actor.uv_frames is None:
+                    actor.uv_frames = self._uv_frames(
+                        lambda: [p for o, r in painters for p in draw(actor, o, r)[1]])
                 if (lines or polys) and actor.position is not None:
                     # Drawn frames after the pose was read: moved back with the
                     # actor, and a point nowhere near it is a misread vertex.
@@ -1025,6 +1122,50 @@ class World:
             actor.lines = tuple(found[id(actor)][1]) if id(actor) in found else ()
             actor.polys = tuple(found[id(actor)][2]) if id(actor) in found else ()
         return len(found)
+
+    def _uv_frames(self, paint):
+        """{CLUT word: ((du, dv), ...)} - one period, a frame each, of how the
+        UVs of the polygons `paint` puts out move together as ANIMATION_FRAME
+        counts from 0. Every frame is drawn from the same RAM, put back after."""
+        mem = self.mem
+        ram, scratch = bytes(mem.ram), bytes(mem.scratch)
+
+        def at(frame):
+            mem.ram[:] = ram
+            mem.scratch[:] = scratch
+            mem.write(ANIMATION_FRAME, 2, frame)
+            return paint()
+
+        try:
+            base = at(0)
+            still = [p[1] for p in base]
+            if all([p[1] for p in at(f)] == still for f in FRAME_PROBES):
+                return {}
+            frames = [base] + [at(f) for f in range(1, FRAME_CYCLE)]
+        finally:
+            mem.ram[:] = ram
+            mem.scratch[:] = scratch
+        moves = {}                      # CLUT word -> [{(du, dv)} per frame]
+        for polys in frames:
+            if len(polys) != len(base) or any(p[3] != b[3] for p, b in zip(polys, base)):
+                return {}
+            now = {}
+            for poly, first in zip(polys, base):
+                now.setdefault(first[3], set()).update(
+                    (u - u0, v - v0) for (u, v), (u0, v0) in zip(poly[1], first[1]))
+            for clut, found in now.items():
+                moves.setdefault(clut, []).append(found)
+        out = {}
+        for clut, per_frame in moves.items():
+            if any(len(found) != 1 for found in per_frame):
+                continue
+            steps = [next(iter(found)) for found in per_frame]
+            if all(step == (0, 0) for step in steps):
+                continue
+            period = next(p for p in range(1, FRAME_CYCLE + 1) if FRAME_CYCLE % p == 0
+                          and all(steps[k] == steps[k % p] for k in range(FRAME_CYCLE)))
+            out[clut] = tuple(steps[:period])
+        return out
 
     def _read_primitives(self, ot, points):
         """([line], [textured polygon]) linked into the ordering table."""

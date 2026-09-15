@@ -69,7 +69,10 @@ Each of the N pointers locates one entry - one plane:
     table3 [ptr3 .. ptr4)       : 8-byte records - the surfaces stacked in
                                   one cell: (u16 kind, s16 pos, s16 rise,
                                   u16 normal).
-                                    kind  - low nibble is a surface type
+                                    kind  - low nibble is a surface type:
+                                            bit 0 a floor, bits 2/3 a wall
+                                            blocking one way or the other
+                                            along the plane - see walls()
                                     pos   - the surface's height; height
                                             in the viewers is -pos
                                     rise  - how much higher the surface
@@ -105,6 +108,12 @@ from dataclasses import dataclass, field
 # with a shift, so it is a hard 64 everywhere.
 CELL = 64
 
+# table3 kind bits f_ResolveTerrainProbeHorizontalSurfaceBySideMask tests:
+# a record with a side bit blocks an actor moving that way along the plane.
+WALL_SIDES = 0x0C
+WALL_EXIT = 0x40            # stands where the plane leaves the cell
+WALL_SLOPE = 0x80           # a ramp, tested by its height across the cell
+
 
 def _u16(b, o):
     return struct.unpack_from("<H", b, o)[0]
@@ -138,6 +147,25 @@ def cell_line(flags, profile):
     else:
         across = along
     across = max(0, min(0x3F, across))
+    return _placed(flags, along, across)
+
+
+def wall_foot(flags, profile, kind):
+    """(local x, local z) a wall record stands at in its cell: where the
+    plane's line enters the cell, or leaves it with WALL_EXIT - the point
+    f_EvaluateTerrainHorizontalSurface pushes a blocked probe back to."""
+    lo, hi = profile & 0xFF, profile >> 8
+    if kind & WALL_EXIT:
+        along, across = 0x3F, hi
+    elif flags & 0x8:
+        along, across = 0, lo
+    else:
+        along, across = lo, 0
+    return _placed(flags, min(along, 0x3F), min(across, 0x3F))
+
+
+def _placed(flags, along, across):
+    """A canonical cell point turned into place by the cell's flags."""
     if flags & 0x4:
         along, across = across, along     # transposed cell
     if flags & 0x2:
@@ -280,22 +308,22 @@ class SCLDEntry:
         """The table3 record index behind each point of trace()."""
         return [r for r, _cell in self.placed()]
 
-    def wall_candidates(self):
-        """Each cell's records joined bottom to top - the stack of
-        surfaces standing at one 64-unit square.
-
-        Which of those pairs is a real wall face is not decoded; these
-        are all of them, for checking by eye."""
+    def walls(self):
+        """Every wall record as a (bottom, top) pair in the viewers' axes:
+        a kind with a WALL_SIDES bit and no WALL_SLOPE, standing at its
+        wall_foot() from its height to its height plus its rise."""
         out = []
         for cell in self.cells():
             if not cell.leaf:
                 continue
-            column = sorted((r for r in range(cell.first,
-                                              min(cell.first + cell.count,
-                                                  len(self.path)))),
-                            key=lambda r: self.path[r].pos)
-            pts = [self._point(self.path[r], cell) for r in column]
-            out.extend([a, b] for a, b in zip(pts, pts[1:]))
+            for r in range(cell.first, min(cell.first + cell.count, len(self.path))):
+                record = self.path[r]
+                if not record.kind & WALL_SIDES or record.kind & WALL_SLOPE:
+                    continue
+                lx, lz = wall_foot(cell.flags, cell.profile, record.kind)
+                gx, gz = cell.x + lx, cell.z + lz
+                out.append(((gz, -record.pos, gx),
+                            (gz, -(record.pos + record.elevation), gx)))
         return out
 
     def _point(self, record, cell):

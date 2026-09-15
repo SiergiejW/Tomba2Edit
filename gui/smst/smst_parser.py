@@ -57,7 +57,7 @@ MainWindow._load_area_vram_bytes(merge_common=True).
 import struct
 from dataclasses import dataclass
 
-from functions import psx_vram
+from functions import draw_order, psx_vram
 from functions.format_detect import FormatError, smst_groups
 
 TRI_SIZE = 36
@@ -262,6 +262,7 @@ def parse_smst(data, address=0):
                             min(v[2] for v in own), max(v[2] for v in own))
         model["groups"].append(group)
 
+    model["face_levels"] = draw_order.face_levels(model, "group")
     return model
 
 

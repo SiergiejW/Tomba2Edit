@@ -122,6 +122,9 @@ PURIFIED_CHUNKS = range(0x1B, 0x23)
 FRESH, EVENTS_DONE, BOTH = "fresh", "done", "both"
 AFTER_EVENTS = ("⧖ only with every event done - each save byte this area's "
                 "code reads set to 0xFF (actor_sim.progress_bytes)")
+# actor_sim Actor.discarded - A05's ice cubes once the ranch is purified.
+DISCARDED_NOTE = ("its code destroys it before any frame draws it - not in the "
+                  "level as it opens, so nothing of it is drawn")
 # Rows of the two runs this close, in world units, are the same row; an
 # assembly moved less than MOVED has not moved; a row further than
 # MERGE_REACH outside every row of the first run stands nowhere real.
@@ -523,10 +526,11 @@ def _at_origin(position):
     return position is None or (abs(position[0]) < 1 and abs(position[2]) < 1)
 
 
-def drawn_model(polys, to_view):
+def drawn_model(polys, to_view, uv_frames=None):
     """A one-group model of captured textured polygons (actor_sim
     .textured_primitives), both windings, or None for none. Page and blend
-    mode are the packet's own page word."""
+    mode are the packet's own page word; `uv_frames` is actor_sim's
+    {CLUT word: steps}, kept by CLUT address."""
     model = {"vertices": [], "vertex_colors": [], "texture_coords": [], "faces": [],
              "texture_info": [], "face_flags": [], "tri_count": 0, "quad_count": 0}
     for corners, uvs, colours, clut, blended, page_word in polys:
@@ -548,6 +552,8 @@ def drawn_model(polys, to_view):
         model["quad_count" if len(corners) == 4 else "tri_count"] += 1
     if not model["faces"]:
         return None
+    model["uv_frames"] = {environment_meshes.clut_address(clut): steps
+                          for clut, steps in (uv_frames or {}).items()}
     model["groups"] = [SimpleNamespace(
         index=0, first_vertex=0, vertex_count=len(model["vertices"]),
         first_face=0, face_count=len(model["faces"]), tris=model["tri_count"],
@@ -953,14 +959,17 @@ class LevelScene:
         """A Posed out of a group of simulated actors, or None if they
         drew nothing this scene can show."""
         pieces, owners = [], []
+        discarded = [a for a in actors if a.discarded]
         for number, a in enumerate(actors):
+            if a.discarded:
+                continue
             for p in a.parts:
                 if self.group(p.source)[1] is not None:
                     pieces.append(p)
                     owners.append((number, self.handler_name(a.handler), a.position))
         riders = []
         for a in actors:
-            if a.parts:
+            if a.parts or a.discarded:
                 continue
             art = self._sim_art(a)
             if art is not None and not _at_origin(a.position):
@@ -968,12 +977,15 @@ class LevelScene:
                 riders.append(actor_sim.Rider(
                     label or self.handler_name(a.handler), a.reward,
                     a.position, art, a.quad))
-        if not pieces and not riders:
+        if not pieces and not riders and not discarded:
             return None
         spawned = len(actors) - 1
         note = (f"built by running its own code: {len(pieces)} parts"
                 + (f", {spawned} spawned actor(s)" if spawned else "")
                 + f"<br>handler {self.handler_name(anchor.handler)}")
+        if discarded:
+            note += (f"<br>{DISCARDED_NOTE}: "
+                     + ", ".join(sorted({self.handler_name(a.handler) for a in discarded})))
         return actor_sim.Posed(name, note, pieces, riders, position, yaw, owners)
     def built_actor(self, handler):
         """([(file, group), ...], offsets) for a class the code builds
@@ -1206,6 +1218,7 @@ class LevelScene:
         instances = []
         self.lines, drew = [], set()
         drawn = {}                  # (owner, scene) -> textured polygons
+        stepped = {}                # (owner, scene) -> {CLUT word: UV steps}
 
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
@@ -1215,6 +1228,7 @@ class LevelScene:
                 drew.add(id(actor))
                 if actor.polys:
                     drawn.setdefault((owner, scene), []).extend(actor.polys)
+                    stepped.setdefault((owner, scene), {}).update(actor.uv_frames or {})
                 for a, b, color_a, color_b, blended in actor.lines:
                     self.lines.append(SceneLine(owner, scene, view_point(a),
                                                 view_point(b), color_a, color_b,
@@ -1265,7 +1279,7 @@ class LevelScene:
             sources, offsets = (), ()
             assembly = None
             kept_sprite = None
-            hidden = actor is not None and actor.hidden
+            hidden = actor is not None and (actor.hidden or actor.discarded)
             # The sprite tables go by handler, and one handler can give a
             # slot a model instead (f_UpdateDonglinInteriorQuestObjectActor,
             # slot 10) - what the code attached decides.
@@ -1337,7 +1351,8 @@ class LevelScene:
             _model, group = self.group(sources[0] if sources else None)
             note = assembly.note if assembly is not None else ""
             if hidden:
-                note = "its code sets its draw count (+0x08) to 0: nothing of it is drawn"
+                note = (DISCARDED_NOTE if actor.discarded else
+                        "its code sets its draw count (+0x08) to 0: nothing of it is drawn")
             if gate:
                 note = f"{note}<br>{gate}" if note else gate
             instances.append(Instance(
@@ -1550,7 +1565,7 @@ class LevelScene:
         # model each, already in world coordinates.
         if drawn:
             for number, ((owner, scene), polys) in enumerate(drawn.items()):
-                model = drawn_model(polys, view_point)
+                model = drawn_model(polys, view_point, stepped.get((owner, scene)))
                 if model is None:
                     continue
                 self.models[DRAWN_ID + number] = model
@@ -1563,7 +1578,8 @@ class LevelScene:
                     sources=((DRAWN_ID + number, 0),), authored=True, scene=scene,
                     x=float(cx), y=float(cy), z=float(cz), name=f"{head}: drawn by its code",
                     note=f"{len(polys)} textured polygon(s) its draw routine put out "
-                         f"(actor_sim.capture_lines), on the page their packets name"))
+                         f"(actor_sim.capture_lines), on the page their packets name"
+                         + (", UVs stepped by the frame counter" if model["uv_frames"] else "")))
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
@@ -1616,7 +1632,7 @@ class LevelScene:
         `groups` holding instances instead of a model's parts."""
         scene = {
             "vertices": [], "vertex_colors": [], "faces": [],
-            "texture_coords": [], "texture_info": [], "face_flags": [],
+            "texture_coords": [], "texture_info": [], "face_flags": [], "face_levels": [],
             "tri_count": 0, "quad_count": 0, "groups": self.instances,
         }
         for instance in self.instances:
@@ -1670,10 +1686,14 @@ class LevelScene:
         scene["vertex_colors"].extend(model["vertex_colors"][first:first + count])
         scene["texture_coords"].extend(model["texture_coords"][first:first + count])
         flags = model.get("face_flags") or ()
+        levels = model.get("face_levels") or ()
         for f in range(face_first, face_first + face_count):
             scene["faces"].append([v + shift for v in model["faces"][f]])
             scene["texture_info"].append(model["texture_info"][f])
             scene["face_flags"].append(flags[f] if f < len(flags) else 0)
+            scene["face_levels"].append(levels[f] if f < len(levels) else 0.0)
+        if model.get("uv_frames"):
+            scene.setdefault("uv_frames", {}).update(model["uv_frames"])
 
     def positions(self, scene):
         """Every vertex with its instance's transform applied.

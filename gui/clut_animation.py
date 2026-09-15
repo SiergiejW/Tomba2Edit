@@ -131,6 +131,12 @@ class ClutAnimationMixin:
         except Exception as e:
             print(f"Could not look for UV animations: {e}")
             self.uv_animations = {}
+        # Stepped by a draw routine, one game frame each - read off its code
+        # (actor_sim._uv_frames), so it wins over the guess off the page.
+        for clut, frames in ((model or {}).get("uv_frames") or {}).items():
+            if clut in used:
+                self.uv_animations[clut] = uv_anim.UVAnimation(clut, None, None,
+                                                               list(frames), ticks=1)
 
         flags = set((model or {}).get("face_flags") or ())
         self.window_rules = tuple(
@@ -216,7 +222,7 @@ class ClutAnimationMixin:
 
         moved = {}
         for address, animation in self.uv_animations.items():
-            frame = (self.anim_tick // UV_TICKS_PER_FRAME) % len(animation)
+            frame = (self.anim_tick // (animation.ticks or UV_TICKS_PER_FRAME)) % len(animation)
             if not force and self.uv_shown.get(address) == frame:
                 continue
             self.uv_shown[address] = frame
