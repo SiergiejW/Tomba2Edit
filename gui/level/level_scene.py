@@ -19,9 +19,10 @@ moving are the same operation whatever was picked.
 WHAT IS PLACED AND WHAT IS NOT
 
 An object record says where and which way round, but not what to draw
-with - see functions/placement.py. A binding read back out of a
-savestate supplies that, for the areas labels/placements.json covers;
-an object with no binding is still shown, as a marker at its position,
+with - see functions/placement.py. Running the object's own code
+supplies that (functions/actor_sim.py), with corrections made by eye in
+labels/placements.json over it; an object with no model is still shown,
+as a marker at its position,
 because where a level's objects are is worth seeing whether or not we
 know what each one looks like yet.
 
@@ -194,6 +195,11 @@ class Instance:
     scene: int = None
     # A sprite object's picture, drawn beside the model its code also built.
     object_sprite: bool = False
+
+    @property
+    def timed(self):
+        """Gated or waiting on progress: its label carries the ⧖."""
+        return "⧖" in self.label
 
     # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
     # the instance's origin - filled by build().
@@ -576,9 +582,6 @@ class LevelScene:
         self.chest_models = {}
         # Where a chest's body and lid sit, already in view axes.
         self.chest_offsets = ()
-        # {chest bit: {"angle":, "y":}} put right by hand - see
-        # functions.placement.load_poses.
-        self.poses = {}
         # The area's collision planes, for the chests' headings.
         self.planes = []
         # {handler: [Sequence, ...]} for the classes that are sprites
@@ -598,8 +601,7 @@ class LevelScene:
         # which every area keeps loaded - see model().
         self.resident = {}
         self.bindings = {}
-        # Where each binding came from - "code", "savestate" or
-        # "corrected" - and the reader that produced the code ones.
+        # Where each binding came from - "code" or "corrected".
         self.binding_source = {}
         self.code = None
         self.instances = []
@@ -663,8 +665,6 @@ class LevelScene:
             if exe_path:
                 self.pickups = placement_module.load_pickups(overlay_path,
                                                              exe_path)
-                self.poses = placement_module.load_poses(
-                    os.path.basename(overlay_path))
                 try:
                     with open(overlay_path, "rb") as f:
                         raw = f.read()
@@ -745,16 +745,32 @@ class LevelScene:
         """A simulated sprite as art the billboards can draw."""
         if not actor.frames:
             return None
+        frames = tuple(pickup_art.Frame(frame=f, ticks=t) for f, t in actor.frames)
         if actor.bank == RESIDENT_SPRITES:
-            return self.reward_art.get(actor.reward)
-        if actor.bank == AREA_SPRITES:
-            return pickup_art.RewardArt(
-                reward=-1, width=0, height=0, item=-1, sequence=-1,
-                clut=pickup_art.AREA_BANK,
-                frames=tuple(pickup_art.Frame(frame=f, ticks=t)
-                             for f, t in actor.frames),
-                loops=actor.loops, name="")
-        return None
+            # A pickup's reward art carries its recolouring; anything else
+            # out of the shared bank keeps its own palette.
+            reward = self.reward_art.get(actor.reward)
+            if reward is not None and {f.frame for f in reward.frames} & {
+                    f.frame for f in frames}:
+                return reward
+            clut = pickup_art.OWN_PALETTE
+        elif actor.bank == AREA_SPRITES:
+            clut = pickup_art.AREA_BANK
+        else:
+            return None
+        return pickup_art.RewardArt(
+            reward=-1, width=0, height=0, item=-1, sequence=-1, clut=clut,
+            frames=frames, loops=actor.loops, name="")
+
+    @staticmethod
+    def _gate_note(actor):
+        """Why an actor would not be there in a fresh game, or ""."""
+        if actor.gated is not None:
+            return (f"⧖ gated: its scene record's condition {actor.gated[0]} "
+                    f"(argument {actor.gated[1]}) does not hold in a fresh game")
+        if actor.waiting:
+            return "⧖ its init waits on progress a fresh game has not made"
+        return ""
 
     def _spawn_label(self, label, posed):
         """A spawned row's name: what its model is called, or which file
@@ -801,8 +817,7 @@ class LevelScene:
 
         Every part, every offset and the file itself come out of the one
         call that makes it - see functions/actor_models.py - so this is
-        preferred over standing a model up on a skeleton picked by fit,
-        and over a savestate binding that only ever saw one part."""
+        preferred over standing a model up on a skeleton picked by fit."""
         build = self.actor_builds.get(handler)
         if build is None:
             return None
@@ -913,27 +928,16 @@ class LevelScene:
         return self.chunk_index - FIRST_AREA_CHUNK
 
     def _bind(self, overlay_path, exe_path):
-        """Work out what each object is drawn with, best source first.
-
-        Three of them, and they are not equal. The handler's own code is
-        the only one that cannot be a coincidence, so where it settles a
-        class outright it wins over a savestate - AREA_1B's kind 20 slot
-        4 loads group 3 with an immediate, and the state that said group
-        2 had matched the wrong object. A savestate still covers the
-        classes the code does not reach or leaves with several answers,
-        and a correction made by eye beats both."""
+        """Work out what each object is drawn with: the handler's own code,
+        and over it a correction made by eye. Nothing comes from a
+        savestate - what a level holds is read off the disc."""
         name = os.path.basename(overlay_path)
         self.binding_source = {}
-        single = {}
-        for label in ("savestate", "corrected"):
-            section = (placement_module.LEARNED if label == "savestate"
-                       else placement_module.CORRECTED)
-            single[label] = {
-                key: (model,) for key, model
-                in placement_module.load_bindings(name, section=section).items()}
-        for label, found in (("savestate", single["savestate"]),
-                             ("code", self._code_bindings(overlay_path, exe_path)),
-                             ("corrected", single["corrected"])):
+        corrected = {key: (model,) for key, model in placement_module.load_bindings(
+            name, section=placement_module.CORRECTED).items()}
+        self.code_bindings = self._code_bindings(overlay_path, exe_path)
+        for label, found in (("code", self.code_bindings),
+                             ("corrected", corrected)):
             for key, models in found.items():
                 self.bindings[key] = models
                 self.binding_source[key] = label
@@ -944,8 +948,8 @@ class LevelScene:
         a MAIN.EXE beside it just falls back on the other sources."""
         if not exe_path or not os.path.exists(exe_path):
             self.notes.append(
-                "no MAIN.EXE beside this disc, so the objects' models come "
-                "from savestates rather than from the code that draws them")
+                "no MAIN.EXE beside this disc, so nothing says what the "
+                "objects are drawn with beyond corrections made by hand")
             return {}
         try:
             self.code = handler_models.CodeModels(exe_path, overlay_path)
@@ -1072,18 +1076,27 @@ class LevelScene:
                                   actor_sim.subtree(world, actor)))
         for record in self.placements:
             states = self.sprite_classes.get(record.handler) or ()
-            art = object_sprites.first_state(states)
+            actor = by_record.get(id(record))
             # A class drawn as a sprite has no model, and whatever
             # handler_models found for it was something else the handler
-            # touched - so it is dropped rather than drawn.
+            # touched - so it is dropped rather than drawn. The sprite its
+            # own code started wins over the class's first state: the tables
+            # go by handler, the code by slot.
+            class_art = object_sprites.first_state(states)
+            # The class's states belong to all its slots: once this one's
+            # code has run, only what it started is its sprite.
+            guess_class = actor is None or not actor.ran or actor.waiting
+            art = ((self._sim_art(actor) if actor is not None else None)
+                   or (object_sprites.as_art(class_art)
+                       if class_art and guess_class else None))
             sources, offsets = (), ()
             assembly = None
             kept_sprite = None
-            actor = by_record.get(id(record))
+            hidden = actor is not None and actor.hidden
             # The sprite tables go by handler, and one handler can give a
             # slot a model instead (f_UpdateDonglinInteriorQuestObjectActor,
             # slot 10) - what the code attached decides.
-            if actor is not None and (not art or actor.parts):
+            if actor is not None and (not art or actor.parts) and not hidden:
                 tree = actor_sim.subtree(world, actor)
                 near = [a for a in tree if a is actor or np.linalg.norm(
                     a.position - actor.position) <= CHILD_REACH]
@@ -1098,7 +1111,12 @@ class LevelScene:
                     assembly = None
                 if assembly is not None and art:
                     kept_sprite, art = art, None
-            if assembly is None and not art:
+            elif actor is not None and not hidden:
+                # A sprite's own spawns - 52.0's two clouds - stand apart.
+                loose.extend((f"{record.kind}.{record.slot} spawned: "
+                              f"{self.handler_name(a.handler)}", [a])
+                             for a in actor_sim.subtree(world, actor) if a is not actor)
+            if assembly is None and not art and not hidden:
                 assembly = actor_assembly.assemble(self.overlay_data, record)
                 if assembly is not None and not self._loads(assembly.sources):
                     assembly = None
@@ -1120,6 +1138,11 @@ class LevelScene:
                     and self.binding_source.get(record.key()) == "code"
                     and world._code(world.mem.read(actor.address + actor_sim.DRAW, 4))):
                 invisible = True
+            # Its code set its draw count (+0x08) to 0 - a door frame only
+            # drawn from inside, a warp - so no part of it is drawn.
+            if hidden:
+                invisible = True
+            gate = self._gate_note(actor) if actor is not None and not actor.parts else ""
             if assembly is not None:
                 sources = assembly.sources
             elif invisible:
@@ -1137,16 +1160,19 @@ class LevelScene:
             used.update(sources)
             x, y, z = view_position(record)
             _model, group = self.group(sources[0] if sources else None)
+            note = assembly.note if assembly is not None else ""
+            if hidden:
+                note = "its code sets its draw count (+0x08) to 0: nothing of it is drawn"
+            if gate:
+                note = f"{note}<br>{gate}" if note else gate
             instances.append(Instance(
                 index=len(instances), role="object",
-                label=f"{record.kind}.{record.slot}",
+                label=f"{'⧖ ' if gate else ''}{record.kind}.{record.slot}",
                 sources=tuple(sources), offsets=offsets, x=x, y=y, z=z,
                 name=(assembly.name if assembly is not None
                       else self.named(sources)),
                 angle=float(record.angle), placement=record,
-                art=object_sprites.as_art(art) if art else None,
-                assembly=assembly,
-                note=assembly.note if assembly is not None else "",
+                art=art, assembly=assembly, note=note,
                 authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
             if assembly is not None:
@@ -1158,7 +1184,7 @@ class LevelScene:
                 instances.append(Instance(
                     index=len(instances), role="spawned",
                     label=f"{record.kind}.{record.slot} sprite",
-                    art=object_sprites.as_art(kept_sprite), x=x, y=y, z=z,
+                    art=kept_sprite, x=x, y=y, z=z,
                     object_sprite=True,
                     note=f"the sprite state of {record.kind}.{record.slot}'s class"))
 
@@ -1169,7 +1195,6 @@ class LevelScene:
             _model, group = self.group(sources[0] if sources else None)
             art = self.reward_art.get(
                 record.contents if record.chest else record.art_reward)
-            pose = self.poses.get(record.bit) or {}
             offsets = ()
             if record.chest and not sources:
                 sources = self.chest_models.get(
@@ -1187,8 +1212,8 @@ class LevelScene:
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
                 offsets=offsets, name=self.named(sources),
-                x=x, y=pose.get("y", y), z=z, pickup=record,
-                angle=float(pose.get("angle", heading)), scene=scene,
+                x=x, y=y, z=z, pickup=record,
+                angle=float(heading), scene=scene,
                 authored=bool(group is not None
                               and world_placed(group, room_box))))
 
@@ -1233,6 +1258,8 @@ class LevelScene:
             if posed is None:
                 continue
             label = self._spawn_label(label, posed)
+            if self._gate_note(head):
+                label = f"⧖ {label}"
             x, y, z = view_point(head.position)
             index = len(instances)
             instances.append(Instance(
@@ -1265,12 +1292,14 @@ class LevelScene:
                 if root.spawner in within or _at_origin(root.position):
                     continue
                 tree = actor_sim.subtree(world, root, actors)
-                label = f"room {scene}: {self.handler_name(root.handler)}"
+                gate = self._gate_note(root)
+                label = (f"{'⧖ ' if gate else ''}room {scene}: "
+                         f"{self.handler_name(root.handler)}")
                 posed = self._posed(tree, root, root.position, 0, label)
                 if posed is None:
                     continue
                 note = (f"room {scene} (interior {scene - 1}), from its scene "
-                        f"table<br>{posed.note}")
+                        f"table<br>{posed.note}" + (f"<br>{gate}" if gate else ""))
                 x, y, z = view_point(root.position)
                 follow = None
                 if posed.sources:

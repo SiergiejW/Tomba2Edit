@@ -42,6 +42,10 @@ FILE_TABLE = 0x800ECF58
 FILE_SLOTS = 64
 PART_BUDGET = 0x800ED098
 PART_BUDGET_HELD = 0x4000
+# g_ActorPool0FreeCount: every transient effect spawner gives up below 7,
+# and the allocation hook never counts it down.
+POOL_FREE = 0x800E7E7C
+POOL_FREE_HELD = 0x40
 AREA_NUMBER = 0x800BF870
 HEAP = 0x80300000
 HEAP_END = 0x80780000
@@ -132,6 +136,8 @@ ACTIVE, KIND, SLOT, LIFECYCLE = 0x01, 0x02, 0x03, 0x04
 PART_FRAME, PART_COUNT = 0x08, 0x09
 LINKED, CALLBACK, FLAGS = 0x10, 0x1C, 0x28
 POSITION, SEQUENCE, BANK, TURN = 0x2C, 0x38, 0x3C, 0x54
+CLASS = 0x0C                        # allocation class; 6 is a transient effect
+EFFECT_CLASS = 6
 PARTS = 0xC0
 DESTROY_STATE = 3
 
@@ -140,10 +146,15 @@ BUDGET = 400_000
 # Extra passes for actors spawned too late in a run to have run at all.
 SETTLE_FRAMES = 2
 
-# pickup_art's sequence step encoding.
+# A sprite sequence step: frame u16, then ticks and an opcode
+# (f_AdvanceActorTimedFrameSequence).
 TICKS = 0x3FFF
 OPCODE = 0xC000
-STOP, GO_ON, JUMP, JUMP_RELOAD = 0x0000, 0x4000, 0x8000, 0xC000
+NEXT, JUMP, HOLD, JUMP_LOOP = 0x0000, 0x4000, 0x8000, 0xC000
+# A scene table record: kind, variant, slot, reward, x, y, z (i16), the
+# condition and its argument, the handler (u32) - 0xFF kind ends a list.
+SCENE_RECORD = 16
+SCENE_END = 0xFF
 MAX_STEPS = 64
 
 TRAILER_BYTES = 0x700
@@ -185,6 +196,15 @@ class Actor:
     # blended), points in game axes - see capture_lines.
     lines: tuple = ()
     ran: bool = False               # whether its handler has run at all
+    read_ran: bool = False          # whether its kept reading is from after it ran
+    # Ends the run with parts but a draw count (+0x08) of 0: nothing drawn.
+    hidden: bool = False
+    # Its init never finished - still in lifecycle state 0, waiting on
+    # something a fresh game doesn't have.
+    waiting: bool = False
+    # (condition, argument) of a scene record whose condition failed but
+    # was spawned anyway - see enter_scene.
+    gated: tuple = None
 
 
 class World:
@@ -222,6 +242,7 @@ class World:
             self.trail = self._trail(idx_path, chunk)
             self.dat = dat_path
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
+        mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
         if purified:
             mem.write(PURIFIED_AREAS, 2,
@@ -496,7 +517,14 @@ class World:
             parts = self._parts(actor, models)
             score = (sum(p.posed for p in parts), len(parts))
             best = (sum(p.posed for p in actor.parts), len(actor.parts))
-            if score > best or actor.position is None:
+            # A reading taken before its first run is no reading at all: a
+            # sprite's init starts its sequence, which no part score sees.
+            # Nor is one left at the origin: a linked child is only put
+            # beside its parent on its second run.
+            if (score > best or actor.position is None
+                    or (actor.ran and not actor.read_ran)
+                    or not actor.position.any()):
+                actor.read_ran = actor.ran
                 actor.parts = parts
                 self._sprite(actor, banks)
                 self._place(actor)
@@ -562,7 +590,91 @@ class World:
         if not made or not all(self._code(read(a.address + CALLBACK, 4))
                                for a in made):
             return None
+        made.extend(self._spawn_gated(spawner, controller, scene, made, budget))
         return made
+
+    def scene_records(self, spawner, scene):
+        """[(kind, variant, slot, reward, x, y, z, condition, argument,
+        handler)] of one scene's table, found through the spawner's own
+        reference to its table of lists, or [] if none reads right."""
+        read = self.mem.read
+        best = []
+        for table in self._spawner_tables(spawner):
+            pointer = read(table + scene * 4, 4)
+            records = self._records_at(pointer)
+            if records is not None and len(records) > len(best):
+                best = records
+        return best
+
+    def _spawner_tables(self, spawner):
+        """Overlay addresses a spawner builds with lui/addiu or lui/lw in
+        its first instructions - its table of scene lists among them."""
+        read, registers, out = self.mem.read, {}, []
+        for n in range(64):
+            word = read(spawner + n * 4, 4)
+            op, rs, rt, imm = word >> 26, (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
+            offset = imm - 0x10000 if imm & 0x8000 else imm
+            if op == 0x0F:
+                registers[rt] = imm << 16
+            elif op in (0x09, 0x23) and rs in registers:
+                target = (registers[rs] + offset) & 0xFFFFFFFF
+                if OVERLAY_BASE <= target < AREA_BASE and target not in out:
+                    out.append(target)
+        return out
+
+    def _records_at(self, pointer):
+        read = self.mem.read
+        if not OVERLAY_BASE <= pointer < AREA_BASE:
+            return None
+        records = []
+        while read(pointer, 1) != SCENE_END:
+            if len(records) >= 64:
+                return None
+            raw = self.mem.bytes(pointer, SCENE_RECORD)
+            kind, variant, slot, reward = raw[:4]
+            x, y, z = struct.unpack_from("<3h", raw, 4)
+            handler = struct.unpack_from("<I", raw, 12)[0]
+            if not self._code(handler):
+                return None
+            records.append((kind, variant, slot, reward, x, y, z, raw[10], raw[11], handler))
+            pointer += SCENE_RECORD
+        return records
+
+    def _spawn_gated(self, spawner, controller, scene, made, budget):
+        """The scene's records its spawner skipped - their condition does
+        not hold in a fresh game - allocated the way the spawner allocates
+        (f_AllocateActor, then position, reward and handler), marked gated."""
+        read, write = self.mem.read, self.mem.write
+        taken = {(read(a.address + CALLBACK, 4), read(a.address + SLOT, 1),
+                  s16(read(a.address + POSITION + 2, 2)),
+                  s16(read(a.address + POSITION + 10, 2))) for a in made}
+        out = []
+        for kind, variant, slot, reward, x, y, z, condition, argument, handler in (
+                self.scene_records(spawner, scene)):
+            if (handler, reward, x, z) in taken:
+                continue
+            first = len(self.actors)
+            self.running_scene = scene or None
+            try:
+                self.cpu.call(ALLOCATE_ACTOR, (controller, kind, variant, slot),
+                              budget=budget, sp=STACK)
+            except EmuError:
+                continue
+            finally:
+                self.running_scene = None
+            for actor in self.actors[first:first + 1]:
+                address = actor.address
+                write(address + POSITION, 4, (x << 16) & 0xFFFFFFFF)
+                write(address + POSITION + 4, 4, (y << 16) & 0xFFFFFFFF)
+                write(address + POSITION + 8, 4, (z << 16) & 0xFFFFFFFF)
+                for at in (TURN, TURN + 2, TURN + 4):
+                    write(address + at, 2, 0)
+                write(address + SLOT, 1, reward)
+                write(address + CALLBACK, 4, handler)
+                actor.gated = (condition, argument)
+                actor.scene = scene or None
+                out.append(actor)
+        return out
 
     def run_rooms(self, spawner, area_number, frames=FRAMES):
         """Every room the area's scene spawner has a table for, each run
@@ -702,8 +814,13 @@ class World:
 
     def _place(self, actor):
         read = self.mem.read
-        actor.position = np.array([s32(read(actor.address + POSITION + k * 4, 4))
-                                   / 65536.0 for k in range(3)])
+        if read(actor.address + CLASS, 1) == EFFECT_CLASS:
+            # f_SpawnTransientEffect*: whole shorts at +0x2C/+0x2E/+0x30.
+            actor.position = np.array([float(s16(read(actor.address + POSITION + k * 2, 2)))
+                                       for k in range(3)])
+        else:
+            actor.position = np.array([s32(read(actor.address + POSITION + k * 4, 4))
+                                       / 65536.0 for k in range(3)])
         actor.reward = read(actor.address + SLOT, 1)
 
     def _parts(self, actor, models):
@@ -714,8 +831,11 @@ class World:
         read, mem, a = self.mem.read, self.mem, actor.address
         count = read(a + PART_COUNT, 1)
         drawn = read(a + PART_FRAME, 1)
-        if drawn and count:
-            count = min(count, drawn)
+        # f_BuildActorModelPartPrimitives draws the first +0x08 of the +0x09
+        # parts; a door that sets +0x08 to 0 draws nothing at all.
+        actor.hidden = bool(count and not drawn)
+        actor.waiting = actor.ran and read(a + LIFECYCLE, 1) == 0
+        count = min(count, drawn)
         turn = struct.unpack("<3h", mem.bytes(a + TURN, 6))
         root_m = rot_xyz(turn)
         root_t = np.array([s32(read(a + POSITION + k * 4, 4)) / 65536.0
@@ -761,6 +881,11 @@ class World:
         self._snapshot()
 
     def _sequence(self, address):
+        """((frame, ticks), ...) and whether it loops, stepped the way
+        f_AdvanceActorTimedFrameSequence steps it: 0x0000 moves on to the
+        next pair, 0x4000 and 0xC000 jump through the pointer after it,
+        0x8000 holds - and so does a step of 0 ticks, which never counts
+        down to its end."""
         read, frames, seen = self.mem.read, [], set()
         while len(frames) < MAX_STEPS and address:
             if address in seen:
@@ -769,9 +894,9 @@ class World:
             frame, control = read(address, 2), read(address + 2, 2)
             frames.append((frame, control & TICKS))
             opcode = control & OPCODE
-            if opcode == STOP:
+            if opcode == HOLD or not control & TICKS:
                 break
-            if opcode in (JUMP, JUMP_RELOAD):
+            if opcode in (JUMP, JUMP_LOOP):
                 address = read(address + 4, 4)
             else:
                 address += 4

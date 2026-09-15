@@ -20,9 +20,9 @@ import math
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QColor, QFont, QMatrix4x4, QPainter, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -57,6 +57,11 @@ KIND_COLORS = {
 }
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
+# Drawn at the top right of anything gated or timed.
+BADGE = "⧖"
+BADGE_COLOR = QColor(255, 214, 0)
+BADGE_SHADOW = QColor(0, 0, 0, 200)
+BADGE_POINT_SIZE = 14
 # F frames the selection no closer than this, world units.
 FRAME_MIN_RADIUS = 150.0
 
@@ -218,6 +223,7 @@ class LevelViewer(SMSTViewer):
         self.marker_vbo = QOpenGLBuffer()
         self.marker_cbo = QOpenGLBuffer()
         self.marker_count = 0
+        self._badge_cache = None            # [(instance index, box corners)]
         self._marker_arrays = None
         self.selection_vao = QOpenGLVertexArrayObject()
         self.selection_vbo = QOpenGLBuffer()
@@ -283,6 +289,7 @@ class LevelViewer(SMSTViewer):
         self.pose = None
         self.pose_pivots = None
         self.model_data = scene.build() if scene is not None else None
+        self._badge_cache = None
         self._face_instance = None
         # A drag in progress refers to the instance list being replaced,
         # so it cannot survive the reload - dragging on into the new
@@ -490,6 +497,7 @@ class LevelViewer(SMSTViewer):
         self.refresh_positions()
         self.rebuild_markers()
         self._build_selection()
+        self._badge_cache = None
         self._face_instance = None
         self._sprite_dirty = True
         self.update()
@@ -1290,6 +1298,84 @@ class LevelViewer(SMSTViewer):
         GL.glEnable(GL.GL_DEPTH_TEST)
 
     def paintGL(self):
+        self._paint_level()
+        self._paint_badges()
+
+    def _badges(self):
+        """[(instance index, its box's 8 corners as GL-unit xyzw)] for
+        every timed instance."""
+        if self._badge_cache is None:
+            out, positions = [], None
+            for instance in self.instances:
+                if instance.role == "room" or not instance.timed:
+                    continue
+                if instance.vertex_count:
+                    if positions is None:
+                        positions = self._positions()
+                    verts = positions[instance.first_vertex:
+                                      instance.first_vertex + instance.vertex_count]
+                    (x0, y0, z0), (x1, y1, z1) = verts.min(axis=0), verts.max(axis=0)
+                else:
+                    box = self._instance_box(instance)
+                    if box is None:
+                        continue
+                    x0, x1, y0, y1, z0, z1 = (v / UNIT_SCALE for v in box)
+                corners = np.array([(x, y, z, 1.0) for x in (x0, x1)
+                                    for y in (y0, y1) for z in (z0, z1)])
+                out.append((instance.index, corners))
+            self._badge_cache = out
+        return self._badge_cache
+
+    def _paint_badges(self):
+        """A yellow ⧖ at the top right of each timed instance on screen."""
+        badges = self._badges() if self.scene is not None else ()
+        if not badges:
+            return
+        mvp = np.array(self._model_view_projection().data(),
+                       dtype=np.float64).reshape(4, 4).T
+        width, height = self.width(), self.height()
+        spots = []
+        for index, corners in badges:
+            if index in self.hidden_groups:
+                continue
+            clip = corners @ mvp.T
+            front = clip[:, 3] > 1e-6
+            if not front.any():
+                continue
+            ndc = clip[front, :3] / clip[front, 3:4]
+            if (ndc[:, 0].max() < -1 or ndc[:, 0].min() > 1
+                    or ndc[:, 1].max() < -1 or ndc[:, 1].min() > 1
+                    or ndc[:, 2].min() > 1):
+                continue
+            spots.append(QPointF((min(ndc[:, 0].max(), 1.0) + 1) * 0.5 * width,
+                                 (1 - min(ndc[:, 1].max(), 1.0)) * 0.5 * height
+                                 + BADGE_POINT_SIZE))
+        if not spots:
+            return
+        # QPainter leaves its own GL state behind; the scene pass assumes ours.
+        depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
+        cull = GL.glIsEnabled(GL.GL_CULL_FACE)
+        blend = GL.glIsEnabled(GL.GL_BLEND)
+        viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+        painter = QPainter(self)
+        try:
+            font = QFont(painter.font())
+            font.setPointSize(BADGE_POINT_SIZE)
+            font.setBold(True)
+            painter.setFont(font)
+            for spot in spots:
+                painter.setPen(BADGE_SHADOW)
+                painter.drawText(spot + QPointF(1.5, 1.5), BADGE)
+                painter.setPen(BADGE_COLOR)
+                painter.drawText(spot, BADGE)
+        finally:
+            painter.end()
+        for flag, on in ((GL.GL_DEPTH_TEST, depth), (GL.GL_CULL_FACE, cull),
+                         (GL.GL_BLEND, blend)):
+            (GL.glEnable if on else GL.glDisable)(flag)
+        GL.glViewport(*[int(v) for v in viewport])
+
+    def _paint_level(self):
         self._sync_lines()
         super().paintGL()
         self.draw_sprites()

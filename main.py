@@ -1,6 +1,12 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 
+# Labels carry symbols a Windows console codepage cannot print (the gated
+# mark); a print must never be what brings the app down.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 version = "0.3.8"
 
 

@@ -7,11 +7,9 @@ the view and fills the boxes below, and picking something in the view
 selects its row; they are two ways at the same list.
 
 An object whose model is not known is shown as a marker (see
-gui/level/level_scene.py). "Learn from savestate" is how one stops
-being a marker: point it at a PCSX state taken in this area and the
-objects standing still in it get bound to what the game was drawing
-them with, which is knowledge nothing on the disc carries. See
-functions/placement.py.
+gui/level/level_scene.py). What everything is drawn with comes off the
+disc - the objects' own code, run - and a model picked by hand here can
+be kept in labels/placements.json.
 """
 import json
 import os
@@ -123,9 +121,7 @@ class LevelEditorPanel(QWidget):
         self.model_box = QComboBox(self)
         self.model_box.setToolTip(
             "Which part of the area's models this object is drawn with.\n\n"
-            "Read out of the code that draws it where that settles it "
-            "outright, otherwise out of whatever a savestate taught "
-            "labels/placements.json - and yours to change either way. A "
+            "Read out of the code that draws it, and yours to change. A "
             "class that attaches several models over its life is left for "
             "you to pick from.")
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
@@ -150,20 +146,10 @@ class LevelEditorPanel(QWidget):
         edit_layout.addWidget(self.details)
         edit_layout.addLayout(form)
 
-        self.learn_button = QPushButton("Learn from savestate...", self)
-        self.learn_button.setToolTip(
-            "Read a PCSX savestate taken in this area and bind the objects "
-            "standing still in it to the models the game was drawing them "
-            "with.")
-        self.learn_button.clicked.connect(self._learn)
         self.keep_button = QPushButton("Keep models", self)
         self.keep_button.setToolTip(
-            "Write the model each object is set to into "
-            "labels/placements.json, so this area opens with them next "
-            "time. What a savestate teaches is a good start and not always "
-            "right - two objects standing on the same spot are told apart "
-            "by eye, not by matching - so a correction made here is worth "
-            "keeping.")
+            "Write the models picked by hand into labels/placements.json, "
+            "so this area opens with them next time.")
         self.keep_button.clicked.connect(self._keep_models)
         self.name_button = QPushButton("Name model...", self)
         self.name_button.setToolTip(
@@ -180,7 +166,6 @@ class LevelEditorPanel(QWidget):
         self.save_button.clicked.connect(self._save_overlay)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.addWidget(self.learn_button)
         buttons.addWidget(self.keep_button)
         buttons.addWidget(self.name_button)
         buttons.addWidget(self.save_button)
@@ -268,7 +253,7 @@ class LevelEditorPanel(QWidget):
         return out
 
     def _enable(self, on):
-        for widget in (self.table, self.model_box, self.learn_button,
+        for widget in (self.table, self.model_box,
                        self.keep_button, self.save_button, *self.boxes.values()):
             widget.setEnabled(on)
 
@@ -670,7 +655,6 @@ class LevelEditorPanel(QWidget):
         where = (self.scene.binding_source.get(key)
                  if key is not None else None)
         told = {"code": "read out of the handler's own code",
-                "savestate": "learned from a savestate",
                 "corrected": "corrected by hand"}.get(where)
         self.details.setText(instance.describe()
                              + (f"<br><i>model {told}</i>" if told else ""))
@@ -754,91 +738,7 @@ class LevelEditorPanel(QWidget):
         if selected is not None:
             self.viewer.select(selected)
 
-    # --- learning and saving ------------------------------------------
-
-    def _learn(self):
-        if self.scene is None or not self.scene.overlay_path:
-            QMessageBox.information(
-                self, "Nothing to learn against",
-                "This area has no overlay, so there is no object table to "
-                "bind anything to.")
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open a PCSX savestate taken in this area", "",
-            "Savestate (*.000 *.001 *.002 *.003 *.004 *.state *.gz);;"
-            "All files (*)")
-        if not path:
-            return
-        files = [(file_id, offset, size)
-                 for _i, file_id, offset, size in self.scene.files]
-        try:
-            learned = placement_module.bindings_from_state(
-                path, self.dat_path, self.scene.dat_start, self.scene.dat_end,
-                files, self.scene.placements, self.scene.overlay_path)
-        except placement_module.PlacementError as e:
-            QMessageBox.warning(self, "Couldn't read that state", str(e))
-            return
-        except Exception as e:
-            QMessageBox.critical(self, "Couldn't read that state", f"{e}")
-            return
-        if not learned:
-            QMessageBox.information(
-                self, "Nothing learned",
-                "Nothing in that state was standing exactly where a record "
-                "puts it.\n\nObjects that walk about never will, and a state "
-                "taken while the level was still loading has none of them "
-                "standing anywhere yet. Try one taken in the room, near this "
-                "area's fixed scenery.")
-            return
-        fresh = {k: v for k, v in learned.items()
-                 if self.scene.bindings.get(k) != v}
-        self.scene.bindings.update(learned)
-        changed = self.scene.apply_bindings()
-        self._rebuild()
-        keep = QMessageBox.question(
-            self, "Learned",
-            f"Bound {len(learned)} object(s), {len(fresh)} of them new - "
-            f"{changed} object(s) on screen changed.\n\n"
-            f"Keep them in labels/placements.json, so this area opens with "
-            f"them next time?")
-        if keep == QMessageBox.StandardButton.Yes:
-            self._store_bindings()
-
-    def _keep_poses(self):
-        """Write the pickups whose angle or height somebody has put right
-        into labels/placements.json, leaving every other area's alone.
-
-        A chest carries no angle at all and its height is only where the
-        record says before the game drops it onto the ground, so this is
-        the only place the corrected pose can live."""
-        if self.scene is None or not self.scene.overlay_path:
-            return 0
-        name = os.path.basename(self.scene.overlay_path)
-        poses = {}
-        for instance in self.scene.instances:
-            record = instance.pickup
-            if record is None:
-                continue
-            moved = {}
-            if round(instance.angle):
-                moved["angle"] = instance.angle
-            if round(instance.y) != -record.y:
-                moved["y"] = instance.y
-            if moved:
-                poses[record.bit] = moved
-        every = {}
-        for other in placement_module.load_poses(name):
-            every.setdefault(name, {})
-        every[name] = poses
-        # Every other overlay's poses are read back and written out
-        # unchanged, the way the bindings are.
-        data = placement_module._read_bindings()
-        for other, rows in (data.get(placement_module.POSED) or {}).items():
-            if other != name:
-                every[other] = {int(r["bit"]): {k: r[k] for k in ("angle", "y")
-                                                if k in r} for r in rows}
-        placement_module.save_poses(every)
-        return len(poses)
+    # --- saving -------------------------------------------------------
 
     def _keep_models(self):
         """Write the models the objects are set to into
@@ -857,32 +757,22 @@ class LevelEditorPanel(QWidget):
             key = instance_key(instance)
             if key is not None:
                 self.scene.bindings[key] = instance.sources
-        posed = self._keep_poses()
         if self._store_bindings():
             name = os.path.basename(self.scene.overlay_path)
             QMessageBox.information(
                 self, "Kept",
                 f"{len(placement_module.load_bindings(name, section=placement_module.CORRECTED))}"
                 f" correction(s) for this area are now in "
-                f"labels/placements.json, over the "
-                f"{len(placement_module.load_bindings(name, section=placement_module.LEARNED))}"
-                f" binding(s) read out of savestates."
-                + (f"\n\n{posed} pickup pose(s) kept too - the angle and "
-                   f"height a chest is aligned to, which its record does "
-                   f"not carry." if posed else ""))
+                f"labels/placements.json.")
 
     def _store_bindings(self):
         """Put this area's models in labels/placements.json, leaving
         every other area's alone. True if it was written.
 
-        They go in the corrections section: what a person settles on by
-        looking at the room is worth more than what matching a savestate
-        worked out, and only that section survives the correlation being
-        run again. Only what differs from what was learned is kept, so
-        the file stays a list of what somebody actually put right."""
+        Only what differs from what the code says is kept, so the file
+        stays a list of what somebody actually put right."""
         name = os.path.basename(self.scene.overlay_path)
-        learned = placement_module.load_bindings(
-            name, section=placement_module.LEARNED)
+        code = getattr(self.scene, "code_bindings", {}) or {}
         path = placement_module.bindings_path()
         corrections = {}
         try:
@@ -898,7 +788,7 @@ class LevelEditorPanel(QWidget):
         corrections[name] = {key: models[0]
                              for key, models in self.scene.bindings.items()
                              if len(models or ()) == 1
-                             and learned.get(key) != models[0]}
+                             and tuple(code.get(key, ())) != tuple(models)}
         try:
             placement_module.save_bindings(
                 corrections, section=placement_module.CORRECTED)

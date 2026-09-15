@@ -32,6 +32,7 @@ the resident chunk's own decompressed pixels - and then checked against
 more of them.
 """
 import gzip
+import struct
 
 import numpy as np
 
@@ -64,13 +65,7 @@ def _payload(path):
     if data[:2] == b"\x1f\x8b":
         return gzip.decompress(data)
     if data.startswith(b"DUCC"):
-        # placement.py already worked this format out; there is no
-        # reason for a second copy of it here.
-        from functions.placement import PlacementError, _duckstation_payload
-        try:
-            return _duckstation_payload(data)
-        except PlacementError as e:
-            raise StateVRAMError(str(e)) from e
+        return _duckstation_payload(data)
     return data
 
 
@@ -170,3 +165,39 @@ def resident_areas(vram, shards, chunk_vram, threshold=0.9):
         if total and same / total >= threshold:
             out.append(area)
     return sorted(out)
+
+
+# DuckStation savestate: 'DUCC', a version, a title and a serial, then a run
+# of u32 fields whose last four say how the payload is compressed, how big
+# it is either way, and where it starts.
+DUCK_TITLE = 128
+DUCK_SERIAL = 32
+DUCK_FIELDS = 4 + 4 + DUCK_TITLE + DUCK_SERIAL
+DUCK_COMPRESSION = DUCK_FIELDS + 8 * 4
+DUCK_NONE, DUCK_DEFLATE, DUCK_ZSTD = 0, 1, 2
+
+
+def _duckstation_payload(data):
+    """A DuckStation state's section stream, decompressed."""
+    kind, compressed, plain, at = struct.unpack_from("<4I", data,
+                                                     DUCK_COMPRESSION)
+    body = data[at:at + compressed]
+    if len(body) < compressed:
+        raise StateVRAMError("the state is cut short - its payload is missing")
+    if kind == DUCK_NONE:
+        return body
+    if kind == DUCK_DEFLATE:
+        import zlib
+        return zlib.decompress(body)
+    if kind == DUCK_ZSTD:
+        try:
+            import zstandard
+        except ImportError:
+            raise StateVRAMError(
+                "this state is Zstandard-compressed and the zstandard module "
+                "isn't installed. Either `pip install zstandard`, or set "
+                "DuckStation's Save State Compression to Deflate or None and "
+                "take the state again.")
+        return zstandard.ZstdDecompressor().decompress(
+            body, max_output_size=max(plain, 1) + 1)
+    raise StateVRAMError(f"unknown save state compression {kind}")

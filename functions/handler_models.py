@@ -48,15 +48,14 @@ WHAT THE CODE ALSO SETTLES
 The drawing record is 68 bytes with the model pointer at +0x40 and the
 matrix at +0x2C. Reading the model at +0 - which is where it appears to
 be if you find the records by their matrices - gives you the PREVIOUS
-record's model, and that is exactly the one-record shift
-functions.placement.bindings_from_state has to undo.
+record's model.
 
 WHAT IS NOT COVERED
 
 A handler that never reaches an attach routine draws nothing, or draws
 through something this does not follow; those come back unbound and the
 Level Editor shows them as markers. Run this module as a script to
-check what it does say against everything the savestates learned.
+check what it does say against the corrections made by hand.
 """
 import collections
 import os
@@ -905,7 +904,7 @@ def bindings_from_code(placements, exe_path, overlay_path, overlay_base=None):
 
 
 # --------------------------------------------------------------------
-# Checking it against what the savestates worked out
+# Checking it against the hand corrections
 # --------------------------------------------------------------------
 
 def _check(cd_folder, bin_folder, exe_path):
@@ -936,9 +935,9 @@ def _check(cd_folder, bin_folder, exe_path):
               f"{len(set(found) - set(known))} new")
         for key in sorted(wrong):
             print(f"    {key[0]}.{key[1]} handler 0x{key[2]:08X}: "
-                  f"code {found[key]}, states {known[key]}")
-    print(f"\ntotal: {agree} agree, {disagree} disagree, {fresh} the states "
-          f"never learned, {missing} the code does not reach")
+                  f"code {found[key]}, corrected {known[key]}")
+    print(f"\ntotal: {agree} agree, {disagree} disagree, {fresh} uncorrected, "
+          f"{missing} the code does not reach")
 
 
 if __name__ == "__main__":
