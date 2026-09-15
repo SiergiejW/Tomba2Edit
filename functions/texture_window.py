@@ -22,6 +22,12 @@ per-vertex depth-cue flicker and nothing moves. The lava its drawer builds
 (FUN_A01__801311fc, functions/environment_meshes.py) is a real E2 window
 on the same counters, v scrolling by +1 a frame.
 
+A08, the Water Temple (FUN_A08__8012a7cc, cell drawers FUN_A08__80140fbc/
+801411d8 - room MDAT and actor parts alike): every frame DAT_A08__80145a6c
+steps u by 64 over three columns and each wrap steps v by 64 over three
+rows; a face flagged 0x04 has that cell added to its u/v - room 3's water
+surface among them.
+
 The counters all start at 0. Other areas set the same bits for other
 things, so the rules are per overlay.
 """
@@ -57,6 +63,7 @@ RULES = {
             Rule(2, 0x08, step=2, scroll_u=-1, scroll_step=2)),
     "A01": (Rule(1, 0x10, step=3, columns=4, rows=2, add=True, skip=QUAD | 0x80),
             Rule(2, GENERATED, step=3, columns=4, rows=2, scroll_v=1)),
+    "A08": (Rule(1, 0x04, step=1, columns=3, rows=3, add=True),),
 }
 
 
