@@ -766,6 +766,24 @@ class LevelScene:
             reward=-1, width=0, height=0, item=-1, sequence=-1, clut=clut,
             frames=frames, loops=actor.loops, name="")
 
+    def _actor_name(self, actor):
+        """A handler's name - or, for a chest or an item some code stood
+        up, what it is and what it gives."""
+        read = self.world.mem.read if self.world is not None else None
+        handler = actor.born[0] if actor.born else actor.handler
+        if read is not None and handler == actor_sim.CHEST_HANDLER:
+            kind = read(actor.address + actor_sim.SLOT, 1) & 0x7F
+            contents = (read(actor.address + actor_sim.CHEST_CONTENTS, 2)
+                        & actor_sim.CONTENTS_MASK)
+            art = self.reward_art.get(contents)
+            what = placement_module.CHEST_KINDS.get(kind, f"chest kind {kind}")
+            return f"{what}: {art.grants if art is not None else f'reward {contents}'}"
+        if read is not None and handler == actor_sim.SECONDARY_ITEM_HANDLER:
+            reward = read(actor.address + actor_sim.SLOT, 1) & 0x7F
+            art = self.reward_art.get(reward)
+            return art.grants if art is not None else f"item, reward {reward}"
+        return self.handler_name(actor.handler)
+
     @staticmethod
     def _gate_note(actor):
         """Why an actor would not be there in a fresh game, or ""."""
@@ -1079,7 +1097,7 @@ class LevelScene:
                 if (actor.record is None and actor.spawner is None
                         and actor.pickup is None
                         and actor.worker not in actor_sim.SHARED_WORKERS):
-                    loose.append((f"scene: {self.handler_name(actor.handler)}",
+                    loose.append((f"scene: {self._actor_name(actor)}",
                                   actor_sim.subtree(world, actor)))
         for record in self.placements:
             states = self.sprite_classes.get(record.handler) or ()
@@ -1108,7 +1126,7 @@ class LevelScene:
                 near = [a for a in tree if a is actor or np.linalg.norm(
                     a.position - actor.position) <= CHILD_REACH]
                 loose.extend((f"{record.kind}.{record.slot} spawned: "
-                              f"{self.handler_name(a.handler)}", [a])
+                              f"{self._actor_name(a)}", [a])
                              for a in tree if a not in near)
                 assembly = self._posed(
                     near, actor, np.array(record.position, dtype=np.float64),
@@ -1121,7 +1139,7 @@ class LevelScene:
             elif actor is not None and not hidden:
                 # A sprite's own spawns - 52.0's two clouds - stand apart.
                 loose.extend((f"{record.kind}.{record.slot} spawned: "
-                              f"{self.handler_name(a.handler)}", [a])
+                              f"{self._actor_name(a)}", [a])
                              for a in actor_sim.subtree(world, actor) if a is not actor)
             if assembly is None and not art and not hidden:
                 assembly = actor_assembly.assemble(self.overlay_data, record)

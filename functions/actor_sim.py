@@ -132,6 +132,9 @@ ALLOCATE_ACTOR = 0x80072DDC
 
 # A chest, as f_SpawnPersistentPickupPlacementTable stands one up.
 CHEST_HANDLER = 0x80040558          # f_HandlePersistentChestActor
+# f_HandleSecondaryItemPickup: what f_SpawnAreaIndexedPersistentPickup stands up
+# - the cursed mine's ice boomerang in the lava, under a mudball carrier.
+SECONDARY_ITEM_HANDLER = 0x8004C238
 CHEST_KIND = 8
 PICKUP_BIT = 0x0E
 PLANE = 0x2A
