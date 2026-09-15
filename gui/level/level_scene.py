@@ -39,6 +39,7 @@ import os
 import re
 import struct
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -53,6 +54,7 @@ from functions import town_collision
 from functions import environment_meshes
 from functions import object_sprites
 from functions import pickup_art
+from functions import psx_vram
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
 
@@ -130,6 +132,8 @@ MERGE_REACH = 2000.0
 # Surfaces an environment drawer builds in code (functions/environment_meshes
 # .py) are models of the scene's own, numbered from here.
 ENVIRONMENT_ID = 0x2000
+# And what an actor's draw routine put out as textured polygons, from here.
+DRAWN_ID, DRAWN_END = 0x3000, 0x4000
 
 
 @dataclass
@@ -519,6 +523,40 @@ def _at_origin(position):
     return position is None or (abs(position[0]) < 1 and abs(position[2]) < 1)
 
 
+def drawn_model(polys, pages, to_view):
+    """A one-group model of captured textured polygons (actor_sim
+    .textured_primitives), both windings, or None if no palette's page is
+    known."""
+    model = {"vertices": [], "vertex_colors": [], "texture_coords": [], "faces": [],
+             "texture_info": [], "face_flags": [], "tri_count": 0, "quad_count": 0}
+    for corners, uvs, colours, clut, blended in polys:
+        address = environment_meshes.clut_address(clut)
+        page = pages.get(address)
+        if page is None:
+            continue
+        base = len(model["vertices"])
+        for point, (u, v), colour in zip(corners, uvs, colours):
+            model["vertices"].append(list(to_view(np.asarray(point, dtype=np.float64))))
+            model["vertex_colors"].append(list(colour))
+            model["texture_coords"].append(psx_vram.atlas_uv(u, v, page))
+        info = (page, address, blended, 0)
+        # A quad is triangles 0-1-2 and 1-3-2.
+        triangles = ((0, 1, 2), (1, 3, 2)) if len(corners) == 4 else ((0, 1, 2),)
+        for triangle in triangles:
+            for winding in (triangle, triangle[::-1]):
+                model["faces"].append([base + t for t in winding])
+                model["texture_info"].append(info)
+                model["face_flags"].append(0)
+        model["quad_count" if len(corners) == 4 else "tri_count"] += 1
+    if not model["faces"]:
+        return None
+    model["groups"] = [SimpleNamespace(
+        index=0, first_vertex=0, vertex_count=len(model["vertices"]),
+        first_face=0, face_count=len(model["faces"]), tris=model["tri_count"],
+        quads=model["quad_count"], size=0, offset=0, empty=False)]
+    return model
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -728,7 +766,8 @@ class LevelScene:
         def key(instance):
             frames = tuple(f.frame for f in getattr(instance.art, "frames", None) or ())
             return (instance.role, instance.label.replace("⧖ ", ""),
-                    tuple(tuple(s) for s in instance.sources), instance.scene,
+                    tuple(tuple(s) for s in instance.sources
+                          if not DRAWN_ID <= s[0] < DRAWN_END), instance.scene,
                     frames, centre(instance),
                     *(round(v / MERGE_GRID) for v in (instance.x, instance.y, instance.z)))
 
@@ -743,6 +782,10 @@ class LevelScene:
             boxes[i.scene] = (tuple(map(min, low, point)), tuple(map(max, high, point)))
 
         def plausible(instance):
+            # A record's place is authored - 16.6's temple stands at the
+            # origin once the giant fish is woken.
+            if instance.role in ("object", "pickup"):
+                return True
             point = (instance.x, instance.y, instance.z)
             box = boxes.get(instance.scene)
             return not _at_origin(point) and (box is None or all(
@@ -779,8 +822,16 @@ class LevelScene:
             if owner in new or (line.scene, line.a, line.b) not in seen:
                 self.lines.append(SceneLine(owner, line.scene, line.a, line.b,
                                             line.color_a, line.color_b, line.blended))
+        # Captured polygons are numbered per run: the other's move past ours.
+        base = max((k + 1 for k in self.models if DRAWN_ID <= k < DRAWN_END), default=DRAWN_ID)
+        for instance in added:
+            if instance.sources and DRAWN_ID <= instance.sources[0][0] < DRAWN_END:
+                moved = base + instance.sources[0][0] - DRAWN_ID
+                self.models[moved] = done.models.get(instance.sources[0][0])
+                instance.sources = ((moved, 0),)
         for file_id, model in done.models.items():
-            self.models.setdefault(file_id, model)
+            if not DRAWN_ID <= file_id < DRAWN_END:
+                self.models.setdefault(file_id, model)
         for file_id, content in done.content.items():
             self.content.setdefault(file_id, content)
         self.notes.append(f"with every event done: {len(added)} more row(s), marked ⧖")
@@ -1156,13 +1207,16 @@ class LevelScene:
     def _build_instances(self):
         instances = []
         self.lines, drew = [], set()
+        drawn = {}                  # (owner, scene) -> textured polygons
 
         def take(actors, owner, scene):
-            """The lines these actors drew, under `owner`'s row."""
+            """The lines and polygons these actors drew, under `owner`'s row."""
             for actor in actors:
-                if id(actor) in drew or not actor.lines:
+                if id(actor) in drew or not (actor.lines or actor.polys):
                     continue
                 drew.add(id(actor))
+                if actor.polys:
+                    drawn.setdefault((owner, scene), []).extend(actor.polys)
                 for a, b, color_a, color_b, blended in actor.lines:
                     self.lines.append(SceneLine(owner, scene, view_point(a),
                                                 view_point(b), color_a, color_b,
@@ -1494,6 +1548,27 @@ class LevelScene:
             for scene, actors in world.rooms.items():
                 take(actors, None, scene)
 
+        # What draw routines put out as textured polygons - A01's chains - a
+        # model each, already in world coordinates.
+        if drawn:
+            pages = self._clut_pages(p[3] for polys in drawn.values() for p in polys)
+            for number, ((owner, scene), polys) in enumerate(drawn.items()):
+                model = drawn_model(polys, pages, view_point)
+                if model is None:
+                    continue
+                self.models[DRAWN_ID + number] = model
+                head = (instances[owner].label if owner is not None
+                        else f"room {scene}" if scene is not None else "the area")
+                cx, cy, cz = np.mean(np.asarray(model["vertices"], dtype=np.float64), axis=0)
+                instances.append(Instance(
+                    index=len(instances), role="spawned",
+                    label=f"{head}: drawn by its code",
+                    sources=((DRAWN_ID + number, 0),), authored=True, scene=scene,
+                    x=float(cx), y=float(cy), z=float(cz), name=f"{head}: drawn by its code",
+                    note=f"{len(polys)} textured polygon(s) its draw routine put out "
+                         f"(actor_sim.capture_lines); the page is the one this area's "
+                         f"own faces sample their palette from"))
+
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
             if group.empty or (ASSET_PACK_ID, group.index) in used:
@@ -1505,6 +1580,24 @@ class LevelScene:
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
+
+    def _clut_pages(self, cluts):
+        """{CLUT address: texture page} for the palettes a draw routine's
+        polygons name - the page this area's own faces sample each from most.
+        A packet carries its CLUT but not its page."""
+        wanted = {environment_meshes.clut_address(c) for c in cluts}
+        counts = collections.defaultdict(collections.Counter)
+
+        def count(model):
+            for page, clut, *_rest in (model or {}).get("texture_info") or ():
+                if clut in wanted:
+                    counts[clut][page] += 1
+
+        for _where, room in self.rooms:
+            count(room)
+        for file_id in list(self.by_id):
+            count(self.model(file_id))
+        return {clut: pages.most_common(1)[0][0] for clut, pages in counts.items()}
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""

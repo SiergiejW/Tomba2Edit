@@ -202,6 +202,7 @@ class CameraControls:
         self.set_scene_radius(radius)
         # What a middle-drag will circle: exactly what was just framed.
         self.orbit_distance = distance
+        self._framed = True
 
     def status_text(self):
         """The camera's own two lines of the stats overlay."""
@@ -261,7 +262,12 @@ class CameraControls:
     def glide_frame(self, centre, radius, heading=MODEL_HEADING,
                     pitch=MODEL_PITCH, margin=2.5, lift=0.0, frames=GLIDE_FRAMES):
         """frame(), eased in from wherever the camera is - position and
-        angles both, the way F glides onto a selection."""
+        angles both, the way F glides onto a selection. The first framing
+        is set outright: the default camera sits under a level, and a
+        glide from there shows it from below, culled see-through."""
+        if not getattr(self, "_framed", False):
+            self.frame(centre, radius, heading, pitch, margin, lift)
+            return
         start = (self.camera_x, self.camera_y, self.camera_z,
                  self.camera_angle_h, self.camera_angle_v)
         self.frame(centre, radius, heading, pitch, margin, lift)

@@ -138,6 +138,15 @@ PRIMITIVE_BYTES = 0x40000
 LINE_REACH = 8000                   # longer than this is a misread vertex
 ACTOR_REACH = 6000                  # a line point this far from its actor too
 TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
+# Render kinds f_DrawClass4ActorRenderQueue draws itself rather than through
+# +0x18 - kind 2 is each area's chain drawer (A01 FUN_80129114) - run on a
+# queue holding the one actor: +0x136 set keeps last frame's queue, whose
+# count and list are +0x152 and +0x14C.
+CLASS4_QUEUE = 0x8003BCF4
+QUEUE_HELD, QUEUE_COUNT, QUEUE_LIST = 0x1F800136, 0x1F800152, 0x1F80014C
+QUEUED_KINDS = frozenset((1, 2, 3, 0x16, 0x17))
+# A textured polygon's colour: 0x80 draws the texel as it is.
+NEUTRAL = 128.0
 
 # A scene controller retires through f_RetireSceneController and calls its
 # spawner twice (scene 0 as it starts, the next at each handoff); the
@@ -230,6 +239,9 @@ class Actor:
     # Line primitives its draw routine put out: (a, b, colour a, colour b,
     # blended), points in game axes - see capture_lines.
     lines: tuple = ()
+    # Textured polygons they put out: (corners, uvs, colours, CLUT word,
+    # blended) - see textured_primitives.
+    polys: tuple = ()
     ran: bool = False               # whether its handler has run at all
     read_ran: bool = False          # whether its kept reading is from after it ran
     # (handler, reward) as its first run found them; code rewrites both.
@@ -879,20 +891,30 @@ class World:
         found = {}
         try:
             ot, primitives = self._alloc(OT_SLOTS * 4), self._alloc(PRIMITIVE_BYTES)
+            queue = self._alloc(4)
             mem.load(CAMERA, struct.pack("<9h2x3i", 0x1000, 0, 0, 0, 0x1000, 0,
                                          0, 0, 0x1000, 0, 0, 0))
             mem.write(ORDERING_TABLE, 4, ot)
             for actor in list(self.actors if actors is None else actors):
-                lines = []
+                lines, polys, passes = [], [], []
                 for offset in (DRAW, CALLBACK):
                     routine = mem.read(actor.address + offset, 4)
-                    if not self._code(routine) or (offset == CALLBACK and actor.dead):
-                        continue
+                    if self._code(routine) and not (offset == CALLBACK and actor.dead):
+                        passes.append((offset, routine))
+                if mem.read(actor.address + RENDER_KIND, 1) in QUEUED_KINDS:
+                    passes.append((None, CLASS4_QUEUE))
+                for offset, routine in passes:
                     mem.load(ot, bytes(OT_SLOTS * 4))
                     mem.write(PRIMITIVE_CURSOR, 4, primitives)
                     if offset == CALLBACK:
                         mem.write(actor.address + ACTIVE, 1, 0)
                         mem.write(PART_BUDGET, 2, PART_BUDGET_HELD)
+                    elif offset is None:
+                        mem.write(queue, 4, actor.address)
+                        mem.write(actor.address + ACTIVE, 1, 1)
+                        mem.write(QUEUE_HELD, 1, 1)
+                        mem.write(QUEUE_COUNT, 2, 1)
+                        mem.write(QUEUE_LIST, 4, queue)
                     cpu.gte.capture = {}
                     self.running = actor.address
                     try:
@@ -901,21 +923,33 @@ class World:
                         pass
                     finally:
                         self.running = None
-                    lines.extend(self._read_lines(ot, cpu.gte.capture))
-                if lines and actor.position is not None:
+                    drawn_lines, drawn_polys = self._read_primitives(ot, cpu.gte.capture)
+                    lines.extend(drawn_lines)
+                    polys.extend(drawn_polys)
+                if (lines or polys) and actor.position is not None:
                     # Drawn frames after the pose was read: moved back with the
                     # actor, and a point nowhere near it is a misread vertex.
                     now = self._position(actor.address)
                     shift = actor.position - now
+
+                    def near(point):
+                        return np.max(np.abs(point - actor.position)) <= ACTOR_REACH
+
                     moved = []
                     for a, b, color_a, color_b, blended in lines:
                         a, b = np.asarray(a) + shift, np.asarray(b) + shift
-                        if (np.max(np.abs(a - actor.position)) <= ACTOR_REACH
-                                and np.max(np.abs(b - actor.position)) <= ACTOR_REACH):
+                        if near(a) and near(b):
                             moved.append((tuple(a), tuple(b), color_a, color_b, blended))
                     lines = moved
-                if lines:
-                    found[id(actor)] = (actor, lines)
+                    moved = []
+                    for corners, uvs, colours, clut, blended in polys:
+                        corners = [np.asarray(c) + shift for c in corners]
+                        if all(near(c) for c in corners):
+                            moved.append((tuple(tuple(c) for c in corners), uvs, colours,
+                                          clut, blended))
+                    polys = moved
+                if lines or polys:
+                    found[id(actor)] = (actor, lines, polys)
         except EmuError:
             pass
         finally:
@@ -929,11 +963,12 @@ class World:
             self._map_cache = None
         for actor in (self.actors if actors is None else actors):
             actor.lines = tuple(found[id(actor)][1]) if id(actor) in found else ()
+            actor.polys = tuple(found[id(actor)][2]) if id(actor) in found else ()
         return len(found)
 
-    def _read_lines(self, ot, points):
-        """Every line primitive linked into the ordering table."""
-        out = []
+    def _read_primitives(self, ot, points):
+        """([line], [textured polygon]) linked into the ordering table."""
+        out, polys = [], []
         for head in struct.unpack(f"<{OT_SLOTS}I", self.mem.bytes(ot, OT_SLOTS * 4)):
             address, walked = head & 0xFFFFFF, 0
             while address and address != 0xFFFFFF and walked < 4096:
@@ -946,8 +981,9 @@ class World:
                 except EmuError:
                     break
                 out.extend(line_primitives(words, points))
+                polys.extend(textured_primitives(words, points))
                 address = tag & 0xFFFFFF
-        return out
+        return out, polys
 
     # --- reading back ---------------------------------------------------
 
@@ -1264,6 +1300,44 @@ def line_primitives(words, points):
         for (a, ca), (b, cb) in zip(known, known[1:]):
             if max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH:
                 out.append((a, b, _rgb(ca), _rgb(cb), blended))
+    return out
+
+
+def textured_primitives(words, points):
+    """[(corners, uvs, colours, CLUT word, blended)] for the textured
+    polygons (FT3/FT4/GT3/GT4) in one packet's words, the corners the points
+    `points` names. A packet names no texture page: the GPU keeps the last
+    one set."""
+    out, k = [], 0
+    while k < len(words):
+        code = words[k] >> 24
+        if code == 0 or 0xE1 <= code <= 0xE6:
+            k += 1
+            continue
+        if not (0x20 <= code <= 0x3F and code & 0x04):
+            break
+        gouraud, corners_wanted = code & 0x10, 4 if code & 0x08 else 3
+        colour, k = words[k] & 0xFFFFFF, k + 1
+        corners, uvs, colours, clut = [], [], [], 0
+        for corner in range(corners_wanted):
+            if gouraud and corner:
+                if k >= len(words):
+                    return out
+                colour, k = words[k] & 0xFFFFFF, k + 1
+            if k + 1 >= len(words):
+                return out
+            xy, uv = words[k], words[k + 1]
+            k += 2
+            if not corner:
+                clut = uv >> 16
+            corners.append(points.get(_xy(xy)))
+            uvs.append((uv & 0xFF, (uv >> 8) & 0xFF))
+            colours.append((1.0, 1.0, 1.0) if code & 0x01 else
+                           tuple(((colour >> shift) & 0xFF) / NEUTRAL for shift in (0, 8, 16)))
+        if all(c is not None for c in corners) and all(
+                max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
+                for a in corners for b in corners):
+            out.append((tuple(corners), tuple(uvs), tuple(colours), clut, bool(code & 0x02)))
     return out
 
 
