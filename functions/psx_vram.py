@@ -84,6 +84,45 @@ ATLAS_WIDTH = ATLAS_COLUMNS * ATLAS_PAGE
 ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_PAGE
 
 
+# A page holds a polygon's art when this much of its box shows through the
+# polygon's palette - see page_under.
+OPAQUE_ENOUGH = 0.9
+
+
+def opaque_share(vram, clut, page, box):
+    """The share of a 4bpp page's texels in `box` - (u0, v0, u1, v1),
+    inclusive - whose colour through `clut` is not the transparent 0x0000."""
+    at = clut_address(clut)
+    colours = [vram[at + 2 * k] | vram[at + 2 * k + 1] << 8 for k in range(16)]
+    byte_x, row0 = page_origin(page)
+    u0, v0, u1, v1 = box
+    total = hits = 0
+    for v in range(v0, v1 + 1):
+        base = (row0 + v % UV_WRAP) * VRAM_STRIDE + byte_x
+        for u in range(u0, u1 + 1):
+            u %= UV_WRAP
+            byte = vram[base + u // 2]
+            hits += colours[byte >> 4 if u & 1 else byte & 0x0F] != 0
+            total += 1
+    return hits / max(total, 1)
+
+
+def page_under(vram, clut, boxes, usage=None):
+    """The page a packet naming only its CLUT is drawn from. The GPU keeps
+    whatever page was set last, so: of the pages whose texels under every
+    box show through the palette, the one the area's own faces set most
+    (`usage`, {page: faces}). None if no page shows anything there."""
+    shares = {page: min(opaque_share(vram, clut, page, box) for box in boxes)
+              for page in range(ATLAS_COLUMNS * ATLAS_ROWS)}
+    best = max(shares.values())
+    if best <= 0:
+        return None
+    floor = min(best, OPAQUE_ENOUGH)
+    usage = usage or {}
+    return max((page for page, share in shares.items() if share >= floor),
+               key=lambda page: (usage.get(page, 0), shares[page]))
+
+
 def atlas_uv(u, v, texpage):
     """One packet's UV as a coordinate in that atlas, aimed at the
     MIDDLE of the texel rather than at its corner.

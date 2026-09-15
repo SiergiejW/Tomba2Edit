@@ -664,11 +664,14 @@ class LevelScene:
         self.background = None          # a BGMPFile, or None
         self.notes = []                 # what didn't load, for the panel
         self.progress = FRESH
+        # The area's VRAM with AREA_01's merged in, when the caller has it -
+        # for the pages code-drawn polygons leave unnamed.
+        self.vram = None
 
     # --- loading ------------------------------------------------------
 
     def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
-             exe_path=None, progress=FRESH):
+             exe_path=None, progress=FRESH, vram=None):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
@@ -678,6 +681,7 @@ class LevelScene:
         self.overlay_path = overlay_path
         self.exe_path = exe_path
         self.progress = progress
+        self.vram = vram
 
         dat_start, files = area_files(idx_path, chunk_index)
         self.dat_start = dat_start
@@ -749,7 +753,7 @@ class LevelScene:
         self._build_instances()
         if progress == BOTH and self.world is not None:
             self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
-                                          overlay_path, exe_path, EVENTS_DONE))
+                                          overlay_path, exe_path, EVENTS_DONE, vram))
         return self
 
     def _merge(self, done):
@@ -1551,7 +1555,7 @@ class LevelScene:
         # What draw routines put out as textured polygons - A01's chains - a
         # model each, already in world coordinates.
         if drawn:
-            pages = self._clut_pages(p[3] for polys in drawn.values() for p in polys)
+            pages = self._clut_pages([p for polys in drawn.values() for p in polys])
             for number, ((owner, scene), polys) in enumerate(drawn.items()):
                 model = drawn_model(polys, pages, view_point)
                 if model is None:
@@ -1581,15 +1585,23 @@ class LevelScene:
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
 
-    def _clut_pages(self, cluts):
+    def _clut_pages(self, polys):
         """{CLUT address: texture page} for the palettes a draw routine's
-        polygons name - the page this area's own faces sample each from most.
-        A packet carries its CLUT but not its page."""
-        wanted = {environment_meshes.clut_address(c) for c in cluts}
+        polygons name. A packet carries its CLUT but not its page: the page
+        this area's own faces sample that palette from, else the page its
+        texels show through under the polygons (psx_vram.page_under)."""
+        boxes = collections.defaultdict(set)
+        for _corners, uvs, _colours, clut, _blended in polys:
+            us, vs = [u for u, _v in uvs], [v for _u, v in uvs]
+            boxes[clut].add((min(us), min(vs), max(min(us), max(us) - 1),
+                             max(min(vs), max(vs) - 1)))
+        wanted = {environment_meshes.clut_address(c) for c in boxes}
         counts = collections.defaultdict(collections.Counter)
+        usage = collections.Counter()
 
         def count(model):
             for page, clut, *_rest in (model or {}).get("texture_info") or ():
+                usage[page] += 1
                 if clut in wanted:
                     counts[clut][page] += 1
 
@@ -1597,7 +1609,15 @@ class LevelScene:
             count(room)
         for file_id in list(self.by_id):
             count(self.model(file_id))
-        return {clut: pages.most_common(1)[0][0] for clut, pages in counts.items()}
+        pages = {clut: found.most_common(1)[0][0] for clut, found in counts.items()}
+        if self.vram:
+            for clut, clut_boxes in boxes.items():
+                address = environment_meshes.clut_address(clut)
+                if address not in pages:
+                    page = psx_vram.page_under(self.vram, clut, sorted(clut_boxes), usage)
+                    if page is not None:
+                        pages[address] = page
+        return pages
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""

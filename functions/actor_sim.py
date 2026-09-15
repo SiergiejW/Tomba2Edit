@@ -147,6 +147,9 @@ QUEUE_HELD, QUEUE_COUNT, QUEUE_LIST = 0x1F800136, 0x1F800152, 0x1F80014C
 QUEUED_KINDS = frozenset((1, 2, 3, 0x16, 0x17))
 # A textured polygon's colour: 0x80 draws the texel as it is.
 NEUTRAL = 128.0
+# Captures after its actor ran that a pass may draw nothing in before it is
+# no longer run.
+QUIET_CAPTURES = 2
 
 # A scene controller retires through f_RetireSceneController and calls its
 # spawner twice (scene 0 as it starts, the next at each handoff); the
@@ -242,6 +245,9 @@ class Actor:
     # Textured polygons they put out: (corners, uvs, colours, CLUT word,
     # blended) - see textured_primitives.
     polys: tuple = ()
+    # Per capture pass (DRAW, CALLBACK, None for the queue): how many
+    # captures after it ran drew nothing, or None once one drew.
+    silent: dict = field(default_factory=dict)
     ran: bool = False               # whether its handler has run at all
     read_ran: bool = False          # whether its kept reading is from after it ran
     # (handler, reward) as its first run found them; code rewrites both.
@@ -904,6 +910,11 @@ class World:
                 if mem.read(actor.address + RENDER_KIND, 1) in QUEUED_KINDS:
                     passes.append((None, CLASS4_QUEUE))
                 for offset, routine in passes:
+                    # A pass that has drawn nothing twice since its actor ran
+                    # is not run again: re-reads repeat it for every actor.
+                    quiet = actor.silent.get(offset, 0)
+                    if quiet is not None and quiet >= QUIET_CAPTURES:
+                        continue
                     mem.load(ot, bytes(OT_SLOTS * 4))
                     mem.write(PRIMITIVE_CURSOR, 4, primitives)
                     if offset == CALLBACK:
@@ -926,6 +937,10 @@ class World:
                     drawn_lines, drawn_polys = self._read_primitives(ot, cpu.gte.capture)
                     lines.extend(drawn_lines)
                     polys.extend(drawn_polys)
+                    if drawn_lines or drawn_polys:
+                        actor.silent[offset] = None
+                    elif actor.ran and quiet is not None:
+                        actor.silent[offset] = quiet + 1
                 if (lines or polys) and actor.position is not None:
                     # Drawn frames after the pose was read: moved back with the
                     # actor, and a point nowhere near it is a misread vertex.
