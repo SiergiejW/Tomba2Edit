@@ -362,6 +362,15 @@ class LevelEditorPanel(QWidget):
         self._phase = 0
         entry = scene.by_id.get(BACKGROUND_ID)
         if not entry or not entry[1]:
+            from functions import sky_gradient
+            sky = sky_gradient.image(overlay)
+            if sky is not None:
+                scene.notes.append(
+                    "no background picture: the sky is the gradient "
+                    + sky_gradient.DRAWERS[os.path.basename(overlay)[:3].upper()]
+                    + " draws")
+                self.viewer.set_background(sky)
+                return
             scene.notes.append(
                 "this area holds no background - some levels are indoors "
                 "and simply have none")
@@ -378,6 +387,14 @@ class LevelEditorPanel(QWidget):
             scene.notes.append(f"the background wouldn't draw: {e}")
             self.viewer.set_background(None)
             return
+        # An area that draws a sky gradient at the back of the ordering
+        # table shows it through every transparent texel of its picture -
+        # the water pig boss's picture is nothing else.
+        from functions import sky_gradient
+        sky = sky_gradient.image(overlay)
+        if sky is not None and self._phases:
+            self._phases = [(sky_gradient.under(picture, sky), ms)
+                            for picture, ms in self._phases]
         self.viewer.set_background(self._phases[0][0] if self._phases else None)
         if len(self._phases) > 1:
             self._phase_timer.start(self._phases[0][1])

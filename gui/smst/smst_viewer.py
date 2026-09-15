@@ -1147,21 +1147,35 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 uniform int windowSlowFlag;
                 uniform vec4 windowFast;
                 uniform vec4 windowSlow;
+                uniform int windowFastSkip;
+                uniform int windowSlowSkip;
+                uniform bool windowFastAdd;
+                uniform bool windowSlowAdd;
+
+                bool takes(int flag, int skip) {
+                    return (fragFlags & flag) != 0
+                        && (skip == 0 || (fragFlags & skip) != skip);
+                }
 
                 vec2 windowUv(vec2 uv) {
                     if (!windowed)
                         return uv;
                     vec4 w;
-                    if ((fragFlags & windowFastFlag) != 0)
+                    bool add;
+                    if (takes(windowFastFlag, windowFastSkip)) {
                         w = windowFast;
-                    else if ((fragFlags & windowSlowFlag) != 0)
+                        add = windowFastAdd;
+                    } else if (takes(windowSlowFlag, windowSlowSkip)) {
                         w = windowSlow;
-                    else
+                        add = windowSlowAdd;
+                    } else
                         return uv;
                     vec2 size = vec2(4096.0, 512.0);
                     vec2 texel = floor(uv * size);
                     vec2 page = floor(texel / 256.0) * 256.0;
-                    vec2 local = w.xy + mod(texel - page + w.zw, 64.0);
+                    // Added to the uv bytes, or an E2 window's cell.
+                    vec2 local = add ? mod(texel - page + w.xy, 256.0)
+                                     : w.xy + mod(texel - page + w.zw, 64.0);
                     return (page + local + 0.5) / size;
                 }
 
@@ -1285,9 +1299,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             "windowFast", QVector4D(*windows.get(1, (0.0, 0.0, 0.0, 0.0))))
         self.shader_program.setUniformValue(
             "windowSlow", QVector4D(*windows.get(2, (0.0, 0.0, 0.0, 0.0))))
-        masks = {rule.mode: rule.flag for rule in self.window_rules}
-        self.shader_program.setUniformValue("windowFastFlag", masks.get(1, 0))
-        self.shader_program.setUniformValue("windowSlowFlag", masks.get(2, 0))
+        by_mode = {rule.mode: rule for rule in self.window_rules}
+        for mode, name in ((1, "Fast"), (2, "Slow")):
+            rule = by_mode.get(mode)
+            self.shader_program.setUniformValue(f"window{name}Flag", rule.flag if rule else 0)
+            self.shader_program.setUniformValue(f"window{name}Skip", rule.skip if rule else 0)
+            self.shader_program.setUniformValue(f"window{name}Add", bool(rule and rule.add))
 
         self.vao.bind()
         self.shader_program.setUniformValue("texelClass", 0)

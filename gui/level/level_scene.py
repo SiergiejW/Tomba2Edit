@@ -198,8 +198,8 @@ class Instance:
 
     @property
     def timed(self):
-        """Gated or waiting on progress: its label carries the ⧖."""
-        return "⧖" in self.label
+        """Gated or waiting on progress: its label or note carries the ⧖."""
+        return "⧖" in self.label or "⧖" in (self.note or "")
 
     # [(first vertex, count, (x, y, z)), ...] for the parts that sit off
     # the instance's origin - filled by build().
@@ -706,7 +706,8 @@ class LevelScene:
                 self.exe_path, self.overlay_path, self.dat_path, idx_path,
                 self.chunk_index, number, self.placements,
                 actor_assembly.degrees_to_units, frames=SIM_FRAMES,
-                spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS)
+                spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS,
+                chests=[p for p in self.pickups if p.chest])
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
@@ -1123,13 +1124,15 @@ class LevelScene:
             # Its own code ran, allocated a part and left it without a
             # model: it draws nothing, and whatever the handler's
             # immediates name is the model it loads and then clears.
-            # Only when that model is exactly what its code was seen to load
-            # - anything else a guess named may still be real.
+            # So is a guess of anything else, once its code has run to a
+            # standstill: a blank part draws nothing whatever was named
+            # (A05 68.3's door and boulder were two such immediates).
             guessed = self.bindings.get(record.key()) or ()
             invisible = (actor is not None and not actor.parts
                          and actor.blank and not actor.frames and guessed
                          and self.binding_source.get(record.key()) == "code"
-                         and {tuple(g) for g in guessed} <= set(actor.loaded))
+                         and ({tuple(g) for g in guessed} <= set(actor.loaded)
+                              or (actor.ran and not actor.dead and not actor.waiting)))
             # Ran, attached nothing, and set a draw routine of its own (+0x18):
             # it draws itself - steam, sparks - so a model its handler's
             # immediates named is not it.

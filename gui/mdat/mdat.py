@@ -2,6 +2,7 @@ import struct
 import io
 
 from functions import psx_vram
+from functions.texture_window import QUAD
 
 
 def find_area_mdat_location(idx_path, chunk_index):
@@ -294,7 +295,7 @@ def exportMDAT(drwa_addr, datpath):
                     model_data['texture_coords'].extend([uv1, uv2, uv3, uv4])
                     model_data['texture_info'].append(tex_info)
                     model_data['texture_info'].append(tex_info)
-                    model_data['face_flags'].extend([char(rom, ind, 4)] * 2)
+                    model_data['face_flags'].extend([char(rom, ind, 4) | QUAD] * 2)
                     model_data['polygons'][-1]['flags'] = char(rom, ind, 4)
                     model_data['quad_count'] += 1
 

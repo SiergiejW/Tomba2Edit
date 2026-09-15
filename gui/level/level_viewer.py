@@ -22,7 +22,8 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QColor, QFont, QMatrix4x4, QPainter, QVector2D, QVector3D, QVector4D)
+    QAction, QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QVector2D,
+    QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -57,11 +58,26 @@ KIND_COLORS = {
 }
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
-# Drawn at the top right of anything gated or timed.
-BADGE = "⧖"
+# The hourglass drawn at the top right of anything gated or timed, in
+# pixels - a path rather than the ⧖ glyph, which fonts draw skewed.
+BADGE_WIDTH, BADGE_HEIGHT = 8.0, 11.0
 BADGE_COLOR = QColor(255, 214, 0)
-BADGE_SHADOW = QColor(0, 0, 0, 200)
-BADGE_POINT_SIZE = 14
+BADGE_OUTLINE = QColor(0, 0, 0, 210)
+
+
+def hourglass(x, y):
+    """The badge's path, its top left corner at (x, y)."""
+    w, h = BADGE_WIDTH, BADGE_HEIGHT
+    path = QPainterPath()
+    path.moveTo(x, y)
+    path.lineTo(x + w, y)
+    path.lineTo(x + w / 2, y + h / 2)
+    path.closeSubpath()
+    path.moveTo(x + w / 2, y + h / 2)
+    path.lineTo(x + w, y + h)
+    path.lineTo(x, y + h)
+    path.closeSubpath()
+    return path
 # F frames the selection no closer than this, world units.
 FRAME_MIN_RADIUS = 150.0
 
@@ -1347,9 +1363,10 @@ class LevelViewer(SMSTViewer):
                     or ndc[:, 1].max() < -1 or ndc[:, 1].min() > 1
                     or ndc[:, 2].min() > 1):
                 continue
-            spots.append(QPointF((min(ndc[:, 0].max(), 1.0) + 1) * 0.5 * width,
-                                 (1 - min(ndc[:, 1].max(), 1.0)) * 0.5 * height
-                                 + BADGE_POINT_SIZE))
+            x = (min(ndc[:, 0].max(), 1.0) + 1) * 0.5 * width + 2
+            y = (1 - min(ndc[:, 1].max(), 1.0)) * 0.5 * height - BADGE_HEIGHT / 2
+            spots.append(QPointF(min(max(x, 0.0), width - BADGE_WIDTH - 1),
+                                 min(max(y, 0.0), height - BADGE_HEIGHT - 1)))
         if not spots:
             return
         # QPainter leaves its own GL state behind; the scene pass assumes ours.
@@ -1359,15 +1376,13 @@ class LevelViewer(SMSTViewer):
         viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
         painter = QPainter(self)
         try:
-            font = QFont(painter.font())
-            font.setPointSize(BADGE_POINT_SIZE)
-            font.setBold(True)
-            painter.setFont(font)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pen = QPen(BADGE_OUTLINE)
+            pen.setWidthF(1.2)
+            painter.setPen(pen)
+            painter.setBrush(BADGE_COLOR)
             for spot in spots:
-                painter.setPen(BADGE_SHADOW)
-                painter.drawText(spot + QPointF(1.5, 1.5), BADGE)
-                painter.setPen(BADGE_COLOR)
-                painter.drawText(spot, BADGE)
+                painter.drawPath(hourglass(spot.x(), spot.y()))
         finally:
             painter.end()
         for flag, on in ((GL.GL_DEPTH_TEST, depth), (GL.GL_CULL_FACE, cull),

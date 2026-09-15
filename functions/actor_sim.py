@@ -27,6 +27,7 @@ functions/decomp_symbols.py from the US decomp:
 
 The state is a fresh game: every progress flag is zero.
 """
+import collections
 import struct
 from dataclasses import dataclass, field
 
@@ -129,6 +130,17 @@ TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
 RETIRE_SCENE = 0x8007ADD0
 ALLOCATE_ACTOR = 0x80072DDC
 
+# A chest, as f_SpawnPersistentPickupPlacementTable stands one up.
+CHEST_HANDLER = 0x80040558          # f_HandlePersistentChestActor
+CHEST_KIND = 8
+PICKUP_BIT = 0x0E
+PLANE = 0x2A
+PICKUP_BEHAVIOUR = 0x5E
+CHEST_CONTENTS, CHEST_EFFECT, EFFECT_FLAGS = 0x60, 0x62, 0x64
+ITEM_ID, INTERIOR_ID = 0x68, 0x6A
+CONTENTS_MASK = 0xFFF
+PERSIST_FLAG = 0x80
+
 ACTOR_SIZE = 0xC0
 MAX_PARTS = 64
 PART_SIZE = 0x44
@@ -155,6 +167,9 @@ NEXT, JUMP, HOLD, JUMP_LOOP = 0x0000, 0x4000, 0x8000, 0xC000
 # condition and its argument, the handler (u32) - 0xFF kind ends a list.
 SCENE_RECORD = 16
 SCENE_END = 0xFF
+# Byte 11: 1 skips the record once the area is purified, 2 while time is
+# stopped (f_Spawn*SceneActorsFromPlacementTable, every one of them).
+ARG_CURSED_ONLY, ARG_TIME_RUNNING = 1, 2
 MAX_STEPS = 64
 
 TRAILER_BYTES = 0x700
@@ -197,6 +212,8 @@ class Actor:
     lines: tuple = ()
     ran: bool = False               # whether its handler has run at all
     read_ran: bool = False          # whether its kept reading is from after it ran
+    # (handler, reward) as its first run found them; code rewrites both.
+    born: tuple = None
     # Ends the run with parts but a draw count (+0x08) of 0: nothing drawn.
     hidden: bool = False
     # Its init never finished - still in lifecycle state 0, waiting on
@@ -205,6 +222,7 @@ class Actor:
     # (condition, argument) of a scene record whose condition failed but
     # was spawned anyway - see enter_scene.
     gated: tuple = None
+    pickup: object = None           # the Pickup record, for a chest
 
 
 class World:
@@ -244,6 +262,7 @@ class World:
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
+        self.purified = purified
         if purified:
             mem.write(PURIFIED_AREAS, 2,
                       mem.read(PURIFIED_AREAS, 2) | 1 << area_number)
@@ -420,6 +439,40 @@ class World:
         w(address + TURN + 4, 2, units(record.angle2))
         return actor
 
+    def place_chest(self, pickup, budget=BUDGET):
+        """An actor for one chest record - f_SpawnPersistentPickupPlacementTable's
+        allocation and writes - so its own handler builds the body and lid
+        and stands them on the ground the way its behaviour byte says."""
+        first = len(self.actors)
+        self.running = None
+        try:
+            self.cpu.call(ALLOCATE_ACTOR, (0, pickup.type, pickup.alloc,
+                                           pickup.persist & ~PERSIST_FLAG & 0xFF),
+                          budget=budget, sp=STACK)
+        except EmuError:
+            return None
+        if len(self.actors) <= first:
+            return None
+        actor = self.actors[first]
+        a, w = actor.address, self.mem.write
+        w(a + CALLBACK, 4, CHEST_HANDLER)
+        w(a + KIND, 1, CHEST_KIND)
+        for k, value in enumerate((pickup.x, pickup.y, pickup.z)):
+            w(a + POSITION + k * 4, 4, (value << 16) & 0xFFFFFFFF)
+        for at in (TURN, TURN + 2, TURN + 4):
+            w(a + at, 2, 0)
+        w(a + PLANE, 1, pickup.plane)
+        w(a + SLOT, 1, pickup.reward & 0x7F)
+        w(a + PICKUP_BIT, 2, pickup.bit & 0xFFFF)
+        w(a + PICKUP_BEHAVIOUR, 1, pickup.behaviour)
+        w(a + CHEST_CONTENTS, 2, pickup.config & CONTENTS_MASK)
+        w(a + CHEST_EFFECT, 2, (s16(pickup.config) >> 12) & 0xFFFF)
+        w(a + ITEM_ID, 2, pickup.reward >> 7)
+        w(a + INTERIOR_ID, 2, pickup.persist)
+        w(a + EFFECT_FLAGS, 2, 5 if pickup.persist & PERSIST_FLAG else 1)
+        actor.pickup = pickup
+        return actor
+
     def start_workers(self, budget=BUDGET):
         for routine in (START_PLANES, START_WORKERS):
             try:
@@ -480,6 +533,8 @@ class World:
         handler = read(actor.address + CALLBACK, 4)
         if not handler:
             return
+        if actor.born is None:
+            actor.born = (handler, read(actor.address + SLOT, 1))
         actor.handler, actor.ran = handler, True
         # As FUN_8007a904 does: off screen until the call says otherwise.
         # And the part budget held where no init can refuse - a 16-bit
@@ -640,18 +695,31 @@ class World:
             pointer += SCENE_RECORD
         return records
 
-    def _spawn_gated(self, spawner, controller, scene, made, budget):
+    def _spawn_gated(self, spawner, controller, scene, made, budget, moved=False):
         """The scene's records its spawner skipped - their condition does
         not hold in a fresh game - allocated the way the spawner allocates
-        (f_AllocateActor, then position, reward and handler), marked gated."""
+        (f_AllocateActor, then position, reward and handler), marked gated.
+        `moved`: `made` have run, so they are matched by what they were
+        born as rather than where they stand."""
         read, write = self.mem.read, self.mem.write
         taken = {(read(a.address + CALLBACK, 4), read(a.address + SLOT, 1),
                   s16(read(a.address + POSITION + 2, 2)),
                   s16(read(a.address + POSITION + 10, 2))) for a in made}
+        left = collections.Counter(
+            a.born or (read(a.address + CALLBACK, 4), read(a.address + SLOT, 1))
+            for a in made) if moved else None
         out = []
         for kind, variant, slot, reward, x, y, z, condition, argument, handler in (
                 self.scene_records(spawner, scene)):
-            if (handler, reward, x, z) in taken:
+            if moved:
+                if left[(handler, reward)] > 0:
+                    left[(handler, reward)] -= 1
+                    continue
+            elif (handler, reward, x, z) in taken:
+                continue
+            # Byte 11 is 1 for a record every spawner skips in a purified
+            # area: not gated there, just not in this variant.
+            if argument == ARG_CURSED_ONLY and self.purified:
                 continue
             first = len(self.actors)
             self.running_scene = scene or None
@@ -675,6 +743,18 @@ class World:
                 actor.scene = scene or None
                 out.append(actor)
         return out
+
+    def spawn_area_gated(self, spawner, frames=FRAMES, budget=BUDGET):
+        """Scene 0's records a fresh game skips - cursed Donglin's ghost
+        guardians - stood up gated beside the area's own actors, and run."""
+        controller = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
+        gated = self._spawn_gated(spawner, controller, 0, list(self.actors),
+                                  budget, moved=True)
+        chosen = {a.address for a in gated}
+        if chosen:
+            self.run(frames, budget, only=lambda a: a.address in chosen,
+                     workers=False)
+        return gated
 
     def run_rooms(self, spawner, area_number, frames=FRAMES):
         """Every room the area's scene spawner has a table for, each run
@@ -970,18 +1050,23 @@ def subtree(world, actor, actors=None):
 
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
-             records, units, frames=FRAMES, spawner=None, purified=False):
-    """The area as it opens - its placed actors and all they spawned - and,
-    given the area's scene spawner, every room it has. An area with no
-    placement records is its spawner's scene 0."""
+             records, units, frames=FRAMES, spawner=None, purified=False,
+             chests=()):
+    """The area as it opens - its placed actors, its chests and all they
+    spawned - and, given the area's scene spawner, every room it has. An
+    area with no placement records is its spawner's scene 0."""
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
                   purified=purified)
     world.start_workers()
     for record in records:
         world.place(record, units)
+    for pickup in chests:
+        world.place_chest(pickup)
     if not records and spawner:
         world.enter_scene(spawner, area_number, 0)
     world.run(frames)
+    if records and spawner:
+        world.spawn_area_gated(spawner, frames)
     world.harvest()
     world.capture_lines()
     if spawner:
