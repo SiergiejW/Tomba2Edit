@@ -150,6 +150,14 @@ NEUTRAL = 128.0
 # Captures after its actor ran that a pass may draw nothing in before it is
 # no longer run.
 QUIET_CAPTURES = 2
+# While capturing, the routines that put out an actor's model and sprite
+# parts do nothing: those are read from the parts and sequences already, and
+# drawn a second time as captured polygons they cover the level.
+PART_DRAWERS = (0x8003CDD8,         # f_BuildActorModelPartPrimitives
+                0x8003F698,         # f_DrawModelPrimitiveStreamForCurrentArea
+                0x8003C8F4,         # f_DrawActorSpriteParts
+                0x8003C464,         # f_DrawActorSpritePartsWithScaleAndZRotation
+                0x8003C2D4)         # f_DrawActorSpritePartsWithZRotation
 
 # A scene controller retires through f_RetireSceneController and calls its
 # spawner twice (scene 0 as it starts, the next at each handoff); the
@@ -895,6 +903,8 @@ class World:
         mem, cpu = self.mem, self.cpu
         ram, scratch, heap, count = bytes(mem.ram), bytes(mem.scratch), self.heap, len(self.actors)
         found = {}
+        held = {address: cpu.hooks.get(address) for address in PART_DRAWERS}
+        cpu.hooks.update({address: _draw_nothing for address in PART_DRAWERS})
         try:
             ot, primitives = self._alloc(OT_SLOTS * 4), self._alloc(PRIMITIVE_BYTES)
             queue = self._alloc(4)
@@ -968,6 +978,11 @@ class World:
         except EmuError:
             pass
         finally:
+            for address, hook in held.items():
+                if hook is None:
+                    cpu.hooks.pop(address, None)
+                else:
+                    cpu.hooks[address] = hook
             cpu.gte.capture = None
             mem.ram[:] = ram
             mem.scratch[:] = scratch
@@ -1316,6 +1331,10 @@ def line_primitives(words, points):
             if max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH:
                 out.append((a, b, _rgb(ca), _rgb(cb), blended))
     return out
+
+
+def _draw_nothing(cpu):
+    return 0
 
 
 def textured_primitives(words, points):

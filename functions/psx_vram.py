@@ -84,43 +84,68 @@ ATLAS_WIDTH = ATLAS_COLUMNS * ATLAS_PAGE
 ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_PAGE
 
 
-# A page holds a polygon's art when this much of its box shows through the
-# polygon's palette - see page_under.
-OPAQUE_ENOUGH = 0.9
+# A code-drawn polygon's picture is a cutout - a chain link, a flame: art in
+# its UV box and none in a ring this many texels round it, which dense level
+# art never shows. See page_under.
+CUTOUT_RING = 2
 
 
-def opaque_share(vram, clut, page, box):
-    """The share of a 4bpp page's texels in `box` - (u0, v0, u1, v1),
-    inclusive - whose colour through `clut` is not the transparent 0x0000."""
-    at = clut_address(clut)
-    colours = [vram[at + 2 * k] | vram[at + 2 * k + 1] << 8 for k in range(16)]
-    byte_x, row0 = page_origin(page)
+def _touching(boxes):
+    """Boxes (u0, v0, u1, v1, inclusive) with the overlapping or adjoining
+    ones joined - two halves of one chain link are one picture."""
+    joined = [list(b) for b in boxes]
+    merged = True
+    while merged:
+        merged = False
+        for i, a in enumerate(joined):
+            for j in range(i + 1, len(joined)):
+                b = joined[j]
+                if (a[0] <= b[2] + 1 and b[0] <= a[2] + 1
+                        and a[1] <= b[3] + 1 and b[1] <= a[3] + 1):
+                    joined[i] = [min(a[0], b[0]), min(a[1], b[1]),
+                                 max(a[2], b[2]), max(a[3], b[3])]
+                    del joined[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return [tuple(b) for b in joined]
+
+
+def _cutout(shown, box):
+    """How much `box` of a page's shown-texel mask looks like a cutout: its
+    share of shown texels, times the share of hidden ones in the ring."""
     u0, v0, u1, v1 = box
-    total = hits = 0
-    for v in range(v0, v1 + 1):
-        base = (row0 + v % UV_WRAP) * VRAM_STRIDE + byte_x
-        for u in range(u0, u1 + 1):
-            u %= UV_WRAP
-            byte = vram[base + u // 2]
-            hits += colours[byte >> 4 if u & 1 else byte & 0x0F] != 0
-            total += 1
-    return hits / max(total, 1)
+    inside = shown[v0:v1 + 1, u0:u1 + 1]
+    around = shown[max(v0 - CUTOUT_RING, 0):v1 + CUTOUT_RING + 1,
+                   max(u0 - CUTOUT_RING, 0):u1 + CUTOUT_RING + 1]
+    ring = around.size - inside.size
+    ring_shown = (int(around.sum()) - int(inside.sum())) / ring if ring else 0.0
+    return float(inside.mean()) * (1.0 - ring_shown)
 
 
-def page_under(vram, clut, boxes, usage=None):
-    """The page a packet naming only its CLUT is drawn from. The GPU keeps
-    whatever page was set last, so: of the pages whose texels under every
-    box show through the palette, the one the area's own faces set most
-    (`usage`, {page: faces}). None if no page shows anything there."""
-    shares = {page: min(opaque_share(vram, clut, page, box) for box in boxes)
-              for page in range(ATLAS_COLUMNS * ATLAS_ROWS)}
-    best = max(shares.values())
-    if best <= 0:
-        return None
-    floor = min(best, OPAQUE_ENOUGH)
-    usage = usage or {}
-    return max((page for page, share in shares.items() if share >= floor),
-               key=lambda page: (usage.get(page, 0), shares[page]))
+def page_under(vram, clut, boxes):
+    """The page a packet naming only its CLUT is drawn from - the GPU keeps
+    whatever page was set last, so it is read off the texels: the page where
+    every one of the polygons' pictures is a cutout through the palette.
+    None if no page shows one."""
+    import numpy as np
+    data = np.frombuffer(bytes(vram), dtype=np.uint8).reshape(VRAM_ROWS, VRAM_STRIDE)
+    at = clut_address(clut)
+    colours = np.frombuffer(bytes(vram[at:at + 32]), dtype="<u2") != 0
+    pictures = _touching(boxes)
+    best = None
+    for page in range(ATLAS_COLUMNS * ATLAS_ROWS):
+        byte_x, row0 = page_origin(page)
+        rows = data[row0:row0 + PAGE_ROWS, byte_x:byte_x + PAGE_BYTES]
+        index = np.empty((PAGE_ROWS, UV_WRAP), dtype=np.uint8)
+        index[:, 0::2] = rows & 0x0F
+        index[:, 1::2] = rows >> 4
+        shown = colours[index]
+        score = min(_cutout(shown, box) for box in pictures)
+        if score > 0 and (best is None or score > best[0]):
+            best = (score, page)
+    return best[1] if best else None
 
 
 def atlas_uv(u, v, texpage):

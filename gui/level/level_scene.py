@@ -1588,8 +1588,8 @@ class LevelScene:
     def _clut_pages(self, polys):
         """{CLUT address: texture page} for the palettes a draw routine's
         polygons name. A packet carries its CLUT but not its page: the page
-        this area's own faces sample that palette from, else the page its
-        texels show through under the polygons (psx_vram.page_under)."""
+        this area's own faces sample that palette from, else the page whose
+        texels under the polygons are a cutout (psx_vram.page_under)."""
         boxes = collections.defaultdict(set)
         for _corners, uvs, _colours, clut, _blended in polys:
             us, vs = [u for u, _v in uvs], [v for _u, v in uvs]
@@ -1597,11 +1597,9 @@ class LevelScene:
                              max(min(vs), max(vs) - 1)))
         wanted = {environment_meshes.clut_address(c) for c in boxes}
         counts = collections.defaultdict(collections.Counter)
-        usage = collections.Counter()
 
         def count(model):
             for page, clut, *_rest in (model or {}).get("texture_info") or ():
-                usage[page] += 1
                 if clut in wanted:
                     counts[clut][page] += 1
 
@@ -1614,7 +1612,7 @@ class LevelScene:
             for clut, clut_boxes in boxes.items():
                 address = environment_meshes.clut_address(clut)
                 if address not in pages:
-                    page = psx_vram.page_under(self.vram, clut, sorted(clut_boxes), usage)
+                    page = psx_vram.page_under(self.vram, clut, sorted(clut_boxes))
                     if page is not None:
                         pages[address] = page
         return pages
