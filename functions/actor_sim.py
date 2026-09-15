@@ -47,6 +47,9 @@ PART_BUDGET_HELD = 0x4000
 # and the allocation hook never counts it down.
 POOL_FREE = 0x800E7E7C
 POOL_FREE_HELD = 0x40
+NEW_GAME = 0x8007982C               # f_NewGameSetDefaultValues
+INTRO_CUTSCENE = 0x800BF89C         # src_IntroCutscene: 2 at New Game,
+INTRO_PLAYED = 4                    # 4 once the intro is over
 AREA_NUMBER = 0x800BF870
 HEAP = 0x80300000
 HEAP_END = 0x80780000
@@ -197,6 +200,7 @@ class Actor:
     worker: int = None              # id of the scene worker that made it
     parts: list = field(default_factory=list)
     bank: int = None                # file id of its sprite bank
+    sprite_bank: int = None         # the bank its code chose, sequence or not
     frames: tuple = ()              # ((frame, ticks), ...)
     loops: bool = False
     reward: int = 0
@@ -230,6 +234,11 @@ class Actor:
     # Render kind 0x14: a textured quad whose corners are its own shorts at
     # +0x60..+0x76 (f_DrawPresentationActorList) - 60.x's rope.
     quad: tuple = None
+    # Its parts' offsets and turns at the last reading pass, and whether a
+    # reading is owed because its run turned them after transforming.
+    turns: bytes = None
+    stale: bool = False
+    restaled: bool = False
 
 
 class World:
@@ -266,6 +275,13 @@ class World:
                 self._slot(file_id, AREA_BASE + offset, size)
             self.trail = self._trail(idx_path, chunk)
             self.dat = dat_path
+        # A fresh game is what New Game leaves - its defaults, not zeroed RAM
+        # - with the intro played: no area can be walked before it ends.
+        try:
+            cpu.call(NEW_GAME, (), budget=BUDGET, sp=STACK)
+        except EmuError:
+            pass
+        mem.write(INTRO_CUTSCENE, 1, INTRO_PLAYED)
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
@@ -597,26 +613,56 @@ class World:
             parts = self._parts(actor, models)
             score = (sum(p.posed for p in parts), len(parts))
             best = (sum(p.posed for p in actor.parts), len(actor.parts))
+            turns = self._turns(actor)
+            # A run that turns its parts after transforming them leaves its
+            # reading a frame stale - the rare fish's stick bends that way,
+            # and its line still ends on last frame's point - so it is read
+            # once more.
+            owed = actor.stale
             # A reading taken before its first run is no reading at all: a
             # sprite's init starts its sequence, which no part score sees.
             # Nor is one left at the origin: a linked child is only put
             # beside its parent on its second run.
-            if (score > best or actor.position is None
+            if (score > best or actor.position is None or owed
                     or (actor.ran and not actor.read_ran)
                     or not actor.position.any()):
+                actor.stale = bool(not owed and not actor.restaled and parts
+                                   and actor.turns is not None
+                                   and turns != actor.turns)
+                actor.restaled |= owed
                 actor.read_ran = actor.ran
                 actor.parts = parts
                 self._sprite(actor, banks)
                 self._place(actor)
                 taken.append(actor)
+            actor.turns = turns
         return taken
+
+    def _turns(self, actor):
+        """Its parts' own offsets and turns (+0x00..+0x0E), as bytes."""
+        read, mem, a = self.mem.read, self.mem, actor.address
+        out = bytearray()
+        for n in range(min(read(a + PART_COUNT, 1), MAX_PARTS)):
+            part = read(a + PARTS + n * 4, 4)
+            if part:
+                out += mem.bytes(part, 0x0E)
+        return bytes(out)
 
     def _read(self):
         """A reading, and the lines the re-read actors draw in that same
         frame - a rope captured later has swung away from its pose."""
         taken = self._snapshot()
         if taken:
-            self.capture_lines(taken)
+            # A parent's line can end on a child only now placed - the rare
+            # fish on its stick - so its spawners draw again too.
+            again, seen = list(taken), {id(a) for a in taken}
+            for actor in taken:
+                parent = self.by_address.get(actor.spawner)
+                while parent is not None and id(parent) not in seen:
+                    seen.add(id(parent))
+                    again.append(parent)
+                    parent = self.by_address.get(parent.spawner)
+            self.capture_lines(again)
 
     # --- rooms ----------------------------------------------------------
 
@@ -989,6 +1035,8 @@ class World:
         read = self.mem.read
         bank = banks.get(read(actor.address + BANK, 4))
         step = read(actor.address + SEQUENCE, 4)
+        if bank is not None:
+            actor.sprite_bank = bank
         if bank is not None and step:
             actor.bank = bank
             actor.frames, actor.loops = self._sequence(step)

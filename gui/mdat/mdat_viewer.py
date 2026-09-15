@@ -844,7 +844,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             return
         centre, radius = scene
         self.scene_radius = radius
-        self.camera_controls.frame(centre, radius, heading, pitch)
+        self.camera_controls.glide_frame(centre, radius, heading, pitch)
         self.update()
 
     def _update_stats_label(self):

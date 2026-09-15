@@ -221,6 +221,10 @@ def billboards(instances, placed):
         art = getattr(instance, "art", None)
         if art is None or not art.frames:
             continue
+        pickup = getattr(instance, "pickup", None)
+        if pickup is not None and pickup.chest:
+            # A chest is its model; what it holds hangs over it on its own row.
+            continue
         key_clut = art.clut if art.recolored else None
         steps = tuple((placed[(art.bank, f.frame, key_clut)], f.ticks)
                       for f in art.frames

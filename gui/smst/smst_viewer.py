@@ -1080,8 +1080,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             return
         centre, radius = scene
         self.scene_radius = radius
-        self.camera_controls.frame(centre, radius, heading, pitch,
-                                   lift=MODEL_LIFT)
+        self.camera_controls.glide_frame(centre, radius, heading, pitch,
+                                         lift=MODEL_LIFT)
         self.update()
 
     # --- GL ----------------------------------------------------------

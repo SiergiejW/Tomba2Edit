@@ -1113,7 +1113,10 @@ class LevelScene:
             class_art = object_sprites.first_state(states)
             # The class's states belong to all its slots: once this one's
             # code has run, only what it started is its sprite.
-            guess_class = actor is None or not actor.ran or actor.waiting
+            # So does one whose code chose a sprite bank but has not started
+            # a sequence yet - 15.6's fish, waiting to jump.
+            guess_class = (actor is None or not actor.ran or actor.waiting
+                           or (not actor.parts and actor.sprite_bank is not None))
             art = ((self._sim_art(actor) if actor is not None else None)
                    or (object_sprites.as_art(class_art)
                        if class_art and guess_class else None))

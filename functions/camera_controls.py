@@ -258,13 +258,35 @@ class CameraControls:
             self._glide_timer.timeout.connect(self._glide_step)
         self._glide_timer.start(GLIDE_INTERVAL_MS)
 
+    def glide_frame(self, centre, radius, heading=MODEL_HEADING,
+                    pitch=MODEL_PITCH, margin=2.5, lift=0.0, frames=GLIDE_FRAMES):
+        """frame(), eased in from wherever the camera is - position and
+        angles both, the way F glides onto a selection."""
+        start = (self.camera_x, self.camera_y, self.camera_z,
+                 self.camera_angle_h, self.camera_angle_v)
+        self.frame(centre, radius, heading, pitch, margin, lift)
+        target = (self.camera_x, self.camera_y, self.camera_z,
+                  self.camera_angle_h, self.camera_angle_v)
+        # The short way round.
+        turn = (target[3] - start[3] + 180.0) % 360.0 - 180.0
+        start = start[:3] + (target[3] - turn, start[4])
+        (self.camera_x, self.camera_y, self.camera_z,
+         self.camera_angle_h, self.camera_angle_v) = start
+        self._glide = [start, target, 0, max(int(frames), 1)]
+        if getattr(self, "_glide_timer", None) is None:
+            self._glide_timer = QTimer()
+            self._glide_timer.timeout.connect(self._glide_step)
+        self._glide_timer.start(GLIDE_INTERVAL_MS)
+
     def _glide_step(self):
         start, target, step, frames = self._glide
         step += 1
         t = step / frames
         eased = t * t * (3.0 - 2.0 * t)
-        self.camera_x, self.camera_y, self.camera_z = (
-            a + (b - a) * eased for a, b in zip(start, target))
+        values = [a + (b - a) * eased for a, b in zip(start, target)]
+        self.camera_x, self.camera_y, self.camera_z = values[:3]
+        if len(values) == 5:
+            self.camera_angle_h, self.camera_angle_v = values[3:]
         self._glide[2] = step
         if step >= frames:
             self.stop_glide()

@@ -20,10 +20,9 @@ import math
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QVector2D,
-    QVector3D, QVector4D)
+    QAction, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -62,25 +61,21 @@ PART_PAD = 6.0
 # line - kind 0x14's other branch writes them 4 either side.
 ROPE_HALF_WIDTH = 4.0
 # The hourglass drawn at the top right of anything gated or timed, in
-# pixels - a path rather than the ⧖ glyph, which fonts draw skewed.
+# pixels - GL triangles, not a QPainter, which left its own state behind.
 BADGE_WIDTH, BADGE_HEIGHT = 8.0, 11.0
-BADGE_COLOR = QColor(255, 214, 0)
-BADGE_OUTLINE = QColor(0, 0, 0, 210)
+BADGE_COLOR = (1.0, 0.84, 0.0)
+BADGE_OUTLINE = (0.0, 0.0, 0.0)
 
 
 def hourglass(x, y):
-    """The badge's path, its top left corner at (x, y)."""
+    """(triangle points, outline segment points) for a badge whose top left
+    is at pixel (x, y), y counted up from the bottom."""
     w, h = BADGE_WIDTH, BADGE_HEIGHT
-    path = QPainterPath()
-    path.moveTo(x, y)
-    path.lineTo(x + w, y)
-    path.lineTo(x + w / 2, y + h / 2)
-    path.closeSubpath()
-    path.moveTo(x + w / 2, y + h / 2)
-    path.lineTo(x + w, y + h)
-    path.lineTo(x, y + h)
-    path.closeSubpath()
-    return path
+    top = [(x, y), (x + w, y), (x + w / 2, y - h / 2)]
+    bottom = [(x + w / 2, y - h / 2), (x + w, y - h), (x, y - h)]
+    edges = [p for tri in (top, bottom)
+             for a, b in zip(tri, tri[1:] + tri[:1]) for p in (a, b)]
+    return top + bottom, edges
 # F frames the selection no closer than this, world units.
 FRAME_MIN_RADIUS = 150.0
 
@@ -243,6 +238,9 @@ class LevelViewer(SMSTViewer):
         self.marker_cbo = QOpenGLBuffer()
         self.marker_count = 0
         self._badge_cache = None            # [(instance index, box corners)]
+        self.badge_vao = QOpenGLVertexArrayObject()
+        self.badge_vbo = QOpenGLBuffer()
+        self.badge_cbo = QOpenGLBuffer()
         self._marker_arrays = None
         self.selection_vao = QOpenGLVertexArrayObject()
         self.selection_vbo = QOpenGLBuffer()
@@ -502,7 +500,7 @@ class LevelViewer(SMSTViewer):
             return
         centre, radius = found
         self.scene_radius = radius
-        self.camera_controls.frame(centre, radius, LEVEL_HEADING, LEVEL_PITCH)
+        self.camera_controls.glide_frame(centre, radius, LEVEL_HEADING, LEVEL_PITCH)
         self.update()
 
     def rebuild_markers(self):
@@ -539,7 +537,7 @@ class LevelViewer(SMSTViewer):
             return
         centre, radius = scene
         self.scene_radius = radius
-        self.camera_controls.frame(centre, radius, LEVEL_HEADING, LEVEL_PITCH)
+        self.camera_controls.glide_frame(centre, radius, LEVEL_HEADING, LEVEL_PITCH)
         self.update()
 
     def frame_model(self, *_args, **_kwargs):
@@ -1402,14 +1400,17 @@ class LevelViewer(SMSTViewer):
         return self._badge_cache
 
     def _paint_badges(self):
-        """A yellow ⧖ at the top right of each timed instance on screen."""
+        """A yellow hourglass at the top right of each timed instance on
+        screen, drawn in GL with the line shader. A QPainter over the widget
+        left its depth mask off, so the next frame's depth never cleared
+        and the whole level went see-through."""
         badges = self._badges() if self.scene is not None else ()
         if not badges:
             return
         mvp = np.array(self._model_view_projection().data(),
                        dtype=np.float64).reshape(4, 4).T
-        width, height = self.width(), self.height()
-        spots = []
+        width, height = max(self.width(), 1), max(self.height(), 1)
+        fill, edges = [], []
         for index, corners in badges:
             if index in self.hidden_groups:
                 continue
@@ -1423,31 +1424,38 @@ class LevelViewer(SMSTViewer):
                     or ndc[:, 2].min() > 1):
                 continue
             x = (min(ndc[:, 0].max(), 1.0) + 1) * 0.5 * width + 2
-            y = (1 - min(ndc[:, 1].max(), 1.0)) * 0.5 * height - BADGE_HEIGHT / 2
-            spots.append(QPointF(min(max(x, 0.0), width - BADGE_WIDTH - 1),
-                                 min(max(y, 0.0), height - BADGE_HEIGHT - 1)))
-        if not spots:
+            y = (min(ndc[:, 1].max(), 1.0) + 1) * 0.5 * height + BADGE_HEIGHT / 2
+            triangles, outline = hourglass(min(max(x, 1.0), width - BADGE_WIDTH - 1),
+                                           min(max(y, BADGE_HEIGHT + 1), height - 1))
+            fill.extend(triangles)
+            edges.extend(outline)
+        if not fill or not self.shader_program.bind():
             return
-        # QPainter leaves its own GL state behind; the scene pass assumes ours.
+
+        def arrays(points, color):
+            positions = np.array([(px / width * 2 - 1, py / height * 2 - 1, 0.0)
+                                  for px, py in points], dtype=np.float32)
+            return positions, np.tile(np.array(color, dtype=np.float32), (len(points), 1))
+
         depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
         cull = GL.glIsEnabled(GL.GL_CULL_FACE)
-        blend = GL.glIsEnabled(GL.GL_BLEND)
-        viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            pen = QPen(BADGE_OUTLINE)
-            pen.setWidthF(1.2)
-            painter.setPen(pen)
-            painter.setBrush(BADGE_COLOR)
-            for spot in spots:
-                painter.drawPath(hourglass(spot.x(), spot.y()))
-        finally:
-            painter.end()
-        for flag, on in ((GL.GL_DEPTH_TEST, depth), (GL.GL_CULL_FACE, cull),
-                         (GL.GL_BLEND, blend)):
-            (GL.glEnable if on else GL.glDisable)(flag)
-        GL.glViewport(*[int(v) for v in viewport])
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDisable(GL.GL_CULL_FACE)
+        self.shader_program.setUniformValue("modelViewProjection", QMatrix4x4())
+        self.shader_program.setUniformValue("useTextures", False)
+        self.shader_program.setUniformValue("alpha", 1.0)
+        for points, color, mode in ((fill, BADGE_COLOR, GL.GL_TRIANGLES),
+                                    (edges, BADGE_OUTLINE, GL.GL_LINES)):
+            count = self._upload_lines(arrays(points, color), self.badge_vao,
+                                       self.badge_vbo, self.badge_cbo)
+            self.badge_vao.bind()
+            GL.glDrawArrays(mode, 0, count)
+            self.badge_vao.release()
+        self.shader_program.release()
+        if depth:
+            GL.glEnable(GL.GL_DEPTH_TEST)
+        if cull:
+            GL.glEnable(GL.GL_CULL_FACE)
 
     def _paint_level(self):
         self._sync_lines()
