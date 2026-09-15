@@ -102,7 +102,13 @@ class SfxPanel(QWidget):
         self._snd = data
         try:
             exe = voice.extract_file(path, "MAIN.EXE")
-            self._rates = sfx.default_rates(exe, data) if exe else {}
+            # The area sounds are defined in each area's overlay.
+            overlays = {}
+            for area, name in enumerate(sfx.OVERLAYS):
+                blob = voice.extract_file(path, name)
+                if blob:
+                    overlays[area] = blob
+            self._rates = sfx.default_rates(exe, data, overlays) if exe else {}
         except Exception:
             self._rates = {}
         slots = sfx.samples(data)

@@ -118,8 +118,17 @@ PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
 # (src_EventWinsWindmill == -1) - bar the bytes saying where the world is.
 SAVE_BLOCK, SAVE_BLOCK_SIZE = AREA_NUMBER, 0x5F4
 DONE = 0xFF
+# src_Travelling (+0x80..+0x83): travelling, mini, invisible - how Tomba is,
+# not what he has done - with the Pig Bag's count in its last byte.
+TRAVELLING = AREA_NUMBER + 0x10
 WORLD_BYTES = frozenset((*range(AREA_NUMBER, AREA_NUMBER + 4),
+                         *range(TRAVELLING, TRAVELLING + 4),
                          PURIFIED_AREAS, PURIFIED_AREAS + 1, INTRO_CUTSCENE))
+# The Pig Bag: f_AddInventoryQuantity appends items 0x17 to 0x1C and counts
+# them. An Evil Pig Door stands only if its item (+0x7E) is in the bag - with
+# every event done, all six are.
+PIG_BAG_COUNT, PIG_BAG = TRAVELLING + 3, TRAVELLING + 4
+PIG_BAG_ITEMS = range(0x17, 0x1D)
 LOAD_SIZES = {0x20: 1, 0x24: 1, 0x21: 2, 0x25: 2, 0x23: 4}
 # beq bne blez bgtz slti sltiu andi xori - see _tested.
 TESTS = frozenset((0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B, 0x0C, 0x0E))
@@ -326,6 +335,10 @@ class World:
         mem.write(INTRO_CUTSCENE, 1, INTRO_PLAYED)
         for address in finished:
             mem.write(address, 1, DONE)
+        if finished:
+            mem.write(PIG_BAG_COUNT, 1, len(PIG_BAG_ITEMS))
+            for slot, item in enumerate(PIG_BAG_ITEMS):
+                mem.write(PIG_BAG + slot, 1, item)
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
@@ -591,6 +604,20 @@ class World:
         asks to be destroyed is put back in the state it was in, and one
         whose code faults keeps what it had built - the editor shows what
         stands in a level, not what a fresh game happens to keep."""
+        if only is not None:
+            chosen = only
+
+            def only(actor):
+                # What a chosen actor spawns runs with it: Donglin's gate,
+                # stood up by the gated pass, spawns its guard in its init.
+                for _depth in range(16):
+                    if actor is None:
+                        return False
+                    if chosen(actor):
+                        return True
+                    actor = self.by_address.get(actor.spawner)
+                return False
+
         for _frame in range(frames):
             if workers:
                 self.run_workers(budget)

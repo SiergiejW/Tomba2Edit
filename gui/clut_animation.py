@@ -136,6 +136,13 @@ class ClutAnimationMixin:
         self.window_rules = tuple(
             rule for rule in texture_window.rules_for(overlay_path)
             if any(value & rule.flag for value in flags))
+        # A palette whose faces a drawer's rule moves is the drawer's: the
+        # UV guess off the page would move them a second time (A0A's lava).
+        windowed = {info[1] for info, value in zip((model or {}).get("texture_info") or (),
+                                                   (model or {}).get("face_flags") or ())
+                    if any(value & rule.flag for rule in self.window_rules)}
+        self.uv_animations = {clut: a for clut, a in self.uv_animations.items()
+                              if clut not in windowed}
         self._apply_windows(0)
 
         total = (len(self.clut_animations) + len(self.uv_animations)

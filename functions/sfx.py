@@ -66,7 +66,17 @@ RESIDENT_SOUNDS = 0x70
 AREA_TONE = 0x80
 EFFECTS_BANK = 0
 SPU_RATE = 44100            # a tone keyed on at its centre note
+SPU_MAX_RATE = SPU_RATE * 4  # the pitch register tops out at 0x4000
 EXE_HEADER = 0x800
+# g_AreaSoundEffectDefinitionTables (f_PlaySoundEffect's path for ids 0x80
+# to 0xE0): a pointer per area into that area's own overlay, where its
+# sounds are defined in the same 8 bytes. Area 9 has none. A tone with bit 7
+# set plays from the area's VAB - bank 2 + area, after the effects and music.
+AREA_TABLES = 0x800A4EF8
+AREA_SOUNDS = 0x61
+AREA_BANK_BASE = 2
+OVERLAY_BASE = 0x80108F9C
+OVERLAYS = tuple(f"A0{c}.BIN" for c in "0123456789ABCDEFGHIJKL")
 
 
 def find_banks(data):
@@ -163,29 +173,57 @@ def loops(data, offset, limit):
     return False
 
 
-def default_rates(exe, data):
-    """{"bank:index": Hz} - the rate each resident effect waveform plays at,
-    from the first sound id that names its tone: 44100 Hz moved by how far
-    that sound's note is from the tone's centre."""
+def default_rates(exe, data, overlays=None):
+    """{"bank:index": Hz} - the rate each effect waveform plays at, from the
+    first sound id that names its tone: 44100 Hz moved by how far that
+    sound's note is from the tone's centre. `overlays`, {area: overlay
+    bytes}, adds the area sounds, whose definitions live there."""
     load = struct.unpack_from("<I", exe, 0x18)[0]
-    base = DEFINITIONS - load + EXE_HEADER
-    head = find_banks(data)[EFFECTS_BANK]["offset"]
-    programs = head + HEADER
-    used = [p for p in range(128) if data[programs + p * 16]]
+    banks = find_banks(data)
     out = {}
-    for sound in range(RESIDENT_SOUNDS):
-        entry = exe[base + sound * DEFINITION_SIZE:base + (sound + 1) * DEFINITION_SIZE]
-        if len(entry) < DEFINITION_SIZE:
-            break
-        _part, _priority, program, tone, note, fine, _volume, _spare = entry
-        if tone & AREA_TONE or program not in used or tone >= data[programs + program * 16]:
-            continue
+
+    def entries(blob, at, count):
+        for sound in range(count):
+            entry = blob[at + sound * DEFINITION_SIZE:at + (sound + 1) * DEFINITION_SIZE]
+            if len(entry) < DEFINITION_SIZE:
+                return
+            yield entry
+
+    def take(entry, area):
+        """Rate the tone a definition plays; False if it is no definition."""
+        _part, _priority, program, tone, note, fine, _volume, spare = entry
+        bank = EFFECTS_BANK
+        # An area's own table always plays its area bank; in the resident
+        # table bit 7 means whichever area is loaded, so no one rate.
+        if area is not None:
+            bank, tone = AREA_BANK_BASE + area, tone & ~AREA_TONE
+        elif tone & AREA_TONE:
+            return True
+        if spare or bank >= len(banks):
+            return False
+        programs = banks[bank]["offset"] + HEADER
+        used = [p for p in range(128) if data[programs + p * 16]]
+        if program not in used or tone >= data[programs + program * 16]:
+            return False
         at = programs + PROGRAM_TABLE + used.index(program) * TONE_TABLE + tone * 32
         center, shift = data[at + 4], data[at + 5]
         vag = struct.unpack_from("<h", data, at + 22)[0]
-        key = f"{EFFECTS_BANK}:{vag}"
+        key = f"{bank}:{vag}"
         if vag > 0 and key not in out:
-            out[key] = round(SPU_RATE * 2 ** ((note - center + fine / 128 - shift / 100) / 12))
+            out[key] = min(SPU_MAX_RATE, round(
+                SPU_RATE * 2 ** ((note - center + fine / 128 - shift / 100) / 12)))
+        return True
+
+    for entry in entries(exe, DEFINITIONS - load + EXE_HEADER, RESIDENT_SOUNDS):
+        take(entry, None)
+    for area, overlay in sorted((overlays or {}).items()):
+        pointer = struct.unpack_from("<I", exe, AREA_TABLES - load + EXE_HEADER + area * 4)[0]
+        if OVERLAY_BASE <= pointer < OVERLAY_BASE + len(overlay):
+            # An area's table has no count: it ends where its bank stops
+            # making sense of it - in the retail overlays, at the SEQ after it.
+            for entry in entries(overlay, pointer - OVERLAY_BASE, AREA_SOUNDS):
+                if not take(entry, area):
+                    break
     return out
 
 

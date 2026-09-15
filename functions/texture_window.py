@@ -28,15 +28,24 @@ and each wrap steps v by 64 over three rows, added to faces flagged 0x04.
 That is the waterfall functions/uv_anim.py already finds and animates, so
 it has no rule here - two would move it twice.
 
+A0A, the Fire Pig Boss (FUN_A0A__8011024c, cell drawers FUN_A0A__8010f97c
+tris, 8010fd74 quads): every 4 frames DAT_A0A__8011bf1e steps through six
+(u, v) cells in the order the table at 0x8011BF20 lists them, and every
+frame DAT_A0A__8011bf18 takes 1 off u, wrapping at 64. A face flagged 0x04
+gets cell + scroll ADDED to its u/v bytes - the lava running - and one
+flagged 0x08 the cell alone. The rule reads the table, and uv_anim's guess
+at those faces is dropped (gui/clut_animation.py).
+
 The counters all start at 0. Other areas set the same bits for other
 things, so the rules are per overlay.
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 CELL = 64
+OVERLAY_BASE = 0x80108F9C
 # Faces functions/environment_meshes.py builds carry this flag - past the
 # packet byte, so it never meets a real one.
 GENERATED = 0x100
@@ -62,6 +71,11 @@ class Rule:
     add: bool = False       # cell added to the uv bytes, not an E2 window
     skip: int = 0           # faces carrying all these bits don't take it
     models: bool = False    # actor model parts take it too, not only rooms
+    # Cells in the order the drawer's own table lists them, not a grid:
+    # (u, v) byte pairs at this overlay address - read by rules_for.
+    cell_table: int = 0
+    cell_count: int = 0
+    cells: tuple = ()
 
 
 RULES = {
@@ -69,20 +83,46 @@ RULES = {
             Rule(2, 0x08, step=2, scroll_u=-1, scroll_step=2)),
     "A01": (Rule(1, 0x10, step=3, columns=4, rows=2, add=True, skip=QUAD | 0x80),
             Rule(2, GENERATED, step=3, columns=4, rows=2, scroll_v=1)),
+    "A0A": (Rule(1, 0x04, step=4, scroll_u=-1, add=True, cell_table=0x8011BF20, cell_count=6),
+            Rule(2, 0x08, step=4, add=True, cell_table=0x8011BF20, cell_count=6)),
 }
 
 
 def rules_for(overlay_path):
-    """The rules an area's drawer follows, () for none."""
-    return RULES.get(os.path.basename(overlay_path or "")[:3].upper(), ())
+    """The rules an area's drawer follows, () for none, with any cell table
+    read out of the overlay."""
+    rules = RULES.get(os.path.basename(overlay_path or "")[:3].upper(), ())
+    if not any(rule.cell_table for rule in rules):
+        return rules
+    try:
+        with open(overlay_path, "rb") as f:
+            overlay = f.read()
+    except OSError:
+        return ()
+    out = []
+    for rule in rules:
+        if rule.cell_table:
+            at = rule.cell_table - OVERLAY_BASE
+            raw = overlay[at:at + rule.cell_count * 2]
+            rule = replace(rule, cells=tuple(zip(raw[0::2], raw[1::2])))
+        out.append(rule)
+    return tuple(out)
 
 
 def window_at(rule, frame):
-    """(cell u, cell v, scroll u, scroll v) in texels at game frame `frame`."""
-    cell = (frame // rule.step) % (rule.columns * rule.rows)
+    """(cell u, cell v, scroll u, scroll v) in texels at game frame `frame`.
+    An added cell carries its scroll in the same bytes."""
+    step = frame // rule.step
+    if rule.cells:
+        cell_u, cell_v = rule.cells[step % len(rule.cells)]
+    else:
+        cell = step % (rule.columns * rule.rows)
+        cell_u, cell_v = cell % rule.columns * CELL, cell // rule.columns * CELL
     scrolls = frame // rule.scroll_step
-    return (float(cell % rule.columns * CELL), float(cell // rule.columns * CELL),
-            float(rule.scroll_u * scrolls % CELL), float(rule.scroll_v * scrolls % CELL))
+    scroll_u, scroll_v = rule.scroll_u * scrolls % CELL, rule.scroll_v * scrolls % CELL
+    if rule.add:
+        return float((cell_u + scroll_u) % 256), float((cell_v + scroll_v) % 256), 0.0, 0.0
+    return float(cell_u), float(cell_v), float(scroll_u), float(scroll_v)
 
 
 def vertex_flags(model_data):
