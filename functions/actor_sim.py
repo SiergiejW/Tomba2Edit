@@ -1368,7 +1368,8 @@ def textured_primitives(words, points):
             uvs.append((uv & 0xFF, (uv >> 8) & 0xFF))
             colours.append((1.0, 1.0, 1.0) if code & 0x01 else
                            tuple(((colour >> shift) & 0xFF) / NEUTRAL for shift in (0, 8, 16)))
-        if all(c is not None for c in corners) and all(
+        # CLUT 0 names the top left of VRAM, which is the display, not a palette.
+        if clut and all(c is not None for c in corners) and all(
                 max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
                 for a in corners for b in corners):
             out.append((tuple(corners), tuple(uvs), tuple(colours), clut, bool(code & 0x02)))
