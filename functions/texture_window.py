@@ -1,21 +1,25 @@
-"""Texture windows: faces drawn through a moving 64-texel cell of their page.
+"""Texture windows: faces drawn through a moving cell of their page.
 
-The Last Pig Boss's arena (A0F) animates part of its MDAT this way rather
-than by palette. FUN_A0F__80115364 draws the room; its cell drawers
-(FUN_A0F__80114a5c tris, FUN_A0F__80114e70 quads) read flags from the top
-byte of each packet's second colour word, and a face with bit 2 or bit 3
-set goes into an ordering-table slot of its own, framed by two GP0(E2h)
-texture-window commands, with a scroll added to its UVs:
+A GP0(E2h) texture-window command limits what a primitive samples: a texel
+is cell + ((uv + scroll) & 63). Two areas animate MDAT faces this way, and
+pick the faces by packet flags - the top byte of each packet's second
+colour word, which their own cell drawers read:
 
-    bit 2   every frame: the window steps one cell along a 3x3 grid of
-            64x64 cells, and u scrolls by -2
-    bit 3   the same on odd frames only (src_SpriteAnimationFrame & 1),
+A0F, the Last Pig Boss (FUN_A0F__80115364, FUN_A0F__80114a5c/80114e70):
+
+    0x04    every frame the window steps a 3x3 grid of 64-texel cells and
+            u scrolls by -2
+    0x08    the same on odd frames only (src_SpriteAnimationFrame & 1),
             u scrolling by -1
 
-Through the window a texel is cell + ((uv + scroll) & 63). The counters
-(DAT_A0F__80120928..3A) all start at 0. Other areas set these flag bits
-too, but their drawers mean something else by them, so the rules are per
-overlay.
+A01, Large Mine Underground (f_RenderPipeAreaEnvironment, FUN_A01__801311fc),
+while cursed: every 3 frames the window steps a 4x2 grid of 64-texel cells.
+Faces flagged 0x10 are sent to the window's ordering-table slot, and so is
+the lava its drawer builds (functions/environment_meshes.py), whose v also
+scrolls by +1 a frame.
+
+The counters all start at 0. Other areas set the same bits for other
+things, so the rules are per overlay.
 """
 import os
 from dataclasses import dataclass
@@ -23,19 +27,29 @@ from dataclasses import dataclass
 import numpy as np
 
 CELL = 64
-GRID = 3
+# Faces functions/environment_meshes.py builds carry this flag - past the
+# packet byte, so it never meets a real one.
+GENERATED = 0x100
 
 
 @dataclass(frozen=True)
 class Rule:
-    mode: int           # which window the shaders take: 1 or 2
-    flag: int           # the packet flag bit
-    every: int          # frames per step
-    scroll_u: int       # texels per step
-    scroll_v: int
+    mode: int               # which of the two windows the shaders take: 1 or 2
+    flag: int               # the face flag bit
+    step: int = 1           # frames per cell
+    columns: int = 3
+    rows: int = 3
+    scroll_u: int = 0       # texels per scroll step
+    scroll_v: int = 0
+    scroll_step: int = 1    # frames per scroll step
 
 
-RULES = {"A0F": (Rule(1, 0x04, 1, -2, 0), Rule(2, 0x08, 2, -1, 0))}
+RULES = {
+    "A0F": (Rule(1, 0x04, scroll_u=-2),
+            Rule(2, 0x08, step=2, scroll_u=-1, scroll_step=2)),
+    "A01": (Rule(1, 0x10, step=3, columns=4, rows=2),
+            Rule(2, GENERATED, step=3, columns=4, rows=2, scroll_v=1)),
+}
 
 
 def rules_for(overlay_path):
@@ -45,24 +59,17 @@ def rules_for(overlay_path):
 
 def window_at(rule, frame):
     """(cell u, cell v, scroll u, scroll v) in texels at game frame `frame`."""
-    steps = frame // rule.every
-    cell = steps % (GRID * GRID)
-    return (float(cell % GRID * CELL), float(cell // GRID * CELL),
-            float(rule.scroll_u * steps % CELL), float(rule.scroll_v * steps % CELL))
+    cell = (frame // rule.step) % (rule.columns * rule.rows)
+    scrolls = frame // rule.scroll_step
+    return (float(cell % rule.columns * CELL), float(cell // rule.columns * CELL),
+            float(rule.scroll_u * scrolls % CELL), float(rule.scroll_v * scrolls % CELL))
 
 
-def mode_of(flags):
-    """The window a face's flags put it through - bit 2 first, as the
-    drawers test it - 0 for none."""
-    return 1 if flags & 0x04 else 2 if flags & 0x08 else 0
-
-
-def vertex_modes(model_data):
-    """float32 per vertex: the window its face is drawn through."""
+def vertex_flags(model_data):
+    """float32 per vertex: the flags of the face it belongs to."""
     out = np.zeros(len(model_data.get("vertices") or ()), dtype=np.float32)
     flags = model_data.get("face_flags") or ()
     for face, value in zip(model_data.get("faces") or (), flags):
-        mode = mode_of(value)
-        if mode:
-            out[face] = mode
+        if value:
+            out[face] = value
     return out

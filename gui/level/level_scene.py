@@ -49,6 +49,7 @@ from functions import actor_models
 from functions import actor_assembly
 from functions import actor_sim
 from functions import town_collision
+from functions import environment_meshes
 from functions import object_sprites
 from functions import pickup_art
 from functions import placement as placement_module
@@ -110,6 +111,10 @@ ROOM_REACH = 400.0
 # A purified area's chunk runs the cursed area's overlay, 22 chunks before,
 # with that area's bit set in src_PurifiedAreas.
 PURIFIED_CHUNKS = range(0x1B, 0x23)
+
+# Surfaces an environment drawer builds in code (functions/environment_meshes
+# .py) are models of the scene's own, numbered from here.
+ENVIRONMENT_ID = 0x2000
 
 
 @dataclass
@@ -1107,6 +1112,14 @@ class LevelScene:
                          and actor.blank and not actor.frames and guessed
                          and self.binding_source.get(record.key()) == "code"
                          and {tuple(g) for g in guessed} <= set(actor.loaded))
+            # Ran, attached nothing, and set a draw routine of its own (+0x18):
+            # it draws itself - steam, sparks - so a model its handler's
+            # immediates named is not it.
+            if (actor is not None and not actor.parts and not actor.frames
+                    and not actor.dead and guessed
+                    and self.binding_source.get(record.key()) == "code"
+                    and world._code(world.mem.read(actor.address + actor_sim.DRAW, 4))):
+                invisible = True
             if assembly is not None:
                 sources = assembly.sources
             elif invisible:
@@ -1276,6 +1289,17 @@ class LevelScene:
                         label=f"room {scene}: {rider.label}", art=rider.art,
                         x=rx, y=ry, z=rz, note=note, scene=scene,
                         follow=(follow, number) if follow is not None else None))
+
+        for number, (name, drawer, model) in enumerate(environment_meshes.models(
+                os.path.basename(self.overlay_path or ""), self.overlay_data,
+                self.chunk_index in PURIFIED_CHUNKS, view_point)):
+            self.models[ENVIRONMENT_ID + number] = model
+            instances.append(Instance(
+                index=len(instances), role="scenery",
+                label=f"{name} (built by {drawer})",
+                sources=((ENVIRONMENT_ID + number, 0),), authored=True,
+                name=name, note=f"no file holds it: {drawer} builds it every "
+                                f"frame - see functions/environment_meshes.py"))
 
         # Lines whose actor got no row of its own still show, by room.
         if world is not None:
@@ -1460,6 +1484,14 @@ class LevelScene:
         lines = overlay.Lines()
         if view in (None, "all"):
             overlay.add_scld(lines, self.planes)
+        elif rooms and view in rooms:
+            # A room loads no collision of its own (its enter routine only
+            # fills slot 15), so what it stands on is the area's SCLD where
+            # the room is.
+            low, high = rooms[view]
+            overlay.add_scld(lines, self.planes, bounds=(
+                low[0] - ROOM_REACH, high[0] + ROOM_REACH,
+                low[2] - ROOM_REACH, high[2] + ROOM_REACH))
         datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
         for number, dataset in enumerate(datasets):
             for plane in dataset.planes:

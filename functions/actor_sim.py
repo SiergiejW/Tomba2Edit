@@ -116,6 +116,7 @@ CAMERA = 0x1F8000F8
 OT_SLOTS = 0x800
 PRIMITIVE_BYTES = 0x40000
 LINE_REACH = 8000                   # longer than this is a misread vertex
+ACTOR_REACH = 6000                  # a line point this far from its actor too
 TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
 
 # A scene controller retires through f_RetireSceneController and calls its
@@ -136,6 +137,8 @@ DESTROY_STATE = 3
 
 FRAMES = 4
 BUDGET = 400_000
+# Extra passes for actors spawned too late in a run to have run at all.
+SETTLE_FRAMES = 2
 
 # pickup_art's sequence step encoding.
 TICKS = 0x3FFF
@@ -181,6 +184,7 @@ class Actor:
     # Line primitives its draw routine put out: (a, b, colour a, colour b,
     # blended), points in game axes - see capture_lines.
     lines: tuple = ()
+    ran: bool = False               # whether its handler has run at all
 
 
 class World:
@@ -244,8 +248,10 @@ class World:
             TERMINATE_WORKER: lambda c: 0,
         })
         self.entering = False
-        # slot -> IDX trail index a resource load put there
+        # slot -> IDX trail index a resource load put there; per room, as
+        # it stood once the room was entered.
         self.trail_slots = {}
+        self.room_trails = {}
 
     # --- setup ----------------------------------------------------------
 
@@ -428,47 +434,59 @@ class World:
         asks to be destroyed is put back in the state it was in, and one
         whose code faults keeps what it had built - the editor shows what
         stands in a level, not what a fresh game happens to keep."""
-        cpu, mem = self.cpu, self.mem
-        read, write = mem.read, mem.write
         for _frame in range(frames):
             if workers:
                 self.run_workers(budget)
             for actor in list(self.actors):
                 if actor.dead or (only is not None and not only(actor)):
                     continue
-                handler = read(actor.address + CALLBACK, 4)
-                if not handler:
-                    continue
-                actor.handler = handler
-                # As FUN_8007a904 does: off screen until the call says
-                # otherwise. And the part budget held where no init can
-                # refuse - a 16-bit count that releases push past 0x7FFF
-                # goes negative and every actor after that kills itself.
-                write(actor.address + ACTIVE, 1, 0)
-                write(PART_BUDGET, 2, PART_BUDGET_HELD)
-                before = mem.bytes(actor.address, ACTOR_SIZE + MAX_PARTS * 4)
-                self.running = actor.address
-                try:
-                    cpu.call(handler, (actor.address, 0, 0), budget=budget,
-                             sp=STACK)
-                except EmuError as e:
-                    actor.error = str(e)
-                    actor.dead = True
-                finally:
-                    self.running = None
-                if read(actor.address + LIFECYCLE, 1) == DESTROY_STATE:
-                    actor.revived += 1
-                    state = before[LIFECYCLE]
-                    if state == DESTROY_STATE or not before[PART_COUNT]:
-                        # Killed before anything was built: keep what it
-                        # has now, and stop asking.
-                        write(actor.address + CALLBACK, 4, handler)
-                        if not read(actor.address + PART_COUNT, 1):
-                            mem.load(actor.address, before)
-                        actor.dead = True
-                    else:
-                        mem.load(actor.address, before)
+                self._run_actor(actor, budget)
             self._snapshot()
+        # Actors spawned during the last frame never ran; give them frames
+        # of their own so what they build is there to read.
+        for _settle in range(SETTLE_FRAMES):
+            fresh = [a for a in self.actors if not a.ran and not a.dead
+                     and (only is None or only(a))]
+            if not fresh:
+                break
+            for actor in fresh:
+                self._run_actor(actor, budget)
+            self._snapshot()
+
+    def _run_actor(self, actor, budget):
+        cpu, mem = self.cpu, self.mem
+        read, write = mem.read, mem.write
+        handler = read(actor.address + CALLBACK, 4)
+        if not handler:
+            return
+        actor.handler, actor.ran = handler, True
+        # As FUN_8007a904 does: off screen until the call says otherwise.
+        # And the part budget held where no init can refuse - a 16-bit
+        # count that releases push past 0x7FFF goes negative and every
+        # actor after that kills itself.
+        write(actor.address + ACTIVE, 1, 0)
+        write(PART_BUDGET, 2, PART_BUDGET_HELD)
+        before = mem.bytes(actor.address, ACTOR_SIZE + MAX_PARTS * 4)
+        self.running = actor.address
+        try:
+            cpu.call(handler, (actor.address, 0, 0), budget=budget, sp=STACK)
+        except EmuError as e:
+            actor.error = str(e)
+            actor.dead = True
+        finally:
+            self.running = None
+        if read(actor.address + LIFECYCLE, 1) == DESTROY_STATE:
+            actor.revived += 1
+            state = before[LIFECYCLE]
+            if state == DESTROY_STATE or not before[PART_COUNT]:
+                # Killed before anything was built: keep what it has now,
+                # and stop asking.
+                write(actor.address + CALLBACK, 4, handler)
+                if not read(actor.address + PART_COUNT, 1):
+                    mem.load(actor.address, before)
+                actor.dead = True
+            else:
+                mem.load(actor.address, before)
 
     def _snapshot(self):
         """Keep each actor's first complete reading - the pose it takes as
@@ -559,6 +577,7 @@ class World:
                      workers=False)
             self.harvest()
             rooms[scene] = [a for a in self.actors if a.scene == scene]
+            self.room_trails[scene] = dict(self.trail_slots)
             self.capture_lines(rooms[scene])
         self.restore(base)
         self.rooms = rooms
@@ -597,6 +616,19 @@ class World:
                     finally:
                         self.running = None
                     lines.extend(self._read_lines(ot, cpu.gte.capture))
+                if lines and actor.position is not None:
+                    # Drawn frames after the pose was read: moved back with the
+                    # actor, and a point nowhere near it is a misread vertex.
+                    now = np.array([s32(mem.read(actor.address + POSITION + k * 4, 4))
+                                    / 65536.0 for k in range(3)])
+                    shift = actor.position - now
+                    moved = []
+                    for a, b, color_a, color_b, blended in lines:
+                        a, b = np.asarray(a) + shift, np.asarray(b) + shift
+                        if (np.max(np.abs(a - actor.position)) <= ACTOR_REACH
+                                and np.max(np.abs(b - actor.position)) <= ACTOR_REACH):
+                            moved.append((tuple(a), tuple(b), color_a, color_b, blended))
+                    lines = moved
                 if lines:
                     found[id(actor)] = (actor, lines)
         except EmuError:

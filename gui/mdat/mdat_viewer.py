@@ -678,7 +678,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
 
             # Which texture window each vertex's face is drawn through.
-            windows = texture_window.vertex_modes(self.model_data)
+            windows = texture_window.vertex_flags(self.model_data)
             self.window_buffer.create()
             self.window_buffer.bind()
             self.window_buffer.allocate(windows.tobytes(), windows.nbytes)
@@ -711,16 +711,16 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 layout(location = 0) in vec3 position;
                 layout(location = 1) in vec3 color;
                 layout(location = 2) in vec2 texCoord;
-                layout(location = 3) in float window;
+                layout(location = 3) in float flags;
                 uniform mat4 modelViewProjection;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
-                flat out int fragWindow;
+                flat out int fragFlags;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
                     fragColor = color;
                     fragTexCoord = texCoord;
-                    fragWindow = int(window + 0.5);
+                    fragFlags = int(flags + 0.5);
                 }
                 """
         ):
@@ -744,15 +744,23 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 uniform vec2 uvOffset;
                 // Faces drawn through a texture window - see
                 // functions/texture_window.py and SMSTViewer's shader.
-                flat in int fragWindow;
+                flat in int fragFlags;
                 uniform bool windowed;
+                uniform int windowFastFlag;
+                uniform int windowSlowFlag;
                 uniform vec4 windowFast;
                 uniform vec4 windowSlow;
 
                 vec2 windowUv(vec2 uv) {
-                    if (!windowed || fragWindow == 0)
+                    if (!windowed)
                         return uv;
-                    vec4 w = fragWindow == 1 ? windowFast : windowSlow;
+                    vec4 w;
+                    if ((fragFlags & windowFastFlag) != 0)
+                        w = windowFast;
+                    else if ((fragFlags & windowSlowFlag) != 0)
+                        w = windowSlow;
+                    else
+                        return uv;
                     vec2 size = vec2(4096.0, 512.0);
                     vec2 texel = floor(uv * size);
                     vec2 page = floor(texel / 256.0) * 256.0;
@@ -894,6 +902,9 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             "windowFast", QVector4D(*windows.get(1, (0.0, 0.0, 0.0, 0.0))))
         self.shader_program.setUniformValue(
             "windowSlow", QVector4D(*windows.get(2, (0.0, 0.0, 0.0, 0.0))))
+        masks = {rule.mode: rule.flag for rule in self.window_rules}
+        self.shader_program.setUniformValue("windowFastFlag", masks.get(1, 0))
+        self.shader_program.setUniformValue("windowSlowFlag", masks.get(2, 0))
 
 
 
