@@ -1489,6 +1489,7 @@ class LevelViewer(SMSTViewer):
                 GL.glDrawArrays(GL.GL_LINES, 0, self.code_blend_count)
                 self.code_blend_vao.release()
                 GL.glDepthMask(GL.GL_TRUE)
+                GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
                 if not blend:
                     GL.glDisable(GL.GL_BLEND)
         if self.show_markers and self.marker_count:

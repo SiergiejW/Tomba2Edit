@@ -296,12 +296,11 @@ class LevelEditorPanel(QWidget):
         # The VRAM has to be in place before the scene is prepared - the
         # palettes are cut out of it while the buffers are built - and it
         # needs AREA_01 merged in, which is where the character models'
-        # texture pages live (see gui/smst/smst_parser.py). The scene reads
-        # it too, for the pages its code-drawn polygons leave unnamed.
+        # texture pages live (see gui/smst/smst_parser.py).
         vram = self.vram_for_area(chunk)
         scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
                                   self.exe_path,
-                                  progress=self.progress_box.currentData(), vram=vram)
+                                  progress=self.progress_box.currentData())
         self.scene = scene
 
         from gui.vram_viewer import vram_index_image

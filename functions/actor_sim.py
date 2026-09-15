@@ -137,6 +137,9 @@ OT_SLOTS = 0x800
 PRIMITIVE_BYTES = 0x40000
 LINE_REACH = 8000                   # longer than this is a misread vertex
 ACTOR_REACH = 6000                  # a line point this far from its actor too
+# A polygon's corners are named, never guessed: only a corner beyond this is
+# dropped. A0E's waterfall spans 6000 either side of its actor and 9600 down.
+POLY_REACH = 16000
 TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
 # Render kinds f_DrawClass4ActorRenderQueue draws itself rather than through
 # +0x18 - kind 2 is each area's chain drawer (A01 FUN_80129114) - run on a
@@ -251,7 +254,7 @@ class Actor:
     # blended), points in game axes - see capture_lines.
     lines: tuple = ()
     # Textured polygons they put out: (corners, uvs, colours, CLUT word,
-    # blended) - see textured_primitives.
+    # blended, page word) - see textured_primitives.
     polys: tuple = ()
     # Per capture pass (DRAW, CALLBACK, None for the queue): how many
     # captures after it ran drew nothing, or None once one drew.
@@ -957,8 +960,8 @@ class World:
                     now = self._position(actor.address)
                     shift = actor.position - now
 
-                    def near(point):
-                        return np.max(np.abs(point - actor.position)) <= ACTOR_REACH
+                    def near(point, reach=ACTOR_REACH):
+                        return np.max(np.abs(point - actor.position)) <= reach
 
                     moved = []
                     for a, b, color_a, color_b, blended in lines:
@@ -967,11 +970,11 @@ class World:
                             moved.append((tuple(a), tuple(b), color_a, color_b, blended))
                     lines = moved
                     moved = []
-                    for corners, uvs, colours, clut, blended in polys:
+                    for corners, uvs, colours, clut, blended, page in polys:
                         corners = [np.asarray(c) + shift for c in corners]
-                        if all(near(c) for c in corners):
+                        if all(near(c, POLY_REACH) for c in corners):
                             moved.append((tuple(tuple(c) for c in corners), uvs, colours,
-                                          clut, blended))
+                                          clut, blended, page))
                     polys = moved
                 if lines or polys:
                     found[id(actor)] = (actor, lines, polys)
@@ -1338,10 +1341,11 @@ def _draw_nothing(cpu):
 
 
 def textured_primitives(words, points):
-    """[(corners, uvs, colours, CLUT word, blended)] for the textured
-    polygons (FT3/FT4/GT3/GT4) in one packet's words, the corners the points
-    `points` names. A packet names no texture page: the GPU keeps the last
-    one set."""
+    """[(corners, uvs, colours, CLUT word, blended, page word)] for the
+    textured polygons (FT3/FT4/GT3/GT4) in one packet's words, the corners
+    the points `points` names. The page word is the second UV's pad: the
+    game writes the texture page attribute there (A01's chains +0x60, A0E's
+    waterfall 0x2D)."""
     out, k = [], 0
     while k < len(words):
         code = words[k] >> 24
@@ -1352,7 +1356,7 @@ def textured_primitives(words, points):
             break
         gouraud, corners_wanted = code & 0x10, 4 if code & 0x08 else 3
         colour, k = words[k] & 0xFFFFFF, k + 1
-        corners, uvs, colours, clut = [], [], [], 0
+        corners, uvs, colours, clut, page = [], [], [], 0, 0
         for corner in range(corners_wanted):
             if gouraud and corner:
                 if k >= len(words):
@@ -1364,15 +1368,20 @@ def textured_primitives(words, points):
             k += 2
             if not corner:
                 clut = uv >> 16
+            elif corner == 1:
+                page = uv >> 16
             corners.append(points.get(_xy(xy)))
             uvs.append((uv & 0xFF, (uv >> 8) & 0xFF))
             colours.append((1.0, 1.0, 1.0) if code & 0x01 else
                            tuple(((colour >> shift) & 0xFF) / NEUTRAL for shift in (0, 8, 16)))
-        # CLUT 0 names the top left of VRAM, which is the display, not a palette.
-        if clut and all(c is not None for c in corners) and all(
+        # CLUT 0 names the top left of VRAM, which is the display, not a
+        # palette; a polygon folded to a line or a point covers nothing.
+        if (clut and all(c is not None for c in corners)
+                and len(set(corners)) >= 3) and all(
                 max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
                 for a in corners for b in corners):
-            out.append((tuple(corners), tuple(uvs), tuple(colours), clut, bool(code & 0x02)))
+            out.append((tuple(corners), tuple(uvs), tuple(colours), clut, bool(code & 0x02),
+                        page))
     return out
 
 

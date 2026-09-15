@@ -523,23 +523,21 @@ def _at_origin(position):
     return position is None or (abs(position[0]) < 1 and abs(position[2]) < 1)
 
 
-def drawn_model(polys, pages, to_view):
+def drawn_model(polys, to_view):
     """A one-group model of captured textured polygons (actor_sim
-    .textured_primitives), both windings, or None if no palette's page is
-    known."""
+    .textured_primitives), both windings, or None for none. Page and blend
+    mode are the packet's own page word."""
     model = {"vertices": [], "vertex_colors": [], "texture_coords": [], "faces": [],
              "texture_info": [], "face_flags": [], "tri_count": 0, "quad_count": 0}
-    for corners, uvs, colours, clut, blended in polys:
+    for corners, uvs, colours, clut, blended, page_word in polys:
         address = environment_meshes.clut_address(clut)
-        page = pages.get(address)
-        if page is None:
-            continue
+        page, blend = page_word & 0x1F, (page_word >> 5) & 3
         base = len(model["vertices"])
         for point, (u, v), colour in zip(corners, uvs, colours):
             model["vertices"].append(list(to_view(np.asarray(point, dtype=np.float64))))
             model["vertex_colors"].append(list(colour))
             model["texture_coords"].append(psx_vram.atlas_uv(u, v, page))
-        info = (page, address, blended, 0)
+        info = (page, address, blended, blend)
         # A quad is triangles 0-1-2 and 1-3-2.
         triangles = ((0, 1, 2), (1, 3, 2)) if len(corners) == 4 else ((0, 1, 2),)
         for triangle in triangles:
@@ -664,14 +662,11 @@ class LevelScene:
         self.background = None          # a BGMPFile, or None
         self.notes = []                 # what didn't load, for the panel
         self.progress = FRESH
-        # The area's VRAM with AREA_01's merged in, when the caller has it -
-        # for the pages code-drawn polygons leave unnamed.
-        self.vram = None
 
     # --- loading ------------------------------------------------------
 
     def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
-             exe_path=None, progress=FRESH, vram=None):
+             exe_path=None, progress=FRESH):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
@@ -681,7 +676,6 @@ class LevelScene:
         self.overlay_path = overlay_path
         self.exe_path = exe_path
         self.progress = progress
-        self.vram = vram
 
         dat_start, files = area_files(idx_path, chunk_index)
         self.dat_start = dat_start
@@ -753,7 +747,7 @@ class LevelScene:
         self._build_instances()
         if progress == BOTH and self.world is not None:
             self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
-                                          overlay_path, exe_path, EVENTS_DONE, vram))
+                                          overlay_path, exe_path, EVENTS_DONE))
         return self
 
     def _merge(self, done):
@@ -1555,9 +1549,8 @@ class LevelScene:
         # What draw routines put out as textured polygons - A01's chains - a
         # model each, already in world coordinates.
         if drawn:
-            pages = self._clut_pages([p for polys in drawn.values() for p in polys])
             for number, ((owner, scene), polys) in enumerate(drawn.items()):
-                model = drawn_model(polys, pages, view_point)
+                model = drawn_model(polys, view_point)
                 if model is None:
                     continue
                 self.models[DRAWN_ID + number] = model
@@ -1570,8 +1563,7 @@ class LevelScene:
                     sources=((DRAWN_ID + number, 0),), authored=True, scene=scene,
                     x=float(cx), y=float(cy), z=float(cz), name=f"{head}: drawn by its code",
                     note=f"{len(polys)} textured polygon(s) its draw routine put out "
-                         f"(actor_sim.capture_lines); the page is the one this area's "
-                         f"own faces sample their palette from"))
+                         f"(actor_sim.capture_lines), on the page their packets name"))
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
@@ -1584,38 +1576,6 @@ class LevelScene:
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
-
-    def _clut_pages(self, polys):
-        """{CLUT address: texture page} for the palettes a draw routine's
-        polygons name. A packet carries its CLUT but not its page: the page
-        this area's own faces sample that palette from, else the page whose
-        texels under the polygons are a cutout (psx_vram.page_under)."""
-        boxes = collections.defaultdict(set)
-        for _corners, uvs, _colours, clut, _blended in polys:
-            us, vs = [u for u, _v in uvs], [v for _u, v in uvs]
-            boxes[clut].add((min(us), min(vs), max(min(us), max(us) - 1),
-                             max(min(vs), max(vs) - 1)))
-        wanted = {environment_meshes.clut_address(c) for c in boxes}
-        counts = collections.defaultdict(collections.Counter)
-
-        def count(model):
-            for page, clut, *_rest in (model or {}).get("texture_info") or ():
-                if clut in wanted:
-                    counts[clut][page] += 1
-
-        for _where, room in self.rooms:
-            count(room)
-        for file_id in list(self.by_id):
-            count(self.model(file_id))
-        pages = {clut: found.most_common(1)[0][0] for clut, found in counts.items()}
-        if self.vram:
-            for clut, clut_boxes in boxes.items():
-                address = environment_meshes.clut_address(clut)
-                if address not in pages:
-                    page = psx_vram.page_under(self.vram, clut, sorted(clut_boxes))
-                    if page is not None:
-                        pages[address] = page
-        return pages
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""

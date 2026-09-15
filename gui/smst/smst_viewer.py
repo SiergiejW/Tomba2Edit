@@ -1262,6 +1262,15 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def paintGL(self):
         self._sync_gl()
+        # Every frame starts from the state the passes below assume: an
+        # overlay left additive blending or depth writes off, and the next
+        # frame's solid faces came out added onto the background - and a
+        # depth mask left off keeps glClear from clearing depth at all.
+        GL.glDepthMask(GL.GL_TRUE)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendEquation(GL.GL_FUNC_ADD)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         GL.glClearColor(*theme.view_background((0.1, 0.1, 0.1)), 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self.draw_backdrop()
