@@ -104,6 +104,8 @@ SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
 # (f_SpawnPersistentPickupPlacementTable, f_HandlePersistentChestActor).
 CHEST_AUTHORED = 4
 INTERIOR_FLAG = 0x80
+# How far over a chest's origin its contents are shown, world units.
+CHEST_CONTENTS_LIFT = 170.0
 
 # How far outside the box round a room's instances one of its town
 # collision planes may reach, in world units.
@@ -1191,34 +1193,63 @@ class LevelScene:
                     object_sprite=True,
                     note=f"the sprite state of {record.kind}.{record.slot}'s class"))
 
+        chests = {id(a.pickup): a for a in (world.actors if world is not None else ())
+                  if a.pickup is not None}
         for record in self.pickups:
             sources = self.bindings.get(pickup_key(record)) or ()
-            used.update(sources)
             x, y, z = view_position(record)
-            _model, group = self.group(sources[0] if sources else None)
             art = self.reward_art.get(
                 record.contents if record.chest else record.art_reward)
             offsets = ()
-            if record.chest and not sources:
-                sources = self.chest_models.get(
-                    record.reward & placement_module.PICKUP_REWARD_MASK, ())
-                offsets = self.chest_offsets
             heading = 0.0
             scene = None
+            assembly = None
+            actor = None
             if record.chest:
-                heading = (record.plane * 360.0 / 256.0
-                           if record.behaviour == CHEST_AUTHORED
-                           else self.chest_heading(record))
                 if record.type & INTERIOR_FLAG:
                     scene = record.persist + 1
+                # f_HandlePersistentChestActor, run: body and lid where its
+                # behaviour byte stood them - on the ground, turned to the
+                # plane, or turned by the record.
+                actor = chests.get(id(record))
+                if actor is not None and actor.parts and not sources:
+                    assembly = self._posed([actor], actor,
+                                           np.array(record.position, dtype=np.float64),
+                                           0, record.name(art))
+                    if assembly is not None and not assembly.sources:
+                        assembly = None
+                if assembly is not None:
+                    sources = assembly.sources
+                else:
+                    if not sources:
+                        sources = self.chest_models.get(
+                            record.reward & placement_module.PICKUP_REWARD_MASK, ())
+                        offsets = self.chest_offsets
+                    heading = (record.plane * 360.0 / 256.0
+                               if record.behaviour == CHEST_AUTHORED
+                               else self.chest_heading(record))
+            used.update(sources)
+            _model, group = self.group(sources[0] if sources else None)
             instances.append(Instance(
                 index=len(instances), role="pickup",
                 label=record.name(art), art=art, sources=tuple(sources),
                 offsets=offsets, name=self.named(sources),
-                x=x, y=y, z=z, pickup=record,
+                x=x, y=y, z=z, pickup=record, assembly=assembly,
                 angle=float(heading), scene=scene,
-                authored=bool(group is not None
+                note=assembly.note if assembly is not None else "",
+                authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
+            if record.chest and art is not None and art.frames:
+                # What it holds, over its lid - seen once it is opened.
+                ground = (actor.position if actor is not None and actor.position is not None
+                          else np.array(record.position, dtype=np.float64))
+                cx, cy, cz = view_point(np.array(
+                    [ground[0], ground[1] - CHEST_CONTENTS_LIFT, ground[2]]))
+                instances.append(Instance(
+                    index=len(instances), role="spawned",
+                    label=f"{record.name(art)}: contents", art=art,
+                    x=cx, y=cy, z=cz, scene=scene,
+                    note=f"reward {record.contents}, what the chest gives when opened"))
 
         # What the assembled objects spawn: pickups that ride them, and
         # props that stand wherever their spawner's table says.
