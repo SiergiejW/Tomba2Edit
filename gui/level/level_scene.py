@@ -120,8 +120,12 @@ PURIFIED_CHUNKS = range(0x1B, 0x23)
 FRESH, EVENTS_DONE, BOTH = "fresh", "done", "both"
 AFTER_EVENTS = ("⧖ only with every event done - each save byte this area's "
                 "code reads set to 0xFF (actor_sim.progress_bytes)")
-# Rows of the two runs this close, in world units, are the same row.
+# Rows of the two runs this close, in world units, are the same row; an
+# assembly moved less than MOVED has not moved; a row further than
+# MERGE_REACH outside every row of the first run stands nowhere real.
 MERGE_GRID = 16.0
+MOVED = 128.0
+MERGE_REACH = 2000.0
 
 # Surfaces an environment drawer builds in code (functions/environment_meshes
 # .py) are models of the scene's own, numbered from here.
@@ -713,20 +717,48 @@ class LevelScene:
     def _merge(self, done):
         """Add what `done` - this area run with every event done - stands and
         this does not: whatever appeared, moved or changed, marked ⧖."""
+        def centre(instance):
+            pieces = getattr(instance.assembly, "pieces", None) or ()
+            points = [p.position if hasattr(p, "position") else p[1] for p in pieces]
+            if not points:
+                return ()
+            mean = np.mean(np.asarray(points, dtype=np.float64), axis=0)
+            return tuple(int(v) for v in np.round(mean / MOVED))
+
         def key(instance):
+            frames = tuple(f.frame for f in getattr(instance.art, "frames", None) or ())
             return (instance.role, instance.label.replace("⧖ ", ""),
                     tuple(tuple(s) for s in instance.sources), instance.scene,
+                    frames, centre(instance),
                     *(round(v / MERGE_GRID) for v in (instance.x, instance.y, instance.z)))
+
+        # Where this run's rows stand, per room: a row of the other far
+        # outside that took its place from a table it ran off.
+        boxes = {}
+        for i in self.instances:
+            point = (i.x, i.y, i.z)
+            if i.role == "room" or _at_origin(point):
+                continue
+            low, high = boxes.get(i.scene, (point, point))
+            boxes[i.scene] = (tuple(map(min, low, point)), tuple(map(max, high, point)))
+
+        def plausible(instance):
+            point = (instance.x, instance.y, instance.z)
+            box = boxes.get(instance.scene)
+            return not _at_origin(point) and (box is None or all(
+                low - MERGE_REACH <= v <= high + MERGE_REACH
+                for v, low, high in zip(point, *box)))
 
         mine = {key(i): i.index for i in self.instances}
         records = {p.key(): p for p in self.placements}
         pickups = {pickup_key(p): p for p in self.pickups}
         index, added = {}, []
         for instance in done.instances:
-            if instance.role in ("room", "scenery") or key(instance) in mine:
-                index[instance.index] = mine.get(key(instance))
+            k = key(instance)
+            if instance.role in ("room", "scenery") or k in mine or not plausible(instance):
+                index[instance.index] = mine.get(k)
                 continue
-            index[instance.index] = instance.index = len(self.instances)
+            index[instance.index] = instance.index = mine[k] = len(self.instances)
             self.instances.append(instance)
             added.append(instance)
         for instance in added:

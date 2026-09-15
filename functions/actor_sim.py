@@ -121,6 +121,9 @@ DONE = 0xFF
 WORLD_BYTES = frozenset((*range(AREA_NUMBER, AREA_NUMBER + 4),
                          PURIFIED_AREAS, PURIFIED_AREAS + 1, INTRO_CUTSCENE))
 LOAD_SIZES = {0x20: 1, 0x24: 1, 0x21: 2, 0x25: 2, 0x23: 4}
+# beq bne blez bgtz slti sltiu andi xori - see _tested.
+TESTS = frozenset((0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B, 0x0C, 0x0E))
+TEST_LOOKAHEAD = 6
 
 # Lines. Nothing in an MDAT or SMST is one: ropes, chains and fishing lines
 # come out of an actor's draw routine (+0x18) straight into the primitive
@@ -1182,19 +1185,47 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     return world
 
 
+def _tested(words, n, register):
+    """Whether the value the load at `n` put in `register` is next tested -
+    compared, masked or thresholded - rather than indexed or added with:
+    0xFF finishes an event, it overruns a table."""
+    for w in words[n + 1:n + 1 + TEST_LOOKAHEAD]:
+        op, rs, rt, funct = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0x3F
+        if op in TESTS and (rs == register or (op in (0x04, 0x05) and rt == register)):
+            return True
+        if op == 0x01 and rs == register:               # bltz / bgez
+            return True
+        if op == 0 and register in (rs, rt):
+            if funct in (0x2A, 0x2B):                   # slt / sltu
+                return True
+            if funct in (0x21, 0x25) and 0 in (rs, rt):  # a move
+                register = (w >> 11) & 31
+                continue
+            return False
+        if op == 0 and (w >> 11) & 31 == register:
+            return False
+        if (op in LOAD_SIZES or 0x08 <= op <= 0x0F) and rt == register:
+            return False
+        if rs == register:
+            return False
+    return False
+
+
 def progress_bytes(overlay):
     """The New Game block bytes an overlay's code loads (lui-based lb/lh/lw
-    and unsigned twins), less WORLD_BYTES: what `finished` sets to DONE."""
+    and unsigned twins) and then tests, less WORLD_BYTES: what `finished`
+    sets to DONE."""
     words = struct.unpack_from(f"<{len(overlay) // 4}I", overlay)
     high, found = {}, set()
-    for w in words:
+    for n, w in enumerate(words):
         op, rs, rt, imm = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
         if op == 0x0F:
             high[rt] = imm << 16
             continue
         if op in LOAD_SIZES and rs in high:
             address = (high[rs] + s16(imm)) & 0xFFFFFFFF
-            if SAVE_BLOCK <= address < SAVE_BLOCK + SAVE_BLOCK_SIZE:
+            if (SAVE_BLOCK <= address < SAVE_BLOCK + SAVE_BLOCK_SIZE
+                    and _tested(words, n, rt)):
                 found.update(range(address, address + LOAD_SIZES[op]))
         # Whatever else writes a register loses its high half.
         if op in LOAD_SIZES or 0x08 <= op <= 0x0E:
