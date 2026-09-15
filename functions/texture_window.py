@@ -42,6 +42,11 @@ CELL = 64
 GENERATED = 0x100
 # gui/mdat/mdat.py marks a quad's faces with this, also past the packet byte.
 QUAD = 0x200
+# gui/smst/smst_parser.py marks every face with this: an actor's model part,
+# which f_DrawModelPrimitiveStreamForCurrentArea sends through an area's cell
+# drawers only in some areas (A08 yes; A01's FUN_80132dc0 and A0F's generic
+# drawer never add the cell).
+MODEL = 0x400
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,7 @@ class Rule:
     scroll_step: int = 1    # frames per scroll step
     add: bool = False       # cell added to the uv bytes, not an E2 window
     skip: int = 0           # faces carrying all these bits don't take it
+    models: bool = False    # actor model parts take it too, not only rooms
 
 
 RULES = {
@@ -63,7 +69,7 @@ RULES = {
             Rule(2, 0x08, step=2, scroll_u=-1, scroll_step=2)),
     "A01": (Rule(1, 0x10, step=3, columns=4, rows=2, add=True, skip=QUAD | 0x80),
             Rule(2, GENERATED, step=3, columns=4, rows=2, scroll_v=1)),
-    "A08": (Rule(1, 0x04, step=1, columns=3, rows=3, add=True),),
+    "A08": (Rule(1, 0x04, step=1, columns=3, rows=3, add=True, models=True),),
 }
 
 

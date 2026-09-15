@@ -191,6 +191,9 @@ class Billboard:
     steps: tuple = ()
     loops: bool = False
     units: float = PICKUP_UNITS      # world units per texel
+    # Four corners (view space, world units) the picture is stretched across,
+    # or None for a picture facing the camera.
+    corners: tuple = None
 
     def frame_now(self, tick):
         """Which frame is showing at `tick`, or None if it has none."""
@@ -226,6 +229,7 @@ def billboards(instances, placed):
             continue
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
                              z=instance.z, steps=steps, loops=art.loops,
+                             corners=getattr(instance, "quad", None),
                              units=(OBJECT_UNITS if instance.role == "object"
                                     or getattr(instance, "object_sprite", False)
                                     else PICKUP_UNITS)))

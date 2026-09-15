@@ -58,6 +58,9 @@ KIND_COLORS = {
 }
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
+# Half the width a stretched sprite quad gets when its corners meet in a
+# line - kind 0x14's other branch writes them 4 either side.
+ROPE_HALF_WIDTH = 4.0
 # The hourglass drawn at the top right of anything gated or timed, in
 # pixels - a path rather than the ⧖ glyph, which fonts draw skewed.
 BADGE_WIDTH, BADGE_HEIGHT = 8.0, 11.0
@@ -1142,6 +1145,9 @@ class LevelViewer(SMSTViewer):
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
                 continue
+            if quad.corners is not None:
+                rows.extend(self._stretched(quad.corners, placed))
+                continue
             # Live, so a dragged pickup - or an apple riding a seesaw -
             # takes its picture with it.
             at = (instances[quad.index] if 0 <= quad.index < len(instances)
@@ -1183,6 +1189,28 @@ class LevelViewer(SMSTViewer):
                                      GL.GL_FALSE, 0, None)
         self.sprite_vao.release()
         self.sprite_count = len(rows)
+
+    @staticmethod
+    def _stretched(corners, placed):
+        """Sprite rows for a picture stretched across four corners - the
+        PSX's v0 v1 on top, v2 v3 below - once over the whole frame. A pair
+        that meets in a point (a rope the game widens per frame) gets two
+        crossed ribbons so it reads from any side."""
+        c = [np.asarray(p, dtype=np.float64) / UNIT_SCALE for p in corners]
+        uvs = ((placed.u0, placed.v0), (placed.u1, placed.v0),
+               (placed.u0, placed.v1), (placed.u1, placed.v1))
+        if np.allclose(c[0], c[1]) and np.allclose(c[2], c[3]):
+            half = ROPE_HALF_WIDTH / UNIT_SCALE
+            quads = [(c[0] - axis, c[0] + axis, c[2] - axis, c[2] + axis)
+                     for axis in (np.array([half, 0.0, 0.0]), np.array([0.0, 0.0, half]))]
+        else:
+            quads = [tuple(c)]
+        rows = []
+        for v0, v1, v2, v3 in quads:
+            for point, (u, v) in ((v0, uvs[0]), (v2, uvs[2]), (v3, uvs[3]),
+                                  (v0, uvs[0]), (v3, uvs[3]), (v1, uvs[1])):
+                rows.append((point[0], point[1], point[2], 0.0, 0.0, u, v))
+        return rows
 
     def _camera_axes(self):
         """The camera's right and up, in world space.

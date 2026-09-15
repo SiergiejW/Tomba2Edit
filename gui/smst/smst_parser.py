@@ -155,7 +155,7 @@ def _read_packets(data, at, count, stride, layout, codes, model, group):
     either format without knowing which it has. 'address' is absolute in
     the DAT, which is what makes a picked face addressable in a hex
     editor."""
-    from functions.texture_window import QUAD
+    from functions.texture_window import MODEL, QUAD
     verts, uvs, colors = layout
     kind = "tri" if len(verts) == 3 else "quad"
     for slot in range(count):
@@ -185,7 +185,7 @@ def _read_packets(data, at, count, stride, layout, codes, model, group):
         info = (page, clut, transparent, blend)
         # The top byte of the second colour word: flags an area's cell
         # drawer reads, as in gui/mdat/mdat.py - functions/texture_window.py.
-        flags = data[ind + 4]
+        flags = data[ind + 4] | MODEL
         first_face = len(model["faces"])
         if len(verts) == 3:
             model["faces"].append([base + 2, base + 1, base])
@@ -215,7 +215,7 @@ def _read_packets(data, at, count, stride, layout, codes, model, group):
             "transparent": transparent,
             "blend": blend,
             "texels": packet_uvs,
-            "flags": flags,
+            "flags": flags & 0xFF,
         })
         at += stride
 

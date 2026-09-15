@@ -754,10 +754,14 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 uniform int windowSlowSkip;
                 uniform bool windowFastAdd;
                 uniform bool windowSlowAdd;
+                uniform bool windowFastModels;
+                uniform bool windowSlowModels;
+                uniform int windowModelBit;
 
-                bool takes(int flag, int skip) {
+                bool takes(int flag, int skip, bool models) {
                     return (fragFlags & flag) != 0
-                        && (skip == 0 || (fragFlags & skip) != skip);
+                        && (skip == 0 || (fragFlags & skip) != skip)
+                        && (models || (fragFlags & windowModelBit) == 0);
                 }
 
                 vec2 windowUv(vec2 uv) {
@@ -765,10 +769,10 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         return uv;
                     vec4 w;
                     bool add;
-                    if (takes(windowFastFlag, windowFastSkip)) {
+                    if (takes(windowFastFlag, windowFastSkip, windowFastModels)) {
                         w = windowFast;
                         add = windowFastAdd;
-                    } else if (takes(windowSlowFlag, windowSlowSkip)) {
+                    } else if (takes(windowSlowFlag, windowSlowSkip, windowSlowModels)) {
                         w = windowSlow;
                         add = windowSlowAdd;
                     } else
@@ -922,6 +926,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue(f"window{name}Flag", rule.flag if rule else 0)
             self.shader_program.setUniformValue(f"window{name}Skip", rule.skip if rule else 0)
             self.shader_program.setUniformValue(f"window{name}Add", bool(rule and rule.add))
+            self.shader_program.setUniformValue(f"window{name}Models", bool(rule and rule.models))
+        self.shader_program.setUniformValue("windowModelBit", texture_window.MODEL)
 
 
 

@@ -198,6 +198,9 @@ class Instance:
     scene: int = None
     # A sprite object's picture, drawn beside the model its code also built.
     object_sprite: bool = False
+    # Four view-space corners its picture is stretched across instead of
+    # facing the camera - a kind-0x14 quad such as a rope.
+    quad: tuple = None
 
     @property
     def timed(self):
@@ -825,7 +828,7 @@ class LevelScene:
                 label = art.label() if art.name or art.reward >= 0 else ""
                 riders.append(actor_sim.Rider(
                     label or self.handler_name(a.handler), a.reward,
-                    a.position, art))
+                    a.position, art, a.quad))
         if not pieces and not riders:
             return None
         spawned = len(actors) - 1
@@ -1280,11 +1283,13 @@ class LevelScene:
             state = game_state(parent)
             for number, sprite in enumerate(parent.assembly.sprites(state)):
                 x, y, z = view_point(sprite.position)
+                quad = getattr(sprite, "quad", None)
                 instances.append(Instance(
                     index=len(instances), role="spawned", label=sprite.label,
                     art=(getattr(sprite, "art", None)
                          or self.reward_art.get(sprite.reward)),
                     x=x, y=y, z=z,
+                    quad=tuple(view_point(c) for c in quad) if quad is not None else None,
                     follow=(parent.index, number), note=spawner))
             for prop in parent.assembly.props():
                 if not self._loads(prop.sources):
@@ -1330,6 +1335,8 @@ class LevelScene:
                     rx, ry, rz = view_point(rider.position)
                     instances[-1].art = rider.art
                     instances[-1].x, instances[-1].y, instances[-1].z = rx, ry, rz
+                    if rider.quad is not None:
+                        instances[-1].quad = tuple(view_point(c) for c in rider.quad)
                     break
                 continue
             for number, rider in enumerate(posed.riders):
@@ -1337,6 +1344,8 @@ class LevelScene:
                 instances.append(Instance(
                     index=len(instances), role="spawned", label=rider.label,
                     art=rider.art, x=rx, y=ry, z=rz, follow=(index, number),
+                    quad=(tuple(view_point(c) for c in rider.quad)
+                          if rider.quad is not None else None),
                     note=f"carried by {label}"))
 
         # The rooms: every scene the area's spawner has a table for, run

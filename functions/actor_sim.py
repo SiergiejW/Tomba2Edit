@@ -153,6 +153,7 @@ LINKED, CALLBACK, FLAGS = 0x10, 0x1C, 0x28
 POSITION, SEQUENCE, BANK, TURN = 0x2C, 0x38, 0x3C, 0x54
 CLASS = 0x0C                        # allocation class; 6 is a transient effect
 EFFECT_CLASS = 6
+RENDER_KIND, QUAD_KIND, QUAD_CORNERS = 0x0B, 0x14, 0x60
 PARTS = 0xC0
 DESTROY_STATE = 3
 
@@ -226,6 +227,9 @@ class Actor:
     # was spawned anyway - see enter_scene.
     gated: tuple = None
     pickup: object = None           # the Pickup record, for a chest
+    # Render kind 0x14: a textured quad whose corners are its own shorts at
+    # +0x60..+0x76 (f_DrawPresentationActorList) - 60.x's rope.
+    quad: tuple = None
 
 
 class World:
@@ -923,6 +927,9 @@ class World:
     def _place(self, actor):
         read = self.mem.read
         actor.position = self._position(actor.address)
+        if actor.quad is not None and not actor.position.any():
+            # Drawn only where its corners are.
+            actor.position = np.mean(actor.quad, axis=0)
         actor.reward = read(actor.address + SLOT, 1)
 
     def _position(self, address):
@@ -985,6 +992,10 @@ class World:
         if bank is not None and step:
             actor.bank = bank
             actor.frames, actor.loops = self._sequence(step)
+        if read(actor.address + RENDER_KIND, 1) == QUAD_KIND:
+            shorts = struct.unpack("<12h", self.mem.bytes(actor.address + QUAD_CORNERS, 24))
+            corners = tuple(np.array(shorts[k:k + 3], dtype=np.float64) for k in range(0, 12, 3))
+            actor.quad = corners if any(c.any() for c in corners) else None
 
     def harvest(self):
         """One last reading, for actors that never ran a frame."""
@@ -1021,6 +1032,7 @@ class Rider:
     reward: int
     position: np.ndarray
     art: object = None
+    quad: tuple = None              # four corners, game axes, for a kind-0x14 quad
 
 
 class Posed:
@@ -1059,8 +1071,10 @@ class Posed:
 
     def sprites(self, state):
         turn, base = self._move(state)
-        return [Rider(r.label, r.reward, turn @ (r.position - self.origin) + base,
-                      r.art) for r in self.riders]
+        return [Rider(r.label, r.reward, turn @ (r.position - self.origin) + base, r.art,
+                      tuple(turn @ (c - self.origin) + base for c in r.quad)
+                      if r.quad is not None else None)
+                for r in self.riders]
 
     def props(self):
         return []

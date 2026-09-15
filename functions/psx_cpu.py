@@ -24,6 +24,7 @@ GPU_READY = 0x1C000000
 CAPTURE_WIDTH, CAPTURE_HEIGHT = 320, 240
 CAPTURE_STRIDE = 7919
 CAPTURE_DEPTH = 1000
+CAPTURE_NCLIP = 0x10000
 
 
 class EmuError(RuntimeError):
@@ -201,6 +202,10 @@ class GTE:
         elif cmd in (0x01, 0x30):                         # RTPS / RTPT
             for v in ((0,) if cmd == 0x01 else (0, 1, 2)):
                 self._rtp(v, sf, lm)
+        elif cmd == 0x06 and self.capture is not None:
+            # Named screen positions carry no winding: every face faces
+            # the camera, and none is too small to draw.
+            d[24] = CAPTURE_NCLIP
         elif cmd == 0x06:                                 # NCLIP
             p = [(s16(d[12 + k]), s16(d[12 + k] >> 16)) for k in range(3)]
             d[24] = (p[0][0] * p[1][1] + p[1][0] * p[2][1] + p[2][0] * p[0][1]
