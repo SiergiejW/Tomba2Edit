@@ -255,6 +255,12 @@ class LevelViewer(SMSTViewer):
         self.code_line_cbo = QOpenGLBuffer()
         self.code_line_count = 0
         self._code_line_arrays = None
+        # The semi-transparent ones, added to what is behind them.
+        self.code_blend_vao = QOpenGLVertexArrayObject()
+        self.code_blend_vbo = QOpenGLBuffer()
+        self.code_blend_cbo = QOpenGLBuffer()
+        self.code_blend_count = 0
+        self._code_blend_arrays = None
 
         # The background: its own tiny program, since it is an ordinary
         # RGB picture rather than the index-and-palette pair everything
@@ -404,11 +410,17 @@ class LevelViewer(SMSTViewer):
 
     def rebuild_code_lines(self):
         lines = self._visible_line_records()
-        self._code_line_arrays = (
-            np.array([p for l in lines for p in (l.a, l.b)],
-                     dtype=np.float32).reshape(-1, 3) / UNIT_SCALE,
-            np.array([c for l in lines for c in (l.color_a, l.color_b)],
-                     dtype=np.float32).reshape(-1, 3))
+        self._code_line_arrays = self._line_arrays(
+            [l for l in lines if not getattr(l, "blended", False)])
+        self._code_blend_arrays = self._line_arrays(
+            [l for l in lines if getattr(l, "blended", False)])
+
+    @staticmethod
+    def _line_arrays(lines):
+        return (np.array([p for l in lines for p in (l.a, l.b)],
+                         dtype=np.float32).reshape(-1, 3) / UNIT_SCALE,
+                np.array([c for l in lines for c in (l.color_a, l.color_b)],
+                         dtype=np.float32).reshape(-1, 3))
 
     def _room_bounds(self):
         """{scene: (low, high)} round each room's instances, world units."""
@@ -578,13 +590,27 @@ class LevelViewer(SMSTViewer):
             colors.extend(color)
             colors.extend(color)
 
+    @staticmethod
+    def sub_object(instance, part):
+        """The pieces the same actor drew as piece `part` - the chest in an
+        ice cube, the Toradako frozen in one - or just that piece."""
+        owners = getattr(instance.assembly, "owners", None) or ()
+        if part is None or not 0 <= part < len(owners):
+            return [part]
+        who = owners[part][0]
+        return [n for n, owner in enumerate(owners) if owner[0] == who]
+
     def _part_box(self, instance, part):
-        """The box round one source of an instance, or None."""
+        """The box round the sub-object one source of an instance belongs
+        to, or None."""
         spans = instance.spans or ()
         if part is None or not 0 <= part < len(spans) or not spans[part]:
             return None
-        first, count = spans[part]
-        verts = self._positions()[first:first + count] * UNIT_SCALE
+        positions = self._positions()
+        pieces = [positions[spans[n][0]:spans[n][0] + spans[n][1]]
+                  for n in self.sub_object(instance, part)
+                  if 0 <= n < len(spans) and spans[n]]
+        verts = np.concatenate(pieces) * UNIT_SCALE if pieces else np.zeros((0, 3))
         if not len(verts):
             return None
         low, high = verts.min(axis=0), verts.max(axis=0)
@@ -1232,6 +1258,11 @@ class LevelViewer(SMSTViewer):
                 self._code_line_arrays, self.code_line_vao, self.code_line_vbo,
                 self.code_line_cbo)
             self._code_line_arrays = None
+        if self._code_blend_arrays is not None:
+            self.code_blend_count = self._upload_lines(
+                self._code_blend_arrays, self.code_blend_vao, self.code_blend_vbo,
+                self.code_blend_cbo)
+            self._code_blend_arrays = None
 
     def _sync_background(self):
         if not self._background_dirty:
@@ -1395,7 +1426,7 @@ class LevelViewer(SMSTViewer):
         super().paintGL()
         self.draw_sprites()
         collision = self.show_collision and self.collision.has_lines()
-        lines = self.show_lines and self.code_line_count
+        lines = self.show_lines and (self.code_line_count or self.code_blend_count)
         if not (self.marker_count or self.selection_count or collision or lines):
             return
         if not self.shader_program.bind():
@@ -1408,9 +1439,22 @@ class LevelViewer(SMSTViewer):
             self.collision.draw(self.shader_program)
         if lines:
             GL.glLineWidth(MARKER_WIDTH)
-            self.code_line_vao.bind()
-            GL.glDrawArrays(GL.GL_LINES, 0, self.code_line_count)
-            self.code_line_vao.release()
+            if self.code_line_count:
+                self.code_line_vao.bind()
+                GL.glDrawArrays(GL.GL_LINES, 0, self.code_line_count)
+                self.code_line_vao.release()
+            if self.code_blend_count:
+                # A PSX semi-transparent line adds itself to the screen.
+                blend = GL.glIsEnabled(GL.GL_BLEND)
+                GL.glEnable(GL.GL_BLEND)
+                GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE)
+                GL.glDepthMask(GL.GL_FALSE)
+                self.code_blend_vao.bind()
+                GL.glDrawArrays(GL.GL_LINES, 0, self.code_blend_count)
+                self.code_blend_vao.release()
+                GL.glDepthMask(GL.GL_TRUE)
+                if not blend:
+                    GL.glDisable(GL.GL_BLEND)
         if self.show_markers and self.marker_count:
             GL.glLineWidth(MARKER_WIDTH)
             self.marker_vao.bind()

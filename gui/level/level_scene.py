@@ -130,6 +130,7 @@ class SceneLine:
     b: tuple
     color_a: tuple
     color_b: tuple
+    blended: bool = False           # semi-transparent: drawn additively
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -1051,9 +1052,10 @@ class LevelScene:
                 if id(actor) in drew or not actor.lines:
                     continue
                 drew.add(id(actor))
-                for a, b, color_a, color_b, _blended in actor.lines:
+                for a, b, color_a, color_b, blended in actor.lines:
                     self.lines.append(SceneLine(owner, scene, view_point(a),
-                                                view_point(b), color_a, color_b))
+                                                view_point(b), color_a, color_b,
+                                                blended))
 
         for number, (where, _room) in enumerate(self.rooms):
             instances.append(Instance(
@@ -1073,7 +1075,9 @@ class LevelScene:
             for actor in world.actors:
                 # The shared workers' spawns are Tomba and the persistent
                 # pickups, which the scene already draws from their tables.
+                # A chest carrying its table record is drawn by its pickup row.
                 if (actor.record is None and actor.spawner is None
+                        and actor.pickup is None
                         and actor.worker not in actor_sim.SHARED_WORKERS):
                     loose.append((f"scene: {self.handler_name(actor.handler)}",
                                   actor_sim.subtree(world, actor)))

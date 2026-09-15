@@ -439,6 +439,22 @@ class World:
         w(address + TURN + 4, 2, units(record.angle2))
         return actor
 
+    def tag_chests(self, chests):
+        """Hand each chest actor the area's own code already made its record,
+        by save bit and kind; the records no actor carries."""
+        read = self.mem.read
+        waiting = {}
+        for pickup in chests:
+            waiting.setdefault((pickup.bit & 0xFFFF, pickup.reward & 0x7F), []).append(pickup)
+        for actor in self.actors:
+            handler = actor.born[0] if actor.born else actor.handler
+            if actor.pickup is not None or handler != CHEST_HANDLER:
+                continue
+            key = (read(actor.address + PICKUP_BIT, 2), read(actor.address + SLOT, 1) & 0x7F)
+            if waiting.get(key):
+                actor.pickup = waiting[key].pop(0)
+        return [p for group in waiting.values() for p in group]
+
     def place_chest(self, pickup, budget=BUDGET):
         """An actor for one chest record - f_SpawnPersistentPickupPlacementTable's
         allocation and writes - so its own handler builds the body and lid
@@ -515,7 +531,7 @@ class World:
                 if actor.dead or (only is not None and not only(actor)):
                     continue
                 self._run_actor(actor, budget)
-            self._snapshot()
+            self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
         for _settle in range(SETTLE_FRAMES):
@@ -525,7 +541,7 @@ class World:
                 break
             for actor in fresh:
                 self._run_actor(actor, budget)
-            self._snapshot()
+            self._read()
 
     def _run_actor(self, actor, budget):
         cpu, mem = self.cpu, self.mem
@@ -566,8 +582,10 @@ class World:
 
     def _snapshot(self):
         """Keep each actor's first complete reading - the pose it takes as
-        the area opens, before anything has swung or wandered off."""
+        the area opens, before anything has swung or wandered off. The
+        actors whose reading it took."""
         models, banks = self._maps()
+        taken = []
         for actor in self.actors:
             parts = self._parts(actor, models)
             score = (sum(p.posed for p in parts), len(parts))
@@ -583,6 +601,15 @@ class World:
                 actor.parts = parts
                 self._sprite(actor, banks)
                 self._place(actor)
+                taken.append(actor)
+        return taken
+
+    def _read(self):
+        """A reading, and the lines the re-read actors draw in that same
+        frame - a rope captured later has swung away from its pose."""
+        taken = self._snapshot()
+        if taken:
+            self.capture_lines(taken)
 
     # --- rooms ----------------------------------------------------------
 
@@ -770,7 +797,6 @@ class World:
             self.harvest()
             rooms[scene] = [a for a in self.actors if a.scene == scene]
             self.room_trails[scene] = dict(self.trail_slots)
-            self.capture_lines(rooms[scene])
         self.restore(base)
         self.rooms = rooms
 
@@ -811,8 +837,7 @@ class World:
                 if lines and actor.position is not None:
                     # Drawn frames after the pose was read: moved back with the
                     # actor, and a point nowhere near it is a misread vertex.
-                    now = np.array([s32(mem.read(actor.address + POSITION + k * 4, 4))
-                                    / 65536.0 for k in range(3)])
+                    now = self._position(actor.address)
                     shift = actor.position - now
                     moved = []
                     for a, b, color_a, color_b, blended in lines:
@@ -834,8 +859,8 @@ class World:
                 self.by_address.pop(extra.address, None)
             del self.actors[count:]
             self._map_cache = None
-        for actor, lines in found.values():
-            actor.lines = tuple(lines)
+        for actor in (self.actors if actors is None else actors):
+            actor.lines = tuple(found[id(actor)][1]) if id(actor) in found else ()
         return len(found)
 
     def _read_lines(self, ot, points):
@@ -894,14 +919,17 @@ class World:
 
     def _place(self, actor):
         read = self.mem.read
-        if read(actor.address + CLASS, 1) == EFFECT_CLASS:
-            # f_SpawnTransientEffect*: whole shorts at +0x2C/+0x2E/+0x30.
-            actor.position = np.array([float(s16(read(actor.address + POSITION + k * 2, 2)))
-                                       for k in range(3)])
-        else:
-            actor.position = np.array([s32(read(actor.address + POSITION + k * 4, 4))
-                                       / 65536.0 for k in range(3)])
+        actor.position = self._position(actor.address)
         actor.reward = read(actor.address + SLOT, 1)
+
+    def _position(self, address):
+        read = self.mem.read
+        if read(address + CLASS, 1) == EFFECT_CLASS:
+            # f_SpawnTransientEffect*: whole shorts at +0x2C/+0x2E/+0x30.
+            return np.array([float(s16(read(address + POSITION + k * 2, 2)))
+                             for k in range(3)])
+        return np.array([s32(read(address + POSITION + k * 4, 4)) / 65536.0
+                         for k in range(3)])
 
     def _parts(self, actor, models):
         """Every part with a model. One its code never got round to
@@ -958,7 +986,7 @@ class World:
     def harvest(self):
         """One last reading, for actors that never ran a frame."""
         self._map_cache = None
-        self._snapshot()
+        self._read()
 
     def _sequence(self, address):
         """((frame, ticks), ...) and whether it loops, stepped the way
@@ -1060,15 +1088,18 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.start_workers()
     for record in records:
         world.place(record, units)
-    for pickup in chests:
-        world.place_chest(pickup)
     if not records and spawner:
         world.enter_scene(spawner, area_number, 0)
     world.run(frames)
+    # An area's controller stands part of the chest table up itself; the
+    # rest are stood up here, the way f_SpawnPersistentPickupPlacementTable does.
+    missing = world.tag_chests(chests)
+    placed = {a.address for a in (world.place_chest(p) for p in missing) if a is not None}
+    if placed:
+        world.run(frames, only=lambda a: a.address in placed, workers=False)
     if records and spawner:
         world.spawn_area_gated(spawner, frames)
     world.harvest()
-    world.capture_lines()
     if spawner:
         world.run_rooms(spawner, area_number, frames)
     return world

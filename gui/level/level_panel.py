@@ -549,6 +549,16 @@ class LevelEditorPanel(QWidget):
         named = self.scene.named(((file_id, group),))
         text = (f"<b>part {part}</b>: id {file_id} group {group}"
                 + (f" - {named}" if named else ""))
+        owners = getattr(instance.assembly, "owners", None) or ()
+        if 0 <= part < len(owners):
+            # The whole actor that drew it is what the box goes round.
+            number, handler, position = owners[part]
+            members = self.viewer.sub_object(instance, part)
+            parts = ", ".join(f"id {f} g{g}" for f, g in
+                              (instance.sources[n] for n in members))
+            where = ", ".join(f"{v:.0f}" for v in position)
+            text = (f"<b>{handler}</b> (actor {number}, at {where}): "
+                    f"{len(members)} part(s) - {parts}<br>" + text)
         self.details.setText(text + "<br>" + self.details.text())
         print(f"selected part: '{instance.label}' part {part} = id {file_id} "
               f"group {group}")
