@@ -95,6 +95,13 @@ ENTER_INTERIOR = 0x800A4AF8         # per area: moves Tomba and the camera in
 MAX_SCENES = 24
 PROLOGUE = 0x27BD
 EXE_END = 0x800F0000
+# Opcodes installed_handlers follows: a constant built by lui and addiu/ori,
+# then stored at +0x1C - a routine whose frame opens within PROLOGUE_REACH
+# words (some load a global first).
+LUI, ADDIU, ORI, SW, JR_RA = 0x0F, 0x09, 0x0D, 0x2B, 0x03E00008
+PROLOGUE_REACH = 4
+# An event's actor further than this from the origin in x or z placed itself.
+UNPLACED = 256
 
 # A room's enter routine (ENTER_INTERIOR) starts a cooperative worker with
 # the room's resource index and waits for it: the worker loads that IDX
@@ -174,6 +181,8 @@ PART_DRAWERS = (0x8003CDD8,         # f_BuildActorModelPartPrimitives
 # (A0E's waterfall: cell (frame >> 1) & 15). 0 while capturing - _uv_frames
 # draws the other values a probe says matter.
 ANIMATION_FRAME = 0x1F80017C
+# (size, crc32) -> what format_detect makes of a loaded file; shared by loads.
+FILE_KINDS = {}
 FRAME_CYCLE = 64
 FRAME_PROBES = (1, 2, 4, 8, 16, 32)
 
@@ -378,6 +387,10 @@ class World:
         self.running_scene = None
         self.worker_errors = []
         self.rooms = {}                         # scene -> [Actor]
+        self.events = []                        # (handler, [Actor]) - spawn_events
+        # id(actor) -> (actor, RAM frame) whose lines are owed - see _owe_capture.
+        self.owed = {}
+        self.defer_capture = True               # False: draw at every reading
         self.part_owner = {}                    # part address -> actor
         cpu.hooks.update({
             ALLOCATE_RECORD: self._allocate_record,
@@ -666,6 +679,37 @@ class World:
         chosen = [a for a in self.actors if not a.dead and (only is None or only(a))]
         self._transit(chosen, budget)
         self._converge(chosen, paths, budget)
+        self.settle_captures()
+
+    def _owe_capture(self, actors):
+        """Lines and polygons owed for these actors, to be drawn from RAM as
+        it stands now: a later reading of the same actor replaces its debt,
+        so each is drawn once, from its last reading's frame."""
+        if not self.defer_capture:
+            self.capture_lines(actors)
+            return
+        frame = (bytes(self.mem.ram), bytes(self.mem.scratch))
+        for actor in actors:
+            self.owed[id(actor)] = (actor, frame)
+
+    def settle_captures(self):
+        """Draw every owed capture, each from its own frame; RAM is left as
+        it was."""
+        if not self.owed:
+            return
+        owed, self.owed = self.owed, {}
+        frames = {}
+        for actor, frame in owed.values():
+            frames.setdefault(id(frame), (frame, []))[1].append(actor)
+        ram, scratch = bytes(self.mem.ram), bytes(self.mem.scratch)
+        try:
+            for (frame_ram, frame_scratch), actors in frames.values():
+                self.mem.ram[:] = frame_ram
+                self.mem.scratch[:] = frame_scratch
+                self.capture_lines(actors)
+        finally:
+            self.mem.ram[:] = ram
+            self.mem.scratch[:] = scratch
 
     def _transit(self, actors, budget):
         """Actors with parts no run has drawn, their state still moving as the
@@ -717,7 +761,7 @@ class World:
             self._sprite(actor, banks)
             self._place(actor)
             actor.turns = self._turns(actor)
-        self.capture_lines(actors)
+        self._owe_capture(actors)
 
     def _run_actor(self, actor, budget):
         cpu, mem = self.cpu, self.mem
@@ -819,7 +863,7 @@ class World:
                     seen.add(id(parent))
                     again.append(parent)
                     parent = self.by_address.get(parent.spawner)
-            self.capture_lines(again)
+            self._owe_capture(again)
 
     # --- rooms ----------------------------------------------------------
 
@@ -914,6 +958,31 @@ class World:
                     out.append(target)
         return out
 
+    def _scene_listed(self, spawner, scene):
+        """False only when the spawner's own table of scene lists is found
+        and holds nothing shaped like a list for `scene`: past the table's
+        end the spawner walks garbage until its budget runs out - most of a
+        load's instructions, before this."""
+        read = self.mem.read
+        tables = [t for t in self._spawner_tables(spawner)
+                  if self._list_shaped(read(t, 4)) and self._list_shaped(read(t + 4, 4))]
+        return not tables or any(self._list_shaped(read(t + scene * 4, 4)) for t in tables)
+
+    def _list_shaped(self, pointer):
+        """Whether `pointer` holds 16-byte scene records ending in SCENE_END,
+        each handler an aligned address in code."""
+        read = self.mem.read
+        if not OVERLAY_BASE <= pointer < AREA_BASE:
+            return False
+        for n in range(64):
+            if read(pointer + n * SCENE_RECORD, 1) == SCENE_END:
+                return True
+            handler = read(pointer + n * SCENE_RECORD + 12, 4)
+            if handler & 3 or not (0x80010000 <= handler < EXE_END
+                                   or OVERLAY_BASE <= handler < AREA_BASE):
+                return False
+        return False
+
     def _records_at(self, pointer):
         read = self.mem.read
         if not OVERLAY_BASE <= pointer < AREA_BASE:
@@ -999,6 +1068,8 @@ class World:
         base = self.snapshot()
         rooms = {}
         for scene in range(1, MAX_SCENES):
+            if not self._scene_listed(spawner, scene):
+                continue
             self.restore(base)
             if self.enter_scene(spawner, area_number, scene) is None:
                 continue
@@ -1009,6 +1080,36 @@ class World:
             self.room_trails[scene] = dict(self.trail_slots)
         self.restore(base)
         self.rooms = rooms
+
+    def spawn_events(self, handlers, frames=FRAMES, budget=BUDGET, reach=UNPLACED):
+        """Each of `handlers` no run reached, stood up alone on a bare record
+        in the area as it opened, into `events` when what it built stands
+        `reach` or more from the origin in x or z - an event's actor, placed
+        by its own code (A0F FUN_A0F__80117fa4: petrified Tabby, stood up as
+        the Evil Pig falls). The world is left as it was."""
+        seen = set()
+        for actors in (self.actors, *self.rooms.values()):
+            seen |= {a.handler for a in actors} | {a.born[0] for a in actors if a.born}
+        base = self.snapshot()
+        events = []
+        for handler in sorted(set(handlers) - seen):
+            self.restore(base)
+            self.actors, self.by_address, self.running = [], {}, None
+            address = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
+            self.mem.load(address, bytes(ACTOR_SIZE + MAX_PARTS * 4))
+            self.mem.write(address + CALLBACK, 4, handler)
+            root = Actor(address, handler)
+            self.actors.append(root)
+            self.by_address[address] = root
+            self.run(frames, budget=budget, only=lambda a, r=root: a is r, workers=False)
+            # One whose code faults keeps what it built, as in run().
+            tree = [a for a in subtree(self, root) if not a.discarded]
+            if any((a.parts or a.frames) and a.position is not None
+                   and max(abs(a.position[0]), abs(a.position[2])) >= max(reach, 1)
+                   for a in tree):
+                events.append((handler, tree))
+        self.restore(base)
+        self.events = events
 
     def capture_lines(self, actors=None, budget=BUDGET):
         """Run each actor's draw routine (+0x18) and then its update handler
@@ -1060,6 +1161,14 @@ class World:
                         passes.append((offset, routine))
                 if mem.read(actor.address + RENDER_KIND, 1) in QUEUED_KINDS:
                     passes.append((None, CLASS4_QUEUE))
+                # Only a drawer that reads the frame counter is probed for UV steps.
+                counted = [False]
+                if actor.uv_frames is None:
+                    def watched(address, size, read=type(mem).read, counted=counted):
+                        if 0 <= (address & 0x1FFFFFFF) - ANIMATION_FRAME < 2:
+                            counted[0] = True
+                        return read(mem, address, size)
+                    mem.read = watched
                 for offset, routine in passes:
                     # A pass that has drawn nothing twice since its actor ran
                     # is not run again: re-reads repeat it for every actor.
@@ -1075,9 +1184,11 @@ class World:
                         actor.silent[offset] = None
                     elif actor.ran and quiet is not None:
                         actor.silent[offset] = quiet + 1
+                mem.__dict__.pop("read", None)
                 if painters and actor.uv_frames is None:
                     actor.uv_frames = self._uv_frames(
-                        lambda: [p for o, r in painters for p in draw(actor, o, r)[1]])
+                        lambda: [p for o, r in painters for p in draw(actor, o, r)[1]]
+                    ) if counted[0] else {}
                 if (lines or polys) and actor.position is not None:
                     # Drawn frames after the pose was read: moved back with the
                     # actor, and a point nowhere near it is a misread vertex.
@@ -1105,6 +1216,7 @@ class World:
         except EmuError:
             pass
         finally:
+            mem.__dict__.pop("read", None)
             for address, hook in held.items():
                 if hook is None:
                     cpu.hooks.pop(address, None)
@@ -1209,11 +1321,16 @@ class World:
     def banks(self):
         """{address: file id} for the loaded sprite banks - +0x3C holds an
         ANMP on a character, so only a SPRT counts."""
+        import zlib
         from functions import format_detect
         out = {}
         for file_id, (address, size) in self.files.items():
-            found = format_detect.best(self.mem.bytes(address, size))
-            if found is not None and found.kind == "SPRT":
+            data = self.mem.bytes(address, size)
+            key = (size, zlib.crc32(data))
+            if key not in FILE_KINDS:
+                found = format_detect.best(data)
+                FILE_KINDS[key] = found.kind if found is not None else None
+            if FILE_KINDS[key] == "SPRT":
                 out[address] = file_id
         return out
 
@@ -1419,7 +1536,40 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.harvest()
     if spawner:
         world.run_rooms(spawner, area_number, frames)
+    # An area with no table (the intro) is built round the origin by code.
+    with open(overlay_path, "rb") as f:
+        world.spawn_events(installed_handlers(f.read()), frames,
+                           reach=UNPLACED if records or spawner else 1)
     return world
+
+
+def installed_handlers(overlay):
+    """Every routine of `overlay` its own code writes into an actor's
+    callback (+0x1C): a lui/addiu or lui/ori constant, stored there."""
+    count = len(overlay) // 4
+    words = struct.unpack(f"<{count}I", overlay[:count * 4])
+    end = OVERLAY_BASE + count * 4
+    consts, found = {}, set()
+    for w in words:
+        op, rs, rt, imm = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
+        if w == JR_RA:
+            consts = {}
+        elif op == LUI:
+            consts[rt] = imm << 16
+        elif op in (ADDIU, ORI) and rs in consts:
+            consts[rt] = ((consts[rs] | imm) if op == ORI
+                          else (consts[rs] + (imm - 0x10000 if imm & 0x8000 else imm)) & 0xFFFFFFFF)
+        elif op == SW:
+            value = consts.get(rt)
+            at = (value - OVERLAY_BASE) // 4 if value is not None else -1
+            if (imm == CALLBACK and OVERLAY_BASE <= (value or 0) < end and not value & 3
+                    and any(w2 >> 16 == PROLOGUE for w2 in words[at:at + PROLOGUE_REACH])):
+                found.add(value)
+        elif op == 0:
+            consts.pop((w >> 11) & 31, None)
+        elif 0x08 <= op <= 0x0E or 0x20 <= op <= 0x26:
+            consts.pop(rt, None)
+    return found
 
 
 def _tested(words, n, register):

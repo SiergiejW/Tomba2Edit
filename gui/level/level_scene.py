@@ -122,6 +122,10 @@ PURIFIED_CHUNKS = range(0x1B, 0x23)
 FRESH, EVENTS_DONE, BOTH = "fresh", "done", "both"
 AFTER_EVENTS = ("⧖ only with every event done - each save byte this area's "
                 "code reads set to 0xFF (actor_sim.progress_bytes)")
+# actor_sim World.spawn_events; its UNPLACED.
+EVENT_REACH = 256
+EVENT_NOTE = ("⧖ stood up by its code in an event the simulation does not play - "
+              "its handler, run alone on a bare record, placed it here")
 # actor_sim Actor.discarded - A05's ice cubes once the ranch is purified.
 DISCARDED_NOTE = ("its code destroys it before any frame draws it - not in the "
                   "level as it opens, so nothing of it is drawn")
@@ -845,11 +849,12 @@ class LevelScene:
         None if it cannot be run; the scene falls back on reading models
         out of the handlers."""
         number = handler_models.overlay_number(self.overlay_path)
-        if number is None or number < 0:
+        if number is None:
+            # SOP.BIN, the intro: New Game leaves src_CurrentArea at 0.
+            number = 0
+        elif number < 0:
             return None
         spawner = self._scene_spawner()
-        if not self.placements and not spawner:
-            return None
         try:
             return actor_sim.simulate(
                 self.exe_path, self.overlay_path, self.dat_path, idx_path,
@@ -1543,6 +1548,31 @@ class LevelScene:
                         label=f"room {scene}: {rider.label}", art=rider.art,
                         x=rx, y=ry, z=rz, note=note, scene=scene,
                         follow=(follow, number) if follow is not None else None))
+
+        reach = EVENT_REACH if self.placements else 1
+        for handler, tree in (world.events if world is not None else ()):
+            anchor = next((a for a in tree if (a.parts or a.frames) and a.position is not None
+                           and max(abs(a.position[0]), abs(a.position[2])) >= reach),
+                          None)
+            if anchor is None:
+                continue
+            label = f"⧖ event: {self.handler_name(handler)}"
+            posed = self._posed(tree, anchor, anchor.position, 0, label)
+            if posed is None:
+                continue
+            x, y, z = view_point(anchor.position)
+            index = len(instances)
+            instances.append(Instance(
+                index=index, role="spawned", label=self._spawn_label(label, posed),
+                sources=posed.sources, x=x, y=y, z=z,
+                assembly=posed if posed.sources else None,
+                name=label, note=f"{EVENT_NOTE}<br>{posed.note}"))
+            used.update(posed.sources)
+            take(tree, index, None)
+            if not posed.sources and posed.riders:
+                rider = posed.riders[0]
+                instances[-1].art = rider.art
+                instances[-1].x, instances[-1].y, instances[-1].z = view_point(rider.position)
 
         for number, (name, drawer, model) in enumerate(environment_meshes.models(
                 os.path.basename(self.overlay_path or ""), self.overlay_data,

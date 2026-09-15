@@ -1,14 +1,14 @@
 """Collision as lines, built and drawn one way by every view that shows it.
 
 The level editor's look: a SCLD sample is a small cross in its entry's
-colour, the stack standing on it (a candidate wall, see
-SCLDEntry.wall_candidates) a vertical line, and a town plane
-(functions/town_collision.py) its outline in the colour of its kind.
+colour, a wall record (SCLDEntry.walls) a vertical line from its foot to
+its top, and a town plane (functions/town_collision.py) its outline in the
+colour of its kind.
 
 Two layers, drawn at different strengths:
 
     surface    crosses and plane outlines, SURFACE_ALPHA
-    vertical   the wall candidates, VERTICAL_ALPHA
+    vertical   the walls, VERTICAL_ALPHA
 
 and each twice: depth-tested where nothing covers it, then again where
 geometry does at HIDDEN of that, so collision inside a wall still shows.
@@ -22,7 +22,7 @@ from gui.scld import scld_render
 
 TICK = 12.0                 # half a sample's cross, world units
 SURFACE_ALPHA = 1.0
-VERTICAL_ALPHA = 0.25
+VERTICAL_ALPHA = 0.6
 HIDDEN = 0.5
 LINE_WIDTH = 1.0
 
@@ -63,7 +63,7 @@ class Lines:
 
 
 def add_scld(lines, entries, bounds=None, color_by=None):
-    """Each entry's samples as crosses and its wall candidates as verticals.
+    """Each entry's samples as crosses and its walls as verticals.
     `bounds` (x0, x1, z0, z1) keeps only what stands inside it."""
     inside = scld_render.contains
     for entry in entries:
@@ -75,10 +75,9 @@ def add_scld(lines, entries, bounds=None, color_by=None):
             lines.line((x - TICK, y, z), (x + TICK, y, z), rgb)
             lines.line((x, y, z - TICK), (x, y, z + TICK), rgb)
         lines.ranges[entry.index] = (first, len(lines.surface) - first)
-        for run in entry.wall_candidates():
-            for a, b in zip(run, run[1:]):
-                if inside(bounds, a) and inside(bounds, b):
-                    lines.line(a, b, rgb, vertical=True)
+        for a, b in entry.walls():
+            if inside(bounds, a):
+                lines.line(a, b, rgb, vertical=True)
     return lines
 
 

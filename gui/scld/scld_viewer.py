@@ -45,8 +45,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         # index, to see whether entries sharing one have anything in
         # common on screen.
         self.color_by_unkn = False
-        # Draw every vertical pair in a cell - candidate side walls,
-        # undecoded. See SCLDEntry.wall_candidates().
+        # Draw the wall records - see SCLDEntry.walls().
         self.show_walls = True
         # entry.index -> [(x, y, z), ...] in record order, for those
         # labels, and the table3 record number behind each.
@@ -128,12 +127,14 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         self.walls_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
-            "Walls?", self)
+            "Walls", self)
         self.walls_action.setCheckable(True)
         self.walls_action.setChecked(True)
         self.walls_action.setToolTip(
-            "UNDECODED: join every record in a cell to the one above it - "
-            "candidate side walls, for checking by eye")
+            "The walls the game stops an actor at: each record whose kind "
+            "blocks one way along its plane (bits 0x04/0x08), standing where "
+            "the plane enters or leaves its cell, from its height to its top "
+            "(f_ResolveTerrainProbeHorizontalSurfaceBySideMask)")
         self.walls_action.toggled.connect(self.toggle_walls)
         self.toolbar.addAction(self.walls_action)
 
@@ -256,8 +257,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
     def export_to_gltf(self):
         """Write the collision out, exactly as it is being shown - the
-        records as points, and the candidate walls when that toggle is
-        on."""
+        records as points, and the walls when that toggle is on."""
         if not self.scld_data:
             QMessageBox.warning(self, "Nothing to export",
                                 "No SCLD is loaded.")
@@ -295,7 +295,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         QMessageBox.information(
             self, "Exported",
             f"Wrote {len(pts)} collision points"
-            + (f" and {len(verts) // 2} candidate walls." if verts else "."))
+            + (f" and {len(verts) // 2} walls." if verts else "."))
 
     def _upload_mesh(self, model_data):
         vertices = model_data.get("vertices") or []
@@ -405,7 +405,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.line_vertex_count = len(lines.vertical)
 
         # What frame_collision() measures: every sample, whether or not the
-        # candidate walls are being drawn.
+        # walls are being drawn.
         (surface, _sc), (vertical, _vc) = lines.arrays(UNIT_SCALE)
         self._scene_points = (surface if len(surface) else vertical).flatten()
 
