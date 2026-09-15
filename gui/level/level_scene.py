@@ -115,6 +115,14 @@ ROOM_REACH = 400.0
 # with that area's bit set in src_PurifiedAreas.
 PURIFIED_CHUNKS = range(0x1B, 0x23)
 
+# What the actors run from: a fresh game, every event done
+# (actor_sim.progress_bytes), or the first with the second's differences.
+FRESH, EVENTS_DONE, BOTH = "fresh", "done", "both"
+AFTER_EVENTS = ("⧖ only with every event done - each save byte this area's "
+                "code reads set to 0xFF (actor_sim.progress_bytes)")
+# Rows of the two runs this close, in world units, are the same row.
+MERGE_GRID = 16.0
+
 # Surfaces an environment drawer builds in code (functions/environment_meshes
 # .py) are models of the scene's own, numbered from here.
 ENVIRONMENT_ID = 0x2000
@@ -613,11 +621,12 @@ class LevelScene:
         self.instances = []
         self.background = None          # a BGMPFile, or None
         self.notes = []                 # what didn't load, for the panel
+        self.progress = FRESH
 
     # --- loading ------------------------------------------------------
 
     def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
-             exe_path=None):
+             exe_path=None, progress=FRESH):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
@@ -626,6 +635,7 @@ class LevelScene:
         self.chunk_index = chunk_index
         self.overlay_path = overlay_path
         self.exe_path = exe_path
+        self.progress = progress
 
         dat_start, files = area_files(idx_path, chunk_index)
         self.dat_start = dat_start
@@ -695,7 +705,53 @@ class LevelScene:
             self.world = self._simulate(idx_path)
 
         self._build_instances()
+        if progress == BOTH and self.world is not None:
+            self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
+                                          overlay_path, exe_path, EVENTS_DONE))
         return self
+
+    def _merge(self, done):
+        """Add what `done` - this area run with every event done - stands and
+        this does not: whatever appeared, moved or changed, marked ⧖."""
+        def key(instance):
+            return (instance.role, instance.label.replace("⧖ ", ""),
+                    tuple(tuple(s) for s in instance.sources), instance.scene,
+                    *(round(v / MERGE_GRID) for v in (instance.x, instance.y, instance.z)))
+
+        mine = {key(i): i.index for i in self.instances}
+        records = {p.key(): p for p in self.placements}
+        pickups = {pickup_key(p): p for p in self.pickups}
+        index, added = {}, []
+        for instance in done.instances:
+            if instance.role in ("room", "scenery") or key(instance) in mine:
+                index[instance.index] = mine.get(key(instance))
+                continue
+            index[instance.index] = instance.index = len(self.instances)
+            self.instances.append(instance)
+            added.append(instance)
+        for instance in added:
+            if instance.follow is not None:
+                parent = index.get(instance.follow[0])
+                instance.follow = None if parent is None else (parent, instance.follow[1])
+            if instance.placement is not None:
+                instance.placement = records.get(instance.placement.key(), instance.placement)
+            if instance.pickup is not None:
+                instance.pickup = pickups.get(pickup_key(instance.pickup), instance.pickup)
+            if "⧖" not in instance.label:
+                instance.label = f"⧖ {instance.label}"
+            instance.note = f"{instance.note}<br>{AFTER_EVENTS}" if instance.note else AFTER_EVENTS
+        new = {i.index for i in added}
+        seen = {(line.scene, line.a, line.b) for line in self.lines}
+        for line in done.lines:
+            owner = index.get(line.owner) if line.owner is not None else None
+            if owner in new or (line.scene, line.a, line.b) not in seen:
+                self.lines.append(SceneLine(owner, line.scene, line.a, line.b,
+                                            line.color_a, line.color_b, line.blended))
+        for file_id, model in done.models.items():
+            self.models.setdefault(file_id, model)
+        for file_id, content in done.content.items():
+            self.content.setdefault(file_id, content)
+        self.notes.append(f"with every event done: {len(added)} more row(s), marked ⧖")
 
     def _simulate(self, idx_path):
         """Run every placed actor's own code - see functions/actor_sim.py.
@@ -713,7 +769,9 @@ class LevelScene:
                 self.chunk_index, number, self.placements,
                 actor_assembly.degrees_to_units, frames=SIM_FRAMES,
                 spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS,
-                chests=[p for p in self.pickups if p.chest])
+                chests=[p for p in self.pickups if p.chest],
+                finished=(actor_sim.progress_bytes(self.overlay_data)
+                          if self.progress == EVENTS_DONE and self.overlay_data else ()))
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None

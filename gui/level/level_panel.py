@@ -30,8 +30,8 @@ from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
-    ASSET_PACK_ID, BACKGROUND_ID, LevelScene, area_files, instance_key,
-    room_entries)
+    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
+    area_files, instance_key, room_entries)
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
@@ -97,6 +97,20 @@ class LevelEditorPanel(QWidget):
             "chests that only appear in there.")
         self.view_box.currentIndexChanged.connect(self._apply_view)
 
+        # Which game the actors run in - see LevelScene.load.
+        self.progress_box = QComboBox(self)
+        for label, value in (("Both", BOTH), ("Fresh game", FRESH),
+                             ("Events done", EVENTS_DONE)):
+            self.progress_box.addItem(label, value)
+        self.progress_box.setToolTip(
+            "What the area's actors are run from.\n\n"
+            "Fresh game: New Game's save, with the intro played.\n"
+            "Events done: every save byte the area's code reads set to 0xFF, "
+            "the way the game marks a finished event.\n"
+            "Both: the fresh game, plus whatever only stands once events are "
+            "done, marked ⧖. Runs the area twice.")
+        self.progress_box.currentIndexChanged.connect(self._on_progress_changed)
+
         self.summary = QLabel("Open a disc to pick an area.", self)
         self.summary.setWordWrap(True)
 
@@ -109,6 +123,7 @@ class LevelEditorPanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
+        self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
 
         self.details = QLabel("Click something in the view, or pick a row.", self)
@@ -174,6 +189,8 @@ class LevelEditorPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(QLabel("Area", self))
         top.addWidget(self.area_box, 1)
+        top.addWidget(QLabel("Progress", self))
+        top.addWidget(self.progress_box)
         top.addWidget(QLabel("Show", self))
         top.addWidget(self.view_box)
 
@@ -253,7 +270,7 @@ class LevelEditorPanel(QWidget):
         return out
 
     def _enable(self, on):
-        for widget in (self.table, self.model_box,
+        for widget in (self.table, self.model_box, self.progress_box,
                        self.keep_button, self.save_button, *self.boxes.values()):
             widget.setEnabled(on)
 
@@ -267,13 +284,18 @@ class LevelEditorPanel(QWidget):
             return
         self.load_area(chunk)
 
+    def _on_progress_changed(self, _index):
+        if not self._filling and self.chunk is not None and self.dat_path:
+            self.load_area(self.chunk)
+
     def load_area(self, chunk):
         self._stop_cycling()
         # Kept so a printed selection can say which area it is in.
         self.chunk = chunk
         overlay = self.overlay_for_area(chunk)
         scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
-                                  self.exe_path)
+                                  self.exe_path,
+                                  progress=self.progress_box.currentData())
         self.scene = scene
 
         # The VRAM has to be in place before the scene is prepared - the
@@ -600,6 +622,14 @@ class LevelEditorPanel(QWidget):
         rows = self.table.selectionModel().selectedRows()
         index = (self.table.item(rows[0].row(), 0).data(ROLE) if rows else None)
         self.viewer.select(index)
+
+    def _on_row_double_clicked(self, item):
+        """Frame the row's object, the way F does."""
+        index = self.table.item(item.row(), 0).data(ROLE)
+        if index is None:
+            return
+        self.viewer.select(index)
+        self.viewer.frame_selection()
 
     def _on_view_selection(self, index):
         self._show_details(index)

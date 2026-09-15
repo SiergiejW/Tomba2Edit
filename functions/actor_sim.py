@@ -113,6 +113,15 @@ TRAIL_ID = 0x1000
 # A purified area runs its cursed overlay with its bit set here.
 PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
 
+# A game with every event done: each byte of New Game's block an area's
+# code reads set to 0xFF, the way the game marks a finished event
+# (src_EventWinsWindmill == -1) - bar the bytes saying where the world is.
+SAVE_BLOCK, SAVE_BLOCK_SIZE = AREA_NUMBER, 0x5F4
+DONE = 0xFF
+WORLD_BYTES = frozenset((*range(AREA_NUMBER, AREA_NUMBER + 4),
+                         PURIFIED_AREAS, PURIFIED_AREAS + 1, INTRO_CUTSCENE))
+LOAD_SIZES = {0x20: 1, 0x24: 1, 0x21: 2, 0x25: 2, 0x23: 4}
+
 # Lines. Nothing in an MDAT or SMST is one: ropes, chains and fishing lines
 # come out of an actor's draw routine (+0x18) straight into the primitive
 # buffer. They are read back there - the camera made identity, and every
@@ -245,7 +254,8 @@ class World:
     """RAM laid out the way an area is running, and the actors in it."""
 
     def __init__(self, exe_path, overlay_path, dat_path, idx_path, chunk,
-                 area_number, resident_chunks=(0, 1, 2), purified=False):
+                 area_number, resident_chunks=(0, 1, 2), purified=False,
+                 finished=()):
         from gui.level.level_scene import area_files
         self.cpu = cpu = CPU()
         self.mem = mem = cpu.mem
@@ -282,6 +292,8 @@ class World:
         except EmuError:
             pass
         mem.write(INTRO_CUTSCENE, 1, INTRO_PLAYED)
+        for address in finished:
+            mem.write(address, 1, DONE)
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
@@ -1144,12 +1156,12 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=()):
+             chests=(), finished=()):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
     area with no placement records is its spawner's scene 0."""
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
-                  purified=purified)
+                  purified=purified, finished=finished)
     world.start_workers()
     for record in records:
         world.place(record, units)
@@ -1168,6 +1180,28 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     if spawner:
         world.run_rooms(spawner, area_number, frames)
     return world
+
+
+def progress_bytes(overlay):
+    """The New Game block bytes an overlay's code loads (lui-based lb/lh/lw
+    and unsigned twins), less WORLD_BYTES: what `finished` sets to DONE."""
+    words = struct.unpack_from(f"<{len(overlay) // 4}I", overlay)
+    high, found = {}, set()
+    for w in words:
+        op, rs, rt, imm = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
+        if op == 0x0F:
+            high[rt] = imm << 16
+            continue
+        if op in LOAD_SIZES and rs in high:
+            address = (high[rs] + s16(imm)) & 0xFFFFFFFF
+            if SAVE_BLOCK <= address < SAVE_BLOCK + SAVE_BLOCK_SIZE:
+                found.update(range(address, address + LOAD_SIZES[op]))
+        # Whatever else writes a register loses its high half.
+        if op in LOAD_SIZES or 0x08 <= op <= 0x0E:
+            high.pop(rt, None)
+        elif op == 0 and 0x20 <= (w & 0x3F) <= 0x2B:
+            high.pop((w >> 11) & 31, None)
+    return sorted(found - WORLD_BYTES)
 
 
 def line_primitives(words, points):
