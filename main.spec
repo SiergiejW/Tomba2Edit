@@ -143,12 +143,15 @@ a = Analysis(
     # the Japanese disc draws with (see functions/biosfont.py). All three
     # are read beside the executable at runtime (sys._MEIPASS when
     # frozen).
+    # decomp/symbols_us.json names handlers and finds each overlay's scene
+    # spawner for the level editor; the rest of decomp/ is not read.
     datas=_icon_files() + [('labels', 'labels'), ('audio_names', 'audio_names'),
-                           ('fonts', 'fonts')] + _multimedia_plugins(),
+                           ('fonts', 'fonts'),
+                           ('decomp/symbols_us.json', 'decomp')] + _multimedia_plugins(),
     # QtMultimedia is imported inside the functions that play audio, so
     # the analysis does not always see it; naming it here is what gets
     # its DLLs collected.
-    hiddenimports=['gui', 'PyQt6.QtMultimedia', 'lameenc'],
+    hiddenimports=['gui', 'PyQt6.QtMultimedia', 'lameenc', 'gui.level.done_worker'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

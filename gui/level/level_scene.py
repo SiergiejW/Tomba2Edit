@@ -97,8 +97,11 @@ AREA_SPRITES = 10
 
 # Names for handlers, recovered by functions/decomp_symbols.py, if the
 # decomp has been run through it.
-SYMBOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "decomp", "symbols_us.json")
+SYMBOLS = os.path.join(
+    getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "decomp", "symbols_us.json")
+# What main.py answers as the events-done worker, in a built exe.
+DONE_WORKER_FLAG = "--level-done-worker"
 
 # An overlay's scene spawner, by its decomp name - what fills a room.
 SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
@@ -141,6 +144,8 @@ CACHE_WORTH = 1.0
 # process of its own (gui/level/done_worker.py) and the fresh one runs here
 # meanwhile. Longer than this and it is built here instead.
 DONE_WAIT = 180.0
+# How many classes a loading line names before it just counts the rest.
+LOG_CLASSES = 6
 MERGE_GRID = 16.0
 MOVED = 128.0
 MERGE_REACH = 2000.0
@@ -327,6 +332,16 @@ class Instance:
                          [0.0, 1.0, 0.0],
                          [sin, 0.0, cos]], dtype=np.float64)
 
+    @property
+    def game_position(self):
+        """(x, y, z) in the game's own axes - what its records and RAM hold,
+        and so what the editor shows. x/y/z are the viewers' (view_position)."""
+        return (self.z, -self.y, self.x)
+
+    @game_position.setter
+    def game_position(self, point):
+        self.x, self.y, self.z = view_point(point)
+
     def to_record(self):
         """Write this instance's position and angle back onto its
         record, in the game's own axes - the inverse of
@@ -341,7 +356,7 @@ class Instance:
             record.angle = int(round(self.angle))
 
     def describe(self):
-        where = f"({self.x:.0f}, {self.y:.0f}, {self.z:.0f})"
+        where = "({:.0f}, {:.0f}, {:.0f})".format(*self.game_position)
         if self.role == "room":
             return f"The room itself - {self.face_count} drawn triangles"
         files = {f for f, _g in self.sources}
@@ -628,10 +643,12 @@ def _start_done(dat_path, idx_path, chunk_index, overlay_path, exe_path):
     It leaves its scene in the cache; None if it could not be started."""
     import subprocess
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # A built exe has no -m: main.py hands it DONE_WORKER_FLAG instead.
+    command = ([sys.executable, DONE_WORKER_FLAG] if getattr(sys, "frozen", False)
+               else [sys.executable, "-m", "gui.level.done_worker"])
     try:
         return subprocess.Popen(
-            [sys.executable, "-m", "gui.level.done_worker", dat_path, idx_path,
-             str(chunk_index), overlay_path, exe_path],
+            command + [dat_path, idx_path, str(chunk_index), overlay_path, exe_path],
             cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except OSError:
@@ -915,6 +932,19 @@ class LevelScene:
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
+
+    def _log_actors(self, message, actors=None):
+        """One line of simulate()'s progress on the console: the stage, and
+        what it stood up counted by class, most first."""
+        line = f"AREA_{self.chunk_index:02X} ({self.progress}): {message}"
+        if actors is not None:
+            live = [a for a in actors if not a.discarded]
+            counts = collections.Counter(self.handler_name(a.handler) for a in live)
+            top = ", ".join(f"{n}x {name}" for name, n in counts.most_common(LOG_CLASSES))
+            more = len(counts) - LOG_CLASSES
+            line += f" - {len(live)} actor(s)" + (f": {top}" if top else "") + (
+                f", +{more} more class(es)" if more > 0 else "")
+        print(line, flush=True)
 
     def _scene_spawner(self):
         """The overlay's scene spawner, or None: by its decomp name, else by

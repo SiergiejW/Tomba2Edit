@@ -13,6 +13,7 @@ without bound and never lands in the project.
 import hashlib
 import os
 import pickle
+import sys
 import tempfile
 
 CACHE = os.path.join(tempfile.gettempdir(), "tomba2-scene-cache")
@@ -39,6 +40,9 @@ def _stamp(path):
 def _code_stamp():
     """Every module that builds a scene, by size and modified time."""
     global _code
+    if _code is None and getattr(sys, "frozen", False):
+        # A built exe carries no sources: the exe itself is the code.
+        _code = hashlib.sha1(_stamp(sys.executable).encode()).hexdigest()[:16]
     if _code is None:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         parts = []

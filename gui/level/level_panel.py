@@ -613,8 +613,9 @@ class LevelEditorPanel(QWidget):
             model = "sprite"
         else:
             model = "-" if instance.role == "room" else "unknown"
-        for column, text in ((1, model), (2, f"{instance.x:.0f}"),
-                             (3, f"{instance.y:.0f}"), (4, f"{instance.z:.0f}"),
+        gx, gy, gz = instance.game_position
+        for column, text in ((1, model), (2, f"{gx:.0f}"),
+                             (3, f"{gy:.0f}"), (4, f"{gz:.0f}"),
                              (5, f"{instance.angle:.0f}")):
             item = self.table.item(row, column)
             if item is None:
@@ -671,9 +672,7 @@ class LevelEditorPanel(QWidget):
             return
         self._filling = True
         self._fill_row(row, instance)
-        for name, value in (("X", instance.x), ("Y", instance.y),
-                            ("Z", instance.z), ("Angle", instance.angle)):
-            self.boxes[name].setValue(value)
+        self._fill_boxes(instance)
         self._filling = False
 
     # --- the selected instance ----------------------------------------
@@ -714,8 +713,8 @@ class LevelEditorPanel(QWidget):
         if instance.sources:
             bits.append("model " + ", ".join(f"id {f} g{g}"
                                              for f, g in instance.sources))
-        bits.append(f"at ({instance.x:.0f}, {instance.y:.0f}, "
-                    f"{instance.z:.0f}) turned {instance.angle:.0f} deg")
+        bits.append("at ({:.0f}, {:.0f}, {:.0f})".format(*instance.game_position)
+                    + f" turned {instance.angle:.0f} deg")
         print("selected: " + "  ".join(bits))
 
     def _show_details(self, index):
@@ -749,12 +748,17 @@ class LevelEditorPanel(QWidget):
                     self.model_box.setCurrentIndex(row)
                     break
             self.model_box.setEnabled(True)
-        for name, value in (("X", instance.x), ("Y", instance.y),
-                            ("Z", instance.z), ("Angle", instance.angle)):
-            self.boxes[name].setValue(value)
-            self.boxes[name].setEnabled(
-                instance.movable and not instance.authored)
+        self._fill_boxes(instance)
+        for box in self.boxes.values():
+            box.setEnabled(instance.movable and not instance.authored)
         self._filling = False
+
+    def _fill_boxes(self, instance):
+        """The boxes hold the game's own axes - the numbers in its records
+        and RAM - not the viewer's."""
+        for name, value in zip(("X", "Y", "Z"), instance.game_position):
+            self.boxes[name].setValue(value)
+        self.boxes["Angle"].setValue(instance.angle)
 
     def _on_box_changed(self, _value):
         if self._filling:
@@ -762,9 +766,7 @@ class LevelEditorPanel(QWidget):
         instance = self._instance(self.viewer.selected)
         if instance is None or not instance.movable:
             return
-        instance.x = self.boxes["X"].value()
-        instance.y = self.boxes["Y"].value()
-        instance.z = self.boxes["Z"].value()
+        instance.game_position = tuple(self.boxes[n].value() for n in ("X", "Y", "Z"))
         instance.angle = self.boxes["Angle"].value()
         instance.to_record()
         self.viewer.refresh_instance(instance.index)
