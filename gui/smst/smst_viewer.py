@@ -1343,6 +1343,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("texelClass", 1)
             self._draw_pass(transparent=True)
 
+        # Whatever else the view hangs in the scene goes here: after the
+        # solid faces, before the blended ones - so a sprite inside
+        # something see-through is behind it rather than over it.
+        self._draw_between_passes()
+
+        if modes:
             # Then the texels that really do blend, one pass per mode.
             # The PSX has four; treating them all as additive - which is
             # what this did - washes out everything that asked for the
@@ -1369,6 +1375,11 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("alpha", 1.0)
             self.origin_axes.draw(radius)
         self.shader_program.release()
+
+    def _draw_between_passes(self):
+        """Hook for a view with something of its own to draw between the
+        solid faces and the blended ones. It must leave the shader, the
+        VAO and texture unit 0 as it found them."""
 
     @staticmethod
     def _set_blend(mode):

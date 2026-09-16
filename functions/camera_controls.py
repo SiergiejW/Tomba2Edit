@@ -62,12 +62,13 @@ ZOOM_FRACTION = 0.10
 # How far WASD travels per frame, as a fraction of the scene radius.
 SPEED_FRACTION = 0.02
 
-# Middle-drag orbits about a point in front of the camera, the way every
-# modelling program does it, and shift+middle-drag slides that point
-# about. How close the camera may get to what it is circling, as a
-# fraction of the scene radius - past this an orbit turns into a spin on
-# the spot, because the thing being circled is behind the near plane.
-MIN_ORBIT = 2.0
+# Middle-drag orbits about whatever the middle of the view is looking at,
+# the way every modelling program does it, and shift+middle-drag slides that
+# point about. The pivot is held this far out at least, as a fraction of the
+# scene radius, so a drag still circles something instead of spinning on the
+# spot; the camera itself is never stopped - the wheel flies it straight
+# through geometry.
+MIN_ORBIT = 0.05
 
 # The vertical field of view the views project with - see
 # smst_viewer._model_view_projection. Panning solves against it so the
@@ -329,6 +330,16 @@ class CameraControls:
         if self.camera_mode:
             return                    # the freecam has the mouse
         self.orbit_mode = "pan" if panning else "orbit"
+        # What the middle of the view is looking at, when the view can say
+        # (LevelViewer.view_pivot reads it back out of the depth buffer) -
+        # so a drag circles the thing on screen, not a point in mid air.
+        seen = getattr(self.widget, "view_pivot", None)
+        point = seen() if callable(seen) else None
+        if point is not None:
+            self.orbit_distance = max(math.dist(self._eye(), point),
+                                      self.scene_radius * MIN_ORBIT)
+            self._orbit_pivot = point
+            return
         self._orbit_pivot = self.orbit_pivot()
         self.widget.setCursor(QCursor(
             Qt.CursorShape.SizeAllCursor if panning
@@ -414,14 +425,12 @@ class CameraControls:
         else:
             forward_x, forward_y, forward_z = self._forward()
             step = scroll_amount * self.zoom_step
-            # Zooming walks the camera towards what it is orbiting, so
-            # the pivot has to stay where it is - otherwise it runs
-            # ahead of the camera and orbiting circles thin air. Held
-            # off the near plane, since a pivot behind the camera turns
-            # an orbit into a spin.
-            floor = self.scene_radius * MIN_ORBIT
-            step = min(step, self.orbit_distance - floor)
-            self.orbit_distance = max(floor, self.orbit_distance - step)
+            # Zooming walks the camera towards what it is orbiting, so the
+            # pivot comes back by the same step - otherwise it runs ahead of
+            # the camera and orbiting circles thin air. The camera is not
+            # stopped at the pivot: it carries on through whatever is there.
+            self.orbit_distance = max(self.scene_radius * MIN_ORBIT,
+                                      self.orbit_distance - step)
             self.camera_x -= forward_x * step
             self.camera_y -= forward_y * step
             self.camera_z -= forward_z * step

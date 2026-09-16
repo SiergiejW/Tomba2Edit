@@ -16,6 +16,9 @@ import pickle
 import tempfile
 
 CACHE = os.path.join(tempfile.gettempdir(), "tomba2-scene-cache")
+# A kept scene has no `world` - the simulation itself is not carried over -
+# so anything that wants to look at the actors turns this off first.
+enabled = True
 CACHE_KEEP = 64
 # Bigger than this and reading it back costs more than running the area.
 CACHE_MAX_BYTES = 256 << 20
@@ -60,6 +63,8 @@ def key(*parts):
 
 def read(name):
     """The scene's state dict, or None."""
+    if not enabled:
+        return None
     path = os.path.join(CACHE, name + ".pickle")
     try:
         with open(path, "rb") as f:
@@ -70,6 +75,8 @@ def read(name):
 
 def write(name, state):
     """Keep this state under `name`, quietly doing nothing if it can't be."""
+    if not enabled:
+        return False
     path = os.path.join(CACHE, name + ".pickle")
     try:
         os.makedirs(CACHE, exist_ok=True)

@@ -1837,8 +1837,12 @@ class LevelScene:
         box holds shows only under "all"."""
         from gui import collision_overlay as overlay
         lines = overlay.Lines()
+        # Two colours here, not one per plane: in a level what matters is
+        # what you stand on and what stops you.
+        plain = dict(color_by=lambda _entry: overlay.PLAIN_SURFACE,
+                     wall_color=overlay.PLAIN_WALL)
         if view in (None, "all"):
-            overlay.add_scld(lines, self.planes)
+            overlay.add_scld(lines, self.planes, **plain)
         elif rooms and view in rooms:
             # A room loads no collision of its own (its enter routine only
             # fills slot 15), so what it stands on is the area's SCLD where
@@ -1846,7 +1850,7 @@ class LevelScene:
             low, high = rooms[view]
             overlay.add_scld(lines, self.planes, bounds=(
                 low[0] - ROOM_REACH, high[0] + ROOM_REACH,
-                low[2] - ROOM_REACH, high[2] + ROOM_REACH))
+                low[2] - ROOM_REACH, high[2] + ROOM_REACH), **plain)
         datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
         for number, dataset in enumerate(datasets):
             for plane in dataset.planes:
@@ -1855,7 +1859,7 @@ class LevelScene:
                 else:
                     shown = view == "all" or view in self._rooms_of(plane, rooms or {})
                 if shown:
-                    overlay.add_town(lines, (plane,), view_point)
+                    overlay.add_town(lines, (plane,), view_point, plain=True)
         return lines
 
     @staticmethod

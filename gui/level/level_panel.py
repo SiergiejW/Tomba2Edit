@@ -13,6 +13,7 @@ be kept in labels/placements.json.
 """
 import json
 import os
+import time
 from math import gcd
 
 import numpy as np
@@ -191,13 +192,13 @@ class LevelEditorPanel(QWidget):
         top.addWidget(self.area_box, 1)
         top.addWidget(QLabel("Progress", self))
         top.addWidget(self.progress_box)
-        top.addWidget(QLabel("Show", self))
+        top.addWidget(QLabel("Rooms", self))
         top.addWidget(self.view_box)
+        top.addStretch(1)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addLayout(top)
         left_layout.addWidget(self.summary)
         left_layout.addWidget(self.table, 1)
         left_layout.addWidget(edit)
@@ -217,6 +218,10 @@ class LevelEditorPanel(QWidget):
             "A whole area and its rooms: the level, its background, and "
             "everything the game stands in it - click an object to select "
             "it, click again for the part under the cursor"))
+        # Across the top of both: what is open belongs to the whole tab, not
+        # to the list on the left, and the view gets the width back.
+        top.setContentsMargins(6, 4, 6, 4)
+        layout.addLayout(top)
         layout.addWidget(splitter, 1)
         self._enable(False)
 
@@ -285,32 +290,44 @@ class LevelEditorPanel(QWidget):
         self.load_area(chunk)
 
     def _on_progress_changed(self, _index):
+        # The camera stays put: the same shot of the same place under the
+        # other progress is what makes the two comparable.
         if not self._filling and self.chunk is not None and self.dat_path:
-            self.load_area(self.chunk)
+            self.load_area(self.chunk, keep_camera=True)
 
-    def load_area(self, chunk):
+    def load_area(self, chunk, keep_camera=False):
+        """Open an area. `keep_camera` leaves the view where it is, so
+        switching Progress shows the same shot of the same place."""
         self._stop_cycling()
         # Kept so a printed selection can say which area it is in.
         self.chunk = chunk
         overlay = self.overlay_for_area(chunk)
+        progress = self.progress_box.currentData()
+        started = time.perf_counter()
+        # An area's own code is run to build it, which takes seconds the
+        # first time - say so, so a quiet window doesn't read as a hang.
+        print(f"AREA_{chunk:02X}: loading ({progress})...", flush=True)
         # The VRAM has to be in place before the scene is prepared - the
         # palettes are cut out of it while the buffers are built - and it
         # needs AREA_01 merged in, which is where the character models'
         # texture pages live (see gui/smst/smst_parser.py).
         vram = self.vram_for_area(chunk)
         scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
-                                  self.exe_path,
-                                  progress=self.progress_box.currentData())
+                                  self.exe_path, progress=progress)
         self.scene = scene
+        print(f"AREA_{chunk:02X}: {len(scene.instances)} row(s) in "
+              f"{time.perf_counter() - started:.1f}s, drawing...", flush=True)
 
         from gui.vram_viewer import vram_index_image
         self.viewer.set_vram(vram, vram_index_image(vram) if vram else None)
         self.viewer.export_name = f"AREA_{chunk:02X}"
-        self.viewer.load_scene(scene)
+        self.viewer.load_scene(scene, frame=not keep_camera)
         self.viewer.load_animations(overlay)
         self._load_background(scene, vram, overlay)
         self._load_sprites(scene, vram)
         self._populate()
+        print(f"AREA_{chunk:02X}: ready in {time.perf_counter() - started:.1f}s",
+              flush=True)
 
         placed = sum(1 for i in scene.instances
                      if i.role == "object" and i.face_count)
@@ -510,7 +527,9 @@ class LevelEditorPanel(QWidget):
     # --- area or room -------------------------------------------------
 
     def _fill_views(self):
-        current = self.view_box.currentData()
+        # An area opens with everything it has in it, rooms included; after
+        # that whatever was chosen is kept from area to area.
+        current = self.view_box.currentData() if self.view_box.count() else "all"
         self._filling_views = True
         self.view_box.clear()
         self.view_box.addItem("Area", None)

@@ -206,6 +206,14 @@ ITEM_ID, INTERIOR_ID = 0x68, 0x6A
 CONTENTS_MASK = 0xFFF
 PERSIST_FLAG = 0x80
 
+# The machine's five actor pools, as f_InitializeActorPools builds them:
+# 0x34, 0x3A, 0x2A and 0x28 records, then five. f_AllocateActorRecordByType's
+# first argument picks the pool, and allocation fails when it is empty - which
+# is what stops a scene from standing up more than the game ever could.
+# f_AllocateActorFromPool0 keeps POOL_RESERVE records back for emergencies.
+POOL_SIZES = (0x34, 0x3A, 0x2A, 0x28, 5)
+POOL_RESERVE = 3
+
 ACTOR_SIZE = 0xC0
 MAX_PARTS = 64
 PART_SIZE = 0x44
@@ -263,6 +271,7 @@ class Part:
 class Actor:
     address: int
     handler: int
+    pool: int = 0                   # which actor pool its record came from
     record: object = None           # the Placement, for a placed actor
     spawner: int = None             # address of the actor that made it
     worker: int = None              # id of the scene worker that made it
@@ -388,6 +397,7 @@ class World:
         self.worker_errors = []
         self.rooms = {}                         # scene -> [Actor]
         self.events = []                        # (handler, [Actor]) - spawn_events
+        self.pool_used = collections.Counter()  # pool -> records handed out
         # id(actor) -> (actor, RAM frame) whose lines are owed - see _owe_capture.
         self.owed = {}
         self.defer_capture = True               # False: draw at every reading
@@ -435,11 +445,25 @@ class World:
     # --- hooks ----------------------------------------------------------
 
     def _allocate_record(self, cpu):
+        # An empty pool is how the game says no - without it a scene whose
+        # code keeps asking (A07's circus, with every event done) stands up
+        # thousands of actors the machine could never hold.
+        pool = cpu.r[4] & 0xFF
+        size = POOL_SIZES[pool] if pool < len(POOL_SIZES) else POOL_SIZES[0]
+        if self.pool_used[pool] + (POOL_RESERVE if pool == 0 else 0) >= size:
+            return 0
+        return self._new_record(cpu)
+
+    def _new_record(self, cpu):
+        """A record, as the hook hands one out - but without asking the pool,
+        which is how a placement table stands its own actors up."""
+        pool = cpu.r[4] & 0xFF
+        self.pool_used[pool] += 1
         address = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
         self.mem.write(address + 0x0A, 1, cpu.r[6])
         self.mem.write(address + 0x0C, 1, cpu.r[5])
         parent = self.by_address.get(self.running)
-        actor = Actor(address, 0, spawner=self.running,
+        actor = Actor(address, 0, pool=pool, spawner=self.running,
                       worker=None if self.running else self.running_worker,
                       scene=parent.scene if parent is not None
                       else self.running_scene)
@@ -540,7 +564,7 @@ class World:
     def place(self, record, units):
         """An actor for one placement record - FUN_80072a78's writes."""
         cpu = self.cpu
-        address = self._allocate_record(cpu)
+        address = self._new_record(cpu)
         actor = self.by_address[address]
         actor.record = record
         actor.spawner = None
@@ -785,6 +809,7 @@ class World:
         except EmuError as e:
             actor.error = str(e)
             actor.dead = True
+            self.pool_used[actor.pool] -= 1     # its record goes back
         finally:
             self.running = None
         actor.shown |= bool(read(actor.address + ACTIVE, 1))
@@ -797,6 +822,8 @@ class World:
                 write(actor.address + CALLBACK, 4, handler)
                 if not read(actor.address + PART_COUNT, 1):
                     mem.load(actor.address, before)
+                if not actor.dead:
+                    self.pool_used[actor.pool] -= 1
                 actor.dead = True
             else:
                 actor.discarded |= not actor.shown and not self.finished
@@ -874,11 +901,12 @@ class World:
         import copy
         return (bytes(self.mem.ram), bytes(self.mem.scratch),
                 [copy.copy(a) for a in self.actors], self.heap, dict(self.files),
-                dict(self.trail_slots))
+                dict(self.trail_slots), collections.Counter(self.pool_used))
 
     def restore(self, saved):
         import copy
-        ram, scratch, actors, heap, files, trail_slots = saved
+        ram, scratch, actors, heap, files, trail_slots, pool_used = saved
+        self.pool_used = collections.Counter(pool_used)
         self.mem.ram[:] = ram
         self.mem.scratch[:] = scratch
         self.actors = [copy.copy(a) for a in actors]

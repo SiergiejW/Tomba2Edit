@@ -116,6 +116,15 @@ class GTE:
         d = self.d
         if n == 15:
             d[12], d[13], d[14] = d[13], d[14], v
+        elif n == 30:
+            # LZCS, and with it LZCR: how many bits the value leads with -
+            # zeroes when it is positive, ones when it is negative, 1 to 32.
+            # SquareRoot0 is built on this pair, so without it every
+            # distance the game measures comes back saturated.
+            d[30] = value = v & MASK
+            if value & 0x80000000:
+                value = ~value & MASK
+            d[31] = 32 - value.bit_length() if value else 32
         elif n == 28:
             d[9] = ((v >> 0) & 0x1F) << 7
             d[10] = ((v >> 5) & 0x1F) << 7

@@ -26,6 +26,12 @@ VERTICAL_ALPHA = 0.6
 HIDDEN = 0.5
 LINE_WIDTH = 1.0
 
+# The level editor draws collision as two things - what you stand on and
+# what stops you - rather than one colour per plane; the SCLD view keeps its
+# own colours, where telling one entry from the next is the point.
+PLAIN_SURFACE = (0.3, 0.9, 0.4)
+PLAIN_WALL = (1.0, 0.35, 0.3)
+
 TOWN_COLORS = {
     "floor": (0.3, 0.9, 0.4), "wall": (1.0, 0.35, 0.3),
     "door": (1.0, 0.85, 0.2), "ladder": (0.3, 0.7, 1.0),
@@ -62,9 +68,10 @@ class Lines:
                 pack(self.vertical, self.vertical_colors))
 
 
-def add_scld(lines, entries, bounds=None, color_by=None):
+def add_scld(lines, entries, bounds=None, color_by=None, wall_color=None):
     """Each entry's samples as crosses and its walls as verticals.
-    `bounds` (x0, x1, z0, z1) keeps only what stands inside it."""
+    `bounds` (x0, x1, z0, z1) keeps only what stands inside it;
+    `wall_color` draws every wall alike instead of in its entry's colour."""
     inside = scld_render.contains
     for entry in entries:
         rgb = color_by(entry) if color_by else scld_render.entry_color(entry.index)
@@ -77,14 +84,16 @@ def add_scld(lines, entries, bounds=None, color_by=None):
         lines.ranges[entry.index] = (first, len(lines.surface) - first)
         for a, b in entry.walls():
             if inside(bounds, a):
-                lines.line(a, b, rgb, vertical=True)
+                lines.line(a, b, wall_color or rgb, vertical=True)
     return lines
 
 
-def add_town(lines, planes, transform=lambda p: p):
-    """Town planes outlined, each in its kind's colour."""
+def add_town(lines, planes, transform=lambda p: p, plain=False):
+    """Town planes outlined, each in its kind's colour - or, `plain`, in the
+    two the level editor draws collision in."""
     for plane in planes:
-        rgb = TOWN_COLORS.get(plane.kind, TOWN_COLORS["other"])
+        rgb = (TOWN_COLORS.get(plane.kind, TOWN_COLORS["other"]) if not plain
+               else PLAIN_WALL if plane.kind == "wall" else PLAIN_SURFACE)
         corners = [transform(p) for p in plane.outline()]
         for k, corner in enumerate(corners):
             lines.line(corner, corners[(k + 1) % len(corners)], rgb)

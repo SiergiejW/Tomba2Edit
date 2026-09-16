@@ -60,9 +60,12 @@ PART_PAD = 6.0
 # Half the width a stretched sprite quad gets when its corners meet in a
 # line - kind 0x14's other branch writes them 4 either side.
 ROPE_HALF_WIDTH = 4.0
-# The hourglass drawn at the top right of anything gated or timed, in
-# pixels - GL triangles, not a QPainter, which left its own state behind.
-BADGE_WIDTH, BADGE_HEIGHT = 8.0, 11.0
+# The hourglass drawn on anything gated or timed, in pixels - GL triangles,
+# not a QPainter, which left its own state behind. Set inside the thing it
+# marks rather than off its corner: BADGE_REACH of the way from the middle
+# of it towards the top right.
+BADGE_WIDTH, BADGE_HEIGHT = 6.0, 8.0
+BADGE_REACH = 0.4
 BADGE_COLOR = (1.0, 0.84, 0.0)
 BADGE_OUTLINE = (0.0, 0.0, 0.0)
 
@@ -121,10 +124,11 @@ MARKER_PICK_PIXELS = 18.0
 FIELD_OF_VIEW = 45.0
 
 # How many degrees of looking up and down the background's full height
-# covers. With the 45-degree field of view above, a screenful is a
-# quarter of the picture, so the horizon sits in the middle of it and
-# there is as much sky above as ground below.
-BACKGROUND_PITCH_SPAN = 180.0
+# covers: the horizon sits in the middle of it, with as much sky above as
+# ground below. It is also how big the picture reads - the 45-degree field
+# of view above shows this fraction of it - so FEWER degrees puts more of
+# the picture on screen and smaller texels on it.
+BACKGROUND_PITCH_SPAN = 120.0
 
 CONTROLS = ("Left-click: select | click it again: the part under the "
             "cursor | F: frame it\n" + CONTROLS_HINT)
@@ -200,12 +204,24 @@ class LevelViewer(SMSTViewer):
         self.sprite_action.toggled.connect(self._toggle_sprites)
         self.toolbar.insertAction(self.background_action, self.sprite_action)
 
-        self.show_collision = False
+        self.show_badges = True
+        self.badge_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+            "Timed", self)
+        self.badge_action.setCheckable(True)
+        self.badge_action.setChecked(True)
+        self.badge_action.setToolTip(
+            "Mark everything gated or timed with an hourglass - what only "
+            "stands once an event is done, or only in one phase of a scene.")
+        self.badge_action.toggled.connect(self._toggle_badges)
+        self.toolbar.insertAction(self.sprite_action, self.badge_action)
+
+        self.show_collision = True
         self.collision_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon),
             "Collision", self)
         self.collision_action.setCheckable(True)
-        self.collision_action.setChecked(False)
+        self.collision_action.setChecked(True)
         self.collision_action.setToolTip(
             "Draw the area's collision as lines.\n\n"
             "A SCLD area shows each plane's surface samples and the stacks "
@@ -373,6 +389,10 @@ class LevelViewer(SMSTViewer):
         self.rebuild_markers()
         self.rebuild_code_lines()
 
+    def _toggle_badges(self, checked):
+        self.show_badges = checked
+        self.update()
+
     def _toggle_collision(self, checked):
         self.show_collision = checked
         self._rebuild_collision()
@@ -442,6 +462,35 @@ class LevelViewer(SMSTViewer):
                 high = np.maximum(high, found[scene][1])
             found[scene] = (low, high)
         return found
+
+    def view_pivot(self):
+        """What the middle of the view is looking at, in GL units, or None
+        where nothing is drawn there: the depth buffer read back and put
+        through the inverse of the matrix it was drawn with. A middle-drag
+        orbits this, so it circles the surface on screen."""
+        if not self.isValid():
+            return None
+        self.makeCurrent()
+        try:
+            ratio = self.devicePixelRatioF()
+            x = int(max(self.width(), 1) * ratio) // 2
+            y = int(max(self.height(), 1) * ratio) // 2
+            depth = GL.glReadPixels(x, y, 1, 1, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+        except Exception:
+            return None
+        finally:
+            self.doneCurrent()
+        depth = float(np.asarray(depth).reshape(-1)[0])
+        if not 0.0 < depth < 1.0:
+            return None                 # sky, or nothing drawn yet
+        inverted = self._model_view_projection().inverted()
+        matrix, ok = inverted if isinstance(inverted, tuple) else (inverted, True)
+        if not ok:
+            return None
+        point = matrix.map(QVector4D(0.0, 0.0, depth * 2.0 - 1.0, 1.0))
+        if not point.w():
+            return None
+        return (point.x() / point.w(), point.y() / point.w(), point.z() / point.w())
 
     def enterEvent(self, event):
         # Keys go where the mouse is, so F frames a selection picked in the
@@ -1222,6 +1271,19 @@ class LevelViewer(SMSTViewer):
               -math.sin(v) * math.cos(h))
         return right, up
 
+    def _draw_between_passes(self):
+        """The pickups, after the room's solid faces and before its blended
+        ones: an apple inside AREA_09's ice is behind the ice, the way the
+        game draws it, rather than floating in front of it."""
+        if not (self.show_sprites and self.sprite_count):
+            return
+        self.vao.release()
+        self.draw_sprites()
+        if self.shader_program.bind():
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture or 0)
+            self.vao.bind()
+
     def draw_sprites(self):
         """The pickups, after the room so they sort against it."""
         self._sync_sprites()
@@ -1307,8 +1369,9 @@ class LevelViewer(SMSTViewer):
         GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB, width, height, 0,
                         GL.GL_RGB, GL.GL_UNSIGNED_BYTE,
                         np.ascontiguousarray(image).tobytes())
-        for name, value in ((GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR),
-                            (GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR),
+        for name, value in (# The picture is PSX art: its pixels stay pixels.
+                            (GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST),
+                            (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
                             # Repeats sideways as the camera turns;
                             # clamped up and down, since the sky does
                             # not start again below the ground.
@@ -1404,7 +1467,7 @@ class LevelViewer(SMSTViewer):
         screen, drawn in GL with the line shader. A QPainter over the widget
         left its depth mask off, so the next frame's depth never cleared
         and the whole level went see-through."""
-        badges = self._badges() if self.scene is not None else ()
+        badges = self._badges() if self.show_badges and self.scene is not None else ()
         if not badges:
             return
         mvp = np.array(self._model_view_projection().data(),
@@ -1423,8 +1486,11 @@ class LevelViewer(SMSTViewer):
                     or ndc[:, 1].max() < -1 or ndc[:, 1].min() > 1
                     or ndc[:, 2].min() > 1):
                 continue
-            x = (min(ndc[:, 0].max(), 1.0) + 1) * 0.5 * width + 2
-            y = (min(ndc[:, 1].max(), 1.0) + 1) * 0.5 * height + BADGE_HEIGHT / 2
+            middle = ndc.mean(axis=0)
+            x = ((middle[0] + (min(ndc[:, 0].max(), 1.0) - middle[0]) * BADGE_REACH)
+                 + 1) * 0.5 * width
+            y = ((middle[1] + (min(ndc[:, 1].max(), 1.0) - middle[1]) * BADGE_REACH)
+                 + 1) * 0.5 * height + BADGE_HEIGHT / 2
             triangles, outline = hourglass(min(max(x, 1.0), width - BADGE_WIDTH - 1),
                                            min(max(y, BADGE_HEIGHT + 1), height - 1))
             fill.extend(triangles)
@@ -1460,7 +1526,9 @@ class LevelViewer(SMSTViewer):
     def _paint_level(self):
         self._sync_lines()
         super().paintGL()
-        self.draw_sprites()
+        if not (self.model_data and self.draw_ranges):
+            # Nothing was drawn, so the mid-pass hook never ran.
+            self.draw_sprites()
         collision = self.show_collision and self.collision.has_lines()
         lines = self.show_lines and (self.code_line_count or self.code_blend_count)
         if not (self.marker_count or self.selection_count or collision or lines):
