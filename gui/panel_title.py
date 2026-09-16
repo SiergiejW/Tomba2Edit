@@ -8,8 +8,9 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 
 def make_panel_title(text):
+    # Styled by gui/theme.py under PANEL_TITLE, so a theme switch reaches it.
     label = QLabel(text)
-    label.setStyleSheet("color: #b8b8b8; font-size: 11px; padding: 2px 4px;")
+    label.setObjectName("panelTitle")
     return label
 
 

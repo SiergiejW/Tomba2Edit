@@ -96,19 +96,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        self.toolbar.setStyleSheet("""
-            QToolButton {
-                background-color: rgba(255, 255, 255, 128);  /* 50% opaque white */
-                color: black;
-                border: none;
-                padding: 5px;
-                margin: 2px;
-                border-radius: 4px;
-            }
-            QToolButton:hover {
-                background-color: rgba(255, 255, 255, 180);
-            }
-        """)
+        self.toolbar.setObjectName("viewerToolbar")
 
         # Texture mode button
         self.texture_mode_enabled = True  # Default to textured mode
@@ -163,30 +151,12 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         # Stats overlay - tri/quad count (static per model) and live camera
         # position, updated once per frame in paintGL().
         self.stats_label = QLabel(self)
-        self.stats_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(0, 0, 0, 128);
-                color: white;
-                padding: 4px 6px;
-                border-radius: 4px;
-                font-family: Consolas, monospace;
-                font-size: 11px;
-            }
-        """)
+        self.stats_label.setObjectName("viewerOverlay")
         self.stats_label.raise_()
 
         # Controls hint overlay - static, bottom-right corner.
         self.controls_label = QLabel(self)
-        self.controls_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(0, 0, 0, 128);
-                color: white;
-                padding: 4px 6px;
-                border-radius: 4px;
-                font-family: Consolas, monospace;
-                font-size: 11px;
-            }
-        """)
+        self.controls_label.setObjectName("viewerOverlay")
         self.controls_label.setText("Left-click: select polygon\n" + CONTROLS_HINT)
         self.controls_label.raise_()
 

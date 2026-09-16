@@ -226,19 +226,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         self.toolbar = QToolBar(self)
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        self.toolbar.setStyleSheet("""
-            QToolButton {
-                background-color: rgba(255, 255, 255, 128);
-                color: black;
-                border: none;
-                padding: 5px;
-                margin: 2px;
-                border-radius: 4px;
-            }
-            QToolButton:hover {
-                background-color: rgba(255, 255, 255, 180);
-            }
-        """)
+        self.toolbar.setObjectName("viewerToolbar")
 
         self.texture_mode_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton),
@@ -299,20 +287,11 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.toolbar.addAction(self.export_action)
 
         self.stats_label = QLabel(self)
-        self.stats_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(0, 0, 0, 128);
-                color: white;
-                padding: 4px 6px;
-                border-radius: 4px;
-                font-family: Consolas, monospace;
-                font-size: 11px;
-            }
-        """)
+        self.stats_label.setObjectName("viewerOverlay")
         self.stats_label.raise_()
 
         self.controls_label = QLabel(self)
-        self.controls_label.setStyleSheet(self.stats_label.styleSheet())
+        self.controls_label.setObjectName("viewerOverlay")
         self.controls_label.setText(CONTROLS_HINT)
         self.controls_label.raise_()
 

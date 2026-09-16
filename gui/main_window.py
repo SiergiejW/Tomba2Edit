@@ -512,9 +512,8 @@ class MainWindow(QMainWindow):
         current_theme = self._theme_settings.value("theme", theme.DEFAULT_THEME)
         if current_theme not in theme.THEMES:
             current_theme = theme.DEFAULT_THEME  # stale value from an older theme key set
-        theme_labels = {"dark": "Dark (default)", "bright": "Bright"}
         for theme_name in theme.THEMES:
-            action = QAction(theme_labels[theme_name], self, checkable=True)
+            action = QAction(theme.LABELS[theme_name], self, checkable=True)
             action.setChecked(theme_name == current_theme)
             action.triggered.connect(lambda checked, t=theme_name: self._apply_and_save_theme(t))
             theme_group.addAction(action)

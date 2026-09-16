@@ -132,8 +132,6 @@ FIELD_OF_VIEW = 45.0
 # area's texels come out the same size.
 BACKGROUND_PITCH_SPAN = 145.0
 BACKGROUND_ROWS = 1152
-# A background row blacker than this is unfilled VRAM, not art.
-UNFILLED_ROW = 0.5
 
 CONTROLS = ("Left-click: select | click it again: the part under the "
             "cursor | F: frame it\n" + CONTROLS_HINT)
@@ -351,16 +349,8 @@ class LevelViewer(SMSTViewer):
 
     def set_background(self, image):
         """The picture to draw behind the room, as an (h, w, 3) uint8
-        array, or None for none. Mostly-black rows at its top and bottom
-        are VRAM the picture never filled (AREA_0A's); they take the nearest
-        painted row, so looking far up or down shows sky and ground."""
-        if image is not None:
-            black = (image.reshape(image.shape[0], -1, image.shape[2]).sum(axis=2) == 0)
-            painted = np.flatnonzero(black.mean(axis=1) < UNFILLED_ROW)
-            if len(painted):
-                image = image.copy()
-                image[:painted[0]] = image[painted[0]]
-                image[painted[-1] + 1:] = image[painted[-1]]
+        array, or None for none. Drawn as it is: AREA_0A's black above and
+        below its trees is the art fading out, not a gap to fill."""
         self._background_image = image
         self._background_dirty = True
         self.update()

@@ -32,7 +32,8 @@ from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
     ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
-    area_files, instance_key, room_entries)
+    area_files, instance_key, marker_color, room_entries)
+from gui.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
@@ -126,6 +127,9 @@ class LevelEditorPanel(QWidget):
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.table.setItemDelegateForColumn(0, DotDelegate(self.table))
+        self.table.setShowGrid(False)
+        self.table.setMouseTracking(True)
 
         self.details = QLabel("Click something in the view, or pick a row.", self)
         self.details.setWordWrap(True)
@@ -514,6 +518,8 @@ class LevelEditorPanel(QWidget):
             name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             name.setCheckState(Qt.CheckState.Checked)
             name.setData(ROLE, instance.index)
+            # The modern theme's dot: the class's marker colour in the view.
+            name.setData(DOT_COLOR, marker_color(instance.marker_class))
             self.table.setItem(row, 0, name)
             self._fill_row(row, instance)
         self._filling = False
