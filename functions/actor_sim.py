@@ -1550,33 +1550,48 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=(), finished=()):
+             chests=(), finished=(), log=None):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
-    area with no placement records is its spawner's scene 0."""
+    area with no placement records is its spawner's scene 0.
+
+    `log(message, actors)` hears each stage as it starts and what it stood up."""
+    say = log or (lambda _message, _actors=None: None)
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
                   purified=purified, finished=finished)
     world.start_workers()
+    say(f"placing {len(records)} record(s)")
     for record in records:
         world.place(record, units)
     if not records and spawner:
+        say("no records: entering scene 0")
         world.enter_scene(spawner, area_number, 0)
+    say(f"running the area, {frames} frame(s)")
     world.run(frames)
+    say("the area stood up", world.actors)
     # An area's controller stands part of the chest table up itself; the
     # rest are stood up here, the way f_SpawnPersistentPickupPlacementTable does.
     missing = world.tag_chests(chests)
     placed = {a.address for a in (world.place_chest(p) for p in missing) if a is not None}
     if placed:
+        say(f"running {len(placed)} chest(s) the area didn't place")
         world.run(frames, only=lambda a: a.address in placed, workers=False)
     if records and spawner:
-        world.spawn_area_gated(spawner, frames)
+        say("running scene 0's gated actors")
+        gated = world.spawn_area_gated(spawner, frames)
+        say("gated", gated)
     world.harvest()
     if spawner:
+        say("running every room")
         world.run_rooms(spawner, area_number, frames)
+        for scene, actors in sorted(world.rooms.items()):
+            say(f"room {scene}", actors)
+    say("looking for event actors")
     # An area with no table (the intro) is built round the origin by code.
     with open(overlay_path, "rb") as f:
         world.spawn_events(installed_handlers(f.read()), frames,
                            reach=UNPLACED if records or spawner else 1)
+    say(f"{len(world.events)} event actor(s)", [a for _h, tree in world.events for a in tree])
     return world
 
 

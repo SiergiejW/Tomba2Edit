@@ -910,7 +910,8 @@ class LevelScene:
                 spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS,
                 chests=[p for p in self.pickups if p.chest],
                 finished=(actor_sim.progress_bytes(self.overlay_data)
-                          if self.progress == EVENTS_DONE and self.overlay_data else ()))
+                          if self.progress == EVENTS_DONE and self.overlay_data else ()),
+                log=self._log_actors)
         except Exception as e:
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None

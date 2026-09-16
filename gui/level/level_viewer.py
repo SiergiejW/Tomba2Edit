@@ -126,9 +126,14 @@ FIELD_OF_VIEW = 45.0
 # How many degrees of looking up and down the background's full height
 # covers: the horizon sits in the middle of it, with as much sky above as
 # ground below. It is also how big the picture reads - the 45-degree field
-# of view above shows this fraction of it - so FEWER degrees puts more of
-# the picture on screen and smaller texels on it.
-BACKGROUND_PITCH_SPAN = 120.0
+# of view above shows this fraction of it - so MORE degrees puts less of
+# the picture on screen and bigger texels on it. Given for a strip
+# BACKGROUND_ROWS tall; a shorter one covers proportionally less, so every
+# area's texels come out the same size.
+BACKGROUND_PITCH_SPAN = 145.0
+BACKGROUND_ROWS = 1152
+# A background row blacker than this is unfilled VRAM, not art.
+UNFILLED_ROW = 0.5
 
 CONTROLS = ("Left-click: select | click it again: the part under the "
             "cursor | F: frame it\n" + CONTROLS_HINT)
@@ -346,7 +351,16 @@ class LevelViewer(SMSTViewer):
 
     def set_background(self, image):
         """The picture to draw behind the room, as an (h, w, 3) uint8
-        array, or None for none."""
+        array, or None for none. Mostly-black rows at its top and bottom
+        are VRAM the picture never filled (AREA_0A's); they take the nearest
+        painted row, so looking far up or down shows sky and ground."""
+        if image is not None:
+            black = (image.reshape(image.shape[0], -1, image.shape[2]).sum(axis=2) == 0)
+            painted = np.flatnonzero(black.mean(axis=1) < UNFILLED_ROW)
+            if len(painted):
+                image = image.copy()
+                image[:painted[0]] = image[painted[0]]
+                image[painted[-1] + 1:] = image[painted[-1]]
         self._background_image = image
         self._background_dirty = True
         self.update()
@@ -1376,7 +1390,7 @@ class LevelViewer(SMSTViewer):
         # sideways as the camera turns. How wide that makes one copy
         # follows from the picture's own shape, which is what keeps the
         # texels square instead of stretched.
-        vertical = BACKGROUND_PITCH_SPAN
+        vertical = BACKGROUND_PITCH_SPAN * height / BACKGROUND_ROWS
         horizontal = vertical * width / max(height, 1)
         aspect = self.width() / max(self.height(), 1)
         half = math.tan(math.radians(FIELD_OF_VIEW) / 2)
