@@ -463,35 +463,6 @@ class LevelViewer(SMSTViewer):
             found[scene] = (low, high)
         return found
 
-    def view_pivot(self):
-        """What the middle of the view is looking at, in GL units, or None
-        where nothing is drawn there: the depth buffer read back and put
-        through the inverse of the matrix it was drawn with. A middle-drag
-        orbits this, so it circles the surface on screen."""
-        if not self.isValid():
-            return None
-        self.makeCurrent()
-        try:
-            ratio = self.devicePixelRatioF()
-            x = int(max(self.width(), 1) * ratio) // 2
-            y = int(max(self.height(), 1) * ratio) // 2
-            depth = GL.glReadPixels(x, y, 1, 1, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
-        except Exception:
-            return None
-        finally:
-            self.doneCurrent()
-        depth = float(np.asarray(depth).reshape(-1)[0])
-        if not 0.0 < depth < 1.0:
-            return None                 # sky, or nothing drawn yet
-        inverted = self._model_view_projection().inverted()
-        matrix, ok = inverted if isinstance(inverted, tuple) else (inverted, True)
-        if not ok:
-            return None
-        point = matrix.map(QVector4D(0.0, 0.0, depth * 2.0 - 1.0, 1.0))
-        if not point.w():
-            return None
-        return (point.x() / point.w(), point.y() / point.w(), point.z() / point.w())
-
     def enterEvent(self, event):
         # Keys go where the mouse is, so F frames a selection picked in the
         # list without clicking the view first.

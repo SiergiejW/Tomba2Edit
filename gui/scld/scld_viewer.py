@@ -546,6 +546,19 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.stats_label.adjustSize()
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
 
+    def _model_view_projection(self):
+        # Clip planes off the file's own size - see MDATViewer.paintGL.
+        radius = self.scene_radius or 5.0
+        projection = QMatrix4x4()
+        projection.perspective(45.0, self.width() / max(self.height(), 1),
+                               max(0.01, radius / 500), max(500.0, radius * 10))
+        view = QMatrix4x4()
+        view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
+        view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
+        view.translate(self.camera_controls.camera_x, self.camera_controls.camera_y,
+                       self.camera_controls.camera_z)
+        return projection * view
+
     def paintGL(self):
         GL.glClearColor(*theme.view_background((0.08, 0.08, 0.1)), 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
@@ -562,16 +575,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
         self._update_stats_label()
 
-        projection = QMatrix4x4()
-        # Clip planes off the file's own size - see MDATViewer.paintGL.
-        radius = self.scene_radius or 5.0
-        projection.perspective(45.0, self.width() / max(self.height(), 1),
-                               max(0.01, radius / 500), max(500.0, radius * 10))
-        view = QMatrix4x4()
-        view.rotate(self.camera_controls.camera_angle_v, 1.0, 0.0, 0.0)
-        view.rotate(self.camera_controls.camera_angle_h, 0.0, 1.0, 0.0)
-        view.translate(self.camera_controls.camera_x, self.camera_controls.camera_y, self.camera_controls.camera_z)
-        mvp = projection * view
+        mvp = self._model_view_projection()
 
         if not self.shader_program.bind():
             return

@@ -56,8 +56,13 @@ MODEL_LIFT = 0.15
 
 # One wheel notch moves the camera this much of the scene radius, so
 # framed at frame()'s default margin it takes about fifteen notches to
-# travel from the camera to the model.
+# travel from the camera to the model. It follows the freecam speed: speed
+# up while looking and the wheel strides further too.
 ZOOM_FRACTION = 0.10
+
+# A middle-drag's pivot sits at least this many wheel notches ahead, so a
+# floor right under the camera doesn't make orbiting a look-around.
+ORBIT_REACH = 4.0
 
 # How far WASD travels per frame, as a fraction of the scene radius.
 SPEED_FRACTION = 0.02
@@ -107,6 +112,38 @@ def scene_of(points):
     low, high = array.min(axis=0), array.max(axis=0)
     centre = tuple(float(v) for v in (low + high) / 2)
     return centre, float(np.linalg.norm(high - low)) / 2
+
+
+def depth_pivot(widget):
+    """What the middle of a view is looking at, in its drawing units, or
+    None where nothing is drawn: the depth buffer read back through the
+    inverse of the widget's _model_view_projection()."""
+    mvp = getattr(widget, "_model_view_projection", None)
+    if not callable(mvp) or not widget.isValid():
+        return None
+    from OpenGL import GL
+    from PyQt6.QtGui import QVector4D
+    widget.makeCurrent()
+    try:
+        ratio = widget.devicePixelRatioF()
+        x = int(max(widget.width(), 1) * ratio) // 2
+        y = int(max(widget.height(), 1) * ratio) // 2
+        depth = GL.glReadPixels(x, y, 1, 1, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+    except Exception:
+        return None
+    finally:
+        widget.doneCurrent()
+    depth = float(np.asarray(depth).reshape(-1)[0])
+    if not 0.0 < depth < 1.0:
+        return None                     # sky, or nothing drawn yet
+    inverted = mvp().inverted()
+    matrix, ok = inverted if isinstance(inverted, tuple) else (inverted, True)
+    if not ok:
+        return None
+    point = matrix.map(QVector4D(0.0, 0.0, depth * 2.0 - 1.0, 1.0))
+    if not point.w():
+        return None
+    return (point.x() / point.w(), point.y() / point.w(), point.z() / point.w())
 
 
 class CameraControls:
@@ -178,7 +215,7 @@ class CameraControls:
 
     @property
     def zoom_step(self):
-        return self.scene_radius * ZOOM_FRACTION
+        return self.camera_speed * ZOOM_FRACTION / SPEED_FRACTION
 
     def frame(self, centre, radius, heading=MODEL_HEADING,
               pitch=MODEL_PITCH, margin=2.5, lift=0.0):
@@ -330,16 +367,14 @@ class CameraControls:
         if self.camera_mode:
             return                    # the freecam has the mouse
         self.orbit_mode = "pan" if panning else "orbit"
-        # What the middle of the view is looking at, when the view can say
-        # (LevelViewer.view_pivot reads it back out of the depth buffer) -
-        # so a drag circles the thing on screen, not a point in mid air.
-        seen = getattr(self.widget, "view_pivot", None)
-        point = seen() if callable(seen) else None
+        # What the middle of the view is looking at, out of the depth buffer,
+        # so a drag circles the thing on screen - pushed out to ORBIT_REACH
+        # when that is right in front of the camera.
+        point = depth_pivot(self.widget)
         if point is not None:
             self.orbit_distance = max(math.dist(self._eye(), point),
+                                      self.zoom_step * ORBIT_REACH,
                                       self.scene_radius * MIN_ORBIT)
-            self._orbit_pivot = point
-            return
         self._orbit_pivot = self.orbit_pivot()
         self.widget.setCursor(QCursor(
             Qt.CursorShape.SizeAllCursor if panning
