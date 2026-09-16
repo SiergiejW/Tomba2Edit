@@ -38,6 +38,8 @@ import math
 import os
 import re
 import struct
+import sys
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -55,6 +57,7 @@ from functions import environment_meshes
 from functions import object_sprites
 from functions import pickup_art
 from functions import psx_vram
+from functions import scene_cache
 from functions import placement as placement_module
 from gui.smst.smst_parser import parse_smst
 
@@ -132,6 +135,12 @@ DISCARDED_NOTE = ("its code destroys it before any frame draws it - not in the "
 # Rows of the two runs this close, in world units, are the same row; an
 # assembly moved less than MOVED has not moved; a row further than
 # MERGE_REACH outside every row of the first run stands nowhere real.
+# A load slower than this is worth keeping on disc - see functions/scene_cache.py.
+CACHE_WORTH = 1.0
+# The two runs "Both" needs share nothing, so the events-done one is given a
+# process of its own (gui/level/done_worker.py) and the fresh one runs here
+# meanwhile. Longer than this and it is built here instead.
+DONE_WAIT = 180.0
 MERGE_GRID = 16.0
 MOVED = 128.0
 MERGE_REACH = 2000.0
@@ -614,6 +623,21 @@ def _bounds(vertices):
     return (low[0], high[0], low[1], high[1], low[2], high[2])
 
 
+def _start_done(dat_path, idx_path, chunk_index, overlay_path, exe_path):
+    """Start the events-done run beside this one - see gui/level/done_worker.py.
+    It leaves its scene in the cache; None if it could not be started."""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        return subprocess.Popen(
+            [sys.executable, "-m", "gui.level.done_worker", dat_path, idx_path,
+             str(chunk_index), overlay_path, exe_path],
+            cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError:
+        return None
+
+
 class LevelScene:
     """Everything one area draws, and the instances it is made of."""
 
@@ -687,6 +711,19 @@ class LevelScene:
         self.exe_path = exe_path
         self.progress = progress
 
+        # The same area, built from the same disc and the same code, is the
+        # same scene - functions/scene_cache.py keeps it.
+        name = scene_cache.key(dat_path, idx_path, chunk_index, overlay_path or "",
+                               exe_path or "", progress)
+        kept = scene_cache.read(name)
+        if kept is not None:
+            self.__dict__.update(kept)
+            return self
+        started = time.perf_counter()
+        done_run = None
+        if progress == BOTH and overlay_path and exe_path:
+            done_run = _start_done(dat_path, idx_path, chunk_index, overlay_path, exe_path)
+
         dat_start, files = area_files(idx_path, chunk_index)
         self.dat_start = dat_start
         self.dat_end = dat_start + max((o + s for _i, _f, o, s in files),
@@ -755,9 +792,19 @@ class LevelScene:
             self.world = self._simulate(idx_path)
 
         self._build_instances()
+        if done_run is not None:
+            try:
+                done_run.wait(timeout=DONE_WAIT)
+            except Exception:
+                done_run.kill()
         if progress == BOTH and self.world is not None:
+            # Built beside this one, or built here now - either way it is the
+            # same scene, and the cache has it if the run finished.
             self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
                                           overlay_path, exe_path, EVENTS_DONE))
+        if time.perf_counter() - started > CACHE_WORTH:
+            scene_cache.write(name, {k: v for k, v in self.__dict__.items()
+                                     if k != "world"})
         return self
 
     def _merge(self, done):

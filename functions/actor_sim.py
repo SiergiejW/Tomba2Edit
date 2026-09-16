@@ -964,8 +964,10 @@ class World:
         end the spawner walks garbage until its budget runs out - most of a
         load's instructions, before this."""
         read = self.mem.read
+        # A table of scene lists: several of its first entries read as lists.
+        # Its scene 0 may not (A05's starts at 1), so count rather than require.
         tables = [t for t in self._spawner_tables(spawner)
-                  if self._list_shaped(read(t, 4)) and self._list_shaped(read(t + 4, 4))]
+                  if sum(self._list_shaped(read(t + k * 4, 4)) for k in range(8)) >= 2]
         return not tables or any(self._list_shaped(read(t + scene * 4, 4)) for t in tables)
 
     def _list_shaped(self, pointer):

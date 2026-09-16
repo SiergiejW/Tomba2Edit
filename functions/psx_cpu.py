@@ -12,6 +12,14 @@ and ApplyRotMatrix are GTE code, and a part's world matrix comes out of
 them. Register layout and command maths follow psx-spx.
 """
 
+import struct
+
+# Loads and stores that land in RAM are read and written straight out of the
+# bytearray in run(), which is most of what the interpreter does.
+_U32 = struct.Struct("<I")
+_U16 = struct.Struct("<H")
+_S16 = struct.Struct("<h")
+
 RAM_SIZE = 0x800000                 # 8 MB, so synthetic loads can sit past 2
 SCRATCH = 0x1F800000
 SCRATCH_SIZE = 0x400
@@ -200,8 +208,10 @@ class GTE:
                    (d1 * i2 - d2 * i1) >> sf]
             self._set_mac_ir(mac, lm)
         elif cmd in (0x01, 0x30):                         # RTPS / RTPT
+            # One matrix and translation for all three vertices.
+            m, tr = self._matrix(0), self._translation(0)
             for v in ((0,) if cmd == 0x01 else (0, 1, 2)):
-                self._rtp(v, sf, lm)
+                self._rtp(v, sf, lm, m, tr)
         elif cmd == 0x06 and self.capture is not None:
             # Named screen positions carry no winding: every face faces
             # the camera, and none is too small to draw.
@@ -226,12 +236,13 @@ class GTE:
         else:                                             # colour ops
             self._push_rgb()
 
-    def _rtp(self, v, sf, lm):
+    def _rtp(self, v, sf, lm, m=None, tr=None):
         d, c = self.d, self.c
-        m = self._matrix(0)
+        if m is None:
+            m, tr = self._matrix(0), self._translation(0)
         vec = self._vector(v)
-        tr = self._translation(0)
-        exact = [tr[k] * 0x1000 + sum(m[k][j] * vec[j] for j in range(3))
+        x, y, z = vec
+        exact = [tr[k] * 0x1000 + m[k][0] * x + m[k][1] * y + m[k][2] * z
                  for k in range(3)]
         mac = [value >> sf for value in exact]
         self._set_mac_ir(mac, lm)
@@ -288,7 +299,7 @@ class CPU:
 
     def run(self, pc, budget):
         r, mem, gte, hooks, cache = self.r, self.mem, self.gte, self.hooks, self._cache
-        read, write = mem.read, mem.write
+        read, write, ram = mem.read, mem.write, mem.ram
         npc = (pc + 4) & MASK
         steps = 0
         while True:
@@ -309,7 +320,7 @@ class CPU:
                 if (pc & 0x1FFFFFFF) >= RAM_SIZE or pc & 3:
                     self.steps += steps
                     raise EmuError(f"jumped to 0x{pc:08X}")
-                word = read(pc, 4)
+                word = _U32.unpack_from(ram, pc & 0x1FFFFFFF)[0]
                 ins = (word >> 26, (word >> 21) & 31, (word >> 16) & 31,
                        (word >> 11) & 31, (word >> 6) & 31, word & 63,
                        word & 0xFFFF, s16(word), word & 0x3FFFFFF, word)
@@ -412,10 +423,16 @@ class CPU:
                 if rt:
                     r[rt] = (r[rs] + simm) & MASK
             elif op == 35:
+                a = (r[rs] + simm) & 0x1FFFFFFF
                 if rt:
-                    r[rt] = read((r[rs] + simm) & MASK, 4)
+                    r[rt] = (_U32.unpack_from(ram, a)[0] if a + 4 <= RAM_SIZE
+                             else read((r[rs] + simm) & MASK, 4))
             elif op == 43:
-                write((r[rs] + simm) & MASK, 4, r[rt])
+                a = (r[rs] + simm) & 0x1FFFFFFF
+                if a + 4 <= RAM_SIZE:
+                    _U32.pack_into(ram, a, r[rt])
+                else:
+                    write((r[rs] + simm) & MASK, 4, r[rt])
             elif op == 15:
                 if rt:
                     r[rt] = (imm << 16) & MASK
@@ -431,22 +448,36 @@ class CPU:
             elif op == 2:
                 npc = (pc & 0xF0000000) | (target << 2)
             elif op == 36:
+                a = (r[rs] + simm) & 0x1FFFFFFF
                 if rt:
-                    r[rt] = read((r[rs] + simm) & MASK, 1)
+                    r[rt] = ram[a] if a < RAM_SIZE else read((r[rs] + simm) & MASK, 1)
             elif op == 33:
+                a = (r[rs] + simm) & 0x1FFFFFFF
                 if rt:
-                    r[rt] = s16(read((r[rs] + simm) & MASK, 2)) & MASK
+                    r[rt] = (_S16.unpack_from(ram, a)[0] & MASK if a + 2 <= RAM_SIZE
+                             else s16(read((r[rs] + simm) & MASK, 2)) & MASK)
             elif op == 37:
+                a = (r[rs] + simm) & 0x1FFFFFFF
                 if rt:
-                    r[rt] = read((r[rs] + simm) & MASK, 2)
+                    r[rt] = (_U16.unpack_from(ram, a)[0] if a + 2 <= RAM_SIZE
+                             else read((r[rs] + simm) & MASK, 2))
             elif op == 32:
+                a = (r[rs] + simm) & 0x1FFFFFFF
                 if rt:
-                    b = read((r[rs] + simm) & MASK, 1)
+                    b = ram[a] if a < RAM_SIZE else read((r[rs] + simm) & MASK, 1)
                     r[rt] = (b - 0x100 if b & 0x80 else b) & MASK
             elif op == 41:
-                write((r[rs] + simm) & MASK, 2, r[rt])
+                a = (r[rs] + simm) & 0x1FFFFFFF
+                if a + 2 <= RAM_SIZE:
+                    _U16.pack_into(ram, a, r[rt] & 0xFFFF)
+                else:
+                    write((r[rs] + simm) & MASK, 2, r[rt])
             elif op == 40:
-                write((r[rs] + simm) & MASK, 1, r[rt])
+                a = (r[rs] + simm) & 0x1FFFFFFF
+                if a < RAM_SIZE:
+                    ram[a] = r[rt] & 0xFF
+                else:
+                    write((r[rs] + simm) & MASK, 1, r[rt])
             elif op == 12:
                 if rt:
                     r[rt] = r[rs] & imm
