@@ -1084,6 +1084,9 @@ class World:
         """Scene 0's records a fresh game skips - cursed Donglin's ghost
         guardians - stood up gated beside the area's own actors, and run."""
         controller = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
+        # Shown beside actors the game never holds at once, so they count
+        # against pools of their own rather than the full area's.
+        self.pool_used = collections.Counter()
         gated = self._spawn_gated(spawner, controller, 0, list(self.actors),
                                   budget, moved=True)
         chosen = {a.address for a in gated}
@@ -1101,6 +1104,9 @@ class World:
             if not self._scene_listed(spawner, scene):
                 continue
             self.restore(base)
+            # The area's actors are gone once a room is entered, and their
+            # records with them: the room gets the pools to itself.
+            self.pool_used = collections.Counter()
             if self.enter_scene(spawner, area_number, scene) is None:
                 continue
             self.run(frames, only=lambda a, s=scene: a.scene == s,
@@ -1125,6 +1131,7 @@ class World:
         for handler in sorted(set(handlers) - seen):
             self.restore(base)
             self.actors, self.by_address, self.running = [], {}, None
+            self.pool_used = collections.Counter()
             address = self._alloc(ACTOR_SIZE + MAX_PARTS * 4)
             self.mem.load(address, bytes(ACTOR_SIZE + MAX_PARTS * 4))
             self.mem.write(address + CALLBACK, 4, handler)

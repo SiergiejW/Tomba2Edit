@@ -1275,6 +1275,8 @@ class LevelViewer(SMSTViewer):
         """The pickups, after the room's solid faces and before its blended
         ones: an apple inside AREA_09's ice is behind the ice, the way the
         game draws it, rather than floating in front of it."""
+        # Upload first: the count is only known once they are.
+        self._sync_sprites()
         if not (self.show_sprites and self.sprite_count):
             return
         self.vao.release()
