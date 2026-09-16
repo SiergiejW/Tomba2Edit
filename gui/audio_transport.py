@@ -51,8 +51,9 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
                              QVBoxLayout, QWidget)
 
 from functions import audio_export
+from gui.transport_icons import set_glyph
 
-KEY = Qt.ItemDataRole.UserRole
+KEY =Qt.ItemDataRole.UserRole
 DESCRIPTION = Qt.ItemDataRole.UserRole + 1
 LOOPS = Qt.ItemDataRole.UserRole + 2
 
@@ -142,13 +143,17 @@ class AudioTransport(QWidget):
         self.lists = []
         self.list = self._make_list(self._extra_columns, source)
 
-        self.play_button = QPushButton("Play")
+        self.play_button = QPushButton()
+        set_glyph(self.play_button, "play")
         self.play_button.clicked.connect(self._toggle)
-        stop = QPushButton("Stop")
+        stop = QPushButton()
+        set_glyph(stop, "stop")
         stop.clicked.connect(self.stop)
-        previous = QPushButton("Prev")
+        previous = QPushButton()
+        set_glyph(previous, "previous")
         previous.clicked.connect(lambda: self.step(-1))
-        following = QPushButton("Next")
+        following = QPushButton()
+        set_glyph(following, "next")
         following.clicked.connect(lambda: self.step(1))
 
         rename = QPushButton("Rename")
@@ -288,6 +293,8 @@ class AudioTransport(QWidget):
         for i in range(table.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
         table.setColumnWidth(0, NAME_COLUMN_WIDTH)
+        # The last column takes what is left, so the list fills its pane.
+        header.setStretchLastSection(True)
         table.cellClicked.connect(lambda _row, _col, t=table: self._use(t))
         table.cellDoubleClicked.connect(
             lambda row, _col, t=table: self._play_from(t, row))
@@ -635,7 +642,7 @@ class AudioTransport(QWidget):
 
     def _state_changed(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
-        self.play_button.setText("Pause" if playing else "Play")
+        set_glyph(self.play_button, "pause" if playing else "play")
 
     def _status_changed(self, status):
         # Advancing to the next row when one finishes is Autoplay's job

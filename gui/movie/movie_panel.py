@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
 from functions import audio_export, psxstr
 from gui import panel_title
 from gui.movie import movie_export
+from gui.transport_icons import set_glyph
 from gui.movie.movie_screen import MovieScreen, clock
 
 # How far ahead of the playhead the worker decodes, and how many frames
@@ -131,6 +132,7 @@ class MoviePanel(QWidget):
             self.list.horizontalHeader().setSectionResizeMode(
                 column, QHeaderView.ResizeMode.Interactive)
         self.list.setColumnWidth(0, 100)
+        self.list.horizontalHeader().setStretchLastSection(True)
         self.list.currentCellChanged.connect(
             lambda row, *_rest: self._chose(row))
 
@@ -158,21 +160,23 @@ class MoviePanel(QWidget):
         self.position = QLabel("-")
         self.position.setMinimumWidth(190)
 
-        self.play_button = QPushButton("Play")
+        self.play_button = QPushButton()
+        set_glyph(self.play_button, "play")
         self.play_button.clicked.connect(self._toggle)
-        stop = QPushButton("Stop")
+        stop = QPushButton()
+        set_glyph(stop, "stop")
         stop.clicked.connect(self.stop)
-        first = QPushButton("|<")
-        first.setToolTip("First frame")
+        first = QPushButton()
+        set_glyph(first, "first")
         first.clicked.connect(lambda: self.show_frame(0))
-        previous = QPushButton("<")
-        previous.setToolTip("Previous frame")
+        previous = QPushButton()
+        set_glyph(previous, "step_back")
         previous.clicked.connect(lambda: self.step(-1))
-        following = QPushButton(">")
-        following.setToolTip("Next frame")
+        following = QPushButton()
+        set_glyph(following, "step_forward")
         following.clicked.connect(lambda: self.step(1))
-        last = QPushButton(">|")
-        last.setToolTip("Last frame")
+        last = QPushButton()
+        set_glyph(last, "last")
         last.clicked.connect(
             lambda: self.show_frame(len(self.movie.frames) - 1)
             if self.movie else None)
@@ -482,14 +486,14 @@ class MoviePanel(QWidget):
             self._clock_frame = self._current
             self._clock.restart()
         self._playing = True
-        self.play_button.setText("Pause")
+        set_glyph(self.play_button, "pause")
         self._ticker.start()
 
     def pause(self):
         self._playing = False
         self._ticker.stop()
         self.player.pause()
-        self.play_button.setText("Play")
+        set_glyph(self.play_button, "play")
 
     def stop(self):
         self._playing = False
@@ -498,7 +502,7 @@ class MoviePanel(QWidget):
         if self._buffer is not None:
             self._buffer.close()
             self._buffer = None
-        self.play_button.setText("Play")
+        set_glyph(self.play_button, "play")
 
     def _start_audio(self, seconds):
         """Start the soundtrack at `seconds`, which is what the picture

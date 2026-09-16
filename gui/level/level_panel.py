@@ -122,8 +122,12 @@ class LevelEditorPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents)
+        # The name takes whatever width the numbers leave, so the list always
+        # fills its pane.
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
@@ -192,13 +196,15 @@ class LevelEditorPanel(QWidget):
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
+        # Area on the left, Progress in the middle, Rooms on the right.
         top.addWidget(QLabel("Area", self))
-        top.addWidget(self.area_box, 1)
+        top.addWidget(self.area_box)
+        top.addStretch(1)
         top.addWidget(QLabel("Progress", self))
         top.addWidget(self.progress_box)
+        top.addStretch(1)
         top.addWidget(QLabel("Rooms", self))
         top.addWidget(self.view_box)
-        top.addStretch(1)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)

@@ -1,36 +1,48 @@
 """
 App-wide visual themes, switchable from Settings > Theme.
 
-- "dark": the platform's default palette, completely unmodified -
-  confirmed against git history to be exactly what this tool looked
-  like before any theme system existed. Default.
-- "bright": the same native style, with an explicit light palette
-  swapped in - a plain light/white look, guaranteed regardless of the
-  system's own dark-mode setting, but otherwise identical to "dark" in
-  every way that isn't color.
-- "modern": a full stylesheet of its own - charcoal panels drawn as
-  rounded cards, one orange accent, pill tabs, small uppercase headers,
-  thin scrollbars - and class-coloured dots for the level editor's rows
-  (gui/dot_delegate.py). Unlike the other two it does change geometry.
+- "modern": charcoal panels drawn as rounded cards, one accent colour, pill
+  tabs, tree lines, thin scrollbars, and class-coloured dots for the level
+  editor's rows (gui/dot_delegate.py). Default.
+- "modern_bright": the same, light.
+- "dark": the platform's default palette, completely unmodified - what
+  this tool looked like before any theme system existed.
+- "bright": the same native style, with an explicit light palette swapped
+  in, otherwise identical to "dark".
 
-Windows' native style renders popup menus (QMenu, used for the
-File/Settings dropdowns) via its own OS dark-mode setting rather than
-Qt's QPalette, so on a system running in Windows dark mode those popups
-stay dark even under "bright". A tiny color-only QSS rule for QMenu
-(no padding/border/geometry changes) forces it to follow the palette
-instead.
+The two modern themes take every colour that isn't grey from ACCENT below:
+change it and the tabs, focus rings, selections, ticks and underlines all
+follow.
+
+Windows' native style renders popup menus (QMenu) via its own OS dark-mode
+setting rather than Qt's QPalette, so on a system running in Windows dark
+mode those popups stay dark even under "bright". A tiny color-only QSS rule
+for QMenu forces it to follow the palette instead.
 
 The 3D views' toolbars and overlay labels, and the panel captions, are
-styled here by object name rather than inline, so switching theme
-restyles them live.
+styled here by object name rather than inline, so switching theme restyles
+them live. Glyphs the stylesheet needs (chevrons, ticks, tree lines,
+splitter grips) are drawn into PNGs when a modern theme is applied - QSS
+can't draw them, and SVG would need the Qt SVG module the build leaves out.
 """
 
-from PyQt6.QtGui import QColor, QPalette
+# ---------------------------------------------------------------------------
+# The modern themes' one colour. Any "#rrggbb": selected tab, focus ring,
+# selection, ticks, the underline on a button that is on.
+ACCENT = "#f28c28"
+# ---------------------------------------------------------------------------
+
+import os
+import tempfile
+
+from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QApplication
 
-THEMES = ("dark", "bright", "modern")
-DEFAULT_THEME = "dark"
-LABELS = {"dark": "Dark (default)", "bright": "Bright", "modern": "Modern"}
+THEMES = ("modern", "modern_bright", "dark", "bright")
+DEFAULT_THEME = "modern"
+LABELS = {"modern": "Modern (default)", "modern_bright": "Modern Bright",
+          "dark": "Dark (classic)", "bright": "Bright (classic)"}
 
 _native_palette = None
 _current_theme = DEFAULT_THEME
@@ -39,18 +51,14 @@ _current_theme = DEFAULT_THEME
 VIEWER_TOOLBAR = "viewerToolbar"
 VIEWER_OVERLAY = "viewerOverlay"
 PANEL_TITLE = "panelTitle"
+# A widget property naming the gui/transport_icons.py glyph it shows, so a
+# theme switch can repaint it in the new colours.
+GLYPH_PROPERTY = "themeGlyph"
 
-# Applied in the two native themes - tightens the native style's unusually
-# wide gap between top-level menu bar entries ("File", "Settings"), and
-# gives them a visible hover/press background (palette(highlight) tracks
-# whichever theme's palette is active, so this one rule works for both).
-# The default (non-hover) state is given the same explicit
-# padding/background here too - leaving it to fall back on the native
-# style's own box model while only :selected/:pressed are styled is what
-# caused the item to change size between its resting and hovered state.
-#
-# The viewer toolbar/overlay/caption rules are what those widgets used to
-# set inline, unchanged.
+# Applied in the two classic themes - tightens the native style's unusually
+# wide gap between top-level menu bar entries, and gives them a visible
+# hover/press background. The viewer toolbar/overlay/caption rules are what
+# those widgets used to set inline, unchanged.
 _BASE_QSS = """
 QMenuBar::item {
     background-color: transparent;
@@ -87,13 +95,9 @@ QLabel#panelTitle {
 }
 """
 
-# Windows' native ("windows11") style renders QMenu popups and
-# QTreeView/QListView row selection/hover via its own light/dark visual
-# style overlay rather than QPalette - calibrated for whatever mode the
-# OS itself is in. On a system running in Windows dark mode, that makes
-# both render dark (QMenu) or with a nearly-invisible highlight
-# (item selection) even under "bright". These color-only overrides force
-# them to follow the palette instead.
+# Windows' native style draws QMenu popups and item-view selection off the
+# OS's own light/dark mode rather than QPalette; these colour-only overrides
+# make "bright" follow its palette.
 _BRIGHT_MENU_QSS = _BASE_QSS + """
 QMenu {
     background-color: #ffffff;
@@ -114,68 +118,164 @@ QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
 
 # --- modern ---------------------------------------------------------------
 
-# The modern theme's colours, by what they are for.
-MODERN = {
-    "ground": "#111111",       # the window behind everything
-    "panel": "#161616",        # a pane: tree, list, editor
-    "card": "#1c1c1c",         # a raised block inside a pane
-    "raised": "#232323",       # a control's own face
-    "hover": "#2a2a2a",
-    "line": "#2a2a2a",         # borders
-    "line_strong": "#3a3a3a",
-    "text": "#e8e8e8",
-    "dim": "#8c8c8c",          # captions, disabled
-    "faint": "#5a5a5a",
-    "accent": "#f28c28",       # the one colour: selected tab, primary action
-    "accent_hover": "#ff9d40",
-    "accent_dim": "#3a2410",   # accent under something - a selected row
-    "accent_text": "#141414",
+# The greys of each modern theme, by what they are for.
+_GREYS = {
+    "modern": {
+        "ground": "#111111",       # the window behind everything
+        "panel": "#161616",        # a pane: tree, list, editor
+        "card": "#1c1c1c",         # a raised block inside a pane
+        "raised": "#232323",       # a control's own face
+        "hover": "#2a2a2a",
+        "line": "#2a2a2a",         # borders
+        "line_strong": "#3c3c3c",  # borders that must be seen: splitters
+        "text": "#e8e8e8",
+        "dim": "#8c8c8c",          # captions
+        "faint": "#5a5a5a",        # disabled
+    },
+    "modern_bright": {
+        "ground": "#f3f3f4",
+        "panel": "#ffffff",
+        "card": "#fafafa",
+        "raised": "#ffffff",
+        "hover": "#ebebed",
+        "line": "#e0e0e3",
+        "line_strong": "#c4c4ca",
+        "text": "#1c1c1e",
+        "dim": "#6c6c72",
+        "faint": "#a8a8ae",
+    },
 }
 
-# A modern 3D view's ground: near-black, just off the window's.
-MODERN_VIEW = (0.055, 0.055, 0.06)
+# A modern 3D view's ground, per theme.
+_VIEW_GROUND = {"modern": (0.055, 0.055, 0.06), "modern_bright": (0.9, 0.9, 0.92)}
 
 
-def _arrow_images(c=MODERN):
-    """{name: path} of the little glyphs the stylesheet needs - chevrons and a
-    tick - drawn into PNGs once. Qt's QSS can't draw a CSS border triangle,
-    and an SVG would need the Qt SVG module the build leaves out."""
-    import os
-    import tempfile
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QImage, QPainter, QPen
+def _mix(a, b, t):
+    """`a` moved `t` of the way to `b`, as #rrggbb."""
+    a, b = QColor(a), QColor(b)
+    return QColor(round(a.red() + (b.red() - a.red()) * t),
+                  round(a.green() + (b.green() - a.green()) * t),
+                  round(a.blue() + (b.blue() - a.blue()) * t)).name()
 
-    folder = os.path.join(tempfile.gettempdir(), "tomba2edit-theme")
+
+def colours(name=None):
+    """{role: "#rrggbb"} for a modern theme - its greys and ACCENT, with what
+    ACCENT implies: a hover shade, a selection tint, and text that reads on
+    it. The current theme's by default; "modern"'s under a classic one."""
+    name = name or _current_theme
+    if name not in _GREYS:
+        name = "modern"
+    c = dict(_GREYS[name])
+    accent = QColor(ACCENT) if QColor(ACCENT).isValid() else QColor("#f28c28")
+    bright = name == "modern_bright"
+    c["accent"] = accent.name()
+    c["accent_hover"] = _mix(c["accent"], "#000000" if bright else "#ffffff", 0.15)
+    # A selected row: the accent, faint, over the pane.
+    c["accent_dim"] = _mix(c["panel"], c["accent"], 0.18 if bright else 0.22)
+    luminance = (0.299 * accent.red() + 0.587 * accent.green() + 0.114 * accent.blue()) / 255
+    c["accent_text"] = "#141414" if luminance > 0.55 else "#ffffff"
+    return c
+
+
+def _glyphs(name, c):
+    """{glyph: path} of the PNGs the stylesheet needs, drawn in `c`'s colours."""
+    folder = os.path.join(tempfile.gettempdir(), "tomba2edit-theme", name)
     os.makedirs(folder, exist_ok=True)
-    size = 18                       # drawn at 2x, shown at 7-9 px
-    shapes = {"down": ((3, 6), (9, 12), (15, 6)),
-              "up": ((3, 12), (9, 6), (15, 12)),
-              "tick": ((3.5, 9.5), (7.5, 13.5), (14.5, 5))}
-    colours = {"": c["dim"], "_hot": c["text"]}
     paths = {}
-    for shape, points in shapes.items():
-        for suffix, colour in colours.items():
-            if shape == "tick" and suffix:
-                continue
-            name = shape + suffix
-            path = os.path.join(folder, f"{name}.png")
-            image = QImage(size, size, QImage.Format.Format_ARGB32)
-            image.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(image)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            pen = QPen(QColor(c["accent_text"] if shape == "tick" else colour), 2.6)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
+
+    def image(glyph, width, height, draw):
+        path = os.path.join(folder, f"{glyph}.png")
+        picture = QImage(width, height, QImage.Format.Format_ARGB32)
+        picture.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(picture)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        draw(painter)
+        painter.end()
+        picture.save(path)
+        paths[glyph] = path.replace("\\", "/")
+
+    def stroke(colour, width=2.6):
+        pen = QPen(QColor(colour), width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        return pen
+
+    def polyline(points, colour, width=2.6):
+        def draw(painter):
+            painter.setPen(stroke(colour, width))
             painter.drawPolyline([QPointF(x, y) for x, y in points])
-            painter.end()
-            image.save(path)
-            paths[name] = path.replace("\\", "/")
+        return draw
+
+    # Chevrons and a tick, drawn at 2x and shown at 7-9 px.
+    for suffix, colour in (("", c["dim"]), ("_hot", c["text"])):
+        image("down" + suffix, 18, 18, polyline(((3, 6), (9, 12), (15, 6)), colour))
+        image("up" + suffix, 18, 18, polyline(((3, 12), (9, 6), (15, 12)), colour))
+    image("tick", 18, 18, polyline(((3.5, 9.5), (7.5, 13.5), (14.5, 5)), c["accent_text"]))
+
+    # Tree lines. Stretched over the branch cell as border-images, so they
+    # are drawn on a 20x20 grid with the line through the middle; a 1px
+    # line stays 1px because the cell is about that size.
+    line = QColor(c["line_strong"])
+    size, mid = 20, 10
+
+    def lines(*segments):
+        def draw(painter):
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setPen(QPen(line, 1))
+            for x1, y1, x2, y2 in segments:
+                painter.drawLine(x1, y1, x2, y2)
+        return draw
+
+    image("vline", size, size, lines((mid, 0, mid, size)))
+    image("branch_more", size, size, lines((mid, 0, mid, size), (mid, mid, size, mid)))
+    image("branch_end", size, size, lines((mid, 0, mid, mid), (mid, mid, size, mid)))
+
+    # An expandable row's arrow, on a disc of the pane's colour so a line
+    # running behind it doesn't cross it.
+    def arrow(points, with_line):
+        def draw(painter):
+            if with_line:
+                lines(*with_line)(painter)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(c["panel"]))
+            painter.drawEllipse(QRectF(mid - 6, mid - 6, 12, 12))
+            painter.setPen(stroke(c["dim"], 1.6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolyline([QPointF(x, y) for x, y in points])
+        return draw
+
+    closed = ((mid - 2, mid - 4), (mid + 2, mid), (mid - 2, mid + 4))
+    opened = ((mid - 4, mid - 2), (mid, mid + 2), (mid + 4, mid - 2))
+    image("closed", size, size, arrow(closed, ()))
+    image("open", size, size, arrow(opened, ()))
+    image("closed_more", size, size, arrow(closed, ((mid, 0, mid, size),)))
+    image("open_more", size, size, arrow(opened, ((mid, 0, mid, size),)))
+    image("closed_end", size, size, arrow(closed, ((mid, 0, mid, mid),)))
+    image("open_end", size, size, arrow(opened, ((mid, 0, mid, mid),)))
+
+    # Splitter grips: three dots along the handle.
+    # On the handle's own grey, so in the page's colour to stand out.
+    image("grip_vertical_bar", 4, 32, _grip(c["ground"], vertical=True))
+    image("grip_horizontal_bar", 32, 4, _grip(c["ground"], vertical=False))
     return paths
 
 
-def _modern_qss(c=MODERN):
-    arrows = _arrow_images(c)
+def _grip(colour, vertical):
+    """Three dots down (vertical) or across a splitter handle."""
+    def draw(painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        for n in range(3):
+            centre = 6 + n * 10
+            x, y = (2, centre) if vertical else (centre, 2)
+            painter.drawEllipse(QRectF(x - 1.6, y - 1.6, 3.2, 3.2))
+    return draw
+
+
+def _modern_qss(name):
+    c = colours(name)
+    g = _glyphs(name, c)
     return f"""
 * {{
     font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
@@ -248,7 +348,7 @@ QMenu::indicator:checked {{
     border-radius: 6px;
 }}
 
-/* tabs: pills, the chosen one orange */
+/* tabs: pills, the chosen one in the accent */
 QTabWidget::pane {{
     border: none;
     border-top: 1px solid {c["line"]};
@@ -312,6 +412,21 @@ QPushButton:disabled {{
     background-color: {c["card"]};
     border-color: {c["card"]};
 }}
+/* a player's glyph button (gui/transport_icons.py): square, round */
+QPushButton[themeGlyph] {{
+    padding: 4px;
+    border-radius: 15px;
+    min-width: 22px;
+    min-height: 22px;
+}}
+QPushButton[themeGlyph="play"], QPushButton[themeGlyph="pause"] {{
+    background-color: {c["accent"]};
+    border-color: {c["accent"]};
+}}
+QPushButton[themeGlyph="play"]:hover, QPushButton[themeGlyph="pause"]:hover {{
+    background-color: {c["accent_hover"]};
+    border-color: {c["accent_hover"]};
+}}
 QToolButton {{
     background-color: transparent;
     color: {c["text"]};
@@ -345,13 +460,23 @@ QToolBar::separator {{
 }}
 
 /* fields */
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit,
-QAbstractSpinBox {{
+QLineEdit, QComboBox, QPlainTextEdit, QTextEdit {{
     background-color: {c["panel"]};
     color: {c["text"]};
     border: 1px solid {c["line"]};
     border-radius: 6px;
     padding: 4px 8px;
+    selection-background-color: {c["accent"]};
+    selection-color: {c["accent_text"]};
+}}
+/* spin boxes sit in tight form rows: less padding, or the digits clip */
+QAbstractSpinBox, QSpinBox, QDoubleSpinBox {{
+    background-color: {c["panel"]};
+    color: {c["text"]};
+    border: 1px solid {c["line"]};
+    border-radius: 6px;
+    padding: 1px 4px 1px 8px;
+    min-height: 20px;
     selection-background-color: {c["accent"]};
     selection-color: {c["accent_text"]};
 }}
@@ -376,13 +501,13 @@ QComboBox::drop-down {{
     width: 20px;
 }}
 QComboBox::down-arrow {{
-    image: url({arrows["down"]});
+    image: url({g["down"]});
     width: 9px;
     height: 9px;
     margin-right: 8px;
 }}
 QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
-    image: url({arrows["down_hot"]});
+    image: url({g["down_hot"]});
 }}
 QComboBox QAbstractItemView {{
     background-color: {c["card"]};
@@ -399,27 +524,24 @@ QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
     width: 16px;
 }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-    image: url({arrows["up"]});
+    image: url({g["up"]});
     width: 7px;
     height: 7px;
 }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-    image: url({arrows["down"]});
+    image: url({g["down"]});
     width: 7px;
     height: 7px;
 }}
 QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
-    image: url({arrows["up_hot"]});
+    image: url({g["up_hot"]});
 }}
 QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
-    image: url({arrows["down_hot"]});
+    image: url({g["down_hot"]});
 }}
 QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
 QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {{
     image: none;
-}}
-QCheckBox::indicator:checked {{
-    image: url({arrows["tick"]});
 }}
 QCheckBox, QRadioButton {{
     background: transparent;
@@ -440,6 +562,9 @@ QRadioButton::indicator {{
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
     background-color: {c["accent"]};
     border-color: {c["accent"]};
+}}
+QCheckBox::indicator:checked {{
+    image: url({g["tick"]});
 }}
 QSlider::groove:horizontal {{
     height: 4px;
@@ -479,7 +604,7 @@ QTreeView, QListView, QTableView, QTreeWidget, QListWidget, QTableWidget {{
     gridline-color: {c["line"]};
 }}
 QTreeView::item, QListView::item, QTableView::item {{
-    padding: 4px 4px;
+    padding: 3px 4px;
     border: none;
     border-radius: 5px;
 }}
@@ -490,9 +615,37 @@ QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {{
     background-color: {c["accent_dim"]};
     color: {c["text"]};
 }}
+
+/* tree structure lines */
 QTreeView::branch {{
     background: transparent;
 }}
+QTreeView::branch:has-siblings:!adjoins-item {{
+    border-image: url({g["vline"]}) 0;
+}}
+QTreeView::branch:has-siblings:adjoins-item {{
+    border-image: url({g["branch_more"]}) 0;
+}}
+QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
+    border-image: url({g["branch_end"]}) 0;
+}}
+QTreeView::branch:has-children:!has-siblings:closed {{
+    border-image: none;
+    image: url({g["closed_end"]});
+}}
+QTreeView::branch:has-children:has-siblings:closed {{
+    border-image: none;
+    image: url({g["closed_more"]});
+}}
+QTreeView::branch:has-children:!has-siblings:open {{
+    border-image: none;
+    image: url({g["open_end"]});
+}}
+QTreeView::branch:has-children:has-siblings:open {{
+    border-image: none;
+    image: url({g["open_more"]});
+}}
+
 QHeaderView {{
     background-color: {c["panel"]};
     border: none;
@@ -500,18 +653,22 @@ QHeaderView {{
 QHeaderView::section {{
     background-color: {c["panel"]};
     color: {c["dim"]};
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     border: none;
     border-bottom: 1px solid {c["line"]};
-    padding: 6px 8px;
+    border-right: 1px solid {c["line"]};
+    padding: 5px 8px;
+}}
+QHeaderView::section:last {{
+    border-right: none;
 }}
 QTableCornerButton::section {{
     background-color: {c["panel"]};
     border: none;
 }}
 
-/* group boxes: a card with a small uppercase caption */
+/* group boxes: a card with a small caption */
 QGroupBox {{
     background-color: {c["card"]};
     border: 1px solid {c["line"]};
@@ -525,15 +682,16 @@ QGroupBox::title {{
     left: 4px;
     padding: 0 4px;
     color: {c["dim"]};
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     background: transparent;
 }}
 QGroupBox QWidget {{
     background-color: transparent;
 }}
-QGroupBox QLineEdit, QGroupBox QSpinBox, QGroupBox QDoubleSpinBox,
-QGroupBox QComboBox, QGroupBox QPlainTextEdit, QGroupBox QTextEdit {{
+QGroupBox QLineEdit, QGroupBox QAbstractSpinBox, QGroupBox QSpinBox,
+QGroupBox QDoubleSpinBox, QGroupBox QComboBox, QGroupBox QPlainTextEdit,
+QGroupBox QTextEdit {{
     background-color: {c["panel"]};
 }}
 QGroupBox QPushButton {{
@@ -560,18 +718,25 @@ QStatusBar::item {{
     border: none;
 }}
 
-/* splitters: a hairline you can still grab */
+/* splitters: a visible bar with a grip, lit when grabbed */
 QSplitter::handle {{
-    background-color: {c["ground"]};
+    background-color: {c["line_strong"]};
+    border-radius: 4px;
+    margin: 1px;
 }}
 QSplitter::handle:horizontal {{
-    width: 5px;
+    width: 8px;
+    image: url({g["grip_vertical_bar"]});
 }}
 QSplitter::handle:vertical {{
-    height: 5px;
+    height: 8px;
+    image: url({g["grip_horizontal_bar"]});
 }}
 QSplitter::handle:hover {{
-    background-color: {c["accent_dim"]};
+    background-color: {c["dim"]};
+}}
+QSplitter::handle:pressed {{
+    background-color: {c["accent"]};
 }}
 
 /* scrollbars: thin, no arrows */
@@ -626,7 +791,7 @@ QToolBar#viewerToolbar QToolButton:hover {{
     background-color: {c["hover"]};
     color: {c["text"]};
 }}
-/* on: lifted, with an orange underline - the accent kept to a stroke */
+/* on: lifted, with an accent underline - the accent kept to a stroke */
 QToolBar#viewerToolbar QToolButton:checked {{
     background-color: {c["raised"]};
     color: {c["text"]};
@@ -638,8 +803,8 @@ QToolBar#viewerToolbar QToolButton:checked:hover {{
 }}
 QLabel#viewerOverlay {{
     background-color: rgba(17, 17, 17, 200);
-    color: {c["dim"]};
-    border: 1px solid {c["line"]};
+    color: #b0b0b0;
+    border: 1px solid rgba(255, 255, 255, 30);
     padding: 6px 8px;
     border-radius: 8px;
     font-family: Consolas, "Cascadia Mono", monospace;
@@ -647,8 +812,8 @@ QLabel#viewerOverlay {{
 }}
 QLabel#panelTitle {{
     color: {c["dim"]};
-    font-size: 10px;
-    font-weight: 700;
+    font-size: 11px;
+    font-weight: 600;
     padding: 6px 4px 3px 4px;
 }}
 """
@@ -670,27 +835,28 @@ def _bright_palette():
     return p
 
 
-def _modern_palette(c=MODERN):
+def _modern_palette(name):
     """Under the stylesheet, for whatever draws off the palette directly -
     custom-painted widgets, native dialogs."""
+    c = colours(name)
     p = QPalette()
-    for role, name in ((QPalette.ColorRole.Window, "ground"),
-                       (QPalette.ColorRole.WindowText, "text"),
-                       (QPalette.ColorRole.Base, "panel"),
-                       (QPalette.ColorRole.AlternateBase, "card"),
-                       (QPalette.ColorRole.Text, "text"),
-                       (QPalette.ColorRole.Button, "raised"),
-                       (QPalette.ColorRole.ButtonText, "text"),
-                       (QPalette.ColorRole.ToolTipBase, "raised"),
-                       (QPalette.ColorRole.ToolTipText, "text"),
-                       (QPalette.ColorRole.Highlight, "accent"),
-                       (QPalette.ColorRole.HighlightedText, "accent_text"),
-                       (QPalette.ColorRole.PlaceholderText, "faint"),
-                       (QPalette.ColorRole.Link, "accent"),
-                       (QPalette.ColorRole.Mid, "line"),
-                       (QPalette.ColorRole.Dark, "ground"),
-                       (QPalette.ColorRole.Light, "line_strong")):
-        p.setColor(role, QColor(c[name]))
+    for role, key in ((QPalette.ColorRole.Window, "ground"),
+                      (QPalette.ColorRole.WindowText, "text"),
+                      (QPalette.ColorRole.Base, "panel"),
+                      (QPalette.ColorRole.AlternateBase, "card"),
+                      (QPalette.ColorRole.Text, "text"),
+                      (QPalette.ColorRole.Button, "raised"),
+                      (QPalette.ColorRole.ButtonText, "text"),
+                      (QPalette.ColorRole.ToolTipBase, "raised"),
+                      (QPalette.ColorRole.ToolTipText, "text"),
+                      (QPalette.ColorRole.Highlight, "accent"),
+                      (QPalette.ColorRole.HighlightedText, "accent_text"),
+                      (QPalette.ColorRole.PlaceholderText, "faint"),
+                      (QPalette.ColorRole.Link, "accent"),
+                      (QPalette.ColorRole.Mid, "line"),
+                      (QPalette.ColorRole.Dark, "ground"),
+                      (QPalette.ColorRole.Light, "line_strong")):
+        p.setColor(role, QColor(c[key]))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText,
                  QPalette.ColorRole.ButtonText):
         p.setColor(QPalette.ColorGroup.Disabled, role, QColor(c["faint"]))
@@ -702,12 +868,12 @@ def current_theme():
 
 
 def is_modern():
-    return _current_theme == "modern"
+    return _current_theme in _GREYS
 
 
-# A 3D view's ground under the bright theme; the dark theme keeps each
-# view's own dark grey. A room is always drawn on black - it is a room in
-# the dark in the game too.
+# A 3D view's ground under the classic bright theme; the classic dark theme
+# keeps each view's own dark grey. A room is always drawn on black - it is a
+# room in the dark in the game too.
 BRIGHT_VIEW = (0.9, 0.9, 0.92)
 ROOM_VIEW = (0.0, 0.0, 0.0)
 
@@ -716,9 +882,7 @@ def view_background(dark=(0.1, 0.1, 0.1)):
     """(r, g, b) to clear a 3D view to: `dark` unless the theme says else."""
     if _current_theme == "bright":
         return BRIGHT_VIEW
-    if _current_theme == "modern":
-        return MODERN_VIEW
-    return dark
+    return _VIEW_GROUND.get(_current_theme, dark)
 
 
 def apply_theme(app: QApplication, name: str):
@@ -730,16 +894,21 @@ def apply_theme(app: QApplication, name: str):
         _native_palette = QPalette(app.palette())
 
     _current_theme = name if name in THEMES else DEFAULT_THEME
-    if _current_theme == "modern":
-        app.setPalette(_modern_palette())
-        app.setStyleSheet(_modern_qss())
+    if is_modern():
+        app.setPalette(_modern_palette(_current_theme))
+        app.setStyleSheet(_modern_qss(_current_theme))
     elif _current_theme == "bright":
         app.setPalette(_bright_palette())
         app.setStyleSheet(_BRIGHT_MENU_QSS)
     else:
         app.setPalette(_native_palette)
         app.setStyleSheet(_BASE_QSS)
-    # Custom-painted widgets (the level list's dots, the 3D views' grounds)
-    # read the theme when they paint, so make them paint.
+    # Glyph buttons are painted in the theme's colours; custom-painted
+    # widgets (the level list's dots, the 3D views' grounds) read the theme
+    # when they paint - so repaint both.
+    from gui import transport_icons
     for widget in app.allWidgets():
+        glyph = widget.property(GLYPH_PROPERTY)
+        if glyph:
+            transport_icons.refresh(widget)
         widget.update()

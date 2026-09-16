@@ -24,7 +24,7 @@ def _color(value):
         return value
     if isinstance(value, (tuple, list)) and len(value) >= 3:
         return QColor.fromRgbF(*(max(0.0, min(1.0, float(v))) for v in value[:3]))
-    return QColor(theme.MODERN["dim"])
+    return QColor(theme.colours()["dim"])
 
 
 def _checked(index):
@@ -55,7 +55,7 @@ class DotDelegate(QStyledItemDelegate):
         shown = _checked(index)
         opt.rect = option.rect.adjusted(DOT_MARGIN * 2 + DOT_SIZE, 0, 0, 0)
         if not shown:
-            opt.palette.setColor(opt.palette.ColorRole.Text, QColor(theme.MODERN["dim"]))
+            opt.palette.setColor(opt.palette.ColorRole.Text, QColor(theme.colours()["dim"]))
         widget = option.widget
         style = widget.style() if widget is not None else None
         # Background across the whole row first, the dot's column included.

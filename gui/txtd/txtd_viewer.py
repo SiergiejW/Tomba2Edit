@@ -14,6 +14,7 @@ import gui.txtd.txtd as txtd
 from functions import audio_export, disc_library, xa
 from functions.voice_edit import VoiceEditStore
 from gui.margin_text_edit import MarginTextEdit
+from gui.transport_icons import set_glyph
 from gui.txtd.font_preview import FontPreview
 from gui.voice_import import confirm_length
 from gui import panel_title
@@ -374,7 +375,8 @@ class TXTDViewer(QWidget):
             "Data tracks already found under the project's iso/ folder")
         self.known_voice_disc.activated.connect(self._open_known_voice)
         voice_row.addWidget(self.known_voice_disc)
-        self.play_voice_button = QPushButton("Play voice")
+        self.play_voice_button = QPushButton()
+        set_glyph(self.play_voice_button, "play", "Play this line's voice")
         self.play_voice_button.clicked.connect(self._play_voice)
         self.play_voice_button.setEnabled(False)
         self.export_voice_button = QPushButton("Export line...")

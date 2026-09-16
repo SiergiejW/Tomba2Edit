@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 
 from functions import gltf_export, pairings, skeleton
 from gui import export_dialog, panel_title
+from gui.transport_icons import set_glyph
 from gui.anmp.anmp_parser import (
     BITS_PER_VALUE, VALUES_PER_LIMB, WIDE_SLOT_BYTES, ANMPError, blend,
     load_anmp)
@@ -188,7 +189,8 @@ class ANMPViewer(QWidget):
         self.info_label = panel_title.make_info_label("No animation loaded")
 
         # --- transport ---
-        self.play_button = QPushButton("Play")
+        self.play_button = QPushButton()
+        set_glyph(self.play_button, "play")
         self.play_button.setCheckable(True)
         self.play_button.toggled.connect(self._on_play_toggled)
 
@@ -1022,7 +1024,7 @@ class ANMPViewer(QWidget):
                       f"{' + root' if frame.root else ''}")
 
     def _on_play_toggled(self, playing):
-        self.play_button.setText("Pause" if playing else "Play")
+        set_glyph(self.play_button, "pause" if playing else "play")
         if playing:
             self._retime()
         else:
