@@ -29,7 +29,7 @@ can't draw them, and SVG would need the Qt SVG module the build leaves out.
 # ---------------------------------------------------------------------------
 # The modern themes' one colour. Any "#rrggbb": selected tab, focus ring,
 # selection, ticks, the underline on a button that is on.
-ACCENT = "#f28c28"
+ACCENT = "#DB5986"
 # ---------------------------------------------------------------------------
 
 import os
@@ -147,7 +147,7 @@ _GREYS = {
 }
 
 # A modern 3D view's ground, per theme.
-_VIEW_GROUND = {"modern": (0.055, 0.055, 0.06), "modern_bright": (0.9, 0.9, 0.92)}
+_VIEW_GROUND = {"modern": (0.0, 0.0, 0.0), "modern_bright": (0.9, 0.9, 0.92)}
 
 
 def _mix(a, b, t):

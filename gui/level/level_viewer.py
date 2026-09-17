@@ -40,21 +40,11 @@ from gui import collision_overlay, export_dialog, theme
 UNIT_SCALE = 1000.0
 
 # The selected instance's box, and the marker an unbound object gets.
-SELECTION_COLOR = (1.0, 0.92, 0.15)
 SELECTION_WIDTH = 2.0
 
-# What a selection box is drawn in, by what was picked - see
-# selection_kind() - and the box round one part of it.
-KIND_COLORS = {
-    "object": SELECTION_COLOR,
-    "character": (1.0, 0.35, 0.3),
-    "chest": (1.0, 0.55, 0.1),
-    "item": (0.3, 0.9, 1.0),
-    "room": (0.85, 0.45, 1.0),
-    "prop": (0.45, 1.0, 0.45),
-    "scenery": (0.7, 0.7, 0.7),
-    "area": (0.9, 0.9, 0.9),
-}
+# A selection box is drawn in its instance's colour - the dot in the list,
+# the marker in the view (level_scene.instance_color) - and the box round one
+# part of it in white.
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
 # Half the width a stretched sprite quad gets when its corners meet in a
@@ -584,7 +574,7 @@ class LevelViewer(SMSTViewer):
         self.selection_changed.emit(index)
 
     def _build_selection(self):
-        """A box round the selected instance, in its kind's colour, and a
+        """A box round the selected instance, in its class's colour, and a
         white one round the picked part of it. Drawn over everything: the
         thing you are looking for is usually the one behind a wall."""
         positions, colors = [], []
@@ -594,8 +584,8 @@ class LevelViewer(SMSTViewer):
         if instance is not None:
             box = self._instance_box(instance)
             if box is not None:
-                self._box_lines(box, KIND_COLORS[selection_kind(instance)],
-                                positions, colors)
+                from gui.level.level_scene import instance_color
+                self._box_lines(box, instance_color(instance), positions, colors)
             part = self._part_box(instance, self.selected_part)
             if part is not None:
                 self._box_lines(part, PART_COLOR, positions, colors)

@@ -32,7 +32,7 @@ from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
     ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
-    area_files, instance_key, marker_color, room_entries)
+    area_files, instance_color, instance_key, room_entries)
 from gui.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
@@ -524,8 +524,8 @@ class LevelEditorPanel(QWidget):
             name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             name.setCheckState(Qt.CheckState.Checked)
             name.setData(ROLE, instance.index)
-            # The modern theme's dot: the class's marker colour in the view.
-            name.setData(DOT_COLOR, marker_color(instance.marker_class))
+            # The modern theme's dot: the colour it is marked in in the view.
+            name.setData(DOT_COLOR, instance_color(instance))
             self.table.setItem(row, 0, name)
             self._fill_row(row, instance)
         self._filling = False
@@ -541,7 +541,7 @@ class LevelEditorPanel(QWidget):
     def _fill_views(self):
         # An area opens with everything it has in it, rooms included; after
         # that whatever was chosen is kept from area to area.
-        current = self.view_box.currentData() if self.view_box.count() else "all"
+        current = "all"
         self._filling_views = True
         self.view_box.clear()
         self.view_box.addItem("Area", None)

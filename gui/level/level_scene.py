@@ -187,6 +187,41 @@ def marker_color(kind):
     return colorsys.hsv_to_rgb((kind * GOLDEN_RATIO_CONJUGATE) % 1.0, 0.7, 1.0)
 
 
+# One colour per group of like things - the list's dot, the view's marker and
+# selection box all use it (instance_color). Characters and other actors
+# built from their own files keep a hue per class instead.
+GROUP_COLORS = {
+    "area": (0.75, 0.75, 0.78),
+    "chest": (1.0, 0.78, 0.2),        # chests
+    "pickup": (0.3, 0.9, 1.0),        # crystals, apples: the pickup table
+    "sprite": (1.0, 0.45, 0.78),      # item sprites: contents, hearts, quest items
+    "asset": (0.55, 0.88, 0.4),       # parts of the area's SMST asset pack
+    "effect": (0.72, 0.52, 1.0),      # geometry the game's code draws
+}
+
+
+def color_group(instance):
+    """Which GROUP_COLORS entry an instance takes, or None for a hue per class."""
+    if instance.role == "room":
+        return "area"
+    if instance.pickup is not None:
+        return "chest" if instance.pickup.chest else "pickup"
+    if instance.drawn_as_sprite:
+        return "sprite"
+    files = {f for f, _g in instance.sources}
+    if files and all(DRAWN_ID <= f < DRAWN_END for f in files):
+        return "effect"
+    if files == {ASSET_PACK_ID}:
+        return "asset"
+    return None
+
+
+def instance_color(instance):
+    """(r, g, b) in 0..1 an instance is marked in, everywhere."""
+    group = color_group(instance)
+    return GROUP_COLORS[group] if group else marker_color(instance.marker_class)
+
+
 @dataclass
 class Instance:
     """One thing standing in the level.
@@ -1928,7 +1963,7 @@ class LevelScene:
                 continue
             x, y, z = instance.x, instance.y, instance.z
             r = MARKER_SIZE
-            color = marker_color(instance.marker_class)
+            color = instance_color(instance)
             ring = [(x - r, y, z), (x, y, z - r), (x + r, y, z), (x, y, z + r)]
             for i, point in enumerate(ring):
                 positions.extend(point)
