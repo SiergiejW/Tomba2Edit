@@ -12,7 +12,17 @@ and ApplyRotMatrix are GTE code, and a part's world matrix comes out of
 them. Register layout and command maths follow psx-spx.
 """
 
+import ctypes
+import os
 import struct
+
+try:
+    from unicorn import (Uc, UcError, UC_ARCH_MIPS, UC_HOOK_BLOCK, UC_HOOK_CODE,
+                         UC_HOOK_INTR, UC_MODE_LITTLE_ENDIAN,
+                         UC_MODE_MIPS32, UC_PROT_ALL)
+    from unicorn import mips_const as _umips
+except ImportError:                 # Optional: the exact Python core remains.
+    Uc = UcError = _umips = None
 
 # Loads and stores that land in RAM are read and written straight out of the
 # bytearray in run(), which is most of what the interpreter does.
@@ -22,8 +32,13 @@ _S16 = struct.Struct("<h")
 
 RAM_SIZE = 0x800000                 # 8 MB, so synthetic loads can sit past 2
 SCRATCH = 0x1F800000
-SCRATCH_SIZE = 0x400
+# A page keeps it directly shareable with Unicorn. The game only uses the
+# first 0x400 bytes, as before.
+SCRATCH_SIZE = 0x1000
 STOP = 0xFFFFFFF0
+# Unicorn follows the MIPS MMU and cannot fetch the interpreter's synthetic
+# 0xFFFFFFF0 return address. This equivalent sentinel is inside mapped RAM.
+NATIVE_STOP = 0x807FFFFC
 MASK = 0xFFFFFFFF
 GPU_STATUS = 0x1F801814
 GPU_READY = 0x1C000000
@@ -299,6 +314,11 @@ class CPU:
         self.hooks = {}
         self._cache = {}
         self.steps = 0
+        self._uc = None
+        self._uc_hooks = set()
+        self._fast_depth = 0
+        self._uc_block = None
+        self.fast = Uc is not None and not os.environ.get("TOMBA2_PYTHON_CPU")
 
     def call(self, address, args=(), budget=2_000_000, sp=None):
         """Run the routine at `address` with a0.. = args; returns v0."""
@@ -312,6 +332,16 @@ class CPU:
         return r[2]
 
     def run(self, pc, budget):
+        # Primitive capture replaces Memory.read temporarily so it can notice
+        # animation-counter reads, and GTE.capture names every transformed
+        # vertex. Both deliberately use the transparent Python interpreter.
+        # Ordinary actor/update code takes the native Unicorn path.
+        if (self.fast and self._fast_depth == 0 and self.gte.capture is None
+                and "read" not in self.mem.__dict__):
+            return self._run_unicorn(pc, budget)
+        return self._run_python(pc, budget)
+
+    def _run_python(self, pc, budget):
         r, mem, gte, hooks, cache = self.r, self.mem, self.gte, self.hooks, self._cache
         read, write, ram = mem.read, mem.write, mem.ram
         npc = (pc + 4) & MASK
@@ -574,3 +604,141 @@ class CPU:
                 self.steps += steps
                 raise EmuError(f"opcode {op} at 0x{cur:08X}")
         self.steps += steps
+
+    # --- optional native execution -----------------------------------
+
+    def _ensure_unicorn(self):
+        if self._uc is not None:
+            return self._uc
+        uc = Uc(UC_ARCH_MIPS, UC_MODE_MIPS32 | UC_MODE_LITTLE_ENDIAN)
+        ram_ptr = ctypes.addressof(
+            (ctypes.c_ubyte * len(self.mem.ram)).from_buffer(self.mem.ram))
+        scratch_ptr = ctypes.addressof(
+            (ctypes.c_ubyte * len(self.mem.scratch)).from_buffer(self.mem.scratch))
+        # MIPS KSEG0 addresses (0x80000000...) translate to these physical
+        # pages in Unicorn, exactly as Memory._where masks them.
+        uc.mem_map_ptr(0, len(self.mem.ram), UC_PROT_ALL, ram_ptr)
+        uc.mem_map_ptr(SCRATCH, len(self.mem.scratch), UC_PROT_ALL, scratch_ptr)
+        uc.mem_map(0x1F801000, 0x1000, UC_PROT_ALL)
+        uc.mem_write(GPU_STATUS, struct.pack("<I", GPU_READY))
+        uc.hook_add(UC_HOOK_BLOCK, self._unicorn_block)
+        uc.hook_add(UC_HOOK_INTR, self._unicorn_interrupt)
+        self._uc = uc
+        return uc
+
+    @staticmethod
+    def _ureg(n):
+        return getattr(_umips, f"UC_MIPS_REG_{n}")
+
+    def _from_unicorn(self):
+        uc = self._uc
+        for n in range(1, 32):
+            self.r[n] = uc.reg_read(self._ureg(n)) & MASK
+        self.r[0] = 0
+        if self.r[31] == NATIVE_STOP:
+            self.r[31] = STOP
+        self.hi = uc.reg_read(_umips.UC_MIPS_REG_HI) & MASK
+        self.lo = uc.reg_read(_umips.UC_MIPS_REG_LO) & MASK
+
+    def _to_unicorn(self):
+        uc = self._uc
+        for n in range(1, 32):
+            value = NATIVE_STOP if n == 31 and self.r[n] == STOP else self.r[n]
+            uc.reg_write(self._ureg(n), value & MASK)
+        uc.reg_write(_umips.UC_MIPS_REG_HI, self.hi & MASK)
+        uc.reg_write(_umips.UC_MIPS_REG_LO, self.lo & MASK)
+
+    def _unicorn_hook(self, uc, address, _size, _data):
+        hook = self.hooks.get(address)
+        if hook is None:
+            return
+        self._from_unicorn()
+        self._fast_depth += 1
+        try:
+            self.r[2] = hook(self) & MASK
+        finally:
+            self._fast_depth -= 1
+        target = NATIVE_STOP if self.r[31] == STOP else self.r[31]
+        self._to_unicorn()
+        uc.reg_write(_umips.UC_MIPS_REG_PC, target)
+
+    def _unicorn_block(self, _uc, address, _size, _data):
+        self._uc_block = address
+
+    def _unicorn_interrupt(self, uc, _number, _data):
+        """Emulate COP2/COP0 instructions Unicorn raises as exceptions.
+
+        Unicorn reports the physical KSEG PC here; Memory accepts either form.
+        Advancing that same representation lets its translated block resume.
+        """
+        # Unicorn has already redirected PC to the exception vector. Its
+        # block hook still names the translated block that faulted, whose
+        # first unsupported COP instruction is the cause.
+        pc = self._uc_block
+        if pc is None:
+            raise EmuError("native CPU exception outside a translated block")
+        for _ in range(1024):
+            word = self.mem.read(pc, 4)
+            op = word >> 26
+            if op in (16, 18, 50, 58):
+                break
+            pc = (pc + 4) & MASK
+        else:
+            raise EmuError(f"native CPU exception in block 0x{self._uc_block:08X}")
+        op, rs = word >> 26, (word >> 21) & 31
+        rt, rd, simm = (word >> 16) & 31, (word >> 11) & 31, s16(word)
+        self._from_unicorn()
+        r = self.r
+        if op == 18:
+            if word & (1 << 25):
+                self.gte.command(word)
+            elif rs == 0:
+                if rt:
+                    r[rt] = self.gte.read_data(rd)
+            elif rs == 2:
+                if rt:
+                    r[rt] = self.gte.read_ctrl(rd)
+            elif rs == 4:
+                self.gte.write_data(rd, r[rt])
+            elif rs == 6:
+                self.gte.write_ctrl(rd, r[rt])
+            else:
+                raise EmuError(f"cop2 rs {rs} at 0x{pc:08X}")
+        elif op == 50:
+            self.gte.write_data(rt, self.mem.read((r[rs] + simm) & MASK, 4))
+        elif op == 58:
+            self.mem.write((r[rs] + simm) & MASK, 4, self.gte.read_data(rt))
+        elif op == 16:
+            if rs == 0:
+                if rt:
+                    r[rt] = self.cop0[rd]
+            elif rs == 4:
+                self.cop0[rd] = r[rt]
+            else:
+                raise EmuError(f"cop0 rs {rs} at 0x{pc:08X}")
+        else:
+            raise EmuError(f"interrupt on opcode {op} at 0x{pc:08X}")
+        self._to_unicorn()
+        uc.reg_write(_umips.UC_MIPS_REG_PC, (pc + 4) & MASK)
+
+    def _run_unicorn(self, pc, budget):
+        uc = self._ensure_unicorn()
+        for address in self.hooks:
+            if address in self._uc_hooks:
+                continue
+            uc.hook_add(UC_HOOK_CODE, self._unicorn_hook,
+                        begin=address, end=address)
+            self._uc_hooks.add(address)
+        self._to_unicorn()
+        self._fast_depth += 1
+        try:
+            uc.emu_start(pc, NATIVE_STOP, count=budget)
+        except UcError as error:
+            where = uc.reg_read(_umips.UC_MIPS_REG_PC) & MASK
+            raise EmuError(f"native CPU stopped at 0x{where:08X}: {error}") from error
+        finally:
+            self._fast_depth -= 1
+            self._from_unicorn()
+        where = uc.reg_read(_umips.UC_MIPS_REG_PC) & MASK
+        if where not in (NATIVE_STOP, NATIVE_STOP & 0x1FFFFFFF):
+            raise EmuError(f"ran out of budget at 0x{where:08X}")
