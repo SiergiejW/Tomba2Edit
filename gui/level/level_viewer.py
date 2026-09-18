@@ -304,6 +304,7 @@ class LevelViewer(SMSTViewer):
         self._sprite_atlas = None       # RGBA array, None for none
         self._sprite_atlas_dirty = False
         self._sprite_quads = []         # see set_sprites()
+        self._flips = []                # see load_scene()
         self._sprite_tick = 0
         self._sprite_dirty = False
         self._background_image = None       # (h, w, 3) uint8, or None
@@ -328,6 +329,9 @@ class LevelViewer(SMSTViewer):
         it is still the same level and they are still looking at the
         part of it they were looking at."""
         self.scene = scene
+        # Each recorded effect's frame instances, in order - one shows a tick.
+        self._flips = [i.flip_frames for i in scene.instances
+                       if getattr(i, "flip_frames", ())]
         self.selected = None
         self.hidden_groups = set()
         self.highlighted_group = None
@@ -374,11 +378,37 @@ class LevelViewer(SMSTViewer):
     def advance_sprites(self, ticks=1):
         """Move every pickup's animation on, and redraw if any of them
         actually changed frame."""
-        if not self._sprite_quads:
+        if not (self._sprite_quads or self._flips):
             return
         self._sprite_tick += ticks
         self._sprite_dirty = True
         self.update()
+
+    @property
+    def animating(self):
+        """Whether anything wants the tick timer: a sprite with several
+        steps, or a recorded effect."""
+        return bool(self._flips) or any(len(q.steps) > 1 for q in self._sprite_quads)
+
+    def _flip_hidden(self):
+        """Every recorded effect's frames but the one showing this tick - all
+        of them where its first frame's row is hidden."""
+        out = set()
+        for frames in self._flips:
+            now = frames[self._sprite_tick % len(frames)]
+            gone = frames[0] in self.hidden_groups
+            out.update(f for f in frames if gone or f != now)
+        return out
+
+    def _draw_pass(self, transparent, blend=None):
+        if not self._flips:
+            return super()._draw_pass(transparent, blend)
+        kept = self.hidden_groups
+        self.hidden_groups = kept | self._flip_hidden()
+        try:
+            super()._draw_pass(transparent, blend)
+        finally:
+            self.hidden_groups = kept
 
     def _toggle_sprites(self, checked):
         self.show_sprites = checked
@@ -523,7 +553,7 @@ class LevelViewer(SMSTViewer):
                                        dtype=np.float32) / UNIT_SCALE)
         found = scene_of(np.concatenate(points)) if points else None
         if found is None:
-            self.frame_level()
+            # An empty room: nothing to frame, so the shot stays.
             return
         centre, radius = found
         self.scene_radius = radius
@@ -777,12 +807,17 @@ class LevelViewer(SMSTViewer):
             t = np.einsum("ij,ij->i", edge2, qvec) * inv
             hit = (live & (u >= -1e-6) & (v >= -1e-6)
                    & (u + v <= 1 + 1e-6) & (t > 1e-6))
-            if self.hidden_groups:
+            hidden = self.hidden_groups | self._flip_hidden()
+            if hidden:
                 hit &= ~np.isin(self._face_instance,
-                                np.fromiter(self.hidden_groups, dtype=np.int64))
+                                np.fromiter(hidden, dtype=np.int64))
             if hit.any():
                 which = int(np.argmin(np.where(hit, t, np.inf)))
                 hit_instance = int(self._face_instance[which])
+                # A recorded effect's frame is its first frame's row.
+                flip = getattr(self.instances[hit_instance], "flip", None)
+                if flip is not None:
+                    hit_instance, self._last_face = flip[0], None
                 hit_distance = float(t[which])
                 self._last_face = which
 
@@ -802,7 +837,7 @@ class LevelViewer(SMSTViewer):
         matrix = self._model_view_projection()
         best = None
         for instance in self.instances:
-            if (not instance.movable or instance.face_count
+            if (not instance.marked or instance.face_count
                     or instance.index in self.hidden_groups):
                 continue
             point = matrix.map(QVector4D(instance.x / UNIT_SCALE,
@@ -906,7 +941,7 @@ class LevelViewer(SMSTViewer):
                 continue
             kind = selection_kind(instance)
             scene = getattr(instance, "scene", None)
-            group = (f"Room {scene}" if kind == "room" and scene is not None
+            group = (f"Interior {scene - 1}" if kind == "room" and scene is not None
                      else EXPORT_GROUPS.get(kind, "Objects"))
             label = f"{instance.index:03d} {instance.label}"
             origin = ((0.0, 0.0, 0.0) if instance.role == "room"
@@ -917,7 +952,7 @@ class LevelViewer(SMSTViewer):
                     out.append({"name": label + suffix, "group": group,
                                 "origin": where or origin,
                                 "model": self._export_model(instance, verts, spans)})
-            elif instance.movable and not instance.drawn_as_sprite:
+            elif instance.marked and not instance.drawn_as_sprite:
                 out.append({"name": label, "group": "Markers", "origin": origin})
         out.extend(self._export_sprites())
         out.extend(self._export_lines())

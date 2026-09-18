@@ -310,15 +310,18 @@ class LevelEditorPanel(QWidget):
         self.load_area(chunk)
 
     def _on_progress_changed(self, _index):
-        # The camera stays put: the same shot of the same place under the
-        # other progress is what makes the two comparable.
+        # The camera and the Rooms choice stay put: the same shot of the same
+        # place under the other progress is what makes the two comparable.
         if not self._filling and self.chunk is not None and self.dat_path:
-            self.load_area(self.chunk, keep_camera=True)
+            self.load_area(self.chunk, keep_camera=True,
+                           keep_view=self.view_box.currentData())
 
-    def load_area(self, chunk, keep_camera=False):
+    def load_area(self, chunk, keep_camera=False, keep_view="all"):
         """Open an area. `keep_camera` leaves the view where it is, so
-        switching Progress shows the same shot of the same place."""
+        switching Progress shows the same shot of the same place; `keep_view`
+        is the Rooms choice to open on, if the area has it."""
         self._stop_cycling()
+        self._keep_view = keep_view
         # Kept so a printed selection can say which area it is in.
         self.chunk = chunk
         overlay = self.overlay_for_area(chunk)
@@ -345,6 +348,9 @@ class LevelEditorPanel(QWidget):
         self.viewer.load_animations(overlay)
         self._load_background(scene, vram, overlay)
         self._load_sprites(scene, vram)
+        # Sprites with several steps and recorded effects share one clock.
+        if self.viewer.animating:
+            self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))
         self._populate()
         print(f"AREA_{chunk:02X}: ready in {time.perf_counter() - started:.1f}s",
               flush=True)
@@ -362,9 +368,13 @@ class LevelEditorPanel(QWidget):
             lines.append(f"{pickups} crystal(s) and apple(s) from MAIN.EXE's "
                          f"own table, {drawn} of them with a known model.")
         rooms = {i.scene for i in scene.instances if i.scene is not None}
-        if rooms:
-            lines.append(f"{len(rooms)} room(s), found by running the area's "
-                         f"scene spawner - pick one under Show.")
+        empty = [s for s in scene.room_tables
+                 if s not in rooms and s <= max(rooms, default=0)]
+        if rooms or empty:
+            lines.append(f"{len(rooms)} interior(s) with something in them, found "
+                         f"by running the area's scene spawner - pick one under "
+                         f"Rooms." + (f" {len(empty)} more with nothing to draw "
+                                      f"are listed there too." if empty else ""))
         lines.extend(scene.notes)
         self.summary.setText("\n".join(lines))
 
@@ -402,8 +412,6 @@ class LevelEditorPanel(QWidget):
         if atlas is None or not quads:
             return
         self.viewer.set_sprites(atlas, quads)
-        if any(len(q.steps) > 1 for q in quads):
-            self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))
 
     def _next_sprite_tick(self):
         self.viewer.advance_sprites()
@@ -549,24 +557,42 @@ class LevelEditorPanel(QWidget):
     # --- area or room -------------------------------------------------
 
     def _fill_views(self):
-        # An area opens with everything it has in it, rooms included; after
-        # that whatever was chosen is kept from area to area.
-        current = "all"
+        """Area, then every interior by the game's own number (src_Interior,
+        its scene index less one). One whose scene table is missing or empty,
+        or whose actors draw nothing, is listed too, saying so."""
+        # An area opens with everything in it, rooms included; a Progress
+        # switch keeps what was chosen (see load_area).
+        current = getattr(self, "_keep_view", "all")
         self._filling_views = True
         self.view_box.clear()
         self.view_box.addItem("Area", None)
         instances = self.scene.instances if self.scene else []
-        scenes = sorted({i.scene for i in instances if i.scene is not None})
+        tables = getattr(self.scene, "room_tables", {}) or {}
+        found = {i.scene for i in instances if i.scene is not None}
+        # The gaps between rooms with something in them; an area whose only
+        # table is an empty one (the bosses) has no rooms at all.
+        last = max(found, default=0)
+        scenes = sorted(found | {s for s in tables if s <= last})
         for scene in scenes:
             count = sum(1 for i in instances if i.scene == scene)
-            self.view_box.addItem(
-                f"Room {scene} (interior {scene - 1}) - {count}", scene)
+            drawn = sum(1 for i in instances if i.scene == scene and not i.marker)
+            if tables.get(scene, 0) is None and not count:
+                what = "no scene table"
+            elif tables.get(scene) == 0 and not count:
+                what = "empty scene table"
+            elif not drawn:
+                what = f"{count} actor(s), nothing drawn"
+            else:
+                what = f"{count}"
+            self.view_box.addItem(f"Interior {scene - 1} - {what}", scene)
         if scenes:
             self.view_box.addItem("Area and every room", "all")
         for row in range(self.view_box.count()):
             if self.view_box.itemData(row) == current:
                 self.view_box.setCurrentIndex(row)
                 break
+        else:
+            self.view_box.setCurrentIndex(self.view_box.count() - 1)
         self._filling_views = False
 
     def _apply_view(self, *_args, frame=True):
@@ -592,14 +618,16 @@ class LevelEditorPanel(QWidget):
                 continue
             if item.checkState() != Qt.CheckState.Checked:
                 unchecked.add(item.data(ROLE))
-            self.table.setRowHidden(row, item.data(ROLE) in filtered)
+            # A recorded effect's later frames have no row of their own.
+            instance = self._instance(item.data(ROLE))
+            self.table.setRowHidden(row, item.data(ROLE) in filtered or (
+                instance is not None and instance.flip is not None))
         self.viewer.set_view(view)
         self.viewer.set_hidden_groups(filtered | unchecked)
-        if frame:
-            if view is None:
-                self.viewer.frame_level()
-            else:
-                self.viewer.frame_visible()
+        # Only an interior is framed: it is somewhere else entirely. The area,
+        # alone or with its rooms, keeps the shot the user had.
+        if frame and view not in (None, "all"):
+            self.viewer.frame_visible()
 
     def _on_part_selected(self, index, part):
         instance = self._instance(index)
@@ -826,6 +854,7 @@ class LevelEditorPanel(QWidget):
             item = self.table.item(row, 0)
             if item is not None and item.checkState() != Qt.CheckState.Checked:
                 unchecked.add(item.data(ROLE))
+        self._keep_view = self.view_box.currentData()
         self.viewer.load_scene(self.scene, frame=frame)
         self._populate()
         self._filling = True

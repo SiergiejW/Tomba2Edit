@@ -116,6 +116,26 @@ WORKER_RECORD = 0x80
 # A model read out of a slot a trail resource was loaded into is named
 # (TRAIL_ID + resource index, group), not by the slot's own file id.
 TRAIL_ID = 0x1000
+TOMBA_SLOT = 47                     # DAT_800ED014: Tomba's costume model
+# Script op 0x22 (0x80042E10) sets this gate (DAT_800BF80C byte 3) to N and
+# waits until it is 0 again - cleared by the transition/text code the sim
+# does not run.
+MESSAGE = 0x800BF80F
+# Tomba is no pooled actor but the player block, run each frame by
+# FUN_80059D28 - which hands him to an overlay's own routine in some areas
+# (A03: 0x80109024, whose init allocates the trolley, callback 0x8010B37C).
+PLAYER = 0x800E7E80
+PLAYER_FRAME = 0x80059D28
+# Area start for the player: planes (START_PLANES), Tomba at his entrance,
+# and in area 3 his trolley (f_AllocateActor(0, 3, 4, 27), 0x80078484).
+PLAYER_START = 0x800783DC
+# Where an area's draw pass poses the player before drawing him, by area
+# number: A03's f_UpdateAndDrawTrolleyRiderModel seats him on the trolley
+# with f_UpdateTrolleyAttachedModelTransforms (0x80109870).
+PLAYER_POSE = {3: 0x80109870}
+# How long a table-less scene's controller is played - SOP's intro reaches
+# its last step (0x800BF9B4 = 7) by frame ~520.
+CUTSCENE_FRAMES = 600
 
 # A purified area runs its cursed overlay with its bit set here.
 PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
@@ -163,6 +183,13 @@ TERMINATOR_MASK, TERMINATOR = 0xF000F000, 0x50005000
 # count and list are +0x152 and +0x14C.
 CLASS4_QUEUE = 0x8003BCF4
 QUEUE_HELD, QUEUE_COUNT, QUEUE_LIST = 0x1F800136, 0x1F800152, 0x1F80014C
+# f_DrawClass5ActorRenderQueue: its kind 0x1F goes to an area's own drawer -
+# A0K's berries (FUN_A0K__8010FF0C) to FUN_8010FC70. Held list and count.
+CLASS5_QUEUE = 0x8003BF00
+QUEUE5_COUNT, QUEUE5_LIST = 0x1F80015E, 0x1F800158
+QUEUED5_KINDS = frozenset((0x1F,))
+SEEN_RECORDS = 0x70
+QUEUE_CLASS5 = 0x80077EFC           # f_QueueClass5ActorForRender
 QUEUED_KINDS = frozenset((1, 2, 3, 0x16, 0x17))
 # A textured polygon's colour: 0x80 draws the texel as it is.
 NEUTRAL = 128.0
@@ -177,6 +204,7 @@ PART_DRAWERS = (0x8003CDD8,         # f_BuildActorModelPartPrimitives
                 0x8003C8F4,         # f_DrawActorSpriteParts
                 0x8003C464,         # f_DrawActorSpritePartsWithScaleAndZRotation
                 0x8003C2D4)         # f_DrawActorSpritePartsWithZRotation
+SPRITE_DRAWERS = PART_DRAWERS[2:]
 # src_SpriteAnimationFrame: the counter draw routines step their cells by
 # (A0E's waterfall: cell (frame >> 1) & 15). 0 while capturing - _uv_frames
 # draws the other values a probe says matter.
@@ -226,6 +254,10 @@ EFFECT_CLASS = 6
 RENDER_KIND, QUAD_KIND, QUAD_CORNERS = 0x0B, 0x14, 0x60
 PARTS = 0xC0
 DESTROY_STATE = 3
+# Frames of a code-drawn effect recorded as a clip, after running it this
+# many first so its particles are coming and going steadily - record_clips.
+CLIP_FRAMES = 64
+CLIP_WARMUP = 96
 
 FRAMES = 4
 BUDGET = 400_000
@@ -310,6 +342,7 @@ class Actor:
     # captures after it ran drew nothing, or None once one drew.
     silent: dict = field(default_factory=dict)
     ran: bool = False               # whether its handler has run at all
+    player: bool = False            # the player block (PLAYER), not a pooled actor
     read_ran: bool = False          # whether its kept reading is from after it ran
     # (handler, reward) as its first run found them; code rewrites both.
     born: tuple = None
@@ -384,7 +417,11 @@ class World:
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
         self.purified = purified
+        self.area_number = area_number
         self.finished = tuple(finished)
+        # A cutscene played through: every message box closes at once, as if
+        # read - see play_cutscene.
+        self.skip_messages = False
         if purified:
             mem.write(PURIFIED_AREAS, 2,
                       mem.read(PURIFIED_AREAS, 2) | 1 << area_number)
@@ -396,6 +433,11 @@ class World:
         self.running_scene = None
         self.worker_errors = []
         self.rooms = {}                         # scene -> [Actor]
+        # family -> [polygons per frame] of what moves - see record_clips.
+        self.clips = {}
+        # scene -> records in its table, None where the spawner has none -
+        # every scene up to the last with a table, run or not.
+        self.room_tables = {}
         self.events = []                        # (handler, [Actor]) - spawn_events
         self.pool_used = collections.Counter()  # pool -> records handed out
         # id(actor) -> (actor, RAM frame) whose lines are owed - see _owe_capture.
@@ -419,8 +461,30 @@ class World:
         # it stood once the room was entered.
         self.trail_slots = {}
         self.room_trails = {}
+        self._load_costume()
 
     # --- setup ----------------------------------------------------------
+
+    def _load_costume(self, costume=0):
+        """Tomba's model in file slot 47, as his lifecycle's disc read puts it
+        there: the area's resource `costume` (g_CurrentAreaResourceOffsets
+        [appearance & 0xF], the IDX trail) - SOP's intro Tomba
+        (0x8010ACFC) builds from it."""
+        if costume + 1 >= len(self.trail):
+            return
+        start, end = self.trail[costume], self.trail[costume + 1]
+        if end <= start:
+            return
+        with open(self.dat, "rb") as dat:
+            dat.seek(start)
+            data = dat.read(end - start)
+        target = self.mem.read(FILE_TABLE + TOMBA_SLOT * 4, 4) or self._alloc(len(data))
+        try:
+            self.mem.load(target, data)
+        except EmuError:
+            return
+        self._slot(TOMBA_SLOT, target, len(data))
+        self.trail_slots[TOMBA_SLOT] = costume
 
     def _slot(self, file_id, address, size):
         if 0 <= file_id < FILE_SLOTS:
@@ -630,6 +694,54 @@ class World:
         actor.pickup = pickup
         return actor
 
+    def run_controller(self, entry, budget=BUDGET):
+        """Run a scene controller's first frame (state 0 at worker +0x50),
+        the way the game mode calls it: v0 and g_CurrentCooperativeWorker its
+        worker record. What it starts runs inline, as when entering a room."""
+        worker = self._alloc(WORKER_RECORD)
+        previous = self.mem.read(CURRENT_WORKER, 4)
+        self.mem.write(CURRENT_WORKER, 4, worker)
+        self.cpu.r[2] = worker
+        self.entering = True
+        try:
+            self.cpu.call(entry, (), budget=budget, sp=STACK)
+        except EmuError as e:
+            self.worker_errors.append(f"controller 0x{entry:08X}: {e}")
+        finally:
+            self.entering = False
+            self.mem.write(CURRENT_WORKER, 4, previous)
+
+    def add_player(self):
+        """Run Tomba himself from now on - see PLAYER."""
+        actor = Actor(PLAYER, PLAYER_FRAME, player=True)
+        self.actors.append(actor)
+        self.by_address[PLAYER] = actor
+        self.running = PLAYER
+        try:
+            self.cpu.call(PLAYER_START, (), budget=BUDGET, sp=STACK)
+        except EmuError as e:
+            self.worker_errors.append(f"player start: {e}")
+        finally:
+            self.running = None
+
+    def _run_player(self, budget=BUDGET):
+        player = self.by_address.get(PLAYER)
+        if player is None or not player.player or player.dead:
+            return
+        player.ran = True
+        self.mem.write(PART_BUDGET, 2, PART_BUDGET_HELD)
+        self.running = PLAYER
+        try:
+            self.cpu.call(PLAYER_FRAME, (), budget=budget, sp=STACK)
+            pose = PLAYER_POSE.get(self.area_number)
+            if pose is not None and self.mem.read(PLAYER + 0x10, 4):
+                self.cpu.call(pose, (PLAYER,), budget=budget, sp=STACK)
+        except EmuError as e:
+            player.error = str(e)
+            player.dead = True
+        finally:
+            self.running = None
+
     def start_workers(self, budget=BUDGET):
         for routine in (START_PLANES, START_WORKERS):
             try:
@@ -681,10 +793,13 @@ class World:
 
         paths = {}                      # id(follower) -> [position per frame]
         for _frame in range(frames):
+            if self.skip_messages:
+                self.mem.write(MESSAGE, 1, 0)
             if workers:
                 self.run_workers(budget)
+                self._run_player(budget)
             for actor in list(self.actors):
-                if actor.dead or (only is not None and not only(actor)):
+                if actor.dead or actor.player or (only is not None and not only(actor)):
                     continue
                 self._run_actor(actor, budget)
                 if actor.spawner is not None:
@@ -705,6 +820,86 @@ class World:
         self._converge(chosen, paths, budget)
         self.settle_captures()
 
+    def family(self, actor):
+        """Who an actor's drawing belongs to: the top of its spawner chain,
+        or ("worker", id) for a transient effect a scene worker made - A01's
+        rising bubbles are each their own top, one worker's all."""
+        for _depth in range(32):
+            parent = self.by_address.get(actor.spawner)
+            if parent is None:
+                break
+            actor = parent
+        if (actor.spawner is None and actor.worker is not None
+                and self.mem.read(actor.address + CLASS, 1) == EFFECT_CLASS):
+            return ("worker", actor.worker)
+        return actor.address
+
+    def record_clips(self, frames=CLIP_FRAMES, warmup=CLIP_WARMUP, budget=BUDGET):
+        """Run each family that draws transient effects on for `frames`
+        frames, the way the game does - particles born, rising and let die -
+        and keep what they draw each frame, where it changes, in `clips`.
+        RAM and the actors are left as they were."""
+        painters = [a for a in self.actors if a.polys and not a.discarded]
+        keys = {self.family(a) for a in self.actors if not a.discarded
+                and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS}
+        keys &= {self.family(a) for a in painters}
+        if not keys:
+            return
+        base = self.snapshot()
+        defer, self.defer_capture = self.defer_capture, False
+        recorded = {k: [] for k in keys}
+        try:
+            for frame in range(warmup + frames):
+                if self.skip_messages:
+                    self.mem.write(MESSAGE, 1, 0)
+                if any(isinstance(k, tuple) for k in keys):
+                    self.run_workers(budget)
+                for actor in list(self.actors):
+                    if not actor.dead and self.family(actor) in keys:
+                        self._run_free(actor, budget)
+                if frame < warmup:
+                    continue
+                live = [a for a in self.actors
+                        if not a.dead and self.family(a) in keys]
+                for actor in live:
+                    actor.position = self._position(actor.address)
+                    actor.silent = {}
+                self.capture_lines(live)
+                drawn = collections.defaultdict(list)
+                for actor in live:
+                    drawn[self.family(actor)].extend(actor.polys)
+                for key in keys:
+                    recorded[key].append(tuple(drawn.get(key, ())))
+        finally:
+            self.defer_capture = defer
+            self.restore(base)
+        for key, clip in recorded.items():
+            if len({repr(f) for f in clip}) > 1:
+                self.clips[key] = clip
+
+    def _run_free(self, actor, budget):
+        """One run of an actor's handler, and nothing put back: one whose code
+        destroys it is gone, as in the game."""
+        if actor.player:
+            return self._run_player(budget)
+        read, write = self.mem.read, self.mem.write
+        handler = read(actor.address + CALLBACK, 4)
+        if not handler:
+            return
+        write(actor.address + ACTIVE, 1, 0)
+        write(PART_BUDGET, 2, PART_BUDGET_HELD)
+        self.running = actor.address
+        try:
+            self.cpu.call(handler, (actor.address, 0, 0), budget=budget, sp=STACK)
+        except EmuError:
+            actor.dead = True
+        finally:
+            self.running = None
+        if actor.dead or read(actor.address + LIFECYCLE, 1) == DESTROY_STATE:
+            if not actor.dead:
+                self.pool_used[actor.pool] -= 1
+            actor.dead = True
+
     def _owe_capture(self, actors):
         """Lines and polygons owed for these actors, to be drawn from RAM as
         it stands now: a later reading of the same actor replaces its debt,
@@ -712,7 +907,9 @@ class World:
         if not self.defer_capture:
             self.capture_lines(actors)
             return
-        frame = (bytes(self.mem.ram), bytes(self.mem.scratch))
+        # The heap mark goes with it: settled after a restore, the capture's
+        # buffers would otherwise land on the actors this frame holds.
+        frame = (bytes(self.mem.ram), bytes(self.mem.scratch), self.heap)
         for actor in actors:
             self.owed[id(actor)] = (actor, frame)
 
@@ -725,15 +922,17 @@ class World:
         frames = {}
         for actor, frame in owed.values():
             frames.setdefault(id(frame), (frame, []))[1].append(actor)
-        ram, scratch = bytes(self.mem.ram), bytes(self.mem.scratch)
+        ram, scratch, heap = bytes(self.mem.ram), bytes(self.mem.scratch), self.heap
         try:
-            for (frame_ram, frame_scratch), actors in frames.values():
+            for (frame_ram, frame_scratch, frame_heap), actors in frames.values():
                 self.mem.ram[:] = frame_ram
                 self.mem.scratch[:] = frame_scratch
+                self.heap = max(heap, frame_heap)
                 self.capture_lines(actors)
         finally:
             self.mem.ram[:] = ram
             self.mem.scratch[:] = scratch
+            self.heap = heap
 
     def _transit(self, actors, budget):
         """Actors with parts no run has drawn, their state still moving as the
@@ -788,6 +987,8 @@ class World:
         self._owe_capture(actors)
 
     def _run_actor(self, actor, budget):
+        if actor.player:
+            return self._run_player(budget)
         cpu, mem = self.cpu, self.mem
         read, write = mem.read, mem.write
         handler = read(actor.address + CALLBACK, 4)
@@ -991,12 +1192,19 @@ class World:
         and holds nothing shaped like a list for `scene`: past the table's
         end the spawner walks garbage until its budget runs out - most of a
         load's instructions, before this."""
+        tables = self._scene_tables(spawner)
+        return not tables or self._has_list(tables, scene)
+
+    def _scene_tables(self, spawner):
+        """The spawner's tables of scene lists: several of their first entries
+        read as lists. Scene 0 may not (A05's starts at 1), so count rather
+        than require."""
         read = self.mem.read
-        # A table of scene lists: several of its first entries read as lists.
-        # Its scene 0 may not (A05's starts at 1), so count rather than require.
-        tables = [t for t in self._spawner_tables(spawner)
-                  if sum(self._list_shaped(read(t + k * 4, 4)) for k in range(8)) >= 2]
-        return not tables or any(self._list_shaped(read(t + scene * 4, 4)) for t in tables)
+        return [t for t in self._spawner_tables(spawner)
+                if sum(self._list_shaped(read(t + k * 4, 4)) for k in range(8)) >= 2]
+
+    def _has_list(self, tables, scene):
+        return any(self._list_shaped(self.mem.read(t + scene * 4, 4)) for t in tables)
 
     def _list_shaped(self, pointer):
         """Whether `pointer` holds 16-byte scene records ending in SCENE_END,
@@ -1099,8 +1307,11 @@ class World:
         """Every room the area's scene spawner has a table for, each run
         from the state the area opened in, into `rooms`."""
         base = self.snapshot()
-        rooms = {}
+        rooms, tables = {}, {}
+        found = self._scene_tables(spawner)
         for scene in range(1, MAX_SCENES):
+            tables[scene] = (len(self.scene_records(spawner, scene))
+                             if found and self._has_list(found, scene) else None)
             if not self._scene_listed(spawner, scene):
                 continue
             self.restore(base)
@@ -1116,6 +1327,8 @@ class World:
             self.room_trails[scene] = dict(self.trail_slots)
         self.restore(base)
         self.rooms = rooms
+        last = max((s for s, n in tables.items() if n is not None), default=0)
+        self.room_tables = {s: n for s, n in tables.items() if s <= last}
 
     def spawn_events(self, handlers, frames=FRAMES, budget=BUDGET, reach=UNPLACED):
         """Each of `handlers` no run reached, stood up alone on a bare record
@@ -1178,8 +1391,16 @@ class World:
                     mem.write(queue, 4, actor.address)
                     mem.write(actor.address + ACTIVE, 1, 1)
                     mem.write(QUEUE_HELD, 1, 1)
-                    mem.write(QUEUE_COUNT, 2, 1)
-                    mem.write(QUEUE_LIST, 4, queue)
+                    held5 = routine == CLASS5_QUEUE
+                    mem.write(QUEUE5_COUNT if held5 else QUEUE_COUNT, 2, 1)
+                    mem.write(QUEUE5_LIST if held5 else QUEUE_LIST, 4, queue)
+                    if held5:
+                        # Its handler marks records the camera sees (+0x70
+                        # bits, FUN_A0K__8010FDD8); the editor has no camera.
+                        mem.write(actor.address + SEEN_RECORDS, 4, 0xFFFFFFFF)
+                        # Its records are sprites: nothing else draws them.
+                        for address in SPRITE_DRAWERS:
+                            cpu.hooks.pop(address, None)
                 cpu.gte.capture = {}
                 self.running = actor.address
                 try:
@@ -1188,16 +1409,27 @@ class World:
                     pass
                 finally:
                     self.running = None
+                    cpu.hooks.update({address: _draw_nothing for address in PART_DRAWERS})
                 return self._read_primitives(ot, cpu.gte.capture)
 
             for actor in list(self.actors if actors is None else actors):
                 lines, polys, passes, painters = [], [], [], []
+                # A class-5 area drawer stands the actor on each of its own
+                # records in turn: its polygons are where the records say.
+                placed = []
                 for offset in (DRAW, CALLBACK):
                     routine = mem.read(actor.address + offset, 4)
                     if self._code(routine) and not (offset == CALLBACK and actor.dead):
                         passes.append((offset, routine))
-                if mem.read(actor.address + RENDER_KIND, 1) in QUEUED_KINDS:
+                kind = mem.read(actor.address + RENDER_KIND, 1)
+                if kind in QUEUED_KINDS:
                     passes.append((None, CLASS4_QUEUE))
+                elif actor.handler >= OVERLAY_BASE and (
+                        kind in QUEUED5_KINDS or self._class5_drawn(actor.handler)):
+                    # MAIN's own kind 0x1F is the persistent pickup manager
+                    # (FUN_8004CC88), whose crystals the scene draws already.
+                    mem.write(actor.address + RENDER_KIND, 1, min(QUEUED5_KINDS))
+                    passes.append((None, CLASS5_QUEUE))
                 # Only a drawer that reads the frame counter is probed for UV steps.
                 counted = [False]
                 if actor.uv_frames is None:
@@ -1214,7 +1446,7 @@ class World:
                         continue
                     drawn_lines, drawn_polys = draw(actor, offset, routine)
                     lines.extend(drawn_lines)
-                    polys.extend(drawn_polys)
+                    (placed if routine == CLASS5_QUEUE else polys).extend(drawn_polys)
                     if drawn_polys:
                         painters.append((offset, routine))
                     if drawn_lines or drawn_polys:
@@ -1248,6 +1480,8 @@ class World:
                             moved.append((tuple(tuple(c) for c in corners), uvs, colours,
                                           clut, blended, page))
                     polys = moved
+                polys.extend((tuple(tuple(c) for c in corners), uvs, colours, clut, blended, page)
+                             for corners, uvs, colours, clut, blended, page in placed)
                 if lines or polys:
                     found[id(actor)] = (actor, lines, polys)
         except EmuError:
@@ -1271,6 +1505,31 @@ class World:
             actor.lines = tuple(found[id(actor)][1]) if id(actor) in found else ()
             actor.polys = tuple(found[id(actor)][2]) if id(actor) in found else ()
         return len(found)
+
+    def _class5_drawn(self, handler):
+        """Whether a handler queues itself for class 5 with render kind 0x1F -
+        drawn by the area's own routine - whenever its camera test passes
+        (A0K's berries): it stores 0x1F to +0x0B and calls
+        f_QueueClass5ActorForRender."""
+        cache = self.__dict__.setdefault("_class5_cache", {})
+        if handler in cache:
+            return cache[handler]
+        found, set_kind, value = False, False, {}
+        read = self.mem.read
+        if self._code(handler):
+            for n in range(1, 400):
+                word = read(handler + n * 4, 4)
+                if word >> 16 == PROLOGUE and word & 0x8000:
+                    break
+                op, rs, rt, imm = word >> 26, (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
+                if op == ADDIU and rs == 0:
+                    value[rt] = imm
+                elif op == 0x28 and imm == RENDER_KIND and value.get(rt) in QUEUED5_KINDS:
+                    set_kind = True
+                elif op == 3 and ((word & 0x3FFFFFF) << 2 | 0x80000000) == QUEUE_CLASS5:
+                    found = True
+        cache[handler] = found and set_kind
+        return cache[handler]
 
     def _uv_frames(self, paint):
         """{CLUT word: ((du, dv), ...)} - one period, a frame each, of how the
@@ -1566,6 +1825,18 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     if not records and spawner:
         say("no records: entering scene 0")
         world.enter_scene(spawner, area_number, 0)
+    elif not records:
+        with open(overlay_path, "rb") as f:
+            controller = find_scene_controller(f.read())
+        if controller is not None:
+            say(f"no records: running scene controller 0x{controller:08X}, "
+                f"its cutscene played for {CUTSCENE_FRAMES} frame(s)")
+            world.run_controller(controller)
+            world.skip_messages = True
+            frames = max(frames, CUTSCENE_FRAMES)
+        else:
+            say("no records: running Tomba himself")
+            world.add_player()
     say(f"running the area, {frames} frame(s)")
     world.run(frames)
     say("the area stood up", world.actors)
@@ -1581,6 +1852,9 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         gated = world.spawn_area_gated(spawner, frames)
         say("gated", gated)
     world.harvest()
+    world.record_clips()
+    if world.clips:
+        say(f"{len(world.clips)} moving effect(s) recorded, {CLIP_FRAMES} frame(s) each")
     if spawner:
         say("running every room")
         world.run_rooms(spawner, area_number, frames)
@@ -1761,6 +2035,21 @@ def _xy(word):
 
 def _rgb(colour):
     return tuple(((colour >> shift) & 0xFF) / 255.0 for shift in (0, 8, 16))
+
+
+def find_scene_controller(overlay):
+    """A table-less overlay's scene controller - SOP.BIN's intro,
+    0x80109458: a per-frame state machine that starts a cooperative worker
+    and stands the scene's actors up itself with f_AllocateActorRecordByType.
+    The first routine calling both, or None."""
+    count = len(overlay) // 4
+    words = struct.unpack_from(f"<{count}I", overlay)
+    starts = [n for n, w in enumerate(words) if w >> 16 == PROLOGUE and w & 0x8000]
+    for s, e in zip(starts, starts[1:] + [count]):
+        called = {(w & 0x3FFFFFF) << 2 | 0x80000000 for w in words[s:e] if w >> 26 == 3}
+        if START_WORKER in called and ALLOCATE_RECORD in called:
+            return OVERLAY_BASE + s * 4
+    return None
 
 
 def find_scene_spawner(overlay):

@@ -89,6 +89,10 @@ SIM_FRAMES = 8
 # drawn as part of it; further than this it gets a row of its own - the
 # harbour's sea plants belong to a seesaw but stand across the water.
 CHILD_REACH = 2500.0
+# A spawned child with this many parts, none from its parent's files, is a
+# character of its own and gets its own row (SOP's 0x8010B2D4, 12 parts).
+CHARACTER_PARTS = 8
+CHARACTER_APART = 500.0
 
 # The sprite banks a simulated actor can draw from - see
 # gui/level/pickup_sprites.py.
@@ -155,6 +159,14 @@ MERGE_REACH = 2000.0
 ENVIRONMENT_ID = 0x2000
 # And what an actor's draw routine put out as textured polygons, from here.
 DRAWN_ID, DRAWN_END = 0x3000, 0x4000
+# Game frames a second - a recorded effect clip plays a frame each.
+CLIP_HZ = 30
+
+
+def interior_name(scene):
+    """A room by the game's own interior number (src_Interior), which is its
+    scene index less one."""
+    return f"interior {scene - 1}"
 
 
 @dataclass
@@ -270,6 +282,13 @@ class Instance:
     scene: int = None
     # A sprite object's picture, drawn beside the model its code also built.
     object_sprite: bool = False
+    # An actor that draws nothing, marked where it stands so it can be found.
+    marker: bool = False
+    # A code-drawn effect played as a flipbook: the head row carries every
+    # frame's instance, in order (itself first); each other frame carries
+    # (head, frame number) and has no row of its own - see record_clips.
+    flip_frames: tuple = ()
+    flip: tuple = None
     # Four view-space corners its picture is stretched across instead of
     # facing the camera - a kind-0x14 quad such as a rope.
     quad: tuple = None
@@ -315,6 +334,11 @@ class Instance:
     def movable(self):
         # Something spawned is where its spawner puts it.
         return self.role not in ("room", "spawned")
+
+    @property
+    def marked(self):
+        """Whether it gets a marker when it has no geometry."""
+        return self.movable or self.marker
 
     @property
     def drawn_as_sprite(self):
@@ -748,6 +772,9 @@ class LevelScene:
         self.background = None          # a BGMPFile, or None
         self.notes = []                 # what didn't load, for the panel
         self.progress = FRESH
+        # scene -> records in its table, None for no table - see
+        # actor_sim.World.run_rooms; rooms with nothing drawn still listed.
+        self.room_tables = {}
 
     # --- loading ------------------------------------------------------
 
@@ -871,6 +898,9 @@ class LevelScene:
             return tuple(int(v) for v in np.round(mean / MOVED))
 
         def key(instance):
+            if instance.flip_frames or instance.flip is not None:
+                # A recorded effect's particles are random: it is its name.
+                return ("flip", instance.label.replace("⧖ ", ""), instance.scene)
             frames = tuple(f.frame for f in getattr(instance.art, "frames", None) or ())
             return (instance.role, instance.label.replace("⧖ ", ""),
                     tuple(tuple(s) for s in instance.sources
@@ -912,6 +942,12 @@ class LevelScene:
             self.instances.append(instance)
             added.append(instance)
         for instance in added:
+            if instance.flip is not None:
+                head = index.get(instance.flip[0])
+                instance.flip = None if head is None else (head, instance.flip[1])
+            if instance.flip_frames:
+                instance.flip_frames = tuple(index[i] for i in instance.flip_frames
+                                             if index.get(i) is not None)
             if instance.follow is not None:
                 parent = index.get(instance.follow[0])
                 instance.follow = None if parent is None else (parent, instance.follow[1])
@@ -1035,6 +1071,8 @@ class LevelScene:
     def _actor_name(self, actor):
         """A handler's name - or, for a chest or an item some code stood
         up, what it is and what it gives."""
+        if actor.player:
+            return "Tomba (the player)"
         read = self.world.mem.read if self.world is not None else None
         handler = actor.born[0] if actor.born else actor.handler
         if read is not None and handler == actor_sim.CHEST_HANDLER:
@@ -1337,6 +1375,8 @@ class LevelScene:
         self.lines, drew = [], set()
         drawn = {}                  # (owner, scene) -> textured polygons
         stepped = {}                # (owner, scene) -> {CLUT word: UV steps}
+        clipped = {}                # (owner, scene) -> {family with a clip}
+        clips = self.world.clips if self.world is not None else {}
 
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
@@ -1344,7 +1384,12 @@ class LevelScene:
                 if id(actor) in drew or not (actor.lines or actor.polys):
                     continue
                 drew.add(id(actor))
-                if actor.polys:
+                family = self.world.family(actor) if actor.polys and clips else None
+                if family in clips and scene is None:
+                    # Drawn frame by frame from its clip instead.
+                    clipped.setdefault((owner, scene), set()).add(family)
+                    drawn.setdefault((owner, scene), [])
+                elif actor.polys:
                     drawn.setdefault((owner, scene), []).extend(actor.polys)
                     stepped.setdefault((owner, scene), {}).update(actor.uv_frames or {})
                 for a, b, color_a, color_b, blended in actor.lines:
@@ -1374,8 +1419,26 @@ class LevelScene:
                 if (actor.record is None and actor.spawner is None
                         and actor.pickup is None
                         and actor.worker not in actor_sim.SHARED_WORKERS):
-                    loose.append((f"scene: {self._actor_name(actor)}",
-                                  actor_sim.subtree(world, actor)))
+                    # A child built of other files, standing apart, is a
+                    # character of its own (SOP: the intro Tomba's script
+                    # brings 0x8010B2D4 on) - not a creature frozen in its block.
+                    tree = actor_sim.subtree(world, actor)
+                    own = {p.source[0] for p in actor.parts}
+
+                    def near_head(a):
+                        if a is actor or a.position is None or actor.position is None:
+                            return True
+                        return not (len(a.parts) >= CHARACTER_PARTS
+                                    and not own & {p.source[0] for p in a.parts}
+                                    and np.linalg.norm(a.position - actor.position)
+                                    > CHARACTER_APART)
+                    near = [a for a in tree if near_head(a)]
+                    loose.append((f"scene: {self._actor_name(actor)}", near))
+                    loose.extend((f"scene: {self._actor_name(a)}",
+                                  [x for x in actor_sim.subtree(world, a)
+                                   if x not in near])
+                                 for a in tree if a not in near
+                                 and self.world.by_address.get(a.spawner) in near)
         for record in self.placements:
             states = self.sprite_classes.get(record.handler) or ()
             actor = by_record.get(id(record))
@@ -1628,6 +1691,7 @@ class LevelScene:
 
         # The rooms: every scene the area's spawner has a table for, run
         # as the game runs it when Tomba walks in (functions/actor_sim.py).
+        self.room_tables = dict(getattr(world, "room_tables", {}) or {})
         for scene, actors in sorted((world.rooms if world is not None
                                      else {}).items()):
             within = {a.address for a in actors}
@@ -1636,14 +1700,23 @@ class LevelScene:
                     continue
                 tree = actor_sim.subtree(world, root, actors)
                 gate = self._gate_note(root)
-                label = (f"{'⧖ ' if gate else ''}room {scene}: "
+                label = (f"{'⧖ ' if gate else ''}{interior_name(scene)}: "
                          f"{self.handler_name(root.handler)}")
                 posed = self._posed(tree, root, root.position, 0, label)
-                if posed is None:
-                    continue
-                note = (f"room {scene} (interior {scene - 1}), from its scene "
-                        f"table<br>{posed.note}" + (f"<br>{gate}" if gate else ""))
                 x, y, z = view_point(root.position)
+                if posed is None:
+                    # Draws nothing - a door trigger, a talk spot: marked.
+                    if not any(a.lines or a.polys for a in tree):
+                        instances.append(Instance(
+                            index=len(instances), role="spawned",
+                            label=f"{label} (draws nothing)", x=x, y=y, z=z,
+                            marker=True, scene=scene,
+                            note=f"{interior_name(scene)}, from its scene table: "
+                                 f"its code ran and drew nothing"
+                                 + (f"<br>{gate}" if gate else "")))
+                    continue
+                note = (f"{interior_name(scene)}, from its scene "
+                        f"table<br>{posed.note}" + (f"<br>{gate}" if gate else ""))
                 follow = None
                 if posed.sources:
                     follow = len(instances)
@@ -1658,7 +1731,7 @@ class LevelScene:
                     rx, ry, rz = view_point(rider.position)
                     instances.append(Instance(
                         index=len(instances), role="spawned",
-                        label=f"room {scene}: {rider.label}", art=rider.art,
+                        label=f"{interior_name(scene)}: {rider.label}", art=rider.art,
                         x=rx, y=ry, z=rz, note=note, scene=scene,
                         follow=(follow, number) if follow is not None else None))
 
@@ -1707,22 +1780,47 @@ class LevelScene:
         # What draw routines put out as textured polygons - A01's chains - a
         # model each, already in world coordinates.
         if drawn:
-            for number, ((owner, scene), polys) in enumerate(drawn.items()):
-                model = drawn_model(polys, view_point, stepped.get((owner, scene)))
-                if model is None:
+            number = 0
+            for (owner, scene), polys in drawn.items():
+                families = sorted(clipped.get((owner, scene), ()), key=repr)
+                frames = [polys]
+                if families:
+                    frames = [list(polys) + [p for f in families for p in clips[f][n]]
+                              for n in range(len(clips[families[0]]))]
+                models = [drawn_model(f, view_point, stepped.get((owner, scene)))
+                          for f in frames]
+                if not any(models):
                     continue
-                self.models[DRAWN_ID + number] = model
                 head = (instances[owner].label if owner is not None
-                        else f"room {scene}" if scene is not None else "the area")
-                cx, cy, cz = np.mean(np.asarray(model["vertices"], dtype=np.float64), axis=0)
-                instances.append(Instance(
-                    index=len(instances), role="spawned",
-                    label=f"{head}: drawn by its code",
-                    sources=((DRAWN_ID + number, 0),), authored=True, scene=scene,
-                    x=float(cx), y=float(cy), z=float(cz), name=f"{head}: drawn by its code",
-                    note=f"{len(polys)} textured polygon(s) its draw routine put out "
-                         f"(actor_sim.capture_lines), on the page their packets name"
-                         + (", UVs stepped by the frame counter" if model["uv_frames"] else "")))
+                        else interior_name(scene) if scene is not None else "the area")
+                every = np.concatenate([np.asarray(m["vertices"], dtype=np.float64)
+                                        for m in models if m])
+                cx, cy, cz = every.mean(axis=0)
+                first = len(instances)
+                for frame, model in enumerate(models):
+                    sources = ()
+                    if model is not None:
+                        self.models[DRAWN_ID + number] = model
+                        sources = ((DRAWN_ID + number, 0),)
+                        number += 1
+                    note = (f"{len(polys)} textured polygon(s) its draw routine put out "
+                            f"(actor_sim.capture_lines), on the page their packets name"
+                            + (", UVs stepped by the frame counter"
+                               if model and model["uv_frames"] else ""))
+                    if families:
+                        note = (f"a moving effect: {len(frames)} frames of what its code "
+                                f"draws, run on as the game runs it (actor_sim.record_clips)"
+                                f" and played back at {CLIP_HZ} a second")
+                    instances.append(Instance(
+                        index=len(instances), role="spawned",
+                        label=f"{head}: drawn by its code"
+                              + (f" (frame {frame})" if frame else ""),
+                        sources=sources, authored=True, scene=scene,
+                        x=float(cx), y=float(cy), z=float(cz),
+                        name=f"{head}: drawn by its code", note=note,
+                        flip=(first, frame) if frame else None))
+                if families:
+                    instances[first].flip_frames = tuple(range(first, len(instances)))
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():
@@ -1956,7 +2054,7 @@ class LevelScene:
         the list and nothing at all in the view."""
         positions, colors = [], []
         for instance in self.instances:
-            if (not instance.movable or instance.face_count
+            if (not instance.marked or instance.face_count
                     or instance.index in hidden):
                 continue
             if instance.drawn_as_sprite:
