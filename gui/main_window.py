@@ -1,6 +1,9 @@
 import os
 import re
 import struct
+import json
+import shutil
+import tempfile
 import numpy as np
 from PyQt6.QtCore import Qt, QSettings, QItemSelectionModel
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup, QIcon, QImage, QPixmap, QColor, QBrush
@@ -25,7 +28,7 @@ from gui.scld.scld_viewer import SCLDViewer, SCLDDebugPanel
 from gui.scld.scld_parser import find_area_scld_location
 from gui.anmp.anmp_viewer import ANMPViewer
 from gui.anmp import game_rest
-from functions import pairings
+from functions import handler_models, pairings
 from functions import psx_vram
 from gui.smst import smst_parser
 from gui.smst.smst_viewer import SMSTViewer, SMSTPanel
@@ -316,6 +319,7 @@ class MainWindow(QMainWindow):
         # aren't enough, since everything besides DAT/IDX/IMG needs to be
         # carried over from the source image too).
         self.current_iso_path = None
+        self._project_snapshot_path = None
 
         # The names on the tree's file rows, and where they came from.
         # `labels` is whichever labels file is in force; `labels_override`
@@ -371,6 +375,12 @@ class MainWindow(QMainWindow):
         export_files_action.setToolTip("Rebuild TOMBA2.DAT and TOMBA2.IDX with all pending TXTD/TXT2 edits applied")
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
+
+        save_project_action = QAction("Save Translation Project...", self)
+        save_project_action.setToolTip(
+            "Create a persistent working folder containing the current "
+            "text, font page, MAIN.EXE and character assignments")
+        save_project_action.triggered.connect(self.save_translation_project)
 
         export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Save BIN", self)
         export_bin_action.setToolTip(
@@ -446,6 +456,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(export_action)
         file_menu.addAction(export_bin_action)
         file_menu.addAction(export_files_action)
+        file_menu.addAction(save_project_action)
         file_menu.addAction(export_iso_action)
 
         font_menu = self.menuBar().addMenu("F&ont Page")
@@ -739,16 +750,30 @@ class MainWindow(QMainWindow):
             self.vram_viewer.set_vram_bytes(
                 vram_bytes, name or self.vram_viewer.source_name)
 
-    def _bones_for_model(self, model, chunk_index):
+    def _bones_for_model(self, model, chunk_index, address=None):
         """The skeleton this model is built on, or None.
 
-        Without an animation there is no limb count to search by, so
-        every size the model could plausibly be is tried and fit picks
-        between them - the same measurement the ANMP viewer uses, just
-        with the model's own group count standing in for what the frames
-        would otherwise say."""
+        Prefer bone tables passed with this exact SDAT model file by the
+        game's actor initializer. Without that code association, try every
+        plausible size and retain the older geometric fallback."""
         if not model or not model.get("groups"):
             return None
+        bindings = self._model_skeletons(chunk_index).get(address, ())
+        if bindings:
+            choices = []
+            blocks = game_rest.mesh_blocks(model)
+            for binding in bindings:
+                if binding.limb_count > len(model["groups"]):
+                    continue
+                bones = [tuple(row) for row in binding.bones]
+                grade = game_rest.fit(bones, model, blocks)
+                choices.append((grade if grade is not None else float("inf"),
+                                binding.offset, binding.source, bones))
+            if choices:
+                grade, offset, source, bones = min(choices)
+                print(f"[SMST] export skeleton: exact actor-code binding "
+                      f"{source} 0x{offset:X}, fit {grade:.2f}")
+                return bones
         counts = list(range(min(len(model["groups"]), 32), 1, -1))
         try:
             found = game_rest.best_for(
@@ -976,7 +1001,7 @@ class MainWindow(QMainWindow):
                         break
         return out
 
-    def _smst_candidates(self, limit=400):
+    def _smst_candidates(self, current_area=None, limit=400):
         """Every SMST on the disc, as (label, address, size) - what the
         animation viewer offers as models to pose. Taken off the tree,
         which has already typed and named everything, deduped by
@@ -987,6 +1012,7 @@ class MainWindow(QMainWindow):
         model = self.tree_view.model()
         if model is None:
             return []
+        rows = []
         found = []
         seen = set()
 
@@ -1000,19 +1026,71 @@ class MainWindow(QMainWindow):
                 if not data or data[1] != "SMST":
                     continue
                 address, content = data[2], data[4]
-                if content in seen:
-                    continue
                 entry = child.data(Qt.ItemDataRole.UserRole) or ()
                 size = entry[3] if len(entry) > 3 else 0
                 if isinstance(entry[0], str):        # a trail row
                     size = entry[2]
                 if not size:
                     continue
-                seen.add(content)
-                found.append((child.text(), address, size))
+                rows.append((0 if self._area_chunk_index(child) == current_area else 1,
+                             address, content, child.text(), size))
 
         walk(model.invisibleRootItem())
+        for _near, address, content, label, size in sorted(rows):
+            if content in seen:
+                continue
+            seen.add(content)
+            found.append((label, address, size))
         return found[:limit]
+
+    def _model_skeletons(self, chunk_index):
+        """Exact code-derived skeleton choices keyed by SMST DAT address.
+
+        An area's actor initialization calls put the model file id and bone
+        table pointer in the same instruction sequence. Unlike geometric
+        fitting, this only associates combinations the game itself uses.
+        """
+        overlay = self.overlay_for_area(chunk_index)
+        exe = getattr(self.mainexe_viewer, "exe_path", None)
+        if chunk_index is None or not overlay or not exe:
+            return {}
+        cache = getattr(self, "_model_skeleton_cache", None)
+        if cache is None:
+            cache = self._model_skeleton_cache = {}
+        key = (exe, overlay)
+        if key not in cache:
+            try:
+                cache[key] = handler_models.model_skeleton_bindings(exe, overlay)
+            except (OSError, ValueError, struct.error) as error:
+                print(f"[ANMP] could not read code model/skeleton pairs: {error}")
+                cache[key] = {}
+        by_id = cache[key]
+        if not by_id:
+            return {}
+
+        out = {}
+        model = self.tree_view.model()
+        if model is None:
+            return out
+
+        def walk(node):
+            for row in range(node.rowCount()):
+                child = node.child(row)
+                if child.hasChildren():
+                    walk(child)
+                    continue
+                data = row_label_data(child)
+                entry = child.data(Qt.ItemDataRole.UserRole) or ()
+                if (not data or data[1] != "SMST"
+                        or self._area_chunk_index(child) != chunk_index
+                        or not entry or not isinstance(entry[0], int)):
+                    continue
+                bindings = by_id.get(entry[0])
+                if bindings:
+                    out[data[2]] = bindings
+
+        walk(model.invisibleRootItem())
+        return out
 
     def rename_row(self, item, name):
         """A row was renamed in the tree. Names live in the labels file,
@@ -2385,10 +2463,14 @@ class MainWindow(QMainWindow):
             exe = b""
         self.build, why = dicts.detect(page, exe)
         translation.use_build(self.build)
+        # A project keeps its character assignments beside the extracted
+        # CD files. Apply them before TXTD and MAIN.EXE are parsed, as
+        # those parsers cache decoded strings for their editors.
+        translation.load(cd_folder)
         print(f"Build: {self.build} - {why}")
 
     def _font_page_saved(self):
-        """Reload whatever is showing the VRAM the font page lives in.
+        """Reload previews and VRAM views after a font-page save.
 
         Also marks the IMG as needing to travel with the next export -
         see img_dirty.
@@ -2401,6 +2483,10 @@ class MainWindow(QMainWindow):
         self.img_dirty = True
         self._refresh_edit_status()
         self._area_vram_cache = {}
+        cd_folder = self._font_page_folder()
+        if cd_folder:
+            self.mainexe_viewer.reload_preview_font(
+                cd_folder, self.preview_glyph_top())
         selected = self.tree_view.selectionModel().selectedIndexes()
         if selected:
             # Re-run the selection, which is what loaded them in the
@@ -2924,6 +3010,179 @@ class MainWindow(QMainWindow):
             self.bins_viewer.mark_exported()
         self._refresh_edit_status()
 
+    def save_translation_project(self):
+        """Snapshot translation work into a reopenable project folder.
+
+        BIN/ISO input is extracted to a temporary directory, which is a
+        poor place to keep a long-running translation: the character
+        table, font page and pending text can otherwise end up in three
+        unrelated locations.  A project deliberately contains only the
+        files translation needs, not a second 400 MB disc image:
+
+            project/\n
+                tomba2project.json\n
+                CD/TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG, tombadict.json\n
+                MAIN.EXE   (when this disc has one)
+
+        The project folder can be opened directly through "Open extracted
+        disc folder". Saving back into the currently open project is an
+        in-place save: files are staged first, then the editor is rebased
+        onto them so a later save cannot apply the same edits twice.
+        """
+        if not getattr(self, "dat_file", None):
+            QMessageBox.information(
+                self, "No disc open", "Open a Tomba! 2 disc first.")
+            return False
+
+        project_dir = QFileDialog.getExistingDirectory(
+            self, "Choose an empty or existing translation project folder")
+        if not project_dir:
+            return False
+        cd_dir = os.path.join(project_dir, "CD")
+        try:
+            os.makedirs(cd_dir, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(self, "Project save failed", str(exc))
+            return False
+
+        edits = self._pack_pending_txtd_edits()
+        if edits is None:
+            return False
+        edits += self._pack_pending_file_edits()
+        source_cd = os.path.dirname(self.dat_file)
+        source_idx = os.path.join(source_cd, "TOMBA2.IDX")
+        mainexe_edits = self.mainexe_viewer.all_edits()
+        in_place = (os.path.normcase(os.path.abspath(source_cd))
+                    == os.path.normcase(os.path.abspath(cd_dir)))
+
+        try:
+            from functions.repacker import repack_files
+            output_dat = os.path.join(cd_dir, "TOMBA2.DAT")
+            output_idx = os.path.join(cd_dir, "TOMBA2.IDX")
+            output_img = os.path.join(cd_dir, "TOMBA2.IMG")
+            exe_path = self.mainexe_viewer.exe_path
+            output_exe = os.path.join(project_dir, "MAIN.EXE") if exe_path else None
+
+            # Always write a complete snapshot somewhere separate first.
+            # Besides avoiding half-written projects, this makes source ==
+            # destination safe on Windows (shutil.copy2 otherwise raises
+            # SameFileError for an already-open project).
+            with tempfile.TemporaryDirectory(
+                    prefix=".tomba2project-", dir=project_dir) as stage:
+                stage_cd = os.path.join(stage, "CD")
+                os.makedirs(stage_cd)
+                stage_dat = os.path.join(stage_cd, "TOMBA2.DAT")
+                stage_idx = os.path.join(stage_cd, "TOMBA2.IDX")
+                stage_img = os.path.join(stage_cd, "TOMBA2.IMG")
+
+                if edits:
+                    repack_files(self.dat_file, source_idx, edits,
+                                 stage_dat, stage_idx)
+                else:
+                    shutil.copy2(self.dat_file, stage_dat)
+                    shutil.copy2(source_idx, stage_idx)
+
+                img = self._edited_img()
+                if img is None:
+                    shutil.copy2(os.path.join(source_cd, "TOMBA2.IMG"),
+                                 stage_img)
+                else:
+                    with open(stage_img, "wb") as f:
+                        f.write(img)
+
+                stage_exe = None
+                if exe_path:
+                    stage_exe = os.path.join(stage, "MAIN.EXE")
+                    if mainexe_edits:
+                        mainbin_repack_pool(
+                            exe_path, self.mainexe_viewer.entries,
+                            mainexe_edits, stage_exe)
+                    else:
+                        shutil.copy2(exe_path, stage_exe)
+
+                from gui.txtd import translation
+                translation.save(stage_cd, translation.active())
+                manifest = {
+                    "format": "tomba2edit-translation-project",
+                    "version": 1,
+                    "cd_folder": "CD",
+                    "main_exe": "MAIN.EXE" if exe_path else None,
+                    "source_image": self.current_iso_path,
+                }
+                stage_manifest = os.path.join(stage, "tomba2project.json")
+                with open(stage_manifest, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+                os.replace(stage_dat, output_dat)
+                os.replace(stage_idx, output_idx)
+                os.replace(stage_img, output_img)
+                os.replace(os.path.join(stage_cd, "tombadict.json"),
+                           os.path.join(cd_dir, "tombadict.json"))
+                if stage_exe:
+                    os.replace(stage_exe, output_exe)
+                os.replace(stage_manifest,
+                           os.path.join(project_dir, "tomba2project.json"))
+
+        except Exception as exc:
+            QMessageBox.critical(self, "Project save failed", str(exc))
+            return False
+
+        if in_place:
+            # The source files have just been replaced. Drop the old
+            # decoded/edit caches and reopen those exact saved files, or a
+            # second save would apply the same pending edits a second time.
+            self.pending_txtd_edits.clear()
+            self.pending_file_edits.clear()
+            self.txtd_file_states.clear()
+            self.txtd_viewer.clear_cache()
+            self.txt2_viewer.clear_cache()
+            self.bins_viewer.clear_cache()
+            self.dat_file = output_dat
+            parse_idx_file(self, cd_dir)
+            self._load_mainexe(output_exe)
+            self.img_dirty = False
+            self._refresh_edit_status()
+
+        self._project_snapshot_path = project_dir
+        QMessageBox.information(
+            self, "Translation project saved",
+            "Your working copy is now self-contained:\n\n"
+            f"    {project_dir}\n\n"
+            "To continue later, choose File > Open extracted disc folder "
+            "and select this project folder. It contains the character "
+            "table and font page with the translated text, so no separate "
+            "letters.json or temporary extraction is needed.")
+        return True
+
+    def _confirm_project_before_close(self, event):
+        """Return False when the user cancels a close of temporary work."""
+        if self.current_iso_path and not self._project_snapshot_path:
+            from gui.txtd import translation
+            has_work = (self.img_dirty or self.pending_txtd_edits
+                        or self.pending_file_edits
+                        or self.mainexe_viewer.has_pending_edits()
+                        or self.bins_viewer.has_pending_edits()
+                        or translation.active().chars)
+            if has_work:
+                answer = QMessageBox.question(
+                    self, "Save translation project first?",
+                    "This disc was opened from an image, so its extracted "
+                    "files are temporary. Closing now can lose the font "
+                    "page, character assignments, and untranslated edits.\n\n"
+                    "Yes - save a persistent Translation Project now\n"
+                    "No - close and discard the temporary working copy\n"
+                    "Cancel - stay in the editor",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes)
+                if answer == QMessageBox.StandardButton.Yes:
+                    if not self.save_translation_project():
+                        return False
+                elif answer != QMessageBox.StandardButton.No:
+                    return False
+        return True
+
     @staticmethod
     def _area_chunk_index(item):
         """The AREA_NN number a file row sits under (its folder's parent,
@@ -2982,6 +3241,23 @@ class MainWindow(QMainWindow):
         empty = own == 0
         own[empty] = shared[:own.size][empty]
         return bytearray(own.tobytes())
+
+    def _anmp_model_vram(self, address, current_area):
+        """VRAM from an SMST's own area, even in another area's ANMP view.
+
+        A trail model can be reachable from several areas; prefer the area
+        being edited when it is one of them, otherwise use the first area
+        that actually loads the model.  Falling back to the ANMP's area is
+        only for old/custom indexes without membership metadata.
+        """
+        areas = sorted((getattr(self, "area_membership", None) or {}).get(
+            address, ()))
+        area = (current_area if current_area in areas else
+                areas[0] if areas else current_area)
+        if area is None:
+            return None
+        vram = self._load_area_vram_bytes(area, merge_common=True)
+        return (vram, vram_index_image(vram) if vram else None, area)
 
     def count_items(self, item):
         count = 0
@@ -3121,6 +3397,7 @@ class MainWindow(QMainWindow):
         self.mainexe_viewer.clear_cache()
         self.bins_viewer.clear_cache()
         self.current_iso_path = None
+        self._project_snapshot_path = None
         self._refresh_edit_status()
 
         try:
@@ -3167,6 +3444,8 @@ class MainWindow(QMainWindow):
         """Open an already-extracted CD folder directly, no ISO needed.
         Accepts either the parent folder (with a CD subfolder) or the CD
         folder itself."""
+        # A different folder may carry a different saved translation.
+        self._translation_loaded = False
         folder = QFileDialog.getExistingDirectory(
             self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
         )
@@ -3213,6 +3492,7 @@ class MainWindow(QMainWindow):
             self.iso_handler.cleanup()
         self.iso_handler = None
         self.current_iso_path = None
+        self._project_snapshot_path = None
         self.pending_txtd_edits.clear()
         self.pending_file_edits.clear()
         self.txtd_file_states.clear()
@@ -3231,12 +3511,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this folder:\n\n{e}")
             return
 
-        # MAIN.EXE sits alongside the CD folder (one level up from
-        # TOMBA2.DAT/IDX/IMG), not inside it - confirmed against a real
-        # extracted Tomba! 2 folder layout - but also check cd_folder
-        # itself in case some other extraction puts it there instead.
+        # MAIN.EXE usually sits alongside the CD folder.  When the user
+        # selects CD itself, ``folder`` and ``cd_folder`` are identical,
+        # so its parent must be checked explicitly as well.  Otherwise a
+        # valid project opens with an empty, apparently unusable MAIN.EXE
+        # tab despite project/MAIN.EXE being present.
         mainexe_path = None
-        for candidate_dir in (folder, cd_folder):
+        for candidate_dir in (folder, cd_folder, os.path.dirname(cd_folder)):
             candidate = os.path.join(candidate_dir, "MAIN.EXE")
             if os.path.exists(candidate):
                 mainexe_path = candidate
@@ -3450,6 +3731,9 @@ class MainWindow(QMainWindow):
         self._refresh_edit_status()
 
     def closeEvent(self, event):
+        if not self._confirm_project_before_close(event):
+            event.ignore()
+            return
         if self.iso_handler:
             self.iso_handler.cleanup()
         # The Movies tab has a decoder thread of its own, and Qt takes
@@ -3937,7 +4221,8 @@ class MainWindow(QMainWindow):
                                 # itself still shows the packed model.
                                 self.smst_viewer.export_name = _export_name(selected_item)
                                 self.smst_viewer.export_bones = self._bones_for_model(
-                                    self.smst_viewer.model_data, chunk_index)
+                                    self.smst_viewer.model_data, chunk_index,
+                                    dat_start + offset)
                                 # The area's animated textures - an asset
                                 # pack animates out of the same overlay
                                 # table its room does, and off the same
@@ -3975,12 +4260,24 @@ class MainWindow(QMainWindow):
                                 self.anmp_viewer.export_name = _export_name(selected_item)
                                 self.anmp_viewer.load_anmp_data(
                                     self.dat_file, dat_start + offset, entry_size,
-                                    candidates=self._smst_candidates(),
+                                    candidates=self._smst_candidates(chunk_index),
                                     vram_bytes=vram_bytes,
                                     vram_image=(vram_index_image(vram_bytes)
                                                 if vram_bytes else None),
                                     area_membership=self.area_membership,
                                     current_area=chunk_index,
+                                    resource_id=id,
+                                    overlay_path=self.overlay_for_area(chunk_index),
+                                    model_skeletons=self._model_skeletons(chunk_index),
+                                    # The main loop waits two video blanks per
+                                    # simulation update. Sequence durations are
+                                    # update ticks, hence 25 PAL / 30 NTSC.
+                                    tick_rate=(25 if self.build in {
+                                        "eu-retail", "fr-retail", "de-retail",
+                                        "sp-retail", "it-retail"} else 30),
+                                    model_vram_provider=(
+                                        lambda model_address, area=chunk_index:
+                                        self._anmp_model_vram(model_address, area)),
                                     preferred=self._preferred_models(selected_item))
                             else:
                                 QMessageBox.critical(self, "Error", "DAT file not loaded.")

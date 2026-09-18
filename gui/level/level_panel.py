@@ -83,7 +83,10 @@ class LevelEditorPanel(QWidget):
         self.viewer.part_changed.connect(self._on_part_selected)
 
         self.area_box = QComboBox(self)
-        self.area_box.setMinimumWidth(240)
+        self.area_box.setMinimumWidth(340)
+        self.area_box.setMinimumContentsLength(30)
+        self.area_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.area_box.currentIndexChanged.connect(self._on_area_changed)
 
         # Area or one of its rooms. Inside, the game never draws the
@@ -91,7 +94,10 @@ class LevelEditorPanel(QWidget):
         # spawns (functions/actor_sim.py) - so a room is shown alone.
         self._filling_views = False
         self.view_box = QComboBox(self)
-        self.view_box.setMinimumWidth(160)
+        self.view_box.setMinimumWidth(300)
+        self.view_box.setMinimumContentsLength(26)
+        self.view_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.view_box.setToolTip(
             "Which part of the area to show. The area is the level Tomba "
             "walks around; a room is what the game draws once he walks "
@@ -101,6 +107,10 @@ class LevelEditorPanel(QWidget):
 
         # Which game the actors run in - see LevelScene.load.
         self.progress_box = QComboBox(self)
+        self.progress_box.setMinimumWidth(170)
+        self.progress_box.setMinimumContentsLength(14)
+        self.progress_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for label, value in (("Both", BOTH), ("Fresh game", FRESH),
                              ("Events done", EVENTS_DONE)):
             self.progress_box.addItem(label, value)
@@ -198,13 +208,13 @@ class LevelEditorPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         # Area on the left, Progress in the middle, Rooms on the right.
         top.addWidget(QLabel("Area", self))
-        top.addWidget(self.area_box)
+        top.addWidget(self.area_box, 3)
         top.addStretch(1)
         top.addWidget(QLabel("Progress", self))
-        top.addWidget(self.progress_box)
+        top.addWidget(self.progress_box, 1)
         top.addStretch(1)
         top.addWidget(QLabel("Rooms", self))
-        top.addWidget(self.view_box)
+        top.addWidget(self.view_box, 3)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)

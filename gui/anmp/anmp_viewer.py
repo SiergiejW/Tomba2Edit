@@ -1,8 +1,9 @@
 """ANMP viewer - the animation tables, played on a model.
 
-Left, the frames: one row each, with the shape its tag declares. Right,
-an SMST posed by whichever frame is selected, and a transport under it
-to scrub or play through them.
+Left, either the raw poses or steps of a decoded game animation. Right,
+an SMST posed by the selected step and a transport to scrub or play it.
+sequences.py reads clip boundaries, timing and links from MAIN.EXE or
+area overlays; raw ANMP order remains available as a separate mode.
 
 An ANMP does not say which model it animates - nothing in the file
 points at an SMST - so the model is chosen from a list of the ones on
@@ -13,7 +14,7 @@ gui/anmp/skeleton.py).
 """
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QMessageBox, QPushButton, QSlider, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -27,8 +28,10 @@ from gui.anmp.anmp_parser import (
 from gui.anmp.skeleton import (
     SPARES, hierarchy_for, pose_transforms, rest_pivots, rest_pose)
 from gui.anmp import game_rest
+from gui.anmp import sequences
 from gui.smst.smst_parser import load_smst
 from gui.smst.smst_viewer import SMSTViewer
+import time
 
 # HOW FAST AN ANIMATION REALLY RUNS
 #
@@ -36,30 +39,31 @@ from gui.smst.smst_viewer import SMSTViewer
 # sequence of 8-byte entries - a u16 frame index at +0, and at +6 a
 # halfword whose low 12 bits are how many TICKS to hold that frame.
 # f_AdvanceActorSkeletalAnimation counts that down one a tick, and while
-# it is above zero it steps the tween instead of loading a new pose. So
-# the game draws every vblank and varies only how long a frame is held.
+# it is above zero it steps the tween instead of loading a new pose. The
+# main scheduler waits two vblanks per game update (DAT_1f800235 = 2),
+# so those ticks run at 30 Hz NTSC or 25 Hz PAL.
 #
 # Read off the ghost guard's own table (A06.BIN 0x44B5C, the address its
 # code hands to f_StartActorSkeletalAnimationBlend), and off the other
 # characters' candidates:
 #
 #     hold  rate   where
-#      1t   60fps  the ghost guard's attacks - a new pose every vblank
-#      2t   30fps
-#      3t   20fps  Tabby, all 44 of her entries
-#      4t   15fps  the commonest by far - 117 of 130 in one table,
+#      1t   30fps  the ghost guard's attacks - a new pose every update
+#      2t   15fps
+#      3t   10fps  Tabby, all 44 of her entries
+#      4t   7.5fps the commonest by far - 117 of 130 in one table,
 #                  135 of 159 in the anemone's, 89 of 105 in a koma pig's
-#      6t   10fps  the ghost guard's slow idles
+#      6t    5fps  the ghost guard's slow idles
 #     8-12t        rare, long holds
 #
 # So the pair below is one point on a curve rather than a constant, and
-# what stays fixed is their PRODUCT: fps x blend = 60, because the blend
+# what stays fixed is their PRODUCT: fps x blend = 30 on NTSC, because the blend
 # is spread across exactly the ticks the frame is held (FUN_80075ff8
 # divides the step by the tick count, FUN_80075f0c adds one a tick).
-# 15 x 4 is the disc's commonest hold, and renders at the 60Hz the game
-# does. 10 x 6 is right for a slow idle, 60 x 1 for an attack - and at a
+# 7.5 x 4 is the disc's commonest hold. 5 x 6 is right for a slow idle,
+# 30 x 1 for an attack - and at a
 # 1-tick hold there is no tween at all.
-DEFAULT_FPS = 15
+DEFAULT_FPS = 10
 DEFAULT_STEPS = 3
 
 # How much of an animation's limbs a model has to have parts for before
@@ -94,6 +98,16 @@ class ANMPViewer(QWidget):
         self._area_membership = {}        # address -> {chunk_index, ...}
         self._current_area = None
         self._preferred = []              # (label, address, size), best first
+        self._model_skeletons = {}        # SMST address -> code-derived bindings
+        self._banks = []
+        self._clip = None
+        self._frames_by_id = {}
+        self._sequence_base = None
+        self._loading_anmp = False
+        self._model_vram_provider = None
+        self._clip_scales = []
+        self._inherit_scales = True
+        self._clock_last = None
 
         self.viewer = SMSTViewer()
         self.viewer.spread_action.setChecked(False)
@@ -105,8 +119,8 @@ class ANMPViewer(QWidget):
         self.viewer.export_action.triggered.connect(self.export_gltf)
         self.viewer.export_action.setToolTip(
             "Write the posed model out as a rigged, animated glTF - the "
-            "model, the skeleton it is being posed on, and every frame "
-            "of this animation, with the palettes baked into textures.")
+            "selected game clip (one traversal, with recorded timing), or "
+            "all poses in raw mode, with the palettes baked into textures.")
 
         self.frames_table = QTableWidget(0, 4)
         self.frames_table.setHorizontalHeaderLabels(["Frame", "Limbs", "Tag", "Offset"])
@@ -118,6 +132,21 @@ class ANMPViewer(QWidget):
             QHeaderView.ResizeMode.ResizeToContents)
         self.frames_table.horizontalHeader().setStretchLastSection(True)
         self.frames_table.itemSelectionChanged.connect(self._on_frame_selected)
+
+        self.bank_box = QComboBox()
+        self.bank_box.addItem("All poses (raw ANMP)", None)
+        self.bank_box.currentIndexChanged.connect(self._on_bank_changed)
+        self.clip_box = QComboBox()
+        self.clip_box.currentIndexChanged.connect(self._on_clip_changed)
+        self.clip_box.setEnabled(False)
+        self.sequence_info = QLabel("Open an ANMP to browse its poses.")
+        self.sequence_info.setWordWrap(True)
+        self.find_sequences_button = QPushButton("Find NPC sequence candidates")
+        self.find_sequences_button.setToolTip(
+            "Search this area's overlay for sequence tables compatible with "
+            "these poses. Compatibility does not prove which NPC owns a table.")
+        self.find_sequences_button.clicked.connect(self._find_sequences)
+        self.find_sequences_button.setEnabled(False)
 
         self.limbs_table = QTableWidget(0, 4)
         self.limbs_table.setHorizontalHeaderLabels(["Limb", "X", "Y", "Z"])
@@ -136,34 +165,16 @@ class ANMPViewer(QWidget):
 
         self.model_box = QComboBox()
         self.model_box.setToolTip(
-            "Which model to pose. An ANMP doesn't name one, so this is a "
-            "choice, not a fact - the default is the model this ANMP's "
-            "own area actually uses, or otherwise the first with enough "
-            "groups for the frames' limbs. Type to search by name or "
-            "offset.")
-        # Editable + a substring completer turns the plain dropdown into
-        # a search box without adding a second widget: typing "55F54"
-        # or "zippo" narrows the popup the same way the tree's search
-        # does, and choosing a match still fires currentIndexChanged
-        # exactly as picking one with the mouse always did.
-        self.model_box.setEditable(True)
-        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        completer = QCompleter(self.model_box.model(), self.model_box)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        completer.setCompletionMode(
-            QCompleter.CompletionMode.PopupCompletion)
-        self.model_box.setCompleter(completer)
+            "Models associated with this animation by labels, packing, or "
+            "the actor-initialization code. Unrelated SMST files are omitted.")
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
 
         self.skeleton_box = QComboBox()
         self.skeleton_box.setToolTip(
-            "Which bone table to pose on. The default is the one that "
-            "best fits this model, but fit is a measurement and it gets "
-            "it wrong - it cannot separate a character's costume "
-            "variants, and a character's own table sometimes scores "
-            "worse than a stranger's. Every candidate is listed, best "
-            "fit first, so a wrong pick can be walked past by eye.")
+            "Which bone table to pose on. When game-code bindings are "
+            "available this contains only tables that the game actually "
+            "passes with the selected model; older builds fall back to "
+            "geometric matching.")
         self.skeleton_box.currentIndexChanged.connect(self._on_skeleton_changed)
 
         self.variation_box = QComboBox()
@@ -194,9 +205,18 @@ class ANMPViewer(QWidget):
         self.play_button.setCheckable(True)
         self.play_button.toggled.connect(self._on_play_toggled)
 
+        self.autoplay_box = QCheckBox("Autoplay")
+        self.autoplay_box.setChecked(True)
+        self.autoplay_box.setToolTip(
+            "Start playback when an ANMP opens or another animation is "
+            "selected. Turning this off does not interrupt a clip already "
+            "playing.")
+
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setMinimum(0)
         self.slider.valueChanged.connect(self.show_position)
+        self.slider.sliderPressed.connect(self._reset_clock)
+        self.slider.sliderReleased.connect(self._reset_clock)
 
         self.fps_box = QSpinBox()
         self.fps_box.setRange(1, 60)
@@ -205,11 +225,11 @@ class ANMPViewer(QWidget):
         self.fps_box.setToolTip(
             "Table frames a second - how often a NEW pose is loaded, not "
             "how often the screen is drawn.\n\n"
-            "The game holds a frame for a whole number of vblanks, so the "
-            "real rates are 60 divided by that: 60, 30, 20, 15, 10. Its "
-            "commonest hold is 4 ticks, which is 15. Set blend to match "
-            "(fps x blend = 60) and playback runs at the speed and the "
-            "smoothness the game does.")
+            "The game updates once per two vblanks, so the real NTSC rates "
+            "are 30 divided by the hold: 30, 15, 10, 7.5, 5. Its "
+            "commonest hold is 4 ticks, or 7.5 new poses/second. Set blend "
+            "to match (fps x blend = 30) for raw playback with the same "
+            "update cadence as the game.")
         self.fps_box.valueChanged.connect(self._retime)
 
         self.steps_box = QSpinBox()
@@ -220,9 +240,9 @@ class ANMPViewer(QWidget):
             "How many poses to render between one table frame and the next, "
             "easing between them instead of snapping.\n\n"
             "The game holds each frame for a number of ticks written beside "
-            "it and eases across exactly those ticks, drawing every vblank - "
-            "so keep blend x fps = 60. 15fps x4 is the disc's commonest "
-            "hold, 10fps x6 a slow idle, 60fps x1 an attack (no easing at "
+            "it and eases across exactly those game updates - so keep blend "
+            "x fps = 30 on NTSC. 15fps x2 is a common hold, 5fps x6 a slow "
+            "idle, 30fps x1 an attack (no easing at "
             "all). 1 shows the frames exactly as stored.")
         self.steps_box.valueChanged.connect(self._on_steps_changed)
 
@@ -230,6 +250,7 @@ class ANMPViewer(QWidget):
         self.frame_label.setMinimumWidth(130)
 
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._advance)
 
         self.rest_button = QPushButton("Reset pose")
@@ -238,20 +259,33 @@ class ANMPViewer(QWidget):
             "rotation applied, which is what the animation moves from.")
         self.rest_button.clicked.connect(self.show_rest)
 
-        transport = QHBoxLayout()
+        transport = QVBoxLayout()
         transport.setContentsMargins(8, 4, 8, 4)
-        transport.addWidget(self.play_button)
-        transport.addWidget(self.rest_button)
-        transport.addWidget(self.slider, 1)
-        transport.addWidget(self.frame_label)
-        transport.addWidget(self.steps_box)
-        transport.addWidget(self.fps_box)
+        transport.setSpacing(3)
+        timeline = QHBoxLayout()
+        timeline.setContentsMargins(0, 0, 0, 0)
+        timeline.addWidget(self.play_button)
+        timeline.addWidget(self.autoplay_box)
+        timeline.addWidget(self.rest_button)
+        timeline.addWidget(self.slider, 1)
+        timeline.addWidget(self.frame_label)
+        details = QHBoxLayout()
+        details.setContentsMargins(0, 0, 0, 0)
+        details.addWidget(self.steps_box)
+        details.addWidget(self.fps_box)
+        details.addWidget(self.info_label, 1)
+        transport.addLayout(timeline)
+        transport.addLayout(details)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
-        left_layout.addWidget(panel_title.make_panel_title("Frames"))
+        left_layout.addWidget(panel_title.make_panel_title("Animations / poses"))
+        left_layout.addWidget(self.bank_box)
+        left_layout.addWidget(self.clip_box)
+        left_layout.addWidget(self.sequence_info)
+        left_layout.addWidget(self.find_sequences_button)
         left_layout.addWidget(self.frames_table, 3)
         left_layout.addWidget(panel_title.make_panel_title("This frame's limbs (degrees)"))
         left_layout.addWidget(self.limbs_table, 2)
@@ -287,10 +321,6 @@ class ANMPViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(splitter, 1)
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(10, 4, 10, 4)
-        bottom.addWidget(self.info_label)
-        layout.addLayout(bottom)
 
     # --- loading -----------------------------------------------------
 
@@ -315,7 +345,9 @@ class ANMPViewer(QWidget):
     def load_anmp_data(self, dat_file_path, address, size, candidates=None,
                        vram_bytes=None, vram_image=None,
                        area_membership=None, current_area=None,
-                       preferred=None):
+                       preferred=None, resource_id=None, overlay_base=None,
+                       overlay_path=None, model_skeletons=None,
+                       tick_rate=30, model_vram_provider=None):
         """Parse the animation at `address` and show it.
 
         `candidates` is [(label, address, size), ...] of the SMSTs on the
@@ -326,11 +358,20 @@ class ANMPViewer(QWidget):
         comes from. `area_membership` ({address: {chunk_index, ...}})
         and `current_area` only matter for the fallback used when
         nothing is preferred or none of it loads."""
+        self._loading_anmp = True
         self.play_button.setChecked(False)
+        self._clip = None
+        self._where = 0.0
+        self.model = None
+        self._pivots = None
+        self._sequence_base = overlay_base
+        self._sequence_overlay_path = overlay_path
+        self._tick_rate = tick_rate
         try:
             self.anmp = load_anmp(dat_file_path, address, size)
         except (ANMPError, OSError) as e:
             self.anmp = None
+            self._loading_anmp = False
             self._clear(f"Not readable as an animation table: {e}")
             return False
 
@@ -344,32 +385,67 @@ class ANMPViewer(QWidget):
         self._area_membership = area_membership or {}
         self._current_area = current_area
         self._preferred = list(preferred or [])
+        self._model_skeletons = dict(model_skeletons or {})
+        self._model_vram_provider = model_vram_provider
         self.viewer.set_vram(vram_bytes, vram_image)
         self._candidates = list(candidates or [])
+        self._frames_by_id = {f.index: f for f in self.anmp.frames}
+        verified_bank = sequences.tomba_bank(
+            self._skeletons, self.anmp, resource_id)
+        self._banks = ([verified_bank] if verified_bank else
+                       self._sequence_candidates())
+        self.bank_box.blockSignals(True)
+        self.bank_box.clear()
+        self.bank_box.addItem("All poses (raw ANMP)", None)
+        for candidate_bank in self._banks:
+            self.bank_box.addItem(candidate_bank.label, candidate_bank)
+        self.bank_box.blockSignals(False)
+        self.find_sequences_button.setText("Rescan animation tables")
+        self.find_sequences_button.setEnabled(
+            not verified_bank and self._sequence_base is not None)
+        self._on_bank_changed(0)
         self._fill_frames()
         self._fill_models()
         self._rescale_slider()
         self.slider.setValue(0)
-        # Opens on the rest pose rather than on frame 0. The rest pose
-        # is the model as the skeleton alone lays it out, so it is the
-        # thing to look at first: whether the right model got paired
-        # with the right skeleton is visible in it directly, without an
-        # animation on top to confuse a bad pairing with a badly
-        # applied rotation. Picking any frame, or Play, leaves it.
+        # Raw ANMP is deliberately the initial view. Sequence discovery is
+        # useful, but opening a resource must first expose the file itself
+        # rather than silently choosing one inferred clip table.
         self.show_rest()
+        self._loading_anmp = False
+        if self.autoplay_box.isChecked():
+            self.play_button.setChecked(True)
         self._update_info()
         return True
 
     def _clear(self, message):
+        self._clip = None
+        self._frames_by_id = {}
+        self.bank_box.blockSignals(True)
+        self.bank_box.clear()
+        self.bank_box.addItem("All poses (raw ANMP)", None)
+        self.bank_box.blockSignals(False)
+        self.clip_box.clear()
+        self.clip_box.setEnabled(False)
+        self.find_sequences_button.setEnabled(False)
+        self.sequence_info.setText(message)
         self.frames_table.setRowCount(0)
         self.limbs_table.setRowCount(0)
         self.slider.setMaximum(0)
+        self._loading_anmp = False
         panel_title.set_info(self.info_label, message)
 
     def _fill_frames(self):
         self.frames_table.blockSignals(True)
-        self.frames_table.setRowCount(len(self.anmp))
-        for row, f in enumerate(self.anmp.frames):
+        clip = self._clip
+        frames = ([self._frames_by_id[s.pose] for s in clip.steps]
+                  if clip else self.anmp.frames)
+        self.frames_table.setColumnCount(6 if clip else 4)
+        self.frames_table.setHorizontalHeaderLabels(
+            ["Pose", "Limbs", "Tag", "Offset", "Ticks", "Transition"]
+            if clip else ["Pose", "Limbs", "Tag", "Offset"])
+        self.frames_table.setRowCount(len(frames))
+        for row, f in enumerate(frames):
             self.frames_table.setItem(row, 0, QTableWidgetItem(str(f.index)))
             limbs = f"{f.limb_count}" + (" + root" if f.root else "")
             self.frames_table.setItem(row, 1, QTableWidgetItem(limbs))
@@ -380,44 +456,222 @@ class ANMPViewer(QWidget):
                                 "for every limb as well as a rotation")
             self.frames_table.setItem(row, 2, item)
             self.frames_table.setItem(row, 3, QTableWidgetItem(f"0x{f.offset:X}"))
+            if clip:
+                step = clip.steps[row]
+                self.frames_table.setItem(row, 4, QTableWidgetItem(str(step.ticks)))
+                kind = "Tween" if step.blend else "Hold"
+                if row == len(clip.steps) - 1:
+                    kind += (f" / loop to step {clip.loop_start + 1}"
+                             if clip.loop_start is not None else " / end")
+                item = QTableWidgetItem(kind)
+                item.setToolTip(
+                    f"Step {row + 1} @ 0x{step.address:08X}\n"
+                    f"Flags 0x{step.flags:04X}; payloads "
+                    f"0x{step.payload2:04X}, 0x{step.payload4:04X}")
+                self.frames_table.setItem(row, 5, item)
         self.frames_table.blockSignals(False)
 
+    def _on_bank_changed(self, index):
+        self.play_button.setChecked(False)
+        bank = self.bank_box.itemData(index)
+        self.clip_box.blockSignals(True)
+        self.clip_box.clear()
+        if bank:
+            for clip in bank.clips:
+                name = f" — {clip.name}" if clip.name else ""
+                poses = len({step.pose for step in clip.steps})
+                self.clip_box.addItem(
+                    f"0x{clip.id:02X}{name} ({len(clip.steps)} steps) "
+                    f"({poses} poses)", clip)
+        self.clip_box.blockSignals(False)
+        self.clip_box.setEnabled(bool(bank))
+        self._on_clip_changed(0 if bank else -1)
+
+    def _on_clip_changed(self, index):
+        self.play_button.setChecked(False)
+        self._clip = self.clip_box.itemData(index) if index >= 0 else None
+        self._clip_scales = (sequences.scale_states(
+            self._clip, self._frames_by_id) if self._clip else [])
+        self._where = 0.0
+        self.steps_box.setEnabled(self._clip is None)
+        self.fps_box.setEnabled(self._clip is None)
+        if self._clip:
+            bank = self.bank_box.currentData()
+            clip = self._clip
+            ending = (f"loops to step {clip.loop_start + 1}"
+                      if clip.loop_start is not None else "ends on its last pose")
+            caution = "" if bank.verified else "Candidate: NPC association unverified. "
+            self.sequence_info.setText(
+                f"{caution}{len(clip.steps)} steps, {clip.duration} ticks; {ending}. "
+                f"Playback: {self._tick_rate} ticks/s.")
+            self.sequence_info.setToolTip(
+                f"Pointer table @ 0x{bank.address:08X}; first step @ "
+                f"0x{clip.steps[0].address:08X}.\n"
+                "Uses recorded pose IDs, holds, tween flags and links. "
+                "Actor events and gameplay-driven transitions are not simulated. "
+                "Candidate IDs are relative to the displayed table start.")
+        else:
+            self.sequence_info.setText(
+                "All stored poses. No clip boundaries are implied by this order.")
+            self.sequence_info.setToolTip("")
+        if self.anmp:
+            self._fill_frames()
+            self._rescale_slider()
+            self.slider.setValue(0)
+            self.show_position(0)
+            if not self._loading_anmp and self.autoplay_box.isChecked():
+                self.play_button.setChecked(True)
+
+    def _sequence_candidates(self):
+        """Automatically rank the overlay's sequence tables for this ANMP.
+
+        A real table is a contiguous run of pointers to complete eight-byte
+        sequences. Compatibility alone can find several actors sharing one
+        pose archive, so the table using the greatest number of this ANMP's
+        poses leads. The remaining compatible tables stay available rather
+        than being discarded.
+        """
+        if self._sequence_base is None and self._sequence_overlay_path:
+            import os
+            from functions import clut_anim
+            self._sequence_base = clut_anim.folder_base(
+                os.path.dirname(self._sequence_overlay_path))
+        if self._sequence_base is None:
+            return []
+        poses = set(self._frames_by_id)
+        found = []
+        for label, data in self._skeletons:
+            source_base = None
+            if label == "overlay":
+                source_base = self._sequence_base
+            elif label == "MAIN.EXE" and data.startswith(b"PS-X EXE"):
+                import struct
+                source_base = struct.unpack_from("<I", data, 0x18)[0] - 0x800
+            if source_base is None:
+                continue
+            candidates = sequences.candidate_banks(
+                data, source_base, poses, label=label,
+                # Four-pose robe banks genuinely have one animation.
+                # Larger ANMPs require a run of at least three pointers to
+                # keep isolated coincidental words out of the chooser.
+                min_clips=1 if len(poses) <= 4 else 3)
+            for candidate in candidates:
+                candidate.source = label
+            found.extend(candidates)
+
+        def score(bank):
+            used = {step.pose for clip in bank.clips for step in clip.steps}
+            steps = sum(len(clip.steps) for clip in bank.clips)
+            local = getattr(bank, "source", "") == "overlay"
+            return len(used), int(local), len(bank.clips), steps
+
+        found.sort(key=lambda bank: (*score(bank), -bank.address), reverse=True)
+        for index, candidate in enumerate(found):
+            used, _local, clips, _steps = score(candidate)
+            marker = " — best match" if index == 0 else ""
+            source = getattr(candidate, "source", "Overlay")
+            candidate.label = (f"{source} animations @ 0x{candidate.address:08X} — "
+                               f"{clips} clips, {used}/{len(poses)} poses"
+                               f"{marker}")
+        return found
+
+    def _find_sequences(self):
+        if not self.anmp:
+            return
+        self.play_button.setChecked(False)
+        found = self._sequence_candidates()
+        if self._sequence_base is None:
+            self.sequence_info.setText(
+                "Could not identify the overlay's load address; raw poses are available.")
+            return
+        self.find_sequences_button.setEnabled(False)
+        self._banks = found
+        self.bank_box.blockSignals(True)
+        self.bank_box.clear()
+        self.bank_box.addItem("All poses (raw ANMP)", None)
+        for bank in found:
+            self.bank_box.addItem(bank.label, bank)
+        self.bank_box.blockSignals(False)
+        if found:
+            self.bank_box.setCurrentIndex(1)
+        else:
+            self.sequence_info.setText(
+                "No compatible sequence table found in this area's overlay. "
+                "The raw poses remain available.")
+
     def _fill_models(self):
-        """Offer every SMST, and pick the one this animation belongs to.
+        """Offer plausible SMSTs and select the strongest association.
 
-        An ANMP does not say which model it animates, so the auto-pick
-        is inference - see MainWindow._preferred_models, which works it
-        out from the labels and from the order an area packs its files
-        in, and hands the answers down in `preferred`.
-
-        A pairing made on the names is taken as given. One made on the
-        packing order gets a sanity check first, because an area packs
-        plenty of things next to each other that are not a character
-        and its animation: the shared NPC animation in the pipe area
-        sits just below a five-group sea anemone, and without this
-        would be posed on it. The check is deliberately loose - a model
-        needs GROUP_RATIO of the limbs the frames usually rotate, not
-        all of them. Across the 92 pairs this disc's labels can be
-        checked against, the right model never has fewer than 0.89 of
-        them, and demanding all of them costs three correct answers,
-        while the anemone mispairing sits far below at 0.33.
-
-        The group-count ranking below is only the fallback for when
-        nothing was preferred, or none of it could be read."""
+        Named/approved associations lead. After those, a candidate is
+        offered only when the area's executable code initializes that
+        exact model file with a limb count present in this ANMP. Packing
+        adjacency remains a fallback for assets (notably trail files)
+        that the area file table cannot name.
+        """
         self.model_box.blockSignals(True)
         self.model_box.clear()
         needed = max((f.limb_count for f in self.anmp.frames), default=0)
         counts = self.anmp.limb_counts
         usual = counts.most_common(1)[0][0] if counts else 0
+        limb_counts = set(counts)
+        exact_addresses = {
+            address for address, bindings in self._model_skeletons.items()
+            if any(binding.limb_count in limb_counts for binding in bindings)
+        }
+        offered = []
+        seen = set()
+
+        def offer(label, address, size):
+            if address not in seen:
+                seen.add(address)
+                offered.append((label, address, size))
+
+        # Preserve all explicit/name matches, then add only code-compatible
+        # models from this area. This turns a disc-wide random list into a
+        # short list of actual game associations.
+        trusted_preferred = [entry for entry in self._preferred if entry[3]]
+        for label, address, size, _trusted in (
+                trusted_preferred or self._preferred):
+            offer(label, address, size)
         for label, address, size in self._candidates:
+            if address in exact_addresses:
+                offer(label, address, size)
+        if not offered:
+            for label, address, size in self._candidates:
+                if self._current_area in self._area_membership.get(address, ()):
+                    offer(label, address, size)
+        for label, address, size in offered:
             self.model_box.addItem(label, (address, size))
+            source = ("Linked to its skeleton by actor initialization code."
+                      if address in exact_addresses else
+                      "Associated by the resource labels or packing order.")
+            self.model_box.setItemData(
+                self.model_box.count() - 1, source,
+                Qt.ItemDataRole.ToolTipRole)
         self.model_box.blockSignals(False)
 
         print(f"[ANMP] {len(self.anmp)} frames, largest frame needs {needed} "
-              f"limbs. {len(self._candidates)} SMST candidate(s), "
-              f"{len(self._preferred)} preferred.")
+              f"limbs. {len(offered)} relevant SMST candidate(s), "
+              f"{len(exact_addresses)} linked by actor code.")
 
-        for label, address, size, trusted in self._preferred:
+        ordered = []
+        # Name/approved pairings are definitive; among structural matches,
+        # prefer one that is also present in an initialization call.
+        ordered.extend(p for p in self._preferred if p[3])
+        ordered.extend(p for p in self._preferred
+                       if not p[3] and p[1] in exact_addresses)
+        candidate_by_address = {address: (label, address, size, False)
+                                for label, address, size in offered}
+        ordered.extend(candidate_by_address[address]
+                       for _label, address, _size in offered
+                       if address in exact_addresses)
+        ordered.extend(p for p in self._preferred
+                       if not p[3] and p[1] not in exact_addresses)
+        tried = set()
+        for label, address, size, trusted in ordered:
+            if address in tried:
+                continue
+            tried.add(address)
             try:
                 model = load_smst(self._source[0], address, size)
             except Exception:
@@ -428,19 +682,16 @@ class ANMPViewer(QWidget):
                       f"animation but only {parts} groups for {usual} limbs")
                 continue
             print(f"[ANMP] picked {label} (0x{address:X}, {parts} groups) - "
-                  + ("named to match this animation" if trusted
-                     else "packed with this animation"))
+                  + ("named to match this animation" if trusted else
+                     "paired with its skeleton by actor code" if
+                     address in exact_addresses else
+                     "packed with this animation"))
             self._select_model(label, address, size)
-            self._use_model(model)
+            self._use_model(model, address)
             return
 
-        same_area, rest = [], []
-        for entry in self._candidates:
-            _label, address, _size = entry
-            areas = self._area_membership.get(address, ())
-            (same_area if self._current_area in areas else rest).append(entry)
         ranked = []
-        for label, address, size in same_area:
+        for label, address, size in offered:
             try:
                 model = load_smst(self._source[0], address, size)
             except Exception:
@@ -454,23 +705,10 @@ class ANMPViewer(QWidget):
                       f"{len(model['groups'])} groups) - fallback: used in "
                       "this area and big enough")
                 self._select_model(label, address, size)
-                self._use_model(model)
+                self._use_model(model, address)
                 return
 
-        for label, address, size in rest:
-            try:
-                model = load_smst(self._source[0], address, size)
-            except Exception:
-                continue
-            if len(model["groups"]) >= needed:
-                print(f"[ANMP] picked {label} (0x{address:X}, "
-                      f"{len(model['groups'])} groups) - fallback: not used "
-                      "here, first elsewhere on disc that fits")
-                self._select_model(label, address, size)
-                self._use_model(model)
-                return
-
-        if self._candidates:
+        if offered:
             print("[ANMP] nothing offered enough groups - showing the "
                   "first candidate anyway")
             self.model_box.setCurrentIndex(0)
@@ -504,7 +742,7 @@ class ANMPViewer(QWidget):
             return
         address, size = data
         try:
-            self._use_model(load_smst(self._source[0], address, size))
+            self._use_model(load_smst(self._source[0], address, size), address)
         except Exception as e:
             print(f"Could not load the model to pose: {e}")
 
@@ -525,9 +763,19 @@ class ANMPViewer(QWidget):
         self._on_model_changed(index)
         return True
 
-    def _use_model(self, model):
+    def _use_model(self, model, address=None):
         self.model = model
         self.viewer.spread = False
+        if self._model_vram_provider is not None and address is not None:
+            try:
+                supplied = self._model_vram_provider(address)
+                if supplied:
+                    vram_bytes, vram_image, area = supplied
+                    self.viewer.set_vram(vram_bytes, vram_image)
+                    print(f"[ANMP] model textures: AREA_{area:02X} VRAM")
+            except Exception as error:
+                # A missing texture chunk must not make the geometry unusable.
+                print(f"[ANMP] could not load this model's area VRAM: {error}")
         # Which skeleton is this character's is decided by how well each
         # candidate fits THIS model, not by bone count alone - an area's
         # overlay holds one per character and plenty are the same size,
@@ -536,21 +784,67 @@ class ANMPViewer(QWidget):
         counts = self.anmp.limb_counts
         by_frequency = [count for count, _n in counts.most_common()] if counts else []
 
+        # This is the authoritative path: model archive and skeleton table
+        # appear together as arguments to the game's actor initializer.
+        # Some asset archives are genuinely initialized with several rigs;
+        # keep those few alternatives, but never mix in unrelated tables.
+        bound = [binding for binding in self._model_skeletons.get(address, ())
+                 if binding.limb_count in by_frequency]
+        if bound:
+            choices = []
+            blocks = game_rest.mesh_blocks(model)
+            for binding in bound:
+                bones = [tuple(row) for row in binding.bones]
+                grade = game_rest.fit(bones, model, blocks)
+                choices.append((binding.source, binding.offset, bones,
+                                binding.limb_count,
+                                grade if grade is not None else float("inf")))
+            choices.sort(key=lambda row: (row[4], row[1]))
+            approved = self._approved(model, by_frequency)
+            chosen = None
+            if approved:
+                wanted = tuple(tuple(int(v) for v in row)
+                               for row in approved[2])
+                chosen = next((row for row in choices
+                               if tuple(tuple(v for v in bone)
+                                        for bone in row[2]) == wanted), None)
+            chosen = chosen or choices[0]
+            label, offset, bones, limbs, grade = chosen
+            self._inherit_scales = not (
+                "sea anemone" in self.model_box.currentText().casefold()
+                and label.upper().startswith("A04") and limbs == 5)
+            if not self._inherit_scales:
+                print("[ANMP] transform: Sea Anemone custom scale path "
+                      "(scaled joint placement, non-inherited mesh width)")
+            print(f"[ANMP] skeleton: EXACT game-code binding - {label} "
+                  f"0x{offset:X}, {limbs} bones, fit {grade:.2f}")
+            self._fill_skeletons(model, by_frequency, bones,
+                                 exact_choices=choices)
+            self._pose_on(model, bones, limbs)
+            return
+
         # A judgement already made by eye beats any measurement. See
         # functions/pairings.py - fit is right about three quarters of
         # the time, and the quarter it misses is not something anything
         # in the files can settle.
         settled = self._approved(model, by_frequency)
         if settled:
+            self._inherit_scales = True
             label, offset, bones, limbs = settled
             kind = self._type_names.get(game_rest.signature(bones), "Type ?")
             print(f"[ANMP] skeleton: APPROVED pairing - {kind}, {label} "
                   f"0x{offset:X} at {limbs} limbs, {game_rest.describe(bones)}")
-            self._fill_skeletons(model, by_frequency, bones)
+            grade = game_rest.fit(bones, model)
+            self._fill_skeletons(
+                model, by_frequency, bones,
+                exact_choices=[(label, offset, bones, limbs,
+                                grade if grade is not None else float("inf"))],
+                choice_origin="approved pairing")
             self._pose_on(model, bones, limbs)
             return
 
         chosen = game_rest.best_for(self._skeletons, model, by_frequency)
+        self._inherit_scales = True
         if chosen:
             label, offset, bones, limbs, grade, seen = chosen
             kind = self._type_names.get(game_rest.signature(bones), "Type ?")
@@ -585,15 +879,18 @@ class ANMPViewer(QWidget):
                 return label, offset, table, bones
         return None
 
-    def _fill_skeletons(self, model, limb_counts, chosen):
+    def _fill_skeletons(self, model, limb_counts, chosen,
+                        exact_choices=None, choice_origin=None):
         """List every table that could be this model's, best fit first.
 
         The automatic pick is a measurement and it is wrong sometimes -
         it cannot separate a character's costume variants, and the
         armadillo's own table fits worse than a stranger's - so the
         whole pool is offered rather than only the winner."""
-        self._skeleton_choices = game_rest.ranked(
-            self._skeletons, model, limb_counts)
+        self._skeleton_choices = (list(exact_choices)
+                                  if exact_choices is not None else
+                                  game_rest.ranked(
+                                      self._skeletons, model, limb_counts))
         self.skeleton_box.blockSignals(True)
         self.skeleton_box.clear()
         at = 0
@@ -608,9 +905,11 @@ class ANMPViewer(QWidget):
             # rig at different sizes, and choosing between those is a
             # different question from choosing between shapes.
             kind = self._type_names.get(game_rest.signature(bones), "Type ?")
+            origin = (choice_origin or
+                      ("game code" if exact_choices is not None else "inferred"))
             self.skeleton_box.addItem(
                 f"{mark}{kind} - {limbs} bones, {game_rest.describe(bones)}"
-                f", fit {score} - {label} 0x{offset:X}", i)
+                f", fit {score} - {label} 0x{offset:X} — {origin}", i)
         if not self._skeleton_choices:
             self.skeleton_box.addItem("no bone table found", -1)
         self.skeleton_box.setCurrentIndex(at)
@@ -788,7 +1087,7 @@ class ANMPViewer(QWidget):
         self.viewer.model_data = model
         self.viewer.prepare_buffers()
         self.viewer.frame_model()
-        self.show_frame(self.slider.value())
+        self.show_position(self.slider.value())
         self._update_info()
 
     # --- transport ---------------------------------------------------
@@ -808,17 +1107,25 @@ class ANMPViewer(QWidget):
             return
         where = self._where
         self.slider.blockSignals(True)
-        self.slider.setMaximum(max((len(self.anmp) - 1) * self.steps, 0))
-        self.slider.setValue(int(round(where * self.steps)))
+        if self._clip:
+            self.slider.setMaximum(max(self._clip.duration - 1, 0))
+            self.slider.setValue(int(where))
+        else:
+            self.slider.setMaximum(max((len(self.anmp) - 1) * self.steps, 0))
+            self.slider.setValue(int(round(where * self.steps)))
         self.slider.blockSignals(False)
 
     def position(self):
-        """Where the transport is, in table frames, as a float."""
+        """Raw table frames, or recorded game ticks in clip mode."""
         return self._where
 
     def show_frame(self, index):
-        """Jump to a whole frame - what the frame list selects."""
-        self.slider.setValue(int(index) * self.steps)
+        """Jump to a row: a raw pose or a recorded clip step."""
+        value = (self._clip.starts[index] if self._clip
+                 else int(index) * self.steps)
+        self.slider.setValue(value)
+        # Selecting the already-current row must leave the rest pose too.
+        self.show_position(value)
 
     def export_gltf(self):
         """Write model + skeleton + this animation out as one file."""
@@ -834,6 +1141,27 @@ class ANMPViewer(QWidget):
                 "nothing to rig the animation to. The model can still be "
                 "exported on its own from the SMST view.")
             return
+        export_clip = bool(self._clip)
+        if self._clip:
+            choice = QMessageBox(self)
+            choice.setWindowTitle("Export animation scope")
+            choice.setIcon(QMessageBox.Icon.Question)
+            choice.setText("Which animation data should the GLB contain?")
+            clip_button = choice.addButton(
+                "Selected game animation", QMessageBox.ButtonRole.AcceptRole)
+            raw_button = choice.addButton(
+                "All raw ANMP poses", QMessageBox.ButtonRole.ActionRole)
+            choice.addButton(QMessageBox.StandardButton.Cancel)
+            choice.setDefaultButton(clip_button)
+            choice.exec()
+            clicked = choice.clickedButton()
+            if clicked is clip_button:
+                export_clip = True
+            elif clicked is raw_button:
+                export_clip = False
+            else:
+                return
+
         path, unlit = export_dialog.ask_model_path(
             self, "Save animated model", self.export_name or "animation")
         if not path:
@@ -841,12 +1169,34 @@ class ANMPViewer(QWidget):
         try:
             write = (gltf_export.write_gltf if path.lower().endswith(".gltf")
                      else gltf_export.write_glb)
+            frames, fps = self.anmp.frames, self.fps_box.value()
+            if export_clip:
+                # Bake recorded holds/tweens for export; raw-table FPS
+                # must not leak into a game-timed sequence.
+                from gui.anmp.anmp_parser import Frame
+                import math
+                frames = []
+                for tick in range(self._clip.duration):
+                    row, nxt, amount = self._clip.sample(tick)
+                    first = self._frames_by_id[self._clip.steps[row].pose]
+                    second = (self._frames_by_id[self._clip.steps[nxt].pose]
+                              if nxt is not None else None)
+                    rotations, root, scales = blend(first, second, amount)
+                    scales = self._clip_scales[row]
+                    frames.append(Frame(
+                        index=tick, offset=first.offset, tag=first.tag,
+                        limbs=[tuple(v / math.tau * 4096 for v in r)
+                               for r in rotations],
+                        root=tuple(int(round(v)) & 0xFFF for v in root),
+                        scales=[tuple(v * 4096 for v in s) for s in scales]))
+                fps = self._tick_rate
             write(path, model, self.viewer.vram_raw_bytes,
                   groups=model["groups"], bones=self._export_bones,
-                  frames=self.anmp.frames, fps=self.fps_box.value(),
+                  frames=frames, fps=fps,
                   name=self.model_box.currentText() or "model",
                   spares=self._variations,
-                  skip=self.viewer.hidden_groups, unlit=unlit)
+                  skip=self.viewer.hidden_groups, unlit=unlit,
+                  flat_bones=not self._inherit_scales)
         except Exception as e:
             QMessageBox.critical(self, "Export failed",
                                  f"Couldn't write it:\n\n{e}")
@@ -854,7 +1204,7 @@ class ANMPViewer(QWidget):
         QMessageBox.information(
             self, "Exported",
             f"Wrote {len(self._export_bones)} bones and "
-            f"{len(self.anmp)} frames at {self.fps_box.value()}fps.")
+            f"{len(frames)} frames at {fps}fps.")
 
     def show_rest(self):
         """Drop the animation and show the model in its rest pose - the
@@ -881,6 +1231,9 @@ class ANMPViewer(QWidget):
         is on, exactly on one when it isn't."""
         if not self.anmp or not self.model or self._pivots is None:
             return
+        if self._clip:
+            self._show_clip_position(sub)
+            return
         steps = max(self.steps, 1)
         index, part = divmod(int(sub), steps)
         index = max(0, min(index, len(self.anmp) - 1))
@@ -888,16 +1241,46 @@ class ANMPViewer(QWidget):
         frame = self.anmp.frames[index]
         following = (self.anmp.frames[index + 1]
                      if amount and index + 1 < len(self.anmp) else None)
-        rotations, translation, scales = (
-            blend(frame, following, amount) if amount
-            else (frame.rotations(), frame.translation(), frame.scaling()))
+        if amount:
+            rotations, translation, _ignored_scale_lerp = blend(
+                frame, following, amount)
+        else:
+            rotations, translation = frame.rotations(), frame.translation()
+        # Raw mode has no actor/sequence history. Treat each stored pose as
+        # self-contained, but do not invent a scale tween the engine lacks.
+        scales = frame.scaling()
         transforms = pose_transforms(rotations, translation,
                                      self._hierarchy, self._pivots,
-                                     scales=scales)
+                                     scales=scales,
+                                     inherit_scales=self._inherit_scales)
         self.viewer.set_pose(transforms, self._pivots)
         self._where = index + amount
         between = f" + {part}/{steps}" if part else ""
         self.frame_label.setText(f"{index + 1}{between} / {len(self.anmp)}")
+        self._fill_limbs(frame, rotations, translation, scales)
+
+    def _show_clip_position(self, tick):
+        clip = self._clip
+        tick = max(0, min(int(tick), clip.duration - 1))
+        row, nxt, amount = clip.sample(tick)
+        frame = self._frames_by_id[clip.steps[row].pose]
+        following = (self._frames_by_id[clip.steps[nxt].pose]
+                     if nxt is not None else None)
+        rotations, translation, _blended_scales = blend(
+            frame, following, amount)
+        scales = self._clip_scales[row]
+        transforms = pose_transforms(rotations, translation,
+                                     self._hierarchy, self._pivots,
+                                     scales=scales,
+                                     inherit_scales=self._inherit_scales)
+        self.viewer.set_pose(transforms, self._pivots)
+        self._where = tick
+        self.frame_label.setText(
+            f"Pose {frame.index} · step {row + 1}/{len(clip.steps)} · "
+            f"tick {tick + 1}/{clip.duration}")
+        self.frames_table.blockSignals(True)
+        self.frames_table.selectRow(row)
+        self.frames_table.blockSignals(False)
         self._fill_limbs(frame, rotations, translation, scales)
 
     def _on_steps_changed(self):
@@ -939,7 +1322,9 @@ class ANMPViewer(QWidget):
         # 190 of its 192 frames and barely rotates - so it is shown
         # rather than left invisible.
         sizes = frame.scaling() if scales is None else scales
-        stretchy = bool(frame.scales)
+        stretchy = bool(frame.scales) or any(
+            any(abs(axis - 1.0) > 1e-6 for axis in size)
+            for size in (scales or ()))
         columns = 7 if stretchy else 4
         rows = []
         if frame.root:
@@ -1016,7 +1401,9 @@ class ANMPViewer(QWidget):
         rows = self.frames_table.selectionModel().selectedRows()
         if rows:
             self.show_frame(rows[0].row())
-            frame = self.anmp.frames[rows[0].row()] if self.anmp else None
+            frame = (self._frames_by_id[self._clip.steps[rows[0].row()].pose]
+                     if self._clip else
+                     self.anmp.frames[rows[0].row()] if self.anmp else None)
             if frame is not None:
                 print(f"selected: ANMP @ 0x{self.anmp.address:X}  frame "
                       f"{frame.index} @ 0x{self.anmp.address + frame.offset:X}"
@@ -1026,23 +1413,54 @@ class ANMPViewer(QWidget):
     def _on_play_toggled(self, playing):
         set_glyph(self.play_button, "pause" if playing else "play")
         if playing:
+            # Play after Reset pose must apply the selected step immediately.
+            if self._clip and self._clip.advance(self.slider.value()) is None:
+                self.slider.setValue(0)
+            self.show_position(self.slider.value())
             self._retime()
         else:
             self._timer.stop()
+            self._clock_last = None
+
+    def _reset_clock(self):
+        """Make the next timer interval start at the current slider pose."""
+        self._clock_last = time.perf_counter()
 
     def _retime(self):
-        # fps is table frames per second; the blend subdivides each of
-        # them, so the tick rate scales with it and the animation still
-        # takes the same time to play through.
+        # QTimer intervals are integer milliseconds: 1000 // 60 used to
+        # run at 62.5 Hz, and delayed callbacks made animation speed depend
+        # on UI load. The timer now only wakes us; perf_counter decides how
+        # many game ticks really elapsed.
         if self.play_button.isChecked():
-            rate = self.fps_box.value() * max(self.steps, 1)
-            self._timer.start(max(1000 // rate, 1))
+            rate = (self._tick_rate if self._clip else
+                    self.fps_box.value() * max(self.steps, 1))
+            self._play_rate = max(rate, 1)
+            self._clock_last = time.perf_counter()
+            self._timer.start(max(min(1000 // (self._play_rate * 2), 16), 1))
 
     def _advance(self):
         if not self.anmp:
             return
-        end = self.slider.maximum()
-        self.slider.setValue(self.slider.value() + 1 if self.slider.value() < end else 0)
+        now = time.perf_counter()
+        if self._clock_last is None:
+            self._clock_last = now
+            return
+        elapsed = now - self._clock_last
+        count = int(elapsed * self._play_rate)
+        if count < 1:
+            return
+        self._clock_last += count / self._play_rate
+        value = self.slider.value()
+        if self._clip:
+            for _ in range(count):
+                value = self._clip.advance(value)
+                if value is None:
+                    self.play_button.setChecked(False)
+                    return
+            self.slider.setValue(value)
+        else:
+            end = self.slider.maximum() + 1
+            self.slider.setValue((value + count) % end if end else 0)
 
     # --- status ------------------------------------------------------
 

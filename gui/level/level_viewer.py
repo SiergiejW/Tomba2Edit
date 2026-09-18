@@ -123,6 +123,19 @@ FIELD_OF_VIEW = 45.0
 BACKGROUND_PITCH_SPAN = 145.0
 BACKGROUND_ROWS = 1152
 
+
+def clamped_background_pitch(camera_pitch, vertical_span,
+                             field_of_view=FIELD_OF_VIEW):
+    """Stop a BGMP at its top/bottom without stretching its edge texel.
+
+    The background may scroll only while a full viewport still fits inside
+    the picture. Beyond that point the level camera can continue looking,
+    but the picture holds on its last complete window just as a bounded
+    backdrop does.
+    """
+    limit = max(vertical_span / 2.0 - field_of_view / 2.0, 0.0)
+    return max(-limit, min(limit, float(camera_pitch)))
+
 CONTROLS = ("Left-click: select | click it again: the part under the "
             "cursor | F: frame it\n" + CONTROLS_HINT)
 
@@ -1339,9 +1352,9 @@ class LevelViewer(SMSTViewer):
         for name, value in (# The picture is PSX art: its pixels stay pixels.
                             (GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST),
                             (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
-                            # Repeats sideways as the camera turns;
-                            # clamped up and down, since the sky does
-                            # not start again below the ground.
+                            # Repeats sideways as the camera turns. Vertical
+                            # movement is bounded before sampling, with this
+                            # clamp retained only as a rounding safeguard.
                             (GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT),
                             (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)):
             GL.glTexParameteri(GL.GL_TEXTURE_2D, name, value)
@@ -1381,13 +1394,15 @@ class LevelViewer(SMSTViewer):
         # circle. It still moves with the level rather than against it,
         # just at the pace a distant backdrop should.
         parallax = horizontal / 360.0
+        pitch = clamped_background_pitch(
+            self.camera_controls.camera_angle_v, vertical)
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDepthMask(GL.GL_FALSE)
         self.background_program.setUniformValue(
             "halfFov", QVector2D(half * aspect, half))
         self.background_program.setUniformValue(
             "look", QVector2D(-self.camera_controls.camera_angle_h * parallax,
-                              self.camera_controls.camera_angle_v))
+                              pitch))
         self.background_program.setUniformValue(
             "span", QVector2D(horizontal, vertical))
         self.background_program.setUniformValue("picture", 0)

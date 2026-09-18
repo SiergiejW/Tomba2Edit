@@ -48,33 +48,38 @@ _LATIN1_FIRST = 0xA0
 # Encoding is unaffected: encode_bytes() already accepts both spellings,
 # so turning this on changes what you SEE, never what gets written.
 #
-# A cell a translation has claimed shows its letter rather than its
-# number, and that letter types back to the same byte - so once "a" is
-# drawn in cell 0xA0 and named in the Translation tab, "a" is what you
-# write here. Only claimed cells, and only in this mode: a byte that is
-# Latin-1 to a stock disc has to keep meaning that, and 0x41 stays "A"
-# whatever the game table calls cell 0x41.
+# MAIN.EXE is different from the dialogue files in one important way:
+# its small-font renderer subtracts 0x20 from its input byte before it
+# reaches the 8x8 system-font grid.  A translation table still names the
+# physical cell (because TXTD uses that direct cell number), so a claimed
+# cell 0x91 must be stored as 0xB1 in MAIN.EXE.  That preserves the
+# system symbols in cells 0x61..0x72 while making the custom letters in
+# 0x81..0x92 draw correctly.
+#
+# Older versions wrote the direct byte.  It remains readable as a legacy
+# spelling, but any edit/save writes the canonical byte + 0x20 spelling.
 _GLYPH_BYTES = False
 
 
 def _claimed():
-    """({byte: letter}, {latin-1 byte the letter came from}).
+    """(canonical raw-byte->letter, legacy raw-byte->letter, shadowed).
 
-    Claims apply whatever mode the view is in. Gating them on
-    GLYPH-BYTE MODE meant a letter you had just drawn and named still
-    would not type, which reads exactly like the feature not working.
-
-    The second set is what keeps decode and encode inverse. If "o" is
-    claimed for cell 0xA5 then "o" has to mean 0xA5 when typed, so byte
-    0xF3 can no longer be shown as the Latin-1 "o" - it would type back
-    as 0xA5. Those bytes show as {$XX} instead, which is honest and
-    round-trips."""
+    Translation claims name font-page cells.  In MAIN.EXE the canonical
+    stored byte is that cell plus 0x20, because f_DrawSmallMenuText
+    subtracts 0x20 before using the system font.  The direct spelling is
+    retained only to open projects made before this distinction was
+    known; encode_bytes always migrates it to the canonical spelling.
+    """
     from gui.txtd import translation
-    claimed = {code: char for code, char in translation.active().chars.items()
-               if char and len(char) == 1}
-    shadowed = {ord(char) for char in claimed.values()
-                if _LATIN1_FIRST <= ord(char) <= 0xFF}
-    return claimed, shadowed
+    cells = {code: char for code, char in translation.active().chars.items()
+             if char and len(char) == 1 and code + 0x20 <= 0xFF}
+    canonical = {code + 0x20: char for code, char in cells.items()}
+    # A direct byte may be a real legacy letter only where it isn't also
+    # another letter's canonical byte. Canonical bytes always win.
+    legacy = {code: char for code, char in cells.items()
+              if code not in canonical}
+    shadowed = set(canonical) | set(legacy)
+    return canonical, legacy, shadowed
 
 
 def glyph_bytes():
@@ -101,7 +106,7 @@ def decode_bytes(raw):
     if _japanese():
         from gui.txtd import jptext
         return jptext.decode_pool(raw)
-    claimed, shadowed = _claimed()
+    claimed, legacy, shadowed = _claimed()
     out = []
     for b in raw:
         if b == 0x0A:
@@ -110,6 +115,8 @@ def decode_bytes(raw):
             out.append(chr(b))
         elif b in claimed:
             out.append(claimed[b])
+        elif b in legacy:
+            out.append(legacy[b])
         elif b in _INLINE_CONTROL_BYTES:
             out.append(_INLINE_CONTROL_BYTES[b])
         elif b >= _LATIN1_FIRST and not _GLYPH_BYTES and b not in shadowed:
@@ -242,6 +249,10 @@ def encode_bytes(text):
             i += 1
             continue
         if _LATIN1_FIRST <= ord(ch) <= 0xFF:
+            if ord(ch) in _claimed()[2]:
+                raise MainBinParseError(
+                    f"Can't encode Latin-1 character {ch!r}: byte "
+                    f"0x{ord(ch):02X} is reserved by a translation glyph.")
             out.append(ord(ch))
             i += 1
             continue

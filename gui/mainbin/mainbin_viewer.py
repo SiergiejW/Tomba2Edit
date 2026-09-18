@@ -54,6 +54,10 @@ class MainExeViewer(QWidget):
         # offsets only - text lives in self.entries[i]["text"], mutated in place
         self._edited_offsets = set()    # pending edit, not yet exported (orange)
         self._exported_offsets = set()  # edited and exported since (green)
+        # Entries made before the MAIN.EXE codec learned the system-font
+        # offset.  They decode normally, but their custom glyph bytes
+        # must be rewritten on the next save (0x91 -> 0xB1, etc.).
+        self._migration_offsets = set()
         self._original_texts = {}
 
         layout = QVBoxLayout()
@@ -177,6 +181,20 @@ class MainExeViewer(QWidget):
         if self.exe_path:
             self.load_exe(self.exe_path)
 
+    def reload_preview_font(self, cd_folder, glyph_top=None):
+        """Reload the font page and redraw the selected entry.
+
+        A Translation-tab save rewrites TOMBA2.IMG underneath an already
+        constructed FontSheet.  Without this explicit reload the text
+        box has the new Polish character while the preview keeps drawing
+        the old cell pixels until the disc is reopened.
+        """
+        self.preview.set_source(cd_folder, glyph_top)
+        item = self._current_entry_item
+        offset = None if item is None else item.data(ENTRY_LOCATION_ROLE)
+        if offset is not None and offset in self._entries_by_offset:
+            self.preview.set_text(self._entries_by_offset[offset]["text"])
+
     def load_exe(self, exe_path):
         """Scan exe_path's string pool and populate the tree. Safe to call
         again with a new path (e.g. a freshly opened ISO/folder) - fully
@@ -195,6 +213,12 @@ class MainExeViewer(QWidget):
         self.entries = _mainbin_entries(exe_path)
         self._original_texts = {e["offset"]: e["text"] for e in self.entries}
         self._entries_by_offset = {e["offset"]: e for e in self.entries}
+        self._migration_offsets = self._legacy_glyph_offsets(exe_path)
+        if self._migration_offsets:
+            # Saving is required even if the translator does not alter
+            # visible text: these entries need their stored glyph bytes
+            # migrated to the small-font spelling.
+            self.content_changed.emit()
 
         root = self.tree_model.invisibleRootItem()
         categories = categorize_entries(exe_path, self.entries) if self.build is not None else None
@@ -339,6 +363,11 @@ class MainExeViewer(QWidget):
         if offset in self._edited_offsets:
             self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText("Edited - will be included in the next save.")
+        elif offset in self._migration_offsets:
+            self.status_label.setStyleSheet("color: gray;")
+            self.status_label.setText(
+                "Legacy Polish glyph byte - will be corrected for the "
+                "system font on the next save.")
         else:
             self.status_label.setStyleSheet("color: gray;")
             self.status_label.setText("")
@@ -427,7 +456,8 @@ class MainExeViewer(QWidget):
         from its original, edited or already-exported alike."""
         return {
             offset: self._entries_by_offset[offset]["text"]
-            for offset in (self._edited_offsets | self._exported_offsets)
+            for offset in (self._edited_offsets | self._exported_offsets
+                           | self._migration_offsets)
         }
 
     def pending_edits(self):
@@ -438,11 +468,37 @@ class MainExeViewer(QWidget):
         """{offset: text} for every entry differing from the on-disk file - what an export must reapply each time."""
         return self.pending_edits_for_pool()
 
+    def _legacy_glyph_offsets(self, exe_path):
+        """Entries whose displayed text re-encodes to different bytes.
+
+        The old MAIN.EXE editor stored a custom font cell directly.  The
+        game subtracts 0x20 before selecting an 8x8 system glyph, so a
+        Polish cell 0x91 must be stored as 0xB1.  mainbin_parser still
+        reads the old spelling for compatibility; this marks it for an
+        automatic, byte-for-byte-length-preserving migration on Save.
+        """
+        try:
+            with open(exe_path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return set()
+        migrated = set()
+        for entry in self.entries:
+            try:
+                canonical = encode_bytes(entry["text"])
+            except MainBinParseError:
+                continue
+            start = entry["offset"]
+            old = raw[start:start + entry["length"]]
+            if len(canonical) == len(old) and canonical != old:
+                migrated.add(start)
+        return migrated
+
     def has_pending_edits(self):
-        return bool(self._edited_offsets)
+        return bool(self._edited_offsets or self._migration_offsets)
 
     def pending_state(self):
-        return "edited" if self._edited_offsets else None
+        return "edited" if (self._edited_offsets or self._migration_offsets) else None
 
     def pool_overflowing(self):
         if self.build is None:
@@ -470,6 +526,7 @@ class MainExeViewer(QWidget):
         self._entries_by_offset = {}
         self._edited_offsets = set()
         self._exported_offsets = set()
+        self._migration_offsets = set()
         self._original_texts = {}
         self._folders = {}
         self._folder_labels = {}

@@ -7,7 +7,7 @@ for _stream in (sys.stdout, sys.stderr):
     if _stream is not None and hasattr(_stream, "reconfigure"):
         _stream.reconfigure(errors="replace")
 
-version = "0.3.8"
+version = "0.4.0"
 
 
 def _install_crash_report():

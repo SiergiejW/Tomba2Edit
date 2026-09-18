@@ -40,9 +40,9 @@ from PyQt6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QApplication
 
 THEMES = ("modern", "modern_bright", "dark", "bright")
-DEFAULT_THEME = "modern"
-LABELS = {"modern": "Modern (default)", "modern_bright": "Modern Bright",
-          "dark": "Dark (classic)", "bright": "Bright (classic)"}
+DEFAULT_THEME = "dark"
+LABELS = {"dark": "Classic Dark (default)", "bright": "Classic Bright",
+          "modern": "Modern Dark", "modern_bright": "Modern Bright"}
 
 _native_palette = None
 _current_theme = DEFAULT_THEME

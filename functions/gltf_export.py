@@ -346,7 +346,8 @@ def _bone_of(groups, vertex, joints, spares=None):
 
 
 def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
-          fps=DEFAULT_FPS, name="model", spares=None, skip=None, unlit=False):
+          fps=DEFAULT_FPS, name="model", spares=None, skip=None, unlit=False,
+          flat_bones=False):
     """The glTF document and its binary blob, as (dict, bytearray).
 
     `spares` maps a group past the end of the skeleton to the limb it
@@ -500,7 +501,8 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         gltf["extensionsUsed"] = [UNLIT]
 
     if bones:
-        _rig(gltf, buffer, bones, frames, fps, name)
+        (_rig_flat(gltf, buffer, bones, frames, fps, name)
+         if flat_bones else _rig(gltf, buffer, bones, frames, fps, name))
     else:
         gltf["nodes"] = [{"name": name, "mesh": 0}]
         gltf["scenes"] = [{"nodes": [0]}]
@@ -563,10 +565,11 @@ def _rig(gltf, buffer, bones, frames, fps, name):
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": first_bone + i, "path": "rotation"}})
 
-    # Per-limb scale, where the frames carry it - bit 6 of the tag. A
-    # glTF node's scale carries its children the same way the game's
-    # does, so this needs no composing by hand. The sea anemone is 190
-    # frames of it; without this its stalk cannot extend.
+    # Per-limb scale, where the frames carry it - bit 6 of the tag. Clip
+    # export has already expanded the engine's persistent scale state into
+    # every sampled frame. A glTF node carries scale into its children like
+    # the game's generic scaled transform path; the viewer separately
+    # emulates the Sea Anemone actor's special two-pass display routine.
     if any(getattr(f, "scales", None) for f in frames):
         for i in range(len(bones)):
             stretch = np.ones((len(frames), 3), dtype=np.float32)
@@ -577,7 +580,9 @@ def _rig(gltf, buffer, bones, frames, fps, name):
                     stretch[f] = (sz, sy, sx)      # into these axes
             samplers.append({"input": time_accessor,
                              "output": buffer.add(stretch, "VEC3", FLOAT),
-                             "interpolation": "LINEAR"})
+                             # ANMP scale is written to actor state at once;
+                             # unlike rotations it has no tween accumulator.
+                             "interpolation": "STEP"})
             channels.append({"sampler": len(samplers) - 1,
                              "target": {"node": first_bone + i,
                                         "path": "scale"}})
@@ -606,6 +611,78 @@ def _rig(gltf, buffer, bones, frames, fps, name):
             channels.append({"sampler": move_sampler,
                              "target": {"node": node, "path": "translation"}})
 
+    gltf["animations"] = [{"name": "take", "samplers": samplers,
+                           "channels": channels}]
+
+
+def _rig_flat(gltf, buffer, bones, frames, fps, name):
+    """Bake world-space joints for actors whose mesh scale is not inherited.
+
+    A normal glTF hierarchy necessarily passes a parent's scale to both the
+    child's position and its mesh. Sea Anemone code deliberately passes it
+    only to joint placement. Flat animated joints are the exact portable
+    representation: each receives the world translation/rotation and its own
+    scale computed by the same two-pass transform as the viewer.
+    """
+    from gui.anmp.skeleton import pose_transforms
+
+    hierarchy = tuple((f"bone {i}", None if parent < 0 else parent)
+                      for i, (parent, *_offset) in enumerate(bones))
+    pivots = []
+    for parent, x, y, z in bones:
+        local = np.array((z, -y, x), dtype=np.float64)
+        pivots.append(local if parent < 0 else pivots[parent] + local)
+    pivots = np.asarray(pivots, dtype=np.float64)
+
+    nodes = [{"name": name, "mesh": 0, "skin": 0}]
+    first_bone = 1
+    nodes.extend({"name": f"bone_{i}",
+                  "translation": (pivots[i] / UNIT_SCALE).tolist()}
+                 for i in range(len(bones)))
+    gltf["nodes"] = nodes
+    gltf["skins"] = [{"joints": [first_bone + i
+                                  for i in range(len(bones))]}]
+    gltf["scenes"] = [{"nodes": [0] + [first_bone + i
+                                         for i in range(len(bones))]}]
+    if not frames:
+        return
+
+    times = np.arange(len(frames), dtype=np.float32) / float(
+        fps or DEFAULT_FPS)
+    time_accessor = buffer.add(times, "SCALAR", FLOAT, minmax=True)
+    rotations = [np.zeros((len(frames), 4), dtype=np.float32)
+                 for _ in bones]
+    translations = [np.zeros((len(frames), 3), dtype=np.float32)
+                    for _ in bones]
+    scales = [np.ones((len(frames), 3), dtype=np.float32)
+              for _ in bones]
+
+    for f, frame in enumerate(frames):
+        posed = pose_transforms(
+            frame.rotations(), frame.translation(), hierarchy, pivots,
+            scales=frame.scaling(), inherit_scales=False)
+        for i, (matrix, offset) in enumerate(posed):
+            lengths = np.linalg.norm(matrix, axis=0)
+            lengths[lengths < 1e-12] = 1.0
+            pure_rotation = matrix / lengths[np.newaxis, :]
+            rotations[i][f] = _quaternion(pure_rotation)
+            translations[i][f] = offset / UNIT_SCALE
+            scales[i][f] = lengths
+
+    samplers, channels = [], []
+    for i in range(len(bones)):
+        for path, values, interpolation in (
+                ("rotation", rotations[i], "LINEAR"),
+                ("translation", translations[i], "LINEAR"),
+                ("scale", scales[i], "STEP")):
+            samplers.append({"input": time_accessor,
+                             "output": buffer.add(
+                                 values, "VEC4" if path == "rotation" else "VEC3",
+                                 FLOAT),
+                             "interpolation": interpolation})
+            channels.append({"sampler": len(samplers) - 1,
+                             "target": {"node": first_bone + i,
+                                        "path": path}})
     gltf["animations"] = [{"name": "take", "samplers": samplers,
                            "channels": channels}]
 
@@ -692,11 +769,11 @@ def _write_glb(path, gltf, blob):
 
 def write_glb(path, model_data, vram_bytes, groups=None, bones=None,
               frames=None, fps=DEFAULT_FPS, name="model", spares=None,
-              skip=None, unlit=False):
+              skip=None, unlit=False, flat_bones=False):
     """Write a single-file .glb - one file with the textures inside it,
     which is what makes this drag-and-droppable into Blender."""
     gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
-                       name, spares, skip, unlit)
+                       name, spares, skip, unlit, flat_bones)
     gltf["buffers"] = [{"byteLength": len(blob)}]
 
     payload = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
@@ -715,11 +792,11 @@ def write_glb(path, model_data, vram_bytes, groups=None, bones=None,
 
 def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
                frames=None, fps=DEFAULT_FPS, name="model", spares=None,
-               skip=None, unlit=False):
+               skip=None, unlit=False, flat_bones=False):
     """Write a .gltf - JSON with the buffer and textures inlined, for
     when something downstream wants to read it as text."""
     gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
-                       name, spares, skip, unlit)
+                       name, spares, skip, unlit, flat_bones)
     gltf["buffers"] = [{
         "byteLength": len(blob),
         "uri": "data:application/octet-stream;base64,"

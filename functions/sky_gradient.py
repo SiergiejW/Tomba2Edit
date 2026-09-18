@@ -61,10 +61,22 @@ def image(overlay_path, span_degrees=180.0):
     degrees = -span_degrees / 2 + span_degrees * (np.arange(rows) + 0.5) / rows
     screen = SCREEN_CENTRE + ROWS_PER_DEGREE * degrees
     out = np.zeros((rows, 3), dtype=np.float64)
+    painted = np.zeros(rows, dtype=bool)
     for top, bottom, top_colour, bottom_colour in quads:
         inside = (screen >= top) & (screen < bottom)
         t = ((screen[inside] - top) / (bottom - top))[:, None]
         out[inside] = (np.array(top_colour) * (1 - t) + np.array(bottom_colour) * t)
+        painted |= inside
+    # The game never exposes space beyond the first/last full-screen quad:
+    # camera pitch stops first. The editor permits freer looking, so extend
+    # the nearest edge colour instead of revealing the zero-filled (black)
+    # part of this synthetic image before the viewer's own pitch clamp takes
+    # over. This is especially visible in AREA_08's A04 gradient.
+    first = np.flatnonzero(painted)
+    if first.size:
+        lo, hi = first[0], first[-1]
+        out[:lo] = out[lo]
+        out[hi + 1:] = out[hi]
     column = np.clip(np.rint(out), 0, 255).astype(np.uint8)
     return np.repeat(column[:, None, :], IMAGE_WIDTH, axis=1)
 

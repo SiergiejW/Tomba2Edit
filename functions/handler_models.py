@@ -60,8 +60,9 @@ check what it does say against the corrections made by hand.
 import collections
 import os
 import struct
+from dataclasses import dataclass
 
-from functions import clut_anim
+from functions import clut_anim, skeleton
 from functions.mips import LOADS, STORES, Image
 
 # MAIN.EXE is a PS-EXE: a 0x800 header, then the body, loaded where the
@@ -109,7 +110,7 @@ SHIFTS = frozenset(("sll", "srl", "sra"))
 LOOKBACK = 48
 FUNCTION_SPAN = 0x8000
 
-A0, A1, A2 = 4, 5, 6
+A0, A1, A2, A3 = 4, 5, 6, 7
 
 # What a table is indexed by.
 BY_SLOT = "slot"
@@ -197,6 +198,22 @@ class Table(Value):
     def __repr__(self):
         return (f"Table(0x{self.address:08X}, by {self.kind}, "
                 f"{self.stride}-byte)")
+
+
+@dataclass(frozen=True)
+class ModelSkeletonBinding:
+    """One model archive and bone table passed to the actor initializer.
+
+    This is stronger than matching a model to a table by dimensions: all
+    four values came from one call made by the game itself.
+    """
+    file_id: int
+    limb_count: int
+    source: str
+    offset: int
+    bones: tuple
+    call: int
+    target: int
 
 
 def load_exe(path):
@@ -623,6 +640,88 @@ def _fold(name, a, b, shift):
     if name == "slti":
         return int(a < b)
     return None
+
+
+def model_skeleton_bindings(exe_path, overlay_path, overlay_base=None):
+    """Return the skeletons the game binds to each area's model file.
+
+    ``f_InitializeMultiPartActorModel`` receives the limb count in ``a1``,
+    the model archive in ``a2`` and the skeleton table in ``a3``. Calls in
+    an area overlay therefore provide a direct relation between an SDAT file
+    id and its bone table. The initializer address differs between builds,
+    so it is identified as the common call target among calls whose three
+    arguments all validate instead of being hard-coded.
+
+    The result is ``{file_id: [ModelSkeletonBinding, ...]}``. More than one
+    entry is retained because a file can legitimately be initialized with
+    several part counts; callers can select the count used by an ANMP.
+    """
+    exe = load_exe(exe_path)
+    overlay = load_overlay(overlay_path, overlay_base)
+    found = find_attach(exe)
+    tables = collections.Counter(found.values())
+    file_table = (tables.most_common(1)[0][0]
+                  if tables else FILE_TABLE_HINT)
+    reader = Reader((exe, overlay), file_table)
+    images = (("MAIN.EXE", exe), (os.path.basename(overlay_path), overlay))
+    candidates = []
+
+    for _source, image in images:
+        for index in range(len(image.data) // 4):
+            call = image.base + index * 4
+            instruction = image.at(call)
+            if instruction.name != "jal":
+                continue
+            count = reader.argument(call, A1)
+            archive = reader.argument(call, A2)
+            table = reader.argument(call, A3)
+            if (not isinstance(count, Const)
+                    or not 3 <= count.n <= 64
+                    or not isinstance(archive, File)
+                    or archive.offset != 0
+                    or not _is_file_id(archive.file_id)
+                    or not isinstance(table, Const)):
+                continue
+            table_image = reader.image_for(table.n)
+            if table_image is None:
+                continue
+            offset = table.n - table_image.base
+            end = offset + count.n * skeleton.RECORD
+            if offset < 0 or end > len(table_image.data) or offset % 4:
+                continue
+            bones = skeleton.read_table(table_image.data, offset, count.n)
+            if not skeleton.valid_table(bones):
+                continue
+            roots = sum(parent == -1 for parent, *_xyz in bones)
+            moved = sum(bool(x or y or z) for _parent, x, y, z in bones)
+            if (roots > skeleton.most_roots(count.n)
+                    or moved * 2 < count.n
+                    or any(abs(value) > skeleton.REACH
+                           for _parent, *xyz in bones for value in xyz)):
+                continue
+            table_source = ("MAIN.EXE" if table_image is exe
+                            else os.path.basename(overlay_path))
+            candidates.append(ModelSkeletonBinding(
+                archive.file_id, count.n, table_source, offset,
+                tuple(tuple(value for value in row) for row in bones),
+                call, instruction.target))
+
+    if not candidates:
+        return {}
+    # Other routines occasionally happen to receive values that look like
+    # these arguments. The real initializer is the target shared by the
+    # majority of validated calls in every retail build.
+    targets = collections.Counter(binding.target for binding in candidates)
+    initializer = targets.most_common(1)[0][0]
+    out = collections.defaultdict(list)
+    seen = set()
+    for binding in candidates:
+        key = (binding.file_id, binding.limb_count, binding.bones)
+        if binding.target != initializer or key in seen:
+            continue
+        seen.add(key)
+        out[binding.file_id].append(binding)
+    return dict(out)
 
 
 class CodeModels:

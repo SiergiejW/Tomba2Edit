@@ -64,25 +64,21 @@ state caught mid-move holds a rotation a step or two off the frame it
 is heading for, which is worth knowing before reading one as ground
 truth.
 
-SCALE NEEDS NO SEPARATE STEP
+SCALE HAS NO TWEEN STEP
 
-The scale at +0x38 is real - the game stretches bones, and Tomba's
-upper body is 4392/4096 wide in two of the savestates here - but it is
-already inside the matrix at +0x18 by the time a pose is written out:
-in both of those the matrix diagonal reads (4392, 4096, 4096), the
-scale exactly. Across the 23 character arrays in these savestates that
-provably reconstruct, those two bones are the only non-unit scales
-there are, and both agree with their matrix. So multiplying the local
-offset by the parent's scale on top of the matrix double-counts it;
-the rule above is complete as it stands, which is what makes it exact.
+The scale at +0x38 is real and bit-6 ANMP frames write it. The file stores
+three 12-bit values per limb after the rotation; FUN_80076904 shifts each
+left by three, making file value 512 become runtime 4096 (1.0). Ordinary
+frames leave the previous scale untouched. FUN_80075ff8 computes tween
+deltas only for translation and rotation; when its target is a scaled
+frame, the target scale is written immediately rather than interpolated.
 
-Nor is there per-frame scale to apply. An animation frame is three
-rotations a limb plus an optional root translation and nothing else
-(see gui/anmp/anmp_parser.py), and the one part of it left undecoded -
-the frames whose tag sets bit 6 - carries no values anywhere near 4096
-and so is not scale either. Stretch is something the game's own code
-does to a character at runtime, not something written into the
-animation.
+Most scaled actors compose local rotation times scale under the parent's
+matrix. Sea Anemones are a deliberate exception: their A04 routine first
+uses that scaled hierarchy to place joints, then rebuilds world rotations
+without inherited scale and applies each segment's own scale. That keeps a
+stretched stalk long without compounding every ancestor's width into its
+head. See gui/anmp/skeleton.py for both paths.
 
 HOW +0x08 ENCODES THE MATRIX
 

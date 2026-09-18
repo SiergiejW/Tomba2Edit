@@ -202,7 +202,8 @@ def _euler_matrix(rx, ry, rz):
 
 
 def pose_transforms(rotations, translation, hierarchy, pivots,
-                    translation_scale=1.0, scales=None):
+                    translation_scale=1.0, scales=None,
+                    inherit_scales=True):
     """(rotation, offset) per limb, so a vertex v of limb i in the rest
     model poses to `rotation @ (v - pivot) + offset`.
 
@@ -222,33 +223,53 @@ def pose_transforms(rotations, translation, hierarchy, pivots,
     190 of its 192 frames carry scales, from 0.77x to 4.18x.
 
     A game scale is in the bone's own axes, so it permutes into the
-    viewer's the same way an offset does - see game_rest.joints."""
+    viewer's the same way an offset does - see game_rest.joints.
+
+    Sea Anemones use a special renderer.  It first uses the ordinary
+    scaled hierarchy to place each joint, then rebuilds every world
+    rotation without inherited scale and applies only that part's own
+    scale.  `inherit_scales=False` reproduces that split: parent scale
+    still lengthens the chain, but it does not make every descendant's
+    mesh wider as well."""
     # The frame's root move is in the game's axes like everything else,
     # so it takes the same turn game_rest.joints gives the joints.
     x, y, z = translation
     root = np.array((z, -y, x), dtype=np.float64) * translation_scale
 
     out = [None] * len(hierarchy)
+    carriers = [None] * len(hierarchy)
+    unscaled = [None] * len(hierarchy)
     order = sorted(range(len(hierarchy)),
                    key=lambda i: _depth(hierarchy, i))
     for i in order:
         if i >= len(rotations):
             out[i] = (np.eye(3), pivots[i] + root)
+            carriers[i] = np.eye(3)
+            unscaled[i] = np.eye(3)
             continue
-        local = _euler_matrix(*rotations[i])
+        rotation = _euler_matrix(*rotations[i])
+        local_scale = np.eye(3)
         if scales is not None and i < len(scales):
             sx, sy, sz = scales[i]
             if (sx, sy, sz) != (1.0, 1.0, 1.0):
-                local = local @ np.diag((sz, sy, sx))
+                local_scale = np.diag((sz, sy, sx))
+        local = rotation @ local_scale
         parent = hierarchy[i][1]
         if parent is None:
             out[i] = (local, pivots[i] + root)
+            carriers[i] = local
+            unscaled[i] = rotation
         else:
-            prot, poff = out[parent]
-            combined = prot @ local
+            _shown, poff = out[parent]
+            combined = carriers[parent] @ local
             # where this limb's pivot has been carried to by its parent
-            moved = prot @ (pivots[i] - pivots[parent]) + poff
-            out[i] = (combined, moved)
+            moved = (carriers[parent] @ (pivots[i] - pivots[parent])
+                     + poff)
+            carriers[i] = combined
+            unscaled[i] = unscaled[parent] @ rotation
+            shown = (combined if inherit_scales
+                     else unscaled[i] @ local_scale)
+            out[i] = (shown, moved)
     return out
 
 
