@@ -190,6 +190,9 @@ QUEUE5_COUNT, QUEUE5_LIST = 0x1F80015E, 0x1F800158
 QUEUED5_KINDS = frozenset((0x1F,))
 SEEN_RECORDS = 0x70
 QUEUE_CLASS5 = 0x80077EFC           # f_QueueClass5ActorForRender
+GTE_H = 26                          # control register: projection distance
+# How far in screen pixels a sprite piece may lie from its projected point.
+SPRITE_REACH = 160
 QUEUED_KINDS = frozenset((1, 2, 3, 0x16, 0x17))
 # A textured polygon's colour: 0x80 draws the texel as it is.
 NEUTRAL = 128.0
@@ -254,10 +257,13 @@ EFFECT_CLASS = 6
 RENDER_KIND, QUAD_KIND, QUAD_CORNERS = 0x0B, 0x14, 0x60
 PARTS = 0xC0
 DESTROY_STATE = 3
+RENDER_MODE, RENDER_MODE_MASK, SEMI_SWITCH = 0x0D, 0x0B, 0x1B
 # Frames of a code-drawn effect recorded as a clip, after running it this
 # many first so its particles are coming and going steadily - record_clips.
 CLIP_FRAMES = 64
 CLIP_WARMUP = 96
+# Frames on at which a code-drawn family is drawn to see whether it moves.
+CLIP_PROBES = (1, 2, 5, 11)
 
 FRAMES = 4
 BUDGET = 400_000
@@ -297,6 +303,9 @@ class Part:
     position: np.ndarray            # world, game axes
     flags: int = 0
     posed: bool = True              # False: stood in rest pose by us
+    # Its actor's render mode over the model's own blending - see
+    # render_blend: False drawn opaque, True semi-transparent, None as authored.
+    blend: object = None
 
 
 @dataclass
@@ -840,9 +849,12 @@ class World:
         and keep what they draw each frame, where it changes, in `clips`.
         RAM and the actors are left as they were."""
         painters = [a for a in self.actors if a.polys and not a.discarded]
+        drawing = {self.family(a) for a in painters}
         keys = {self.family(a) for a in self.actors if not a.discarded
-                and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS}
-        keys &= {self.family(a) for a in painters}
+                and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS} & drawing
+        # Anything else its code draws is recorded too if a few frames on it
+        # draws something else - a wheel, a flame, a waving flag.
+        keys |= self._moving(drawing - keys, budget)
         if not keys:
             return
         base = self.snapshot()
@@ -874,8 +886,52 @@ class World:
             self.defer_capture = defer
             self.restore(base)
         for key, clip in recorded.items():
-            if len({repr(f) for f in clip}) > 1:
-                self.clips[key] = clip
+            names = [repr(f) for f in clip]
+            if len(set(names)) > 1:
+                # A cycle is kept one period long, so it loops without a seam.
+                period = next((p for p in range(2, len(names) // 2 + 1)
+                               if all(names[k] == names[k % p] for k in range(len(names)))),
+                              len(names))
+                self.clips[key] = clip[:period]
+
+    def _drawn_by(self, keys):
+        """{family: repr of the polygons its live actors draw now}."""
+        live = [a for a in self.actors if not a.dead and self.family(a) in keys]
+        for actor in live:
+            actor.position = self._position(actor.address)
+            actor.silent = {}
+        self.capture_lines(live)
+        drawn = collections.defaultdict(list)
+        for actor in live:
+            drawn[self.family(actor)].extend(actor.polys)
+        return {k: repr(drawn.get(k, ())) for k in keys}
+
+    def _moving(self, keys, budget=BUDGET):
+        """Which of these families draw something different at any of the
+        CLIP_PROBES frames on - several, so a cycle of six (A0L's 101.x cells)
+        is not mistaken for a still. RAM and the actors are left as they were."""
+        if not keys:
+            return set()
+        base = self.snapshot()
+        defer, self.defer_capture = self.defer_capture, False
+        moving = set()
+        try:
+            before = self._drawn_by(keys)
+            for frame in range(1, max(CLIP_PROBES) + 1):
+                if any(isinstance(k, tuple) for k in keys):
+                    self.run_workers(budget)
+                for actor in list(self.actors):
+                    if not actor.dead and self.family(actor) in keys:
+                        self._run_free(actor, budget)
+                if frame in CLIP_PROBES:
+                    now = self._drawn_by(keys - moving)
+                    moving |= {k for k, v in now.items() if v != before[k]}
+                    if moving == keys:
+                        break
+        finally:
+            self.defer_capture = defer
+            self.restore(base)
+        return moving
 
     def _run_free(self, actor, budget):
         """One run of an actor's handler, and nothing put back: one whose code
@@ -1372,6 +1428,11 @@ class World:
         found = {}
         held = {address: cpu.hooks.get(address) for address in PART_DRAWERS}
         cpu.hooks.update({address: _draw_nothing for address in PART_DRAWERS})
+        # The projection distance at the capture depth: a sprite laid out in
+        # screen pixels round a projected point (f_DrawProjectedSpriteDefinition
+        # Stream scales by H / z) comes out a world unit a pixel.
+        screen = cpu.gte.c[GTE_H]
+        cpu.gte.c[GTE_H] = psx_cpu.CAPTURE_DEPTH
         try:
             ot, primitives = self._alloc(OT_SLOTS * 4), self._alloc(PRIMITIVE_BYTES)
             queue = self._alloc(4)
@@ -1494,6 +1555,7 @@ class World:
                 else:
                     cpu.hooks[address] = hook
             cpu.gte.capture = None
+            cpu.gte.c[GTE_H] = screen
             mem.ram[:] = ram
             mem.scratch[:] = scratch
             self.heap = heap
@@ -1575,6 +1637,26 @@ class World:
             out[clut] = tuple(steps[:period])
         return out
 
+    @staticmethod
+    def _sprite_corner(points):
+        """A resolver for corners no vertex projected to: a screen-space sprite
+        piece round the nearest projected point, a pixel a world unit (see
+        capture_lines), or None."""
+        named = list(points.items())
+
+        def resolve(xy):
+            best = None
+            for (nx, ny), point in named:
+                dx, dy = xy[0] - nx, xy[1] - ny
+                if max(abs(dx), abs(dy)) <= SPRITE_REACH and (
+                        best is None or abs(dx) + abs(dy) < best[0]):
+                    best = (abs(dx) + abs(dy), point, dx, dy)
+            if best is None:
+                return None
+            _d, point, dx, dy = best
+            return (point[0] + dx, point[1] + dy, point[2])
+        return resolve
+
     def _read_primitives(self, ot, points):
         """([line], [textured polygon]) linked into the ordering table."""
         out, polys = [], []
@@ -1590,7 +1672,7 @@ class World:
                 except EmuError:
                     break
                 out.extend(line_primitives(words, points))
-                polys.extend(textured_primitives(words, points))
+                polys.extend(textured_primitives(words, points, self._sprite_corner(points)))
                 address = tag & 0xFFFFFF
         return out, polys
 
@@ -1652,6 +1734,19 @@ class World:
         return np.array([s32(read(address + POSITION + k * 4, 4)) / 65536.0
                          for k in range(3)])
 
+    def render_blend(self, address):
+        """What f_DrawActorModelByRenderMode does to an actor's semi-
+        transparency, from its render mode (+0x0D & 0xB): mode 1 turns it off
+        when +0x1B is 0 and on otherwise (the Evil Pig is authored additive and
+        drawn solid, mode 1 with +0x1B 0); mode 3 is colour plus semi-
+        transparency (its teleport fade). None: the model's own packets."""
+        mode = self.mem.read(address + RENDER_MODE, 1) & RENDER_MODE_MASK
+        if mode == 1:
+            return bool(self.mem.read(address + SEMI_SWITCH, 1))
+        if mode == 3:
+            return True
+        return None
+
     def _parts(self, actor, models):
         """Every part with a model. One its code never got round to
         posing - an actor stopped before its first update - is stood in
@@ -1665,6 +1760,7 @@ class World:
         actor.hidden = bool(count and not drawn)
         actor.waiting = actor.ran and read(a + LIFECYCLE, 1) == 0
         count = min(count, drawn)
+        blend = self.render_blend(a)
         turn = struct.unpack("<3h", mem.bytes(a + TURN, 6))
         root_m = rot_xyz(turn)
         root_t = np.array([s32(read(a + POSITION + k * 4, 4)) / 65536.0
@@ -1692,7 +1788,7 @@ class World:
             source = models.get(read(part + 0x40, 4))
             if source is not None:
                 out.append(Part(source, matrix, position, read(part + 0x3E, 2),
-                            posed=any(raw)))
+                            posed=any(raw), blend=blend))
         actor.blank = max(actor.blank, blank)
         return out
 
@@ -1760,6 +1856,8 @@ class Posed:
         self.pieces = list(pieces)
         self.riders = list(riders)
         self.sources = tuple(p.source for p in self.pieces)
+        # Per piece, its actor's render mode over the model's blending.
+        self.blends = tuple(getattr(p, "blend", None) for p in self.pieces)
         self.origin = np.asarray(position, dtype=np.float64)
         self.yaw = yaw
         # Per piece, who drew it: (actor number, handler name, position).
@@ -1984,7 +2082,7 @@ def _draw_nothing(cpu):
     return 0
 
 
-def textured_primitives(words, points):
+def textured_primitives(words, points, resolve=None):
     """[(corners, uvs, colours, CLUT word, blended, page word)] for the
     textured polygons (FT3/FT4/GT3/GT4) in one packet's words, the corners
     the points `points` names. The page word is the second UV's pad: the
@@ -2014,7 +2112,10 @@ def textured_primitives(words, points):
                 clut = uv >> 16
             elif corner == 1:
                 page = uv >> 16
-            corners.append(points.get(_xy(xy)))
+            corner = points.get(_xy(xy))
+            if corner is None and resolve is not None:
+                corner = resolve(_xy(xy))
+            corners.append(corner)
             uvs.append((uv & 0xFF, (uv >> 8) & 0xFF))
             colours.append((1.0, 1.0, 1.0) if code & 0x01 else
                            tuple(((colour >> shift) & 0xFF) / NEUTRAL for shift in (0, 8, 16)))

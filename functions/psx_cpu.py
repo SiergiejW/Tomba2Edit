@@ -282,6 +282,11 @@ class GTE:
         d[12], d[13] = d[13], d[14]
         d[14] = sx | sy << 16
         d[8] = 0x1000
+        # MAC0 as RTPS leaves it at the capture depth: DQA * H/z + DQB, what a
+        # screen-space sprite is scaled by (f_DrawProjectedSpriteDefinitionStream).
+        c = self.c
+        q = min(0x1FFFF, (c[26] & 0xFFFF) * 0x10000 // CAPTURE_DEPTH)
+        d[24] = (s16(c[27]) * q + s32(c[28])) & MASK
 
 
 class CPU:

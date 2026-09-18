@@ -167,6 +167,11 @@ class LevelViewer(SMSTViewer):
                 action.setText("Frame Level")
         self.controls_label.setText(CONTROLS)
 
+        self.gif_action.setToolTip(
+            "Record the selected row alone, framed, over one loop of whatever "
+            "moves it - a recorded effect, a sprite, palettes, UV strips, "
+            "texture cells - as an animated GIF. With nothing selected, the "
+            "whole view.")
         self.show_markers = True
         self.marker_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
@@ -899,6 +904,96 @@ class LevelViewer(SMSTViewer):
     def _toggle_background(self, checked):
         self.show_background = checked
         self.update()
+
+    # --- animated GIFs ----------------------------------------------------
+
+    def _gif_tick(self, tick):
+        """Every clock at game tick `tick`: palettes, UV strips and cells, and
+        the sprites' and recorded effects' own."""
+        from gui import view_gif
+        view_gif.set_anim_tick(self, tick)
+        self._sprite_tick = tick
+        self._sprite_dirty = True
+
+    def _gif_ticks(self, keep=None):
+        """One loop, in ticks, of everything animating in `keep` (instance
+        indices), or in the whole view."""
+        from gui import view_gif
+        periods = [len(f) for f in self._flips if keep is None or f[0] in keep]
+        for quad in self._sprite_quads:
+            if (keep is None or quad.index in keep) and len(quad.steps) > 1:
+                periods.append(sum(max(t, 1) for _p, t in quad.steps))
+        if keep is None:
+            periods += view_gif.animation_ticks(self)
+        else:
+            cluts = {r[1] for r in self.draw_ranges if r[0] in keep}
+            flags = (self.model_data or {}).get("face_flags") or ()
+            faces = {f for i in keep for f in range(self.instances[i].first_face,
+                                                     self.instances[i].first_face
+                                                     + self.instances[i].face_count)}
+            windowed = any(flags[f] & rule.flag for f in faces if f < len(flags)
+                           for rule in getattr(self, "window_rules", ()) or ())
+            periods += view_gif.animation_ticks(self, cluts, windows=windowed)
+        return view_gif.lcm(periods)
+
+    def save_gif(self):
+        """The selected row alone, framed, over one loop of whatever moves it
+        - its recorded effect, its sprite, its palettes, UVs and cells - or
+        the whole view when nothing is selected."""
+        from gui import view_gif
+        name = self.export_name or "level"
+        index = self.selected
+        if index is None:
+            ticks = self._gif_ticks()
+            frames = (view_gif.record(self, ticks, self._gif_tick) if ticks > 1 else [])
+            self._gif_tick(0)
+            view_gif.save(self, frames, name)
+            return
+        instance = self.instances[index]
+        keep = {index, *getattr(instance, "flip_frames", ())}
+        keep |= {i.index for i in self.instances
+                 if getattr(i, "follow", None) and i.follow[0] in keep}
+        ticks = self._gif_ticks(keep)
+        if ticks <= 1:
+            view_gif.save(self, [], name)
+            return
+        cc = self.camera_controls
+        camera = (cc.camera_x, cc.camera_y, cc.camera_z, cc.camera_angle_h,
+                  cc.camera_angle_v, getattr(cc, "orbit_distance", None))
+        kept = (set(self.hidden_groups), self.show_markers, self.show_badges,
+                self.show_background, self.show_collision)
+        try:
+            self.show_markers = self.show_badges = False
+            self.show_background = self.show_collision = False
+            self.set_hidden_groups({i.index for i in self.instances} - keep)
+            self.selected = None
+            self._build_selection()
+            # Framed on every frame of it at once - a rising bubble leaves
+            # its first frame's box.
+            cc._glide = None
+            self.frame_visible()
+            glide = getattr(cc, "_glide", None)
+            if glide:
+                target = glide[1]
+                cc.camera_x, cc.camera_y, cc.camera_z = target[:3]
+                if len(target) == 5:
+                    cc.camera_angle_h, cc.camera_angle_v = target[3:]
+                cc.stop_glide()
+            frames = view_gif.record(self, ticks, self._gif_tick)
+        finally:
+            (hidden, self.show_markers, self.show_badges, self.show_background,
+             self.show_collision) = kept
+            self.set_hidden_groups(hidden)
+            self.selected = index
+            self._build_selection()
+            (cc.camera_x, cc.camera_y, cc.camera_z, cc.camera_angle_h,
+             cc.camera_angle_v, distance) = camera
+            if distance is not None:
+                cc.orbit_distance = distance
+            self._gif_tick(0)
+            self.update()
+        label = "".join(c if c.isalnum() or c in "._-" else "_" for c in instance.label)
+        view_gif.save(self, frames, f"{name}_{index:03d}_{label}"[:80])
 
     def export_to_gltf(self):
         """Write the level out with everything standing where it does, one

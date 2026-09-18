@@ -286,6 +286,18 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.export_action.triggered.connect(self.export_to_gltf)
         self.toolbar.addAction(self.export_action)
 
+        # Everything the view animates - palettes, UV strips, whole cells -
+        # as the view draws it, one game frame a tick (gui/view_gif.py).
+        self.gif_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
+            "Save GIF", self)
+        self.gif_action.setToolTip(
+            "Record one loop of everything this view animates - palettes, "
+            "UV strips and whole texture cells - as an animated GIF, from "
+            "where the camera is now.")
+        self.gif_action.triggered.connect(self.save_gif)
+        self.toolbar.addAction(self.gif_action)
+
         self.stats_label = QLabel(self)
         self.stats_label.setObjectName("viewerOverlay")
         self.stats_label.raise_()
@@ -823,6 +835,10 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def set_hidden_groups(self, hidden):
         self.hidden_groups = set(hidden)
         self.update()
+
+    def save_gif(self):
+        from gui import view_gif
+        view_gif.save_view(self, self.export_name or "model")
 
     def set_highlighted_group(self, index):
         self.highlighted_group = index

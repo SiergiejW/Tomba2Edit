@@ -13,6 +13,7 @@ be kept in labels/placements.json.
 """
 import json
 import os
+import re
 import time
 from math import gcd
 
@@ -39,6 +40,29 @@ from gui.level.level_viewer import LevelViewer
 from gui.panel_title import make_panel_title
 
 COLUMNS = ["Instance", "Model", "X", "Y", "Z", "Angle"]
+# How many of an interior's rows the Rooms box names.
+ROOM_NAMES = 3
+
+
+def room_row_name(instance):
+    """A short name for what a room row is: a chest's contents, a model's
+    given name, else its handler's decomp name made readable."""
+    if instance.pickup is not None:
+        return instance.label.replace("⧖ ", "")
+    label = instance.label.replace("⧖ ", "").replace(" (draws nothing)", "")
+    label = re.sub(r"interior \d+: ", "", label)
+    handler = re.search(r"\bf_(?:Update|Handle)?([A-Za-z0-9]+?)(?:Actor)?\b", label)
+    if handler:
+        return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", handler.group(1)).lower()
+    model = re.match(r"(.+?) \((.+)\)$", label)
+    if model and not model.group(1).startswith(("id ", "trail ")):
+        return model.group(1)           # a model somebody named
+    if model:
+        inner = re.search(r"(0x[0-9A-F]{8})", model.group(2))
+        return f"{model.group(1)}" + (f" {inner.group(1)}" if inner else "")
+    return label
+
+
 ROLE = Qt.ItemDataRole.UserRole
 
 # How many frames of a moving background to render at most. Each one is
@@ -193,6 +217,12 @@ class LevelEditorPanel(QWidget):
             "asset pack is named under its own group. Kept in "
             "labels/placements.json beside the bindings.")
         self.name_button.clicked.connect(self._name_model)
+        self.gif_button = QPushButton("Save GIF...", self)
+        self.gif_button.setToolTip(
+            "Record the selected row - an effect, a sprite, anything with an "
+            "animated texture - alone and framed, as an animated GIF over one "
+            "loop of it. With nothing selected, the whole view.")
+        self.gif_button.clicked.connect(lambda: self.viewer.save_gif())
         self.save_button = QPushButton("Save overlay as...", self)
         self.save_button.setToolTip(
             "Write a copy of this area's Axx.BIN with the positions and "
@@ -202,6 +232,7 @@ class LevelEditorPanel(QWidget):
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.keep_button)
         buttons.addWidget(self.name_button)
+        buttons.addWidget(self.gif_button)
         buttons.addWidget(self.save_button)
 
         top = QHBoxLayout()
@@ -574,17 +605,21 @@ class LevelEditorPanel(QWidget):
         last = max(found, default=0)
         scenes = sorted(found | {s for s in tables if s <= last})
         for scene in scenes:
-            count = sum(1 for i in instances if i.scene == scene)
-            drawn = sum(1 for i in instances if i.scene == scene and not i.marker)
-            if tables.get(scene, 0) is None and not count:
-                what = "no scene table"
-            elif tables.get(scene) == 0 and not count:
+            rows = [i for i in instances if i.scene == scene and i.flip is None]
+            names = [room_row_name(i) for i in rows]
+            if tables.get(scene, 0) is None and not rows:
+                what = "no scene table - no door leads here"
+            elif tables.get(scene) == 0 and not rows:
                 what = "empty scene table"
-            elif not drawn:
-                what = f"{count} actor(s), nothing drawn"
             else:
-                what = f"{count}"
+                shown = [n for n in dict.fromkeys(names) if n][:ROOM_NAMES]
+                more = len(set(names)) - len(shown)
+                what = (f"{len(rows)} row(s): " + ", ".join(shown)
+                        + (f" +{more} more" if more > 0 else ""))
             self.view_box.addItem(f"Interior {scene - 1} - {what}", scene)
+            self.view_box.setItemData(self.view_box.count() - 1,
+                                      "\n".join(sorted(set(names))) or what,
+                                      Qt.ItemDataRole.ToolTipRole)
         if scenes:
             self.view_box.addItem("Area and every room", "all")
         for row in range(self.view_box.count()):

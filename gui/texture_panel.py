@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QVBoxLayout,
 )
 
-from functions import psx_vram, uv_anim
+from functions import psx_vram, texture_window, uv_anim
 from gui.clut_animation import TICK_HZ, UV_TICKS_PER_FRAME
 from gui.pixel_canvas import PixelCanvas, fit_zoom
 
@@ -42,6 +42,7 @@ GIF_SCALE = 4
 
 # However long an animation's loop is, a GIF of it stops here.
 MAX_GIF_FRAMES = 240
+CELL = texture_window.CELL
 
 
 class UVCanvas(PixelCanvas):
@@ -113,9 +114,10 @@ class TexturePanel(QGroupBox):
         self.png_button.clicked.connect(self._save_png)
         self.gif_button = QPushButton("Save GIF...", self)
         self.gif_button.setToolTip(
-            "Write the polygon's own patch of texture out as an animated "
-            "GIF, one frame per step of whatever animates it - the palette "
-            "being swapped, the UVs stepping across the page, or both.")
+            "Write the polygon's texture out as an animated GIF, one frame "
+            "per step of whatever animates it - the palette being swapped, "
+            "the UVs stepping across the page, or the whole 64x64 cell an "
+            "area's cell drawer steps and scrolls it through.")
         self.gif_button.clicked.connect(self._save_gif)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
@@ -139,7 +141,8 @@ class TexturePanel(QGroupBox):
                   and len(vram) >= psx_vram.VRAM_SIZE)
         self.png_button.setEnabled(bool(usable))
         self.gif_button.setEnabled(bool(usable)
-                                   and any(self._animations(polygon)))
+                                   and (any(self._animations(polygon))
+                                        or self._window_rule(polygon) is not None))
         if not usable:
             self._preview_timer.stop()
             self.clut_strip.clear()
@@ -159,6 +162,22 @@ class TexturePanel(QGroupBox):
         clut = polygon["clut"]
         return (getattr(self.viewer, "clut_animations", {}).get(clut),
                 getattr(self.viewer, "uv_animations", {}).get(clut))
+
+    def _window_rule(self, polygon):
+        """The texture-window rule (functions/texture_window.py) the
+        polygon's face flags put it under, or None."""
+        if polygon is None:
+            return None
+        flags = ((getattr(self.viewer, "model_data", None) or {}).get("face_flags") or ())
+        face = polygon.get("first_face")
+        value = flags[face] if face is not None and face < len(flags) else 0
+        for rule in getattr(self.viewer, "window_rules", ()) or ():
+            if not value & rule.flag or (rule.skip and value & rule.skip == rule.skip):
+                continue
+            if value & texture_window.MODEL and not rule.models:
+                continue
+            return rule
+        return None
 
     def _frame_state(self, polygon, tick):
         """(palette frame, UV frame) at `tick`, either None."""
@@ -267,6 +286,9 @@ class TexturePanel(QGroupBox):
         what animates is the patch this face takes, and a page around it
         that never changes is just margin."""
         palette_animation, uv_animation = self._animations(polygon)
+        rule = self._window_rule(polygon)
+        if rule is not None:
+            return self._cell_frames(polygon, rule, palette_animation)
         if palette_animation is None and uv_animation is None:
             return []
         palette_period = (palette_animation.loop_ticks
@@ -308,6 +330,45 @@ class TexturePanel(QGroupBox):
         if len(patches) > 1 and np.array_equal(patches[0][0], patches[-1][0]):
             patches[0][1] += patches.pop()[1]
 
+        return self._to_frames(patches)
+
+    def _cell_frames(self, polygon, rule, palette_animation):
+        """[(image, milliseconds), ...] of the whole 64x64 cell a cell
+        drawer shows the polygon through, one game frame a tick: an E2
+        window samples cell + ((uv + scroll) & 63); an added cell moves the
+        face's own cell across the page."""
+        cells = (len(rule.cells) if rule.cells else rule.columns * rule.rows) * rule.step
+        scrolls = [CELL // gcd(CELL, abs(s)) * rule.scroll_step
+                   for s in (rule.scroll_u, rule.scroll_v) if s]
+        period = cells
+        for other in scrolls + ([palette_animation.loop_ticks] if palette_animation else []):
+            period = period * other // gcd(period, other)
+        period = min(period, MAX_GIF_FRAMES)
+        us = [u for u, _v in polygon["texels"]]
+        vs = [v for _u, v in polygon["texels"]]
+        home_u, home_v = min(us) // CELL * CELL, min(vs) // CELL * CELL
+        patches = []
+        for tick in range(period):
+            cell_u, cell_v, scroll_u, scroll_v = texture_window.window_at(rule, tick)
+            palette_frame = palette_animation.frame_at(tick) if palette_animation else None
+            rgb = self._page_rgb(polygon, palette_frame)
+            if rule.add:
+                u0, v0 = home_u + int(cell_u), home_v + int(cell_v)
+                rows, cols = np.arange(v0, v0 + CELL), np.arange(u0, u0 + CELL)
+            else:
+                rows = int(cell_v) + (np.arange(CELL) + int(scroll_v)) % CELL
+                cols = int(cell_u) + (np.arange(CELL) + int(scroll_u)) % CELL
+            patch = np.take(np.take(rgb, rows % PAGE, axis=0), cols % PAGE, axis=1)
+            if patches and np.array_equal(patches[-1][0], patch):
+                patches[-1][1] += 1
+            else:
+                patches.append([patch, 1])
+        if len(patches) > 1 and np.array_equal(patches[0][0], patches[-1][0]):
+            patches[0][1] += patches.pop()[1]
+        return self._to_frames(patches)
+
+    @staticmethod
+    def _to_frames(patches):
         frames = []
         for patch, ticks in patches:
             image = Image.fromarray(patch, "RGB")

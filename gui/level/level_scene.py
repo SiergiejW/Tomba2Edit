@@ -1892,9 +1892,18 @@ class LevelScene:
                     if group is None:
                         instance.spans.append(None)
                         continue
-                    at = len(scene["vertices"])
+                    at, faces_at = len(scene["vertices"]), len(scene["faces"])
                     self._append(scene, model, group)
                     instance.spans.append((at, len(scene["vertices"]) - at))
+                    blends = getattr(instance.assembly, "blends", None) or ()
+                    blend = blends[number] if number < len(blends) else None
+                    if blend is not None:
+                        # The actor's render mode, as f_DrawActorModelByRenderMode
+                        # applies it over the model's own packets.
+                        info = scene["texture_info"]
+                        for f in range(faces_at, len(info)):
+                            page, clut, _blended, mode = info[f]
+                            info[f] = (page, clut, blend, mode)
                     shift = (instance.offsets[number]
                              if number < len(instance.offsets) else None)
                     if shift and any(shift):
