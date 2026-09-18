@@ -729,6 +729,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     solid; blending the lot made them ghosts. The water pig is the
     exception that proves it - 89% of its entries DO set STP, and it is
     meant to look like water."""
+        if address < 0:
+            # Captured untextured GPU polygons share the ordinary textured
+            # draw path with an all-white synthetic palette. Their packet
+            # colour is therefore shown directly, including its blend bit.
+            alpha = 128 if transparent else 255
+            return np.full((16, 4), (255, 255, 255, alpha), dtype=np.uint8)
         return self._clut_from_bytes(
             bytes(self.vram_raw_bytes[address:address + 32]), transparent)
 

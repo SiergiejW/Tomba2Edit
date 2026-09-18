@@ -551,14 +551,16 @@ class ANMPViewer(QWidget):
         The Ghost Guard's A06 actor switches its nine tongue bones from
         groups 7..15 to 16..24 for animations 10..13.
         """
+        label = self.model_box.currentText().casefold()
+        # Raw mode still needs the normal short tongue selected explicitly;
+        # otherwise the spanning heuristic can expose the long attack tongue.
+        if "ghost guard" in label:
+            start = 16 if clip is not None and 10 <= clip.id <= 13 else 7
+            return {bone: start + bone - 7 for bone in range(7, 16)}
         if clip is None:
             return {}
-        label = self.model_box.currentText().casefold()
         if "tomba" in label and clip.parts:
             return dict(clip.parts)
-        if "ghost guard" in label:
-            start = 16 if 10 <= clip.id <= 13 else 7
-            return {bone: start + bone - 7 for bone in range(7, 16)}
         return {}
 
     def _ghost_long_bones(self):
@@ -1249,7 +1251,7 @@ class ANMPViewer(QWidget):
 
         # FUN_A04__80129744 uses payload4's low nibble to choose the
         # closed/open archive.  Mode 2 additionally uses the high nibble as
-        # the mouth-part group installed on node 3.
+        # the mouth-part group installed on node 2 (actor + 0xC8).
         mode = step.payload4 & 0xF
         if mode not in self._sea_variants:
             return
@@ -1273,7 +1275,7 @@ class ANMPViewer(QWidget):
             finally:
                 self._switching_variant = False
         mouth = step.payload4 >> 4
-        wanted = ({3: mouth} if mode == 2
+        wanted = ({2: mouth} if mode == 2
                   and 0 <= mouth < len(self.model.get("groups", ())) else {})
         if wanted != self._automatic_parts:
             self._automatic_parts = wanted

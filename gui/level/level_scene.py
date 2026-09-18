@@ -627,7 +627,8 @@ def drawn_model(polys, to_view, uv_frames=None):
     model = {"vertices": [], "vertex_colors": [], "texture_coords": [], "faces": [],
              "texture_info": [], "face_flags": [], "tri_count": 0, "quad_count": 0}
     for corners, uvs, colours, clut, blended, page_word in polys:
-        address = environment_meshes.clut_address(clut)
+        address = (actor_sim.SOLID_CLUT if clut == actor_sim.SOLID_CLUT else
+                   environment_meshes.clut_address(clut))
         page, blend = page_word & 0x1F, (page_word >> 5) & 3
         base = len(model["vertices"])
         for point, (u, v), colour in zip(corners, uvs, colours):
@@ -784,6 +785,9 @@ class LevelScene:
         # {drawn model id: the captured polygons it was built from} - what a
         # sprite rip cuts out of VRAM (functions/sprite_rip.py).
         self.drawn_polys = {}
+        # {instance index: polygon frames}. Projected sprites are converted
+        # into true camera-facing billboards once the area's VRAM is present.
+        self.captured_billboards = {}
 
     # --- loading ------------------------------------------------------
 
@@ -1480,7 +1484,10 @@ class LevelScene:
             sources, offsets = (), ()
             assembly = None
             kept_sprite = None
-            hidden = actor is not None and (actor.hidden or actor.discarded)
+            nonvisual = ((record.handler, record.slot)
+                         in actor_sim.NONVISUAL_PLACEMENTS)
+            hidden = actor is not None and (actor.hidden or actor.discarded
+                                             or nonvisual)
             # The sprite tables go by handler, and one handler can give a
             # slot a model instead (f_UpdateDonglinInteriorQuestObjectActor,
             # slot 10) - what the code attached decides.
@@ -1553,8 +1560,12 @@ class LevelScene:
             _model, group = self.group(sources[0] if sources else None)
             note = assembly.note if assembly is not None else ""
             if hidden:
-                note = (DISCARDED_NOTE if actor.discarded else
-                        "its code sets its draw count (+0x08) to 0: nothing of it is drawn")
+                if nonvisual:
+                    note = ("interior-transition/warp trigger: its temporary "
+                            "initializer model is not level geometry")
+                else:
+                    note = (DISCARDED_NOTE if actor.discarded else
+                            "its code sets its draw count (+0x08) to 0: nothing of it is drawn")
             if gate:
                 note = f"{note}<br>{gate}" if note else gate
             instances.append(Instance(
@@ -1589,9 +1600,17 @@ class LevelScene:
                     frame.flip_frames = ()
                     instances.append(frame)
                     frames.append(frame.index)
-                head.flip_frames = tuple(frames)
+                sequence = frames
+                if getattr(actor, "pose_pingpong", False) and len(frames) > 2:
+                    # Refer to the existing pose rows in reverse; do not build
+                    # more geometry or run the game longer just to close the
+                    # preview loop without a visible snap.
+                    sequence = frames + frames[-2:0:-1]
+                head.flip_frames = tuple(sequence)
                 head.note = (f"{head.note}<br>" if head.note else "") + (
-                    f"{len(frames)} idle pose frames from its update routine")
+                    f"{len(frames)} idle pose frames from its update routine"
+                    + (", played forward/back for a seamless bounded loop"
+                       if len(sequence) != len(frames) else ""))
             if assembly is not None:
                 assembled.append(head)
             if actor is not None:
@@ -1838,6 +1857,29 @@ class LevelScene:
                 if alone is not None:
                     frames, _name = solo[key]
                     families = [alone]
+                actor = (world.by_address.get(alone)
+                         if world is not None and alone is not None else None)
+                snow_firefly = (actor is not None
+                                and isinstance(actor.family_key, tuple)
+                                and actor.family_key[:1] == ("snow-firefly",))
+                if snow_firefly:
+                    points = [view_point(np.asarray(point, dtype=np.float64))
+                              for frame_polys in frames for poly in frame_polys
+                              for point in poly[0]]
+                    if not points:
+                        continue
+                    cx, cy, cz = np.asarray(points, dtype=np.float64).mean(axis=0)
+                    index = len(instances)
+                    label = f"the area: {self._actor_name(actor)}"
+                    instances.append(Instance(
+                        index=index, role="spawned", label=label,
+                        x=float(cx), y=float(cy), z=float(cz), name=label,
+                        note=(f"{len(frames)} game-code frames; rendered as a "
+                              "camera-facing billboard. Preview origin is the "
+                              "game's stored free-flight/reward position, not "
+                              "the still-unresolved terrain trigger point.")))
+                    self.captured_billboards[index] = tuple(frames)
+                    continue
                 models = [drawn_model(f, view_point, stepped.get(key)) for f in frames]
                 if not any(models):
                     continue
@@ -1858,7 +1900,7 @@ class LevelScene:
                         self.drawn_polys[DRAWN_ID + number] = tuple(frames[frame])
                         sources = ((DRAWN_ID + number, 0),)
                         number += 1
-                    note = (f"{len(polys)} textured polygon(s) its draw routine put out "
+                    note = (f"{len(polys)} polygon(s) its draw routine put out "
                             f"(actor_sim.capture_lines), on the page their packets name"
                             + (", UVs stepped by the frame counter"
                                if model and model["uv_frames"] else ""))

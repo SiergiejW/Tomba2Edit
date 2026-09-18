@@ -895,7 +895,8 @@ class MainWindow(QMainWindow):
         the two together got all 92 of those pairs right.
         """
         out = []
-        seen = set()
+        seen_addresses = set()
+        seen_contents = set()
 
         def add(row_item, trusted):
             data = row_label_data(row_item)
@@ -906,9 +907,15 @@ class MainWindow(QMainWindow):
                 return
             size = entry[2] if isinstance(entry[0], str) else (
                 entry[3] if len(entry) > 3 else 0)
-            if not size or data[2] in seen:
+            content = data[4]
+            if (not size or data[2] in seen_addresses
+                    or content in seen_contents):
                 return
-            seen.add(data[2])
+            # Named/preferred matches used to bypass the content-based
+            # dedupe in _smst_candidates, producing many identical Zippo
+            # rows from the same model copied through several areas.
+            seen_addresses.add(data[2])
+            seen_contents.add(content)
             out.append((row_item.text(), data[2], size, trusted))
 
         subject = self._row_subject(item.text())
@@ -967,6 +974,19 @@ class MainWindow(QMainWindow):
                         add(row_item, True)
                     matched = True
                     break
+
+            # Tomba's one TANP drives every costume archive. Keep the plain
+            # model first, but expose the suits in the model chooser too.
+            if subject == "tomba":
+                tomba_models = [c for s, c in models
+                                if "tomba" in s.split()]
+                near = self._nearness(item)
+                for row_item in sorted(
+                        tomba_models,
+                        key=lambda c: (
+                            0 if self._row_subject(c.text()) == "tomba" else 1,
+                            near(c))):
+                    add(row_item, True)
 
             # Failing that, a model whose name CONTAINS the animation's:
             # "Sea Anemone Animation" belongs to the models called

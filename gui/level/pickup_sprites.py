@@ -119,7 +119,7 @@ class SpriteBank:
         return self._images[key]
 
 
-def build_atlas(banks, wanted):
+def build_atlas(banks, wanted, extra=()):
     """(atlas as an RGBA array, {(bank, frame, clut): Placed}) for every
     frame a level needs.
 
@@ -140,6 +140,12 @@ def build_atlas(banks, wanted):
         if image.width and image.height:
             cut.append((key, np.asarray(image, dtype=np.uint8),
                         origin_x, origin_y))
+    # Captured projected sprites (Snow Fireflies, particles) have already
+    # been cut from VRAM.  Packing them beside ordinary SPRT frames lets the
+    # same camera-facing shader draw both kinds.
+    cut.extend((key, np.asarray(image, dtype=np.uint8), origin_x, origin_y)
+               for key, image, origin_x, origin_y in extra
+               if image is not None and image.shape[0] and image.shape[1])
     if not cut:
         return None, {}
 

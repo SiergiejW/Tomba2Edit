@@ -60,7 +60,12 @@ class Patch:
     def dest(self):
         """(x, y) this patch's own top-left corner lands at in the
         4096x512 texel atlas gui.vram_viewer's images use."""
-        return self.page_byte_x * 2, self.page_row0 + self.v0
+        # The preview canvas is the 4bpp interpretation of physical VRAM:
+        # four pixels per halfword. u0 is relative to the page and was
+        # previously omitted, which piled every coloured patch at the left
+        # edge of its page. An 8bpp texel occupies two of these display pixels.
+        scale = 2 if self.is_8bpp else 1
+        return self.page_byte_x * 2 + self.u0 * scale, self.page_row0 + self.v0
 
 
 def regions_from_polygons(polygons):
@@ -232,6 +237,8 @@ def render(vram_bytes, regions):
     for region in regions:
         try:
             patch = textures.piece_image(region)
+            if region.is_8bpp:
+                patch = patch.resize((patch.width * 2, patch.height), Image.Resampling.NEAREST)
             # A region that wraps off the right edge of its own page,
             # or sits at the very edge of VRAM, can land partly outside
             # the 4096x512 canvas - alpha_composite refuses that rather

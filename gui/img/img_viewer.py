@@ -54,6 +54,7 @@ class IMGViewer(QWidget):
 
         self.textured_btn = QPushButton("Textured (as used)", self)
         self.textured_btn.setCheckable(True)
+        self.textured_btn.setChecked(True)
         self.textured_btn.setToolTip(
             "Reconstruct this chunk by finding every SMST, SPRT and BGMP "
             "file that samples it and painting each patch through its "

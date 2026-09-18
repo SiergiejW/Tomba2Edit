@@ -102,6 +102,9 @@ class LevelEditorPanel(QWidget):
         self._sprite_timer.timeout.connect(self._next_sprite_tick)
 
         self.viewer = LevelViewer(self)
+        self.viewer.animate_action.setToolTip(
+            "Animate textures, backgrounds, sprites, actor effects, and idle poses")
+        self.viewer.animate_action.toggled.connect(self._sync_motion_animation)
         self.viewer.selection_changed.connect(self._on_view_selection)
         self.viewer.instance_moved.connect(self._on_instance_moved)
         self.viewer.part_changed.connect(self._on_part_selected)
@@ -379,9 +382,14 @@ class LevelEditorPanel(QWidget):
         self.viewer.load_animations(overlay)
         self._load_background(scene, vram, overlay)
         self._load_sprites(scene, vram)
-        # Sprites with several steps and recorded effects share one clock.
-        if self.viewer.animating:
-            self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))
+        # The one Animate button owns palette/UV, background, sprite, effect,
+        # and skeletal-pose playback together.
+        has_motion = self.viewer.animating or len(self._phases) > 1
+        self.viewer.animate_action.setEnabled(
+            self.viewer.animate_action.isEnabled() or has_motion)
+        if has_motion and self.viewer.animate_wanted:
+            self.viewer.animate_action.setChecked(True)
+        self._sync_motion_animation(self.viewer.animate_action.isChecked())
         self._populate()
         print(f"AREA_{chunk:02X}: ready in {time.perf_counter() - started:.1f}s",
               flush=True)
@@ -435,8 +443,36 @@ class LevelEditorPanel(QWidget):
                 banks[name] = pickup_sprites.SpriteBank(
                     scene.dat_path, start, offset, size, vram)
             wanted = pickup_sprites.wanted_frames(scene.instances)
-            atlas, placed = pickup_sprites.build_atlas(banks, wanted)
+            captured, captured_steps, captured_units = [], {}, {}
+            if scene.captured_billboards:
+                from functions import sprite_rip
+                from gui.level.level_scene import CLIP_HZ
+                for index, polygons in scene.captured_billboards.items():
+                    ripped = sprite_rip.rip_polygons(
+                        polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
+                    if not ripped:
+                        continue
+                    frames, units = ripped
+                    keys = []
+                    for frame, (image, _ms) in enumerate(frames):
+                        key = ("captured", index, frame)
+                        pixels = np.asarray(image, dtype=np.uint8)
+                        captured.append((key, pixels, image.width / 2,
+                                         image.height / 2))
+                        keys.append(key)
+                    captured_steps[index] = keys
+                    captured_units[index] = units
+            atlas, placed = pickup_sprites.build_atlas(
+                banks, wanted, extra=captured)
             quads = pickup_sprites.billboards(scene.instances, placed)
+            for index, keys in captured_steps.items():
+                instance = scene.instances[index]
+                steps = tuple((placed[key], 1) for key in keys if key in placed)
+                if steps:
+                    quads.append(pickup_sprites.Billboard(
+                        index=index, x=instance.x, y=instance.y, z=instance.z,
+                        steps=steps, loops=True,
+                        units=float(captured_units[index])))
         except Exception as e:
             scene.notes.append(f"couldn't cut the pickup sprites: {e}")
             return
@@ -446,6 +482,24 @@ class LevelEditorPanel(QWidget):
 
     def _next_sprite_tick(self):
         self.viewer.advance_sprites()
+
+    def _sync_motion_animation(self, checked):
+        """Make Animate the master switch for every kind of level motion."""
+        if checked:
+            if self.viewer.animating:
+                self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))
+            if len(self._phases) > 1:
+                hold = self._phases[self._phase][1]
+                self._phase_timer.start(max(20, hold))
+            return
+        self._sprite_timer.stop()
+        self._phase_timer.stop()
+        self.viewer._sprite_tick = 0
+        self.viewer._sprite_dirty = True
+        if self._phases:
+            self._phase = 0
+            self.viewer.set_background(self._phases[0][0])
+        self.viewer.update()
 
     def _load_background(self, scene, vram, overlay):
         """Render the area's BGMP, and every frame of it that moves.
@@ -494,7 +548,7 @@ class LevelEditorPanel(QWidget):
             self._phases = [(sky_gradient.under(picture, sky), ms)
                             for picture, ms in self._phases]
         self.viewer.set_background(self._phases[0][0] if self._phases else None)
-        if len(self._phases) > 1:
+        if len(self._phases) > 1 and self.viewer.animate_action.isChecked():
             self._phase_timer.start(self._phases[0][1])
 
     def _background_frames(self, background, vram, offset, overlay):

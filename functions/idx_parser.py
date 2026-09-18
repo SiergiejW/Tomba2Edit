@@ -556,11 +556,6 @@ def parse_idx_file(main_window, cd_folder):
             vram_item.setFlags(vram_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             area_item.appendRow(vram_item)
 
-            vram_c_item = QStandardItem(main_window.cvram_icon, f"{chunk_index:02X}.CVRAM")
-            vram_c_item.setFlags(vram_c_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            vram_c_item.setData(("vram_compressed", img_start, img_end - img_start, img_path), Qt.ItemDataRole.UserRole)
-            vram_item.appendRow(vram_c_item)
-
             # The chunk as it sits in TOMBA2.IMG - the shard table and
             # what each shard cost - rather than the VRAM it builds.
             img_item = QStandardItem(main_window.cvram_icon,
@@ -576,6 +571,9 @@ def parse_idx_file(main_window, cd_folder):
             vram_u_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.VRAM")
             vram_u_item.setFlags(vram_u_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             vram_u_item.setData(("vram_uncompressed", chunk_index), Qt.ItemDataRole.UserRole)
+            vram_u_item.setToolTip(
+                "The decompressed 1024x512 PSX VRAM. Choose indexed grey, "
+                "one CLUT, direct RGB555, or Textured (as used) in the viewer.")
             vram_item.appendRow(vram_u_item)
 
         if traildata:

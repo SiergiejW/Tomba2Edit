@@ -86,35 +86,58 @@ def _centre(poly):
     return points.mean(axis=0), float(np.ptp(points[:, 0]) + np.ptp(points[:, 1]))
 
 
-def follow_one(frames):
-    """One sprite out of a clip of several - a single Seed of Strength, one
-    mine bubble - tracked frame to frame by where it is, from the frame where
-    the most of them show, on until it is gone. [[polygon], ...] a frame,
-    or None when every frame holds one sprite or fewer."""
-    if not frames or max(len(f) for f in frames) < 2:
-        return None
+def _kind(poly):
+    """What sprite a quad shows: its palette and the size of its patch."""
+    us = [u for u, _v in poly[1]]
+    vs = [v for _u, v in poly[1]]
+    return poly[3], max(us) - min(us), max(vs) - min(vs)
+
+
+def _track(frames, start, poly):
+    """[[polygon], ...] following `poly` on from frame `start` until it is
+    gone - nothing near where it was - or the clip comes round."""
     count = len(frames)
-    start = max(range(count), key=lambda n: len(frames[n]))
-    # The largest there: a bubble just born is a speck.
-    here, size = max((_centre(p) + (p,) for p in frames[start]),
-                     key=lambda c: c[1])[:2]
-    out = []
-    for step in range(count):
+    here, size = _centre(poly)
+    out = [[poly]]
+    for step in range(1, count):
         polys = frames[(start + step) % count]
         if not polys:
             break
         best = min(polys, key=lambda p: np.linalg.norm(_centre(p)[0] - here))
         where, extent = _centre(best)
-        # Further than it could have moved in a frame: the one followed is
-        # gone and this is another.
+        # Further than it could have moved in a frame: another one.
         if np.linalg.norm(where - here) > max(size, extent):
             break
         out.append([best])
         here, size = where, extent
-    return out if len(out) > 1 else None
+    return out
 
 
-def rip_polygons(frames, vram, ms_per_frame, centred=False):
+def follow_one(frames):
+    """One sprite out of a clip of several - a single Seed of Strength, one
+    mine bubble - followed frame to frame by where it is. Of every start, the
+    one seen longest, the commonest kind of sprite breaking a tie (five seeds
+    beat the trolley's two sparks). [[polygon], ...] a frame, or None when
+    no frame holds more than one sprite."""
+    if not frames or max(len(f) for f in frames) < 2:
+        return None
+    kinds = {}
+    for polys in frames:
+        for p in polys:
+            kinds[_kind(p)] = kinds.get(_kind(p), 0) + 1
+    best = None
+    for start, polys in enumerate(frames):
+        for poly in polys:
+            track = _track(frames, start, poly)
+            score = (len(track), kinds[_kind(poly)], _centre(poly)[1])
+            if best is None or score > best[0]:
+                best = (score, track)
+    track = best[1]
+    return track if len(track) > 1 else None
+
+
+def rip_polygons(frames, vram, ms_per_frame, centred=False,
+                 return_scale=False):
     """[(RGBA image, ms)] of captured sprite quads, one list of polygons a
     frame, or None when any of them is not a screen-facing quad (a model
     drawn by code, which only a render shows). `centred` holds each frame's
@@ -158,7 +181,8 @@ def rip_polygons(frames, vram, ms_per_frame, centred=False):
             canvas.alpha_composite(piece, (int(round((x0 - left) / scale)),
                                            int(round((y0 - top) / scale))))
         out.append((canvas, ms_per_frame))
-    return _held(out)
+    held = _held(out)
+    return (held, scale) if return_scale else held
 
 
 def rip_atlas(atlas, steps, ms_per_tick):

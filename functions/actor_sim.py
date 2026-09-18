@@ -191,11 +191,17 @@ QUEUED5_KINDS = frozenset((0x1F,))
 SEEN_RECORDS = 0x70
 QUEUE_CLASS5 = 0x80077EFC           # f_QueueClass5ActorForRender
 GTE_H = 26                          # control register: projection distance
-# How far in screen pixels a sprite piece may lie from its projected point.
-SPRITE_REACH = 160
+# How far in screen pixels an effect polygon may lie from its projected
+# anchor. Ordinary sprites stay under 160, but A01's authored pipe-steam
+# sheets are tall GT4s reaching roughly 1,320 pixels from that point.
+SPRITE_REACH = 2048
 QUEUED_KINDS = frozenset((1, 2, 3, 0x16, 0x17))
 # A textured polygon's colour: 0x80 draws the texel as it is.
 NEUTRAL = 128.0
+# Sentinel carried into a generated level model for an untextured PSX
+# polygon. The viewer binds an all-white palette for it, so the packet's
+# vertex colour reaches the screen unchanged.
+SOLID_CLUT = -1
 # Captures after its actor ran that a pass may draw nothing in before it is
 # no longer run.
 QUIET_CAPTURES = 2
@@ -266,13 +272,22 @@ CLIP_WARMUP = 96
 # frames). Long, non-repeating particle paths still use CLIP_FRAMES.
 MOVING_CLIP_FRAMES = 32
 POSE_CLIP_FRAMES = 24
-POSE_CLIP_PARTS = 8
+POSE_CLIP_PARTS = 1
 # Frames on at which a code-drawn family is drawn to see whether it moves.
 CLIP_PROBES = (1, 2, 5, 11)
-# A04's ambient mote/firefly effect deliberately stops translating once the
-# ranch is purified. The editor still previews its established idle flight;
-# record it with that one progress bit temporarily lowered.
-KUJARA_FIREFLY = 0x8013AB0C
+# A04's unrelated platform/Koma apparition deliberately stops translating
+# once the ranch is purified. Keep recording it, but do not confuse it with
+# the collectible three-frame Snow Firefly handled separately below.
+KUJARA_PLATFORM_GHOST = 0x8013AB0C
+KUJARA_SNOW_FIREFLY = 0x8013E910
+DONGLIN_SNOW_FIREFLY = 0x80140E4C
+DONGLIN_LIGHT_CUTSCENE = 0x800BFA20
+MINE_PIPE_STEAM = 0x8012E1B4
+MINE_PIPE_STEAM_FRAMES = 16
+# A07's subtype 8 is an interior-transition/warp record.  Its common
+# initializer briefly attaches 12:0, but that is not a prop at the placement
+# that should be presented as level geometry.
+NONVISUAL_PLACEMENTS = frozenset(((0x8011A398, 8),))
 
 FRAMES = 4
 BUDGET = 400_000
@@ -393,6 +408,10 @@ class Actor:
     # Opening idle poses sampled from the actor's real update routine. Kept
     # only for character-sized placed actors whose transforms actually move.
     pose_clip: tuple = ()
+    # A bounded capture that did not contain a complete exact cycle is played
+    # forward then backward.  It has no hard last-to-first jump, and needs no
+    # extra emulation frames or duplicate scene geometry.
+    pose_pingpong: bool = False
     stale: bool = False
     restaled: bool = False
 
@@ -471,6 +490,7 @@ class World:
         # through the recording.
         self.actor_clips = {}
         self.archived_effects = []
+        self._firefly_progress = None
         # scene -> records in its table, None where the spawner has none -
         # every scene up to the last with a table, run or not.
         self.room_tables = {}
@@ -914,6 +934,54 @@ class World:
             self.actors.append(actor)
             self.by_address[actor.address] = actor
 
+    def add_firefly_previews(self, budget=BUDGET):
+        """Stand up collectible Snow Fireflies hidden behind terrain triggers.
+
+        Kujara's free fireflies have five authored spawn-table slots but are
+        normally allocated only after Tomba steps on the right surface.
+        Donglin has already allocated nest children; keep one representative
+        and put it into the same free-flight state. Their own lifecycle and
+        projected-sprite draw callback supply both motion and artwork.
+        """
+        made = []
+        if self.area_number == 4:
+            for reward in range(5):
+                self.cpu.r[4], self.cpu.r[5], self.cpu.r[6] = 0, 2, 0x47
+                address = self._new_record(self.cpu)
+                actor = self.by_address[address]
+                self.mem.write(address + CALLBACK, 4, KUJARA_SNOW_FIREFLY)
+                self.mem.write(address + 0x5E, 1, 1)    # free-flight mode
+                self.mem.write(address + SLOT, 1, reward)
+                actor.family_key = ("snow-firefly", address)
+                made.append(actor)
+        elif self.area_number == 6:
+            found = [a for a in self.actors if a.handler == DONGLIN_SNOW_FIREFLY
+                     and a.polys]
+            if found:
+                self._firefly_progress = self.mem.read(DONGLIN_LIGHT_CUTSCENE, 1)
+                self.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, 0)
+                actor = found[0]
+                for duplicate in found[1:]:
+                    duplicate.discarded = True
+                actor.dead = actor.discarded = False
+                self.mem.write(actor.address + LIFECYCLE, 1, 1)
+                self.mem.write(actor.address + 5, 1, 0)  # initialise motion
+                self.mem.write(actor.address + 0x5E, 1, 1)  # rising free flight
+                actor.family_key = ("snow-firefly", actor.address)
+                made.append(actor)
+        if not made:
+            return
+        for _frame in range(3):
+            for actor in made:
+                self._run_actor(actor, budget)
+            self._read()
+        self.settle_captures()
+
+    def restore_firefly_progress(self):
+        if self._firefly_progress is not None:
+            self.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, self._firefly_progress)
+            self._firefly_progress = None
+
     def record_clips(self, frames=CLIP_FRAMES, warmup=CLIP_WARMUP, budget=BUDGET):
         """Run each family that draws transient effects - or draws something
         else a few frames on - on for `frames` frames the way the game does:
@@ -928,7 +996,7 @@ class World:
         effects = {self.family(a) for a in self.actors if not a.discarded
                    and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS} & drawing
         ambient = {self.family(a) for a in self.actors
-                   if a.handler == KUJARA_FIREFLY and a.polys and not a.discarded}
+                   if a.handler == KUJARA_PLATFORM_GHOST and a.polys and not a.discarded}
         # A drawer that reads src_SpriteAnimationFrame already has its exact
         # UV cycle in Actor.uv_frames. Recording that family as a geometry
         # flipbook samples frame counter 0 on every capture and consequently
@@ -968,12 +1036,29 @@ class World:
         moving_active = set(moving)
         moving_end = min(frames, MOVING_CLIP_FRAMES) if moving else 0
         effect_start = warmup if effects else 0
-        effect_end = effect_start + frames if effects else 0
+        # Fifteen A01 vents each jitter a tall steam sheet randomly, so they
+        # never form a byte-identical period. Sixty-four generated models per
+        # vent made the purified mine exceed a thousand scene rows. Sixteen
+        # real game ticks retain the visible breathing/jitter while keeping
+        # the level practical to load and draw.
+        effect_limits = {
+            key: (MINE_PIPE_STEAM_FRAMES if any(
+                a.handler == MINE_PIPE_STEAM and self.family(a) == key
+                for a in self.actors) else frames)
+            for key in effects
+        }
+        effect_end = (effect_start + max(effect_limits.values())
+                      if effect_limits else 0)
         try:
             for frame in range(max(moving_end, effect_end)):
                 if self.skip_messages:
                     self.mem.write(MESSAGE, 1, 0)
-                updating = effects | (moving_active if frame < moving_end else set())
+                active_effects = {
+                    key for key, limit in effect_limits.items()
+                    if frame < effect_start + limit
+                }
+                updating = active_effects | (
+                    moving_active if frame < moving_end else set())
                 if any(isinstance(k, tuple) for k in updating):
                     self.run_workers(budget)
                 for actor in list(self.actors):
@@ -982,8 +1067,8 @@ class World:
                 capture = set()
                 if frame < moving_end:
                     capture.update(moving_active)
-                if effect_start <= frame < effect_end:
-                    capture.update(effects)
+                if frame >= effect_start:
+                    capture.update(active_effects)
                 if not capture:
                     continue
                 live = [a for a in self.actors
@@ -1035,8 +1120,12 @@ class World:
         candidates = collections.defaultdict(list)
         for address, clip in per_actor.items():
             actor = self.by_address.get(address)
-            if (actor is not None and len(clip) == frames and all(clip)
-                    and self.mem.read(address + CLASS, 1) == EFFECT_CLASS):
+            family = actor_family.get(address)
+            expected = len(raw.get(family, ()))
+            snow = (isinstance(getattr(actor, "family_key", None), tuple)
+                    and actor.family_key[:1] == ("snow-firefly",))
+            if (actor is not None and len(clip) == expected and all(clip)
+                    and (self.mem.read(address + CLASS, 1) == EFFECT_CLASS or snow)):
                 looped = _looped(clip)
                 if looped is not None:
                     candidates[actor_family.get(address)].append((address, looped))
@@ -1056,7 +1145,13 @@ class World:
                 self.clips[key] = clip
 
     def record_pose_clips(self, frames=POSE_CLIP_FRAMES, budget=BUDGET):
-        """Record short idle loops for placed, character-sized model actors."""
+        """Record short idle loops for placed models whose pose really moves.
+
+        This deliberately starts at one part: hanging mushrooms and other
+        articulated props are actors too. The signature check below discards
+        every static object, so widening eligibility does not manufacture
+        animation for ordinary scenery.
+        """
         candidates = [a for a in self.actors
                       if a.record is not None and not (a.dead or a.discarded or a.hidden)
                       and len(a.parts) >= POSE_CLIP_PARTS]
@@ -1096,6 +1191,7 @@ class World:
                            if all(signatures[k] == signatures[k % p]
                                   for k in range(len(clip)))), len(clip))
             actor.pose_clip = tuple(clip[:period])
+            actor.pose_pingpong = period == len(clip)
 
     def _drawn_by(self, keys, geometry=False):
         """{family: repr of what its live actors draw now}.
@@ -1927,7 +2023,9 @@ class World:
                 except EmuError:
                     break
                 out.extend(line_primitives(words, points))
-                polys.extend(textured_primitives(words, points, self._sprite_corner(points)))
+                resolve = self._sprite_corner(points)
+                polys.extend(textured_primitives(words, points, resolve))
+                polys.extend(untextured_primitives(words, points, resolve))
                 address = tag & 0xFFFFFF
         return out, polys
 
@@ -1986,7 +2084,10 @@ class World:
             # f_SpawnTransientEffect*: whole shorts at +0x2C/+0x2E/+0x30.
             return np.array([float(s16(read(address + POSITION + k * 2, 2)))
                              for k in range(3)])
-        if self.area_number == 1 and read(address + CALLBACK, 4) == 0x80133D74:
+        callback = read(address + CALLBACK, 4)
+        if ((self.area_number == 1 and callback == 0x80133D74)
+                or (self.area_number == 4 and callback == KUJARA_SNOW_FIREFLY)
+                or (self.area_number == 6 and callback == DONGLIN_SNOW_FIREFLY)):
             # Purified Mine's upward steam is a model-part attachment.  Its
             # handler writes whole coordinates into the low half of three
             # four-byte slots (+2/+6/+10), rather than 16.16 actor position.
@@ -2199,6 +2300,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
             world.add_player()
     say(f"running the area, {frames} frame(s)")
     world.run(frames)
+    world.add_firefly_previews()
     say("the area stood up", world.actors)
     # An area's controller stands part of the chest table up itself; the
     # rest are stood up here, the way f_SpawnPersistentPickupPlacementTable does.
@@ -2214,6 +2316,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.harvest()
     world.record_pose_clips()
     world.record_clips()
+    world.restore_firefly_progress()
     world.restore_archived_effects()
     if world.clips:
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
@@ -2404,6 +2507,47 @@ def textured_primitives(words, points, resolve=None):
                 for a in corners for b in corners):
             out.append((tuple(corners), tuple(uvs), tuple(colours), clut, bool(code & 0x02),
                         page))
+    return out
+
+
+def untextured_primitives(words, points, resolve=None):
+    """Captured PSX F3/F4/G3/G4 packets in the textured-poly shape.
+
+    Mine steam vents use these shaded, untextured polygons.  Keeping the
+    common tuple shape lets the generated level model and its flipbooks use
+    the same path as captured textured effects; ``SOLID_CLUT`` tells the
+    renderer to multiply by white instead of sampling a real palette.
+    """
+    out, k = [], 0
+    while k < len(words):
+        code = words[k] >> 24
+        if code == 0 or 0xE1 <= code <= 0xE6:
+            k += 1
+            continue
+        if not (0x20 <= code <= 0x3F) or code & 0x04:
+            break
+        gouraud = bool(code & 0x10)
+        corners_wanted = 4 if code & 0x08 else 3
+        colour, k = words[k] & 0xFFFFFF, k + 1
+        corners, colours = [], []
+        for corner_number in range(corners_wanted):
+            if gouraud and corner_number:
+                if k >= len(words):
+                    return out
+                colour, k = words[k] & 0xFFFFFF, k + 1
+            if k >= len(words):
+                return out
+            xy, k = words[k], k + 1
+            corner = points.get(_xy(xy))
+            if corner is None and resolve is not None:
+                corner = resolve(_xy(xy))
+            corners.append(corner)
+            colours.append(_rgb(colour))
+        if (all(c is not None for c in corners) and len(set(corners)) >= 3
+                and all(max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
+                        for a in corners for b in corners)):
+            out.append((tuple(corners), ((0, 0),) * corners_wanted,
+                        tuple(colours), SOLID_CLUT, bool(code & 0x02), 0))
     return out
 
 
