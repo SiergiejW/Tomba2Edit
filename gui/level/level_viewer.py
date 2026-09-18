@@ -936,6 +936,67 @@ class LevelViewer(SMSTViewer):
             periods += view_gif.animation_ticks(self, cluts, windows=windowed)
         return view_gif.lcm(periods)
 
+    def _rip(self, index, one=False):
+        """[(RGBA image, ms)] of the selected row as a sprite rip - its own
+        pixels, transparent - or None when it is not a sprite: a billboard's
+        steps out of the atlas, or a recorded effect's screen-facing quads
+        out of VRAM (functions/sprite_rip.py)."""
+        from functions import sprite_rip
+        from gui.level.level_scene import CLIP_HZ
+        from gui.clut_animation import TICK_HZ
+        for quad in self._sprite_quads:
+            if quad.index == index and quad.corners is None:
+                return sprite_rip.rip_atlas(self._sprite_atlas, quad.steps,
+                                            1000.0 / TICK_HZ)
+        instance = self.instances[index]
+        frames = getattr(instance, "flip_frames", ()) or (index,)
+        polys = getattr(self.scene, "drawn_polys", {}) or {}
+        found = []
+        for number in frames:
+            sources = self.instances[number].sources
+            found.append(polys.get(sources[0][0], ()) if sources else ())
+        if not any(found):
+            return None
+        if one:
+            found = sprite_rip.follow_one(found)
+            if found is None:
+                return None
+        return sprite_rip.rip_polygons(found, getattr(self, "vram_raw_bytes", None),
+                                       1000.0 / CLIP_HZ, centred=one)
+
+    def _save_rip(self, index, name):
+        """Offer a sprite rip when the row is a sprite. True if that was
+        chosen (and saved, or cancelled), False to record the view instead."""
+        from PyQt6.QtWidgets import QFileDialog, QInputDialog
+        from functions import sprite_rip
+        frames = self._rip(index)
+        if not frames:
+            return False
+        rip = "Sprite rip - its own pixels, transparent background"
+        single = "Sprite rip of one of them - followed, centred"
+        options = [rip]
+        alone = self._rip(index, one=True)
+        if alone:
+            options.insert(0, single)
+        options.append("The view - rendered in 3D, framed on it")
+        choice, ok = QInputDialog.getItem(
+            self, "Save GIF", "This row is a sprite. Save it as:", options, 0, False)
+        if not ok:
+            return True
+        if choice == single:
+            frames = alone
+        elif choice != rip:
+            return False
+        label = "".join(c if c.isalnum() or c in "._-" else "_"
+                        for c in self.instances[index].label)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save sprite rip", f"{name}_{index:03d}_{label}"[:80] + ".gif",
+            "GIF image (*.gif)")
+        if path:
+            sprite_rip.save_gif(path, frames)
+            print(f"wrote {path}: {len(frames)} frame(s)")
+        return True
+
     def save_gif(self):
         """The selected row alone, framed, over one loop of whatever moves it
         - its recorded effect, its sprite, its palettes, UVs and cells - or
@@ -943,6 +1004,8 @@ class LevelViewer(SMSTViewer):
         from gui import view_gif
         name = self.export_name or "level"
         index = self.selected
+        if index is not None and self._save_rip(index, name):
+            return
         if index is None:
             ticks = self._gif_ticks()
             frames = (view_gif.record(self, ticks, self._gif_tick) if ticks > 1 else [])

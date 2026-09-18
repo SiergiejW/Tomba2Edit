@@ -359,10 +359,10 @@ class MainWindow(QMainWindow):
             "Open the disc's data track (Track 1 of a bin/cue). This is the "
             "only source that carries the voice track intact")
 
-        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open extracted disc folder", self)
+        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Translation Project / Game Folder...", self)
         open_folder_action.setToolTip(
-            "Open an already-extracted CD folder directly, skipping ISO extraction. "
-            "'Save ISO' won't be available - use 'Save IDX/DAT' instead."
+            "Resume a saved Translation Project, or open an already-extracted "
+            "game-files folder directly. 'Save ISO' is unavailable for folders."
         )
         open_folder_action.triggered.connect(self.open_folder_dialog)
 
@@ -3010,6 +3010,115 @@ class MainWindow(QMainWindow):
             self.bins_viewer.mark_exported()
         self._refresh_edit_status()
 
+    def _translation_project_state(self):
+        """JSON-safe editor history which is not present in packed files.
+
+        The project snapshot contains the edited bytes, but orange/green rows
+        and the asterisks mean *how* those bytes got there.  Preserve that
+        workspace state separately so closing the application does not erase
+        the translator's progress markers.
+        """
+        text_files = {}
+        for kind, viewer in (("txtd", self.txtd_viewer),
+                             ("txt2", self.txt2_viewer)):
+            for location, cached in viewer._file_state_cache.items():
+                item = self.txtd_item_lookup.get(location)
+                data = item.data(Qt.ItemDataRole.UserRole) if item else None
+                if not data or not isinstance(data[0], int):
+                    continue
+                _id, dat_start, offset, _size = data
+                address = dat_start + offset
+                def locations(name):
+                    return [list(value) if isinstance(value, tuple) else value
+                            for value in sorted(cached.get(name, ()))]
+                record = text_files.setdefault(str(address), {
+                    "kind": kind, "edited": [], "exported": []})
+                record["edited"] = locations("edited_locations")
+                record["exported"] = locations("exported_locations")
+
+        tree_files = {}
+        for address, rows in self.address_rows.items():
+            states = {self.txtd_file_states.get(id(row)) for row in rows}
+            state = "edited" if "edited" in states else (
+                "exported" if "exported" in states else None)
+            if state:
+                tree_files[str(address)] = state
+
+        return {
+            "text_files": text_files,
+            "tree_files": tree_files,
+            "pending_replacements": [
+                {"address": info["address"], "label": info.get("label", "")}
+                for info in self.pending_file_edits.values()],
+            "main_exe": self.mainexe_viewer.project_state(),
+            "sop": self.bins_viewer.sop_viewer.project_state(),
+            "img_dirty": bool(self.img_dirty),
+        }
+
+    def _restore_translation_project_state(self, state):
+        """Restore saved colors, stars and pending-work semantics."""
+        state = state or {}
+        for address_text, record in state.get("text_files", {}).items():
+            try:
+                address = int(address_text)
+            except (TypeError, ValueError):
+                continue
+            locations = self.address_locations.get(address, ())
+            if not locations:
+                continue
+            chunk_index, file_index = locations[0]
+            item = self.txtd_item_lookup.get((chunk_index, file_index))
+            data = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if not data:
+                continue
+            id_val, dat_start, offset, size = data
+            kind = record.get("kind")
+            viewer = self.txt2_viewer if kind == "txt2" else self.txtd_viewer
+            if kind == "txt2":
+                cached = viewer.file_state(
+                    chunk_index, file_index, self.dat_file, dat_start,
+                    offset, size, id_val)
+                decode = lambda value: int(value)
+            else:
+                cached = viewer.file_state(
+                    chunk_index, file_index, self.dat_file, dat_start, offset)
+                decode = lambda value: tuple(int(part) for part in value)
+            cached["edited_locations"].update(
+                decode(value) for value in record.get("edited", ()))
+            cached["exported_locations"].update(
+                decode(value) for value in record.get("exported", ()))
+            cached["exported_locations"] -= cached["edited_locations"]
+            if cached["edited_locations"]:
+                self.pending_txtd_edits[address] = {
+                    "kind": kind or "txtd", "id": id_val,
+                    "dat_start": dat_start, "offset": offset,
+                    "data": cached["data"], "locations": list(locations),
+                }
+
+        for address_text, visual in state.get("tree_files", {}).items():
+            try:
+                self._colour_address(int(address_text), visual)
+            except (TypeError, ValueError):
+                pass
+
+        for saved in state.get("pending_replacements", ()):
+            item = self.address_item.get(saved.get("address"))
+            entry = self._entry_of(item)
+            if entry is None:
+                continue
+            with open(self.dat_file, "rb") as source:
+                source.seek(entry["address"])
+                payload = source.read(entry["size"])
+            self.pending_file_edits[entry["key"]] = dict(
+                entry, data=payload, label=saved.get("label", ""))
+            self._colour_address(entry["address"], "edited")
+
+        self.mainexe_viewer.restore_project_state(state.get("main_exe"))
+        self.bins_viewer.sop_viewer.restore_project_state(state.get("sop"))
+        self.bins_viewer._refresh_sop_item_color()
+        self.img_dirty = bool(state.get("img_dirty"))
+        self._refresh_edit_status()
+
     def save_translation_project(self):
         """Snapshot translation work into a reopenable project folder.
 
@@ -3021,11 +3130,13 @@ class MainWindow(QMainWindow):
 
             project/\n
                 tomba2project.json\n
-                CD/TOMBA2.DAT, TOMBA2.IDX, TOMBA2.IMG, tombadict.json\n
+                Tomba 2 Game Files/TOMBA2.DAT, TOMBA2.IDX,
+                    TOMBA2.IMG, tombadict.json\n
                 MAIN.EXE   (when this disc has one)
+                BIN/SOP.BIN (when story text is available)
 
-        The project folder can be opened directly through "Open extracted
-        disc folder". Saving back into the currently open project is an
+        The project folder can be opened directly through "Open Translation
+        Project / Game Folder". Saving back into the currently open project is an
         in-place save: files are staged first, then the editor is rebased
         onto them so a later save cannot apply the same edits twice.
         """
@@ -3038,7 +3149,19 @@ class MainWindow(QMainWindow):
             self, "Choose an empty or existing translation project folder")
         if not project_dir:
             return False
-        cd_dir = os.path.join(project_dir, "CD")
+        game_folder_name = "Tomba 2 Game Files"
+        manifest_path = os.path.join(project_dir, "tomba2project.json")
+        # Existing version-1 projects keep their CD folder so Save does not
+        # silently fork one workspace into two directories.  New projects use
+        # a name that says what the folder actually contains.
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, encoding="utf-8") as source:
+                    old_manifest = json.load(source)
+                game_folder_name = old_manifest.get("cd_folder") or game_folder_name
+            except (OSError, ValueError, TypeError):
+                pass
+        cd_dir = os.path.join(project_dir, game_folder_name)
         try:
             os.makedirs(cd_dir, exist_ok=True)
         except OSError as exc:
@@ -3052,6 +3175,9 @@ class MainWindow(QMainWindow):
         source_cd = os.path.dirname(self.dat_file)
         source_idx = os.path.join(source_cd, "TOMBA2.IDX")
         mainexe_edits = self.mainexe_viewer.all_edits()
+        sop_path = self.bins_viewer.sop_viewer.sop_path
+        sop_edits = self.bins_viewer.all_edits()
+        project_state = self._translation_project_state()
         in_place = (os.path.normcase(os.path.abspath(source_cd))
                     == os.path.normcase(os.path.abspath(cd_dir)))
 
@@ -3062,6 +3188,8 @@ class MainWindow(QMainWindow):
             output_img = os.path.join(cd_dir, "TOMBA2.IMG")
             exe_path = self.mainexe_viewer.exe_path
             output_exe = os.path.join(project_dir, "MAIN.EXE") if exe_path else None
+            output_sop = (os.path.join(project_dir, "BIN", "SOP.BIN")
+                          if sop_path else None)
 
             # Always write a complete snapshot somewhere separate first.
             # Besides avoiding half-written projects, this makes source ==
@@ -3069,7 +3197,7 @@ class MainWindow(QMainWindow):
             # SameFileError for an already-open project).
             with tempfile.TemporaryDirectory(
                     prefix=".tomba2project-", dir=project_dir) as stage:
-                stage_cd = os.path.join(stage, "CD")
+                stage_cd = os.path.join(stage, game_folder_name)
                 os.makedirs(stage_cd)
                 stage_dat = os.path.join(stage_cd, "TOMBA2.DAT")
                 stage_idx = os.path.join(stage_cd, "TOMBA2.IDX")
@@ -3100,14 +3228,28 @@ class MainWindow(QMainWindow):
                     else:
                         shutil.copy2(exe_path, stage_exe)
 
+                stage_sop = None
+                if sop_path:
+                    stage_bin = os.path.join(stage, "BIN")
+                    os.makedirs(stage_bin)
+                    stage_sop = os.path.join(stage_bin, "SOP.BIN")
+                    if sop_edits:
+                        sop_repack_pool(
+                            sop_path, self.bins_viewer.sop_viewer.entries,
+                            sop_edits, stage_sop)
+                    else:
+                        shutil.copy2(sop_path, stage_sop)
+
                 from gui.txtd import translation
                 translation.save(stage_cd, translation.active())
                 manifest = {
                     "format": "tomba2edit-translation-project",
-                    "version": 1,
-                    "cd_folder": "CD",
+                    "version": 2,
+                    "cd_folder": game_folder_name,
                     "main_exe": "MAIN.EXE" if exe_path else None,
+                    "sop_bin": "BIN/SOP.BIN" if sop_path else None,
                     "source_image": self.current_iso_path,
+                    "editor_state": project_state,
                 }
                 stage_manifest = os.path.join(stage, "tomba2project.json")
                 with open(stage_manifest, "w", encoding="utf-8") as f:
@@ -3120,6 +3262,9 @@ class MainWindow(QMainWindow):
                            os.path.join(cd_dir, "tombadict.json"))
                 if stage_exe:
                     os.replace(stage_exe, output_exe)
+                if stage_sop:
+                    os.makedirs(os.path.dirname(output_sop), exist_ok=True)
+                    os.replace(stage_sop, output_sop)
                 os.replace(stage_manifest,
                            os.path.join(project_dir, "tomba2project.json"))
 
@@ -3140,16 +3285,22 @@ class MainWindow(QMainWindow):
             self.dat_file = output_dat
             parse_idx_file(self, cd_dir)
             self._load_mainexe(output_exe)
-            self.img_dirty = False
-            self._refresh_edit_status()
+            self._load_bins(
+                ([{"name": "SOP.BIN", "size": os.path.getsize(output_sop)}]
+                 if output_sop else []), output_sop)
+            self._restore_translation_project_state(project_state)
+            self.load_translation_tab(cd_dir)
+            self.mainexe_viewer.reload_preview_font(
+                cd_dir, self.preview_glyph_top())
 
         self._project_snapshot_path = project_dir
         QMessageBox.information(
             self, "Translation project saved",
             "Your working copy is now self-contained:\n\n"
             f"    {project_dir}\n\n"
-            "To continue later, choose File > Open extracted disc folder "
-            "and select this project folder. It contains the character "
+            "To continue later, choose File > Open Translation Project / "
+            "Game Folder and select this project folder. "
+            "It contains the character "
             "table and font page with the translated text, so no separate "
             "letters.json or temporary extraction is needed.")
         return True
@@ -3441,34 +3592,52 @@ class MainWindow(QMainWindow):
         self._tab_changed()
 
     def open_folder_dialog(self):
-        """Open an already-extracted CD folder directly, no ISO needed.
-        Accepts either the parent folder (with a CD subfolder) or the CD
-        folder itself."""
+        """Open a Translation Project or extracted game-files folder."""
         # A different folder may carry a different saved translation.
         self._translation_loaded = False
         folder = QFileDialog.getExistingDirectory(
-            self, "Select a Tomba! 2 folder (containing a CD folder, or the CD folder itself)"
-        )
+            self, "Select a Translation Project or Tomba! 2 game-files folder")
         if not folder:
             return
+
+        project_root = None
+        manifest = {}
+        for possible_root in (folder, os.path.dirname(folder)):
+            possible = os.path.join(possible_root, "tomba2project.json")
+            if not os.path.isfile(possible):
+                continue
+            try:
+                with open(possible, encoding="utf-8") as source:
+                    candidate = json.load(source)
+                if candidate.get("format") == "tomba2edit-translation-project":
+                    project_root, manifest = possible_root, candidate
+                    break
+            except (OSError, ValueError, TypeError):
+                continue
 
         required_files = ("TOMBA2.DAT", "TOMBA2.IDX", "TOMBA2.IMG")
 
         def has_required_files(path):
             return all(os.path.exists(os.path.join(path, name)) for name in required_files)
 
-        nested_cd = os.path.join(folder, "CD")
-        if has_required_files(nested_cd):
-            cd_folder = nested_cd
-        elif has_required_files(folder):
-            cd_folder = folder
-        else:
+        candidates = []
+        if project_root:
+            declared = manifest.get("cd_folder")
+            if declared:
+                candidates.append(os.path.join(project_root, declared))
+            candidates.extend((os.path.join(project_root, "Tomba 2 Game Files"),
+                               os.path.join(project_root, "CD")))
+        candidates.extend((folder,
+                           os.path.join(folder, "Tomba 2 Game Files"),
+                           os.path.join(folder, "CD")))
+        cd_folder = next((path for path in candidates
+                          if has_required_files(path)), None)
+        if cd_folder is None:
             QMessageBox.critical(
                 self, "Error",
-                "Couldn't find TOMBA2.DAT, TOMBA2.IDX and TOMBA2.IMG in this folder "
-                "or in a CD subfolder inside it. Select the folder that was extracted "
-                "from a Tomba! 2 disc image (with a CD subfolder), or that CD folder "
-                "directly."
+                "Couldn't find TOMBA2.DAT, TOMBA2.IDX and TOMBA2.IMG. "
+                "Select the Translation Project itself, its 'Tomba 2 Game "
+                "Files' folder, or an extracted game folder."
             )
             return
 
@@ -3492,7 +3661,7 @@ class MainWindow(QMainWindow):
             self.iso_handler.cleanup()
         self.iso_handler = None
         self.current_iso_path = None
-        self._project_snapshot_path = None
+        self._project_snapshot_path = project_root
         self.pending_txtd_edits.clear()
         self.pending_file_edits.clear()
         self.txtd_file_states.clear()
@@ -3511,22 +3680,33 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to parse TOMBA2.IDX from this folder:\n\n{e}")
             return
 
+        # MAIN.EXE decoding consults the active character assignment too.
+        # Load the project's table before parsing the executable; doing this
+        # afterwards left its editor populated with {$89}-style fallbacks
+        # until another manual refresh.
+        self.load_translation_tab(cd_folder)
+
         # MAIN.EXE usually sits alongside the CD folder.  When the user
         # selects CD itself, ``folder`` and ``cd_folder`` are identical,
         # so its parent must be checked explicitly as well.  Otherwise a
         # valid project opens with an empty, apparently unusable MAIN.EXE
         # tab despite project/MAIN.EXE being present.
         mainexe_path = None
-        for candidate_dir in (folder, cd_folder, os.path.dirname(cd_folder)):
-            candidate = os.path.join(candidate_dir, "MAIN.EXE")
-            if os.path.exists(candidate):
+        declared_exe = (os.path.join(project_root, manifest.get("main_exe"))
+                        if project_root and manifest.get("main_exe") else None)
+        exe_candidates = ([declared_exe] if declared_exe else []) + [
+            os.path.join(candidate_dir, "MAIN.EXE")
+            for candidate_dir in (folder, cd_folder, os.path.dirname(cd_folder))]
+        for candidate in exe_candidates:
+            if candidate and os.path.exists(candidate):
                 mainexe_path = candidate
                 break
         self._load_mainexe(mainexe_path)
 
         # BIN/ sits alongside MAIN.EXE, same two candidate locations.
         bin_dir = None
-        for candidate_dir in (folder, cd_folder):
+        bin_roots = ([project_root] if project_root else []) + [folder, cd_folder]
+        for candidate_dir in bin_roots:
             candidate = os.path.join(candidate_dir, "BIN")
             if os.path.isdir(candidate):
                 bin_dir = candidate
@@ -3550,7 +3730,23 @@ class MainWindow(QMainWindow):
             if self.movie_panel.movies:
                 break
 
-        self.folder_info_label.setText(f"Loaded folder: {cd_folder}")
+        # Load the saved character table/font page now, even if Translation
+        # is not the visible tab, then refresh MAIN.EXE's game-font preview.
+        # This removes the old "open project, click around until a tab wakes
+        # up" behavior.
+        self.load_translation_tab(cd_folder)
+        self.mainexe_viewer.reload_preview_font(
+            cd_folder, self.preview_glyph_top())
+        if project_root:
+            self._restore_translation_project_state(
+                manifest.get("editor_state"))
+            self.folder_info_label.setText(
+                f"Loaded Translation Project: {project_root}")
+        else:
+            self.folder_info_label.setText(f"Loaded game files: {cd_folder}")
+        selected = self.tree_view.selectionModel().selectedIndexes()
+        if selected:
+            self.on_tree_selection_changed()
 
     def _pack_pending_txtd_edits(self):
         """Turn self.pending_txtd_edits into the `edits` list repack_files()

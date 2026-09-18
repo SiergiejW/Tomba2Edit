@@ -262,8 +262,17 @@ RENDER_MODE, RENDER_MODE_MASK, SEMI_SWITCH = 0x0D, 0x0B, 0x1B
 # many first so its particles are coming and going steadily - record_clips.
 CLIP_FRAMES = 64
 CLIP_WARMUP = 96
+# Geometry-driven scenery reaches its cycles quickly (Water Temple is nine
+# frames). Long, non-repeating particle paths still use CLIP_FRAMES.
+MOVING_CLIP_FRAMES = 32
+POSE_CLIP_FRAMES = 24
+POSE_CLIP_PARTS = 8
 # Frames on at which a code-drawn family is drawn to see whether it moves.
 CLIP_PROBES = (1, 2, 5, 11)
+# A04's ambient mote/firefly effect deliberately stops translating once the
+# ranch is purified. The editor still previews its established idle flight;
+# record it with that one progress bit temporarily lowered.
+KUJARA_FIREFLY = 0x8013AB0C
 
 FRAMES = 4
 BUDGET = 400_000
@@ -306,6 +315,7 @@ class Part:
     # Its actor's render mode over the model's own blending - see
     # render_blend: False drawn opaque, True semi-transparent, None as authored.
     blend: object = None
+    address: int = 0                 # emulated model-part record
 
 
 @dataclass
@@ -370,6 +380,19 @@ class Actor:
     # Its parts' offsets and turns at the last reading pass, and whether a
     # reading is owed because its run turned them after transforming.
     turns: bytes = None
+    # The game's attachment effects read the already-transformed matrices and
+    # world positions out of their parent's model-part records.  Keep those
+    # bytes with the selected opening pose: later exploratory runs restore RAM
+    # snapshots, and without this the parent still has its parts but every
+    # attachment point is back at (0, 0, 0).
+    pose_state: dict = field(default_factory=dict)
+    # A transient captured earlier in a cutscene can outlive its emulated
+    # actor record in the editor.  Its archived row keeps the recorded family
+    # key here instead of following a now-reused spawner address.
+    family_key: object = None
+    # Opening idle poses sampled from the actor's real update routine. Kept
+    # only for character-sized placed actors whose transforms actually move.
+    pose_clip: tuple = ()
     stale: bool = False
     restaled: bool = False
 
@@ -444,6 +467,10 @@ class World:
         self.rooms = {}                         # scene -> [Actor]
         # family -> [polygons per frame] of what moves - see record_clips.
         self.clips = {}
+        # actor address -> [its own polygons per frame], for one that lives
+        # through the recording.
+        self.actor_clips = {}
+        self.archived_effects = []
         # scene -> records in its table, None where the spawner has none -
         # every scene up to the last with a table, run or not.
         self.room_tables = {}
@@ -833,6 +860,8 @@ class World:
         """Who an actor's drawing belongs to: the top of its spawner chain,
         or ("worker", id) for a transient effect a scene worker made - A01's
         rising bubbles are each their own top, one worker's all."""
+        if actor.family_key is not None:
+            return actor.family_key
         for _depth in range(32):
             parent = self.by_address.get(actor.spawner)
             if parent is None:
@@ -843,70 +872,252 @@ class World:
             return ("worker", actor.worker)
         return actor.address
 
+    def probe_transient_clips(self, frames=2, budget=BUDGET):
+        """Archive effects present at the start of a long cutscene.
+
+        A0L starts its continuous steam on the camera worker's first call,
+        then plays hundreds of frames.  By the final scene snapshot that
+        first effect has correctly expired, but the level viewer still needs
+        its loop.  Probe from a reversible snapshot and retain only a drawn
+        representative plus the clip; normal cutscene simulation then carries
+        on from the untouched initial state.
+        """
+        import copy
+        outer = self.snapshot()
+        previous = set(self.clips)
+        archived = []
+        try:
+            self.run(frames, budget=budget)
+            self.harvest()
+            self.record_clips(budget=budget)
+            new_keys = [k for k in self.clips if k not in previous]
+            for number, key in enumerate(new_keys):
+                representative = next((a for a in self.actors
+                                       if a.polys and self.family(a) == key), None)
+                if representative is None:
+                    continue
+                kept = copy.copy(representative)
+                kept.address = -(len(self.archived_effects) + len(archived) + number + 1)
+                kept.spawner = None
+                kept.worker = None
+                kept.family_key = ("cutscene", kept.address)
+                kept.dead = kept.discarded = False
+                self.clips[kept.family_key] = self.clips.pop(key)
+                archived.append(kept)
+        finally:
+            self.restore(outer)
+        self.archived_effects.extend(archived)
+
+    def restore_archived_effects(self):
+        """Expose probed cutscene effects to the ordinary scene builder."""
+        for actor in self.archived_effects:
+            self.actors.append(actor)
+            self.by_address[actor.address] = actor
+
     def record_clips(self, frames=CLIP_FRAMES, warmup=CLIP_WARMUP, budget=BUDGET):
-        """Run each family that draws transient effects on for `frames`
-        frames, the way the game does - particles born, rising and let die -
-        and keep what they draw each frame, where it changes, in `clips`.
+        """Run each family that draws transient effects - or draws something
+        else a few frames on - on for `frames` frames the way the game does:
+        updated, then drawn, its draws' own state kept (an effect's sprite
+        steps in its draw routine), particles born and let die. What each
+        family draws a frame goes in `clips`, and what each actor that lives
+        through it draws in `actor_clips` - a Seed of Strength, one of five.
+        Particle families are run `warmup` frames first, to a steady state.
         RAM and the actors are left as they were."""
         painters = [a for a in self.actors if a.polys and not a.discarded]
         drawing = {self.family(a) for a in painters}
-        keys = {self.family(a) for a in self.actors if not a.discarded
-                and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS} & drawing
+        effects = {self.family(a) for a in self.actors if not a.discarded
+                   and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS} & drawing
+        ambient = {self.family(a) for a in self.actors
+                   if a.handler == KUJARA_FIREFLY and a.polys and not a.discarded}
+        # A drawer that reads src_SpriteAnimationFrame already has its exact
+        # UV cycle in Actor.uv_frames. Recording that family as a geometry
+        # flipbook samples frame counter 0 on every capture and consequently
+        # freezes waterfalls while also making large areas very slow to load.
+        uv_driven = {self.family(a) for a in painters if a.uv_frames} - ambient
         # Anything else its code draws is recorded too if a few frames on it
         # draws something else - a wheel, a flame, a waving flag.
-        keys |= self._moving(drawing - keys, budget)
+        effects -= uv_driven
+        effects |= ambient
+        # UV-driven does not mean spatially still. Kujara's fireflies use a
+        # stepped sprite/CLUT and also fly in a slow wave; excluding every
+        # UV-driven family kept only one frozen sample. Probe their polygon
+        # corners (not UVs), while static waterfalls continue to use their
+        # cheap UV cycle.
+        purified_bits = self.mem.read(PURIFIED_AREAS, 2)
+        preview_flight = bool(ambient and self.area_number == 4
+                              and purified_bits & (1 << self.area_number))
+        if preview_flight:
+            self.mem.write(PURIFIED_AREAS, 2,
+                           purified_bits & ~(1 << self.area_number))
+        moving_uv = self._moving(uv_driven, budget, geometry=True)
+        moving = self._moving(drawing - effects - uv_driven, budget) | moving_uv
+        keys = effects | moving
         if not keys:
+            if preview_flight:
+                self.mem.write(PURIFIED_AREAS, 2, purified_bits)
             return
+        born = {a.address for a in self.actors}
+        self._restore_poses()
         base = self.snapshot()
         defer, self.defer_capture = self.defer_capture, False
-        recorded = {k: [] for k in keys}
+        # Per family, per recorded frame: [(address, polygons)].  Moving
+        # scenery records immediately; only transient particle families need
+        # the steady-state warm-up.  Previously one particle family made all
+        # Water Temple waterfalls run and draw through the 96-frame warm-up.
+        raw = {key: [] for key in keys}
+        moving_active = set(moving)
+        moving_end = min(frames, MOVING_CLIP_FRAMES) if moving else 0
+        effect_start = warmup if effects else 0
+        effect_end = effect_start + frames if effects else 0
         try:
-            for frame in range(warmup + frames):
+            for frame in range(max(moving_end, effect_end)):
                 if self.skip_messages:
                     self.mem.write(MESSAGE, 1, 0)
-                if any(isinstance(k, tuple) for k in keys):
+                updating = effects | (moving_active if frame < moving_end else set())
+                if any(isinstance(k, tuple) for k in updating):
                     self.run_workers(budget)
                 for actor in list(self.actors):
-                    if not actor.dead and self.family(actor) in keys:
+                    if not actor.dead and self.family(actor) in updating:
                         self._run_free(actor, budget)
-                if frame < warmup:
+                capture = set()
+                if frame < moving_end:
+                    capture.update(moving_active)
+                if effect_start <= frame < effect_end:
+                    capture.update(effects)
+                if not capture:
                     continue
                 live = [a for a in self.actors
-                        if not a.dead and self.family(a) in keys]
+                        if not a.dead and self.family(a) in capture]
                 for actor in live:
                     actor.position = self._position(actor.address)
                     actor.silent = {}
-                self.capture_lines(live)
-                drawn = collections.defaultdict(list)
+                self.capture_lines(live, keep_draws=True)
+                by_family = collections.defaultdict(list)
                 for actor in live:
-                    drawn[self.family(actor)].extend(actor.polys)
-                for key in keys:
-                    recorded[key].append(tuple(drawn.get(key, ())))
+                    by_family[self.family(actor)].append(
+                        (actor.address, tuple(actor.polys)))
+                for key in capture:
+                    raw[key].append(by_family.get(key, []))
+                # Once three complete repeats establish a moving scenery
+                # cycle, it needs no more emulation. Water Temple's nine-cell
+                # waterfalls therefore finish after 27 frames instead of 64;
+                # non-periodic particles still retain the full recording.
+                for key in tuple(moving_active & capture):
+                    names = [repr(value) for value in raw[key]]
+                    if len(names) < 6:
+                        continue
+                    period = next((p for p in range(2, len(names) // 3 + 1)
+                                   if len(names) >= p * 3 and all(
+                                       names[n] == names[n % p]
+                                       for n in range(len(names)))), None)
+                    if period is not None:
+                        raw[key] = raw[key][:period]
+                        moving_active.remove(key)
         finally:
             self.defer_capture = defer
             self.restore(base)
-        for key, clip in recorded.items():
-            names = [repr(f) for f in clip]
-            if len(set(names)) > 1:
-                # A cycle is kept one period long, so it loops without a seam.
-                period = next((p for p in range(2, len(names) // 2 + 1)
-                               if all(names[k] == names[k % p] for k in range(len(names)))),
-                              len(names))
-                self.clips[key] = clip[:period]
+            if preview_flight:
+                self.mem.write(PURIFIED_AREAS, 2, purified_bits)
+        # An effect that lives and draws all through it, and moves, is its
+        # own clip - and not part of its family's.  Split a family only when
+        # it has one such survivor.  Turning every persistent particle into a
+        # separate 64-model row made Donglin and Water Temple balloon into
+        # hundreds of rows; their family clip already preserves every
+        # particle's independent position and motion.
+        per_actor = collections.defaultdict(list)
+        actor_family = {}
+        for family, recorded in raw.items():
+            for entries in recorded:
+                for address, polys in entries:
+                    if address in born:
+                        per_actor[address].append(polys)
+                        actor_family[address] = family
+        candidates = collections.defaultdict(list)
+        for address, clip in per_actor.items():
+            actor = self.by_address.get(address)
+            if (actor is not None and len(clip) == frames and all(clip)
+                    and self.mem.read(address + CLASS, 1) == EFFECT_CLASS):
+                looped = _looped(clip)
+                if looped is not None:
+                    candidates[actor_family.get(address)].append((address, looped))
+        own = set()
+        for family, found in candidates.items():
+            if family is None or len(found) != 1:
+                continue
+            address, looped = found[0]
+            self.actor_clips[address] = looped
+            own.add(address)
+        for key in keys:
+            clip = [tuple(p for address, polys in entries
+                          if address not in own for p in polys)
+                    for entries in raw[key]]
+            clip = _looped(clip)
+            if clip is not None:
+                self.clips[key] = clip
 
-    def _drawn_by(self, keys):
-        """{family: repr of the polygons its live actors draw now}."""
+    def record_pose_clips(self, frames=POSE_CLIP_FRAMES, budget=BUDGET):
+        """Record short idle loops for placed, character-sized model actors."""
+        candidates = [a for a in self.actors
+                      if a.record is not None and not (a.dead or a.discarded or a.hidden)
+                      and len(a.parts) >= POSE_CLIP_PARTS]
+        if not candidates:
+            return
+        self._restore_poses(candidates)
+        base = self.snapshot()
+        recorded = {a.address: [] for a in candidates}
+        try:
+            for _frame in range(frames):
+                for actor in candidates:
+                    live = self.by_address.get(actor.address)
+                    if live is not None and not live.dead:
+                        self._run_free(live, budget)
+                models, _banks = self._maps()
+                for address in recorded:
+                    actor = self.by_address.get(address)
+                    recorded[address].append(
+                        self._parts(actor, models) if actor is not None and not actor.dead else [])
+        finally:
+            self.restore(base)
+
+        for address, clip in recorded.items():
+            actor = self.by_address.get(address)
+            if actor is None or not clip or any(not frame for frame in clip):
+                continue
+            sources = tuple(p.source for p in clip[0])
+            if any(tuple(p.source for p in frame) != sources for frame in clip):
+                continue
+            signatures = [tuple((p.source,
+                                 tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)),
+                                 tuple(np.rint(p.position).astype(int)))
+                                for p in frame) for frame in clip]
+            if len(set(signatures)) < 2:
+                continue
+            period = next((p for p in range(2, len(clip) // 2 + 1)
+                           if all(signatures[k] == signatures[k % p]
+                                  for k in range(len(clip)))), len(clip))
+            actor.pose_clip = tuple(clip[:period])
+
+    def _drawn_by(self, keys, geometry=False):
+        """{family: repr of what its live actors draw now}.
+
+        With `geometry`, compare only corners. This tells a spatially moving
+        sprite effect from scenery whose texture alone advances.
+        """
         live = [a for a in self.actors if not a.dead and self.family(a) in keys]
         for actor in live:
             actor.position = self._position(actor.address)
             actor.silent = {}
-        self.capture_lines(live)
+        self.capture_lines(live, keep_draws=True)
         drawn = collections.defaultdict(list)
         for actor in live:
-            drawn[self.family(actor)].extend(actor.polys)
+            polys = actor.polys
+            if geometry:
+                polys = tuple(tuple(tuple(float(v) for v in point)
+                                    for point in polygon[0]) for polygon in polys)
+            drawn[self.family(actor)].extend(polys)
         return {k: repr(drawn.get(k, ())) for k in keys}
 
-    def _moving(self, keys, budget=BUDGET):
+    def _moving(self, keys, budget=BUDGET, geometry=False):
         """Which of these families draw something different at any of the
         CLIP_PROBES frames on - several, so a cycle of six (A0L's 101.x cells)
         is not mistaken for a still. RAM and the actors are left as they were."""
@@ -916,7 +1127,7 @@ class World:
         defer, self.defer_capture = self.defer_capture, False
         moving = set()
         try:
-            before = self._drawn_by(keys)
+            before = self._drawn_by(keys, geometry)
             for frame in range(1, max(CLIP_PROBES) + 1):
                 if any(isinstance(k, tuple) for k in keys):
                     self.run_workers(budget)
@@ -924,7 +1135,7 @@ class World:
                     if not actor.dead and self.family(actor) in keys:
                         self._run_free(actor, budget)
                 if frame in CLIP_PROBES:
-                    now = self._drawn_by(keys - moving)
+                    now = self._drawn_by(keys - moving, geometry)
                     moving |= {k for k, v in now.items() if v != before[k]}
                     if moving == keys:
                         break
@@ -1037,6 +1248,7 @@ class World:
         models, banks = self._maps()
         for actor in actors:
             actor.parts = self._parts(actor, models)
+            actor.pose_state = self._pose_state(actor)
             self._sprite(actor, banks)
             self._place(actor)
             actor.turns = self._turns(actor)
@@ -1117,6 +1329,7 @@ class World:
                 actor.restaled |= owed
                 actor.read_ran = actor.ran
                 actor.parts = parts
+                actor.pose_state = self._pose_state(actor)
                 self._sprite(actor, banks)
                 self._place(actor)
                 taken.append(actor)
@@ -1132,6 +1345,36 @@ class World:
             if part:
                 out += mem.bytes(part, 0x0E)
         return bytes(out)
+
+    def _pose_state(self, actor):
+        """Transformed matrix and position bytes for every allocated part."""
+        read, mem, a = self.mem.read, self.mem, actor.address
+        out = {}
+        for n in range(min(read(a + PART_COUNT, 1), MAX_PARTS)):
+            part = read(a + PARTS + n * 4, 4)
+            if part:
+                # +0x18: 3x3 matrix; +0x2C: three 32-bit world coordinates.
+                out[part] = mem.bytes(part + 0x18, 0x20)
+        # Some actors retain only local offsets in RAM; _parts() resolves
+        # those through the parent chain for the viewer.  Attachment handlers
+        # do not—they read the transform block directly—so materialise the
+        # resolved pose in the saved block as the game renderer would.
+        for part in actor.parts:
+            if not part.address:
+                continue
+            matrix = np.rint(np.asarray(part.matrix) * 4096.0).astype(np.int64)
+            matrix = np.clip(matrix, -32768, 32767)
+            position = np.rint(np.asarray(part.position)).astype(np.int64)
+            position = np.clip(position, -2147483648, 2147483647)
+            out[part.address] = (struct.pack("<9h", *matrix.reshape(-1)) + b"\0\0"
+                                 + struct.pack("<3i", *position))
+        return out
+
+    def _restore_poses(self, actors=None):
+        """Put selected model poses back where attachment code expects them."""
+        for actor in self.actors if actors is None else actors:
+            for part, state in actor.pose_state.items():
+                self.mem.load(part + 0x18, state)
 
     def _read(self):
         """A reading, and the lines the re-read actors draw in that same
@@ -1417,15 +1660,17 @@ class World:
         self.restore(base)
         self.events = events
 
-    def capture_lines(self, actors=None, budget=BUDGET):
+    def capture_lines(self, actors=None, budget=BUDGET, keep_draws=False):
         """Run each actor's draw routine (+0x18) and then its update handler
         once with the GTE naming its vertices, and keep the line primitives
         that come out, on the actor - A00's ropes come from the first, A06's
         (f_UpdateLaughingCryingDoorTriggerActor) from the second. Leaves RAM
-        as it was."""
+        as it was - except, with `keep_draws`, what each draw routine (+0x18)
+        wrote to its own actor: an effect's sprite stream steps there
+        (FUN_80027CB4 stores the next frame at +0x38), so a clip keeps it."""
         mem, cpu = self.mem, self.cpu
         ram, scratch, heap, count = bytes(mem.ram), bytes(mem.scratch), self.heap, len(self.actors)
-        found = {}
+        found, drawn_state = {}, {}
         held = {address: cpu.hooks.get(address) for address in PART_DRAWERS}
         cpu.hooks.update({address: _draw_nothing for address in PART_DRAWERS})
         # The projection distance at the capture depth: a sprite laid out in
@@ -1506,6 +1751,8 @@ class World:
                     if quiet is not None and quiet >= QUIET_CAPTURES:
                         continue
                     drawn_lines, drawn_polys = draw(actor, offset, routine)
+                    if keep_draws and offset == DRAW:
+                        drawn_state[actor.address] = mem.bytes(actor.address, ACTOR_SIZE)
                     lines.extend(drawn_lines)
                     (placed if routine == CLASS5_QUEUE else polys).extend(drawn_polys)
                     if drawn_polys:
@@ -1541,6 +1788,12 @@ class World:
                             moved.append((tuple(tuple(c) for c in corners), uvs, colours,
                                           clut, blended, page))
                     polys = moved
+                # Do not discard a draw solely because the actor record is at
+                # the origin. Attached effects deliberately leave their own
+                # position at zero and draw through a parent's posed matrix;
+                # Donglin's snow fireflies and several small environmental
+                # effects use exactly that arrangement. The captured GTE
+                # vertices, not the actor record, are their real placement.
                 polys.extend((tuple(tuple(c) for c in corners), uvs, colours, clut, blended, page)
                              for corners, uvs, colours, clut, blended, page in placed)
                 if lines or polys:
@@ -1559,6 +1812,8 @@ class World:
             mem.ram[:] = ram
             mem.scratch[:] = scratch
             self.heap = heap
+            for address, state in drawn_state.items():
+                mem.load(address, state)
             for extra in self.actors[count:]:
                 self.by_address.pop(extra.address, None)
             del self.actors[count:]
@@ -1731,6 +1986,12 @@ class World:
             # f_SpawnTransientEffect*: whole shorts at +0x2C/+0x2E/+0x30.
             return np.array([float(s16(read(address + POSITION + k * 2, 2)))
                              for k in range(3)])
+        if self.area_number == 1 and read(address + CALLBACK, 4) == 0x80133D74:
+            # Purified Mine's upward steam is a model-part attachment.  Its
+            # handler writes whole coordinates into the low half of three
+            # four-byte slots (+2/+6/+10), rather than 16.16 actor position.
+            return np.array([float(s16(read(address + POSITION + 2 + k * 4, 2)))
+                             for k in range(3)])
         return np.array([s32(read(address + POSITION + k * 4, 4)) / 65536.0
                          for k in range(3)])
 
@@ -1788,7 +2049,7 @@ class World:
             source = models.get(read(part + 0x40, 4))
             if source is not None:
                 out.append(Part(source, matrix, position, read(part + 0x3E, 2),
-                            posed=any(raw), blend=blend))
+                            posed=any(raw), blend=blend, address=part))
         actor.blank = max(actor.blank, blank)
         return out
 
@@ -1931,6 +2192,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
                 f"its cutscene played for {CUTSCENE_FRAMES} frame(s)")
             world.run_controller(controller)
             world.skip_messages = True
+            world.probe_transient_clips()
             frames = max(frames, CUTSCENE_FRAMES)
         else:
             say("no records: running Tomba himself")
@@ -1950,9 +2212,12 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         gated = world.spawn_area_gated(spawner, frames)
         say("gated", gated)
     world.harvest()
+    world.record_pose_clips()
     world.record_clips()
+    world.restore_archived_effects()
     if world.clips:
-        say(f"{len(world.clips)} moving effect(s) recorded, {CLIP_FRAMES} frame(s) each")
+        say(f"{len(world.clips)} moving effect(s) recorded, up to "
+            f"{CLIP_FRAMES} frame(s) each")
     if spawner:
         say("running every room")
         world.run_rooms(spawner, area_number, frames)
@@ -1965,6 +2230,18 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
                            reach=UNPLACED if records or spawner else 1)
     say(f"{len(world.events)} event actor(s)", [a for _h, tree in world.events for a in tree])
     return world
+
+
+def _looped(clip):
+    """A recorded clip one period long, so it loops without a seam - or None
+    when every frame is the same."""
+    names = [repr(f) for f in clip]
+    if len(set(names)) < 2:
+        return None
+    period = next((p for p in range(2, len(names) // 2 + 1)
+                   if all(names[k] == names[k % p] for k in range(len(names)))),
+                  len(names))
+    return list(clip[:period])
 
 
 def installed_handlers(overlay):

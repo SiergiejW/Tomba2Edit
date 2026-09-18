@@ -43,6 +43,11 @@ class Clip:
     steps: list
     loop_start: object = None
     name: str = ""
+    # Bone -> SMST group selections made by actor code when this clip is
+    # started.  ANMP itself only stores transforms; characters such as
+    # Tomba carry alternate heads/hands in the same SMST and the executable
+    # chooses which group each bone draws from the animation id.
+    parts: dict = field(default_factory=dict)
     starts: list = field(init=False)
     duration: int = field(init=False)
 
@@ -170,6 +175,20 @@ def tomba_bank(sources, anmp, resource_id=None):
             pointers = struct.unpack_from("<239I", data, table - base)
             clips = [read_clip(data, base, p, poses, i)
                      for i, p in enumerate(pointers)]
+            # FUN_80054790 indexes one mode byte per animation, then a
+            # three-byte tuple for head, left hand and right hand.  These
+            # are model-group indices assigned to bones 1, 4 and 7.
+            mode_at = 0x800A42F8 - base
+            parts_at = 0x800A44AC - base
+            modes = data[mode_at:mode_at + len(clips)]
+            if len(modes) != len(clips):
+                raise SequenceError("truncated Tomba part-mode table")
+            for clip, mode in zip(clips, modes):
+                at = parts_at + mode * 3
+                groups = data[at:at + 3]
+                if len(groups) != 3:
+                    raise SequenceError("truncated Tomba part-selection table")
+                clip.parts = dict(zip((1, 4, 7), groups))
         except (SequenceError, struct.error):
             return None
         # These are usage contexts established by named decompiled

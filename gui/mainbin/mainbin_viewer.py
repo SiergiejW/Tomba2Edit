@@ -515,6 +515,26 @@ class MainExeViewer(QWidget):
             if item is not None:
                 self._set_item_state(item, offset)
 
+    def project_state(self):
+        """JSON-safe edit markers saved with a Translation Project."""
+        return {
+            "edited": sorted(self._edited_offsets),
+            "exported": sorted(self._exported_offsets),
+        }
+
+    def restore_project_state(self, state):
+        """Restore orange/green rows and category asterisks after reopen."""
+        known = set(self._entries_by_offset)
+        self._edited_offsets = {
+            int(offset) for offset in (state or {}).get("edited", ())
+            if int(offset) in known}
+        self._exported_offsets = {
+            int(offset) for offset in (state or {}).get("exported", ())
+            if int(offset) in known} - self._edited_offsets
+        for offset, item in self._entry_items.items():
+            self._set_item_state(item, offset)
+        self._update_pool_label()
+
     def clear_cache(self):
         """Full reset - called before loading a new exe, and when a new
         ISO/folder is opened with no MAIN.EXE found in it."""

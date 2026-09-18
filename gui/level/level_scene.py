@@ -32,6 +32,7 @@ water surfaces, which are the width of the harbour - and those are put
 in the scene as they are. `world_placed()` is what tells them apart.
 """
 import collections
+import copy
 import colorsys
 import json
 import math
@@ -83,7 +84,12 @@ SKELETON_SLACK = 3
 
 # How many frames each actor's code runs for before its parts are read:
 # enough for the update routines to pose them.
-SIM_FRAMES = 8
+# Eight ticks is enough for most outdoor placements, but several purified
+# room actors take a second eight-tick state transition before attaching their
+# model. At eight, Donglin's six floating ghosts are all falsely reported as
+# "draws nothing"; at sixteen they have the same complete six-part models the
+# game displays.
+SIM_FRAMES = 16
 
 # How far from the actor that spawned it a child may stand and still be
 # drawn as part of it; further than this it gets a row of its own - the
@@ -775,6 +781,9 @@ class LevelScene:
         # scene -> records in its table, None for no table - see
         # actor_sim.World.run_rooms; rooms with nothing drawn still listed.
         self.room_tables = {}
+        # {drawn model id: the captured polygons it was built from} - what a
+        # sprite rip cuts out of VRAM (functions/sprite_rip.py).
+        self.drawn_polys = {}
 
     # --- loading ------------------------------------------------------
 
@@ -971,6 +980,8 @@ class LevelScene:
             if instance.sources and DRAWN_ID <= instance.sources[0][0] < DRAWN_END:
                 moved = base + instance.sources[0][0] - DRAWN_ID
                 self.models[moved] = done.models.get(instance.sources[0][0])
+                self.drawn_polys[moved] = getattr(done, "drawn_polys", {}).get(
+                    instance.sources[0][0], ())
                 instance.sources = ((moved, 0),)
         for file_id, model in done.models.items():
             if not DRAWN_ID <= file_id < DRAWN_END:
@@ -1377,6 +1388,10 @@ class LevelScene:
         stepped = {}                # (owner, scene) -> {CLUT word: UV steps}
         clipped = {}                # (owner, scene) -> {family with a clip}
         clips = self.world.clips if self.world is not None else {}
+        # An effect with a clip of its own - a Seed of Strength - is its own
+        # row: (owner, scene, address) -> (frames, handler name).
+        actor_clips = getattr(self.world, "actor_clips", {}) if self.world is not None else {}
+        solo = {}
 
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
@@ -1385,13 +1400,18 @@ class LevelScene:
                     continue
                 drew.add(id(actor))
                 family = self.world.family(actor) if actor.polys and clips else None
-                if family in clips and scene is None:
+                own = actor_clips.get(actor.address) if scene is None and actor.polys else None
+                if own is not None:
+                    key = (owner, scene, actor.address)
+                    solo[key] = (own, self._actor_name(actor))
+                    drawn[key] = []
+                elif family in clips and scene is None:
                     # Drawn frame by frame from its clip instead.
-                    clipped.setdefault((owner, scene), set()).add(family)
-                    drawn.setdefault((owner, scene), [])
+                    clipped.setdefault((owner, scene, None), set()).add(family)
+                    drawn.setdefault((owner, scene, None), [])
                 elif actor.polys:
-                    drawn.setdefault((owner, scene), []).extend(actor.polys)
-                    stepped.setdefault((owner, scene), {}).update(actor.uv_frames or {})
+                    drawn.setdefault((owner, scene, None), []).extend(actor.polys)
+                    stepped.setdefault((owner, scene, None), {}).update(actor.uv_frames or {})
                 for a, b, color_a, color_b, blended in actor.lines:
                     self.lines.append(SceneLine(owner, scene, view_point(a),
                                                 view_point(b), color_a, color_b,
@@ -1495,7 +1515,8 @@ class LevelScene:
             # standstill: a blank part draws nothing whatever was named
             # (A05 68.3's door and boulder were two such immediates).
             guessed = self.bindings.get(record.key()) or ()
-            invisible = (actor is not None and not actor.parts
+            invisible = (self.chunk_index not in PURIFIED_CHUNKS
+                         and actor is not None and not actor.parts
                          and actor.blank and not actor.frames and guessed
                          and self.binding_source.get(record.key()) == "code"
                          and ({tuple(g) for g in guessed} <= set(actor.loaded)
@@ -1546,10 +1567,35 @@ class LevelScene:
                 art=art, assembly=assembly, note=note,
                 authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
+            head = instances[-1]
+            pose_clip = getattr(actor, "pose_clip", ()) if actor is not None else ()
+            if (assembly is not None and len(pose_clip) > 1
+                    and tuple(assembly.sources)
+                    == tuple(p.source for p in pose_clip[0])):
+                frames = [head.index]
+                for frame_number, pieces in enumerate(pose_clip):
+                    posed = actor_sim.Posed(
+                        assembly.name, assembly.note, pieces, assembly.riders,
+                        assembly.origin, assembly.yaw, assembly.owners)
+                    if frame_number == 0:
+                        head.assembly = posed
+                        continue
+                    frame = copy.copy(head)
+                    frame.index = len(instances)
+                    frame.assembly = posed
+                    frame.sources = posed.sources
+                    frame.label = f"{head.label} (idle frame {frame_number})"
+                    frame.flip = (head.index, frame_number)
+                    frame.flip_frames = ()
+                    instances.append(frame)
+                    frames.append(frame.index)
+                head.flip_frames = tuple(frames)
+                head.note = (f"{head.note}<br>" if head.note else "") + (
+                    f"{len(frames)} idle pose frames from its update routine")
             if assembly is not None:
-                assembled.append(instances[-1])
+                assembled.append(head)
             if actor is not None:
-                take(actor_sim.subtree(world, actor), len(instances) - 1, None)
+                take(actor_sim.subtree(world, actor), head.index, None)
             if kept_sprite:
                 # Its class's sprite state still shows, beside the model.
                 instances.append(Instance(
@@ -1781,18 +1827,26 @@ class LevelScene:
         # model each, already in world coordinates.
         if drawn:
             number = 0
-            for (owner, scene), polys in drawn.items():
-                families = sorted(clipped.get((owner, scene), ()), key=repr)
+            seen_heads = {}
+            for key, polys in drawn.items():
+                owner, scene, alone = key
+                families = sorted(clipped.get(key, ()), key=repr)
                 frames = [polys]
                 if families:
                     frames = [list(polys) + [p for f in families for p in clips[f][n]]
                               for n in range(len(clips[families[0]]))]
-                models = [drawn_model(f, view_point, stepped.get((owner, scene)))
-                          for f in frames]
+                if alone is not None:
+                    frames, _name = solo[key]
+                    families = [alone]
+                models = [drawn_model(f, view_point, stepped.get(key)) for f in frames]
                 if not any(models):
                     continue
                 head = (instances[owner].label if owner is not None
                         else interior_name(scene) if scene is not None else "the area")
+                if alone is not None:
+                    head = f"{head}: {solo[key][1]}"
+                    seen_heads[head] = seen_heads.get(head, 0) + 1
+                    head = f"{head} {seen_heads[head]}"
                 every = np.concatenate([np.asarray(m["vertices"], dtype=np.float64)
                                         for m in models if m])
                 cx, cy, cz = every.mean(axis=0)
@@ -1801,6 +1855,7 @@ class LevelScene:
                     sources = ()
                     if model is not None:
                         self.models[DRAWN_ID + number] = model
+                        self.drawn_polys[DRAWN_ID + number] = tuple(frames[frame])
                         sources = ((DRAWN_ID + number, 0),)
                         number += 1
                     note = (f"{len(polys)} textured polygon(s) its draw routine put out "

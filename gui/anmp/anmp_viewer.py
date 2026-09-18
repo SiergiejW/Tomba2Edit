@@ -31,6 +31,7 @@ from gui.anmp import game_rest
 from gui.anmp import sequences
 from gui.smst.smst_parser import load_smst
 from gui.smst.smst_viewer import SMSTViewer
+import struct
 import time
 
 # HOW FAST AN ANIMATION REALLY RUNS
@@ -106,6 +107,13 @@ class ANMPViewer(QWidget):
         self._loading_anmp = False
         self._model_vram_provider = None
         self._clip_scales = []
+        self._automatic_parts = {}        # bone -> group, from actor code
+        self._selected_model_address = None
+        self._sea_variants = {}
+        self._sea_variant_mode = None
+        self._switching_variant = False
+        self._switching_actor_rig = False
+        self._base_actor_bones = None
         self._inherit_scales = True
         self._clock_last = None
 
@@ -134,7 +142,6 @@ class ANMPViewer(QWidget):
         self.frames_table.itemSelectionChanged.connect(self._on_frame_selected)
 
         self.bank_box = QComboBox()
-        self.bank_box.addItem("All poses (raw ANMP)", None)
         self.bank_box.currentIndexChanged.connect(self._on_bank_changed)
         self.clip_box = QComboBox()
         self.clip_box.currentIndexChanged.connect(self._on_clip_changed)
@@ -285,7 +292,10 @@ class ANMPViewer(QWidget):
         left_layout.addWidget(self.bank_box)
         left_layout.addWidget(self.clip_box)
         left_layout.addWidget(self.sequence_info)
-        left_layout.addWidget(self.find_sequences_button)
+        # Sequence discovery is automatic.  Keep the diagnostic rescan
+        # action available to code, but do not make normal users click it
+        # every time merely to reveal data that was already found.
+        self.find_sequences_button.setVisible(False)
         left_layout.addWidget(self.frames_table, 3)
         left_layout.addWidget(panel_title.make_panel_title("This frame's limbs (degrees)"))
         left_layout.addWidget(self.limbs_table, 2)
@@ -387,6 +397,7 @@ class ANMPViewer(QWidget):
         self._preferred = list(preferred or [])
         self._model_skeletons = dict(model_skeletons or {})
         self._model_vram_provider = model_vram_provider
+        self._resource_id = resource_id
         self.viewer.set_vram(vram_bytes, vram_image)
         self._candidates = list(candidates or [])
         self._frames_by_id = {f.index: f for f in self.anmp.frames}
@@ -396,9 +407,10 @@ class ANMPViewer(QWidget):
                        self._sequence_candidates())
         self.bank_box.blockSignals(True)
         self.bank_box.clear()
-        self.bank_box.addItem("All poses (raw ANMP)", None)
         for candidate_bank in self._banks:
             self.bank_box.addItem(candidate_bank.label, candidate_bank)
+        if not self._banks:
+            self.bank_box.addItem("No decoded animation table", None)
         self.bank_box.blockSignals(False)
         self.find_sequences_button.setText("Rescan animation tables")
         self.find_sequences_button.setEnabled(
@@ -423,7 +435,7 @@ class ANMPViewer(QWidget):
         self._frames_by_id = {}
         self.bank_box.blockSignals(True)
         self.bank_box.clear()
-        self.bank_box.addItem("All poses (raw ANMP)", None)
+        self.bank_box.addItem("No decoded animation table", None)
         self.bank_box.blockSignals(False)
         self.clip_box.clear()
         self.clip_box.setEnabled(False)
@@ -476,6 +488,7 @@ class ANMPViewer(QWidget):
         bank = self.bank_box.itemData(index)
         self.clip_box.blockSignals(True)
         self.clip_box.clear()
+        self.clip_box.addItem("All poses (raw ANMP)", None)
         if bank:
             for clip in bank.clips:
                 name = f" — {clip.name}" if clip.name else ""
@@ -484,12 +497,21 @@ class ANMPViewer(QWidget):
                     f"0x{clip.id:02X}{name} ({len(clip.steps)} steps) "
                     f"({poses} poses)", clip)
         self.clip_box.blockSignals(False)
-        self.clip_box.setEnabled(bool(bank))
-        self._on_clip_changed(0 if bank else -1)
+        self.clip_box.setEnabled(True)
+        # Raw is deliberately first on initial load.  When the user changes
+        # table, keep that mode until they pick a named animation; the table's
+        # clips remain visible directly below it rather than disappearing.
+        self.clip_box.setCurrentIndex(0)
+        self._on_clip_changed(0)
 
     def _on_clip_changed(self, index):
         self.play_button.setChecked(False)
         self._clip = self.clip_box.itemData(index) if index >= 0 else None
+        if self._clip is None:
+            self._restore_selected_sea_model()
+        self._automatic_parts = self._parts_for_clip(self._clip)
+        self._apply_clip_rig()
+        self._refresh_visible_parts()
         self._clip_scales = (sequences.scale_states(
             self._clip, self._frames_by_id) if self._clip else [])
         self._where = 0.0
@@ -522,6 +544,76 @@ class ANMPViewer(QWidget):
             if not self._loading_anmp and self.autoplay_box.isChecked():
                 self.play_button.setChecked(True)
 
+    def _parts_for_clip(self, clip):
+        """Exact actor-code part choices known for the selected model.
+
+        Tomba's mapping is read from MAIN.EXE by sequences.tomba_bank.
+        The Ghost Guard's A06 actor switches its nine tongue bones from
+        groups 7..15 to 16..24 for animations 10..13.
+        """
+        if clip is None:
+            return {}
+        label = self.model_box.currentText().casefold()
+        if "tomba" in label and clip.parts:
+            return dict(clip.parts)
+        if "ghost guard" in label:
+            start = 16 if 10 <= clip.id <= 13 else 7
+            return {bone: start + bone - 7 for bone in range(7, 16)}
+        return {}
+
+    def _ghost_long_bones(self):
+        """A06's alternate nine-bone layout for the extended tongue."""
+        base = self._base_actor_bones
+        if ("ghost guard" not in self.model_box.currentText().casefold()
+                or self._current_area != 6 or not base or len(base) != 16):
+            return None
+        from functions import skeleton as skeleton_reader
+        for label, data in self._skeletons:
+            if label == "MAIN.EXE":
+                continue
+            try:
+                short = skeleton_reader.read_table(data, 0x3923C, 16)
+                if tuple(map(tuple, short)) != tuple(map(tuple, base)):
+                    continue
+                long_tail = skeleton_reader.read_table(data, 0x391F4, 9)
+                return [tuple(row) for row in base[:7]] + [
+                    tuple(row) for row in long_tail]
+            except (IndexError, struct.error):
+                continue
+        return None
+
+    def _apply_clip_rig(self):
+        """Switch actor-specific rest layouts which accompany part swaps."""
+        if not self.model or not self._base_actor_bones:
+            return
+        label = self.model_box.currentText().casefold()
+        if "ghost guard" not in label:
+            return
+        long = bool(self._clip and 10 <= self._clip.id <= 13)
+        target = self._ghost_long_bones() if long else self._base_actor_bones
+        if not target or target == self._export_bones:
+            return
+        self._switching_actor_rig = True
+        try:
+            self._pose_on(self.model, target, len(target),
+                          frame_model=False, show_position=False)
+        finally:
+            self._switching_actor_rig = False
+
+    def _refresh_visible_parts(self):
+        if not self.model:
+            return
+        total = len(self.model["groups"])
+        first = self.viewer.pose_first_group
+        keep = self._keep_groups(first)
+        spare = self.variation_box.currentData()
+        if spare is not None and spare in self._variations:
+            keep.add(spare)
+            keep.discard(first + self._variations[spare])
+        self.viewer.hidden_groups = set(range(total)) - keep
+        self.viewer.prepare_buffers()
+        self.viewer.update()
+
     def _sequence_candidates(self):
         """Automatically rank the overlay's sequence tables for this ANMP.
 
@@ -540,7 +632,15 @@ class ANMPViewer(QWidget):
             return []
         poses = set(self._frames_by_id)
         found = []
-        for label, data in self._skeletons:
+        sources = list(self._skeletons)
+        if (self._sequence_overlay_path
+                and not any(label == "overlay" for label, _data in sources)):
+            try:
+                with open(self._sequence_overlay_path, "rb") as source:
+                    sources.insert(0, ("overlay", source.read()))
+            except OSError:
+                pass
+        for label, data in sources:
             source_base = None
             if label == "overlay":
                 source_base = self._sequence_base
@@ -588,12 +688,14 @@ class ANMPViewer(QWidget):
         self._banks = found
         self.bank_box.blockSignals(True)
         self.bank_box.clear()
-        self.bank_box.addItem("All poses (raw ANMP)", None)
         for bank in found:
             self.bank_box.addItem(bank.label, bank)
+        if not found:
+            self.bank_box.addItem("No decoded animation table", None)
         self.bank_box.blockSignals(False)
         if found:
-            self.bank_box.setCurrentIndex(1)
+            self.bank_box.setCurrentIndex(0)
+            self._on_bank_changed(0)
         else:
             self.sequence_info.setText(
                 "No compatible sequence table found in this area's overlay. "
@@ -765,6 +867,12 @@ class ANMPViewer(QWidget):
 
     def _use_model(self, model, address=None):
         self.model = model
+        self._model_address = address
+        if not self._switching_variant:
+            self._selected_model_address = address
+            self._sea_variant_mode = None
+            self._find_sea_variants()
+        self._automatic_parts = self._parts_for_clip(self._clip)
         self.viewer.spread = False
         if self._model_vram_provider is not None and address is not None:
             try:
@@ -821,6 +929,7 @@ class ANMPViewer(QWidget):
             self._fill_skeletons(model, by_frequency, bones,
                                  exact_choices=choices)
             self._pose_on(model, bones, limbs)
+            self._apply_clip_rig()
             return
 
         # A judgement already made by eye beats any measurement. See
@@ -841,6 +950,7 @@ class ANMPViewer(QWidget):
                                 grade if grade is not None else float("inf"))],
                 choice_origin="approved pairing")
             self._pose_on(model, bones, limbs)
+            self._apply_clip_rig()
             return
 
         chosen = game_rest.best_for(self._skeletons, model, by_frequency)
@@ -857,6 +967,7 @@ class ANMPViewer(QWidget):
                   f"{by_frequency} - falling back to the measured/flat rest pose")
         self._fill_skeletons(model, by_frequency, bones)
         self._pose_on(model, bones, limbs)
+        self._apply_clip_rig()
 
     def _approved(self, model, limb_counts):
         """The skeleton someone signed off for this pairing, or None.
@@ -926,6 +1037,7 @@ class ANMPViewer(QWidget):
               f"0x{offset:X} at {limbs} bones, "
               f"{game_rest.describe(bones)}, fit {grade:.2f}")
         self._pose_on(self.model, bones, limbs)
+        self._apply_clip_rig()
 
     def _fill_variations(self, model, animated):
         """The spare parts, and which limb each stands in for.
@@ -989,8 +1101,10 @@ class ANMPViewer(QWidget):
         game_rest.spanning_groups."""
         keep = set()
         for bone in range(len(self._hierarchy)):
+            automatic = getattr(self, "_automatic_parts", {}).get(bone)
             spanning = getattr(self, "_spanning", {}).get(bone)
-            keep.add(first + bone if spanning is None else spanning)
+            keep.add(automatic if automatic is not None else
+                     first + bone if spanning is None else spanning)
         return keep
 
     def _on_first_group_changed(self, first):
@@ -1009,23 +1123,17 @@ class ANMPViewer(QWidget):
         at part 0."""
         if not self.model:
             return
-        spare = self.variation_box.itemData(index)
-        total = len(self.model["groups"])
-        first = self.viewer.pose_first_group
-        keep = self._keep_groups(first)
-        if spare is not None:
-            keep.add(spare)
-            keep.discard(first + self._variations[spare])
-        self.viewer.hidden_groups = set(range(total)) - keep
-        self.viewer.prepare_buffers()
-        self.viewer.update()
+        self._refresh_visible_parts()
 
-    def _pose_on(self, model, bones, limbs):
+    def _pose_on(self, model, bones, limbs, *, frame_model=True,
+                 show_position=True):
         """Stand `model` up on `bones` and show it.
 
         Split out of _use_model so the skeleton chooser can put a
         different table under the same model without reloading it."""
         self.model = model
+        if not self._switching_variant and not self._switching_actor_rig:
+            self._base_actor_bones = bones
         if bones is not None:
             self._hierarchy, self._named_hierarchy = game_rest.hierarchy(bones), True
         else:
@@ -1057,6 +1165,7 @@ class ANMPViewer(QWidget):
         first = self.first_group_box.value()
         self.viewer.pose_first_group = first
         self.viewer.pose_spares = dict(self._variations)
+        self._automatic_parts = self._parts_for_clip(self._clip)
         keep = self._keep_groups(first)
         self.viewer.hidden_groups = set(range(total)) - keep
         if bones is not None:
@@ -1086,9 +1195,89 @@ class ANMPViewer(QWidget):
             self._pivots = rest_pivots(model["groups"], self._hierarchy)
         self.viewer.model_data = model
         self.viewer.prepare_buffers()
-        self.viewer.frame_model()
-        self.show_position(self.slider.value())
+        if frame_model:
+            self.viewer.frame_model()
+        if show_position:
+            self.show_position(self.slider.value())
         self._update_info()
+
+    def _find_sea_variants(self):
+        """Locate the three SMST archives selected by A04's payload mode."""
+        self._sea_variants = {}
+        label = self.model_box.currentText().casefold()
+        if "sea anemone" not in label:
+            return
+        color = "pink" if "pink" in label else "blue" if "blue" in label else ""
+        for candidate_label, address, size in self._candidates:
+            folded = candidate_label.casefold()
+            if "sea anemone" not in folded or (color and color not in folded):
+                continue
+            mode = (0 if "mouth closed" in folded else
+                    1 if "opened var 1" in folded else
+                    2 if "opened var 2" in folded else None)
+            if mode is not None:
+                self._sea_variants[mode] = (candidate_label, address, size)
+
+    def _restore_selected_sea_model(self):
+        if (not self._sea_variants or self._sea_variant_mode is None
+                or self._selected_model_address is None or not self._source):
+            return
+        selected = next((entry for entry in self._candidates
+                         if entry[1] == self._selected_model_address), None)
+        if selected is None:
+            return
+        _label, address, size = selected
+        self._switching_variant = True
+        try:
+            self._use_model(load_smst(self._source[0], address, size), address)
+        except Exception as error:
+            print(f"[ANMP] could not restore Sea Anemone model: {error}")
+        finally:
+            self._switching_variant = False
+            self._sea_variant_mode = None
+
+    def _apply_actor_parts(self, step):
+        """Apply actor-code model choices attached to one sequence step."""
+        if not self._clip:
+            return
+        if not self._sea_variants:
+            wanted = self._parts_for_clip(self._clip)
+            if wanted != self._automatic_parts:
+                self._automatic_parts = wanted
+                self._refresh_visible_parts()
+            return
+
+        # FUN_A04__80129744 uses payload4's low nibble to choose the
+        # closed/open archive.  Mode 2 additionally uses the high nibble as
+        # the mouth-part group installed on node 3.
+        mode = step.payload4 & 0xF
+        if mode not in self._sea_variants:
+            return
+        if mode != self._sea_variant_mode:
+            _label, address, size = self._sea_variants[mode]
+            try:
+                variant = load_smst(self._source[0], address, size)
+                bones = self._export_bones
+                self._switching_variant = True
+                self._pose_on(variant, bones, len(self._hierarchy),
+                              frame_model=False, show_position=False)
+                self._model_address = address
+                if self._model_vram_provider is not None:
+                    supplied = self._model_vram_provider(address)
+                    if supplied:
+                        vram_bytes, vram_image, _area = supplied
+                        self.viewer.set_vram(vram_bytes, vram_image)
+                self._sea_variant_mode = mode
+            except Exception as error:
+                print(f"[ANMP] could not switch Sea Anemone variant: {error}")
+            finally:
+                self._switching_variant = False
+        mouth = step.payload4 >> 4
+        wanted = ({3: mouth} if mode == 2
+                  and 0 <= mouth < len(self.model.get("groups", ())) else {})
+        if wanted != self._automatic_parts:
+            self._automatic_parts = wanted
+            self._refresh_visible_parts()
 
     # --- transport ---------------------------------------------------
 
@@ -1263,6 +1452,7 @@ class ANMPViewer(QWidget):
         clip = self._clip
         tick = max(0, min(int(tick), clip.duration - 1))
         row, nxt, amount = clip.sample(tick)
+        self._apply_actor_parts(clip.steps[row])
         frame = self._frames_by_id[clip.steps[row].pose]
         following = (self._frames_by_id[clip.steps[nxt].pose]
                      if nxt is not None else None)
