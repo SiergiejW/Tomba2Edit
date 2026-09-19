@@ -14,11 +14,13 @@ be kept in labels/placements.json.
 import json
 import os
 import re
+import sys
+import tempfile
 import time
 from math import gcd
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QProcess, Qt, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -86,6 +88,11 @@ class LevelEditorPanel(QWidget):
         self.exe_path = None
         self.scene = None
         self._filling = False
+        self._cache_process = None
+        self._cache_manifest = None
+        self._cache_output_tail = ""
+        self._background_cache = {}
+        self._sprite_cache = {}
 
         # Pre-rendered phases of the background, flipped by a timer -
         # the same trick the BGMP viewer uses, since re-rendering a
@@ -231,12 +238,19 @@ class LevelEditorPanel(QWidget):
             "Write a copy of this area's Axx.BIN with the positions and "
             "angles as they are here. Only those bytes change.")
         self.save_button.clicked.connect(self._save_overlay)
+        self.cache_button = QPushButton("Pre-cache levels", self)
+        self.cache_button.setToolTip(
+            "Build every area's exact Fresh, Events done, and Both scene in "
+            "two background processes. This is a one-time calculation for "
+            "this disc; afterwards those Level Editor loads are cache reads.")
+        self.cache_button.clicked.connect(self._precache_levels)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.keep_button)
         buttons.addWidget(self.name_button)
         buttons.addWidget(self.gif_button)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.cache_button)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -292,6 +306,8 @@ class LevelEditorPanel(QWidget):
         self.overlay_for_area = overlay_for_area
         self.vram_for_area = vram_for_area
         self.exe_path = exe_path
+        self._background_cache.clear()
+        self._sprite_cache.clear()
         self._filling = True
         self.area_box.clear()
         rooms = self._areas_with_rooms()
@@ -330,8 +346,75 @@ class LevelEditorPanel(QWidget):
 
     def _enable(self, on):
         for widget in (self.table, self.model_box, self.progress_box,
-                       self.keep_button, self.save_button, *self.boxes.values()):
+                       self.keep_button, self.save_button, self.cache_button,
+                       *self.boxes.values()):
             widget.setEnabled(on)
+
+    def _precache_levels(self):
+        """Compute every exact scene off the UI thread, two areas at once."""
+        if self._cache_process is not None:
+            return
+        jobs = []
+        for row in range(self.area_box.count()):
+            chunk = self.area_box.itemData(row)
+            overlay = self.overlay_for_area(chunk)
+            if overlay and self.exe_path:
+                jobs.append((self.dat_path, self.idx_path, chunk,
+                             overlay, self.exe_path))
+        if not jobs:
+            return
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="tomba2-level-cache-",
+            encoding="utf-8", delete=False)
+        try:
+            json.dump(jobs, handle)
+        finally:
+            handle.close()
+        self._cache_manifest = handle.name
+        self._cache_output_tail = ""
+        process = QProcess(self)
+        self._cache_process = process
+        process.setWorkingDirectory(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        process.readyReadStandardOutput.connect(self._cache_output)
+        process.finished.connect(self._cache_finished)
+        self.cache_button.setEnabled(False)
+        self.cache_button.setText(f"Caching 0/{len(jobs)}...")
+        process.start(sys.executable, ["-m", "functions.scene_prewarm",
+                                       self._cache_manifest])
+
+    def _cache_output(self):
+        process = self._cache_process
+        if process is None:
+            return
+        output = bytes(process.readAllStandardOutput()).decode(
+            "utf-8", errors="replace")
+        print(output, end="", flush=True)
+        combined = self._cache_output_tail + output
+        lines = combined.splitlines(keepends=True)
+        self._cache_output_tail = (lines.pop() if lines and
+                                   not lines[-1].endswith(("\n", "\r")) else "")
+        matches = re.findall(r"CACHE (\d+) (\d+) AREA_[0-9A-F]+",
+                             "".join(lines))
+        if matches:
+            done, total = matches[-1]
+            self.cache_button.setText(f"Caching {done}/{total}...")
+
+    def _cache_finished(self, exit_code, _status):
+        process, self._cache_process = self._cache_process, None
+        if process is not None:
+            process.deleteLater()
+        if self._cache_manifest:
+            try:
+                os.unlink(self._cache_manifest)
+            except OSError:
+                pass
+        self._cache_manifest = None
+        self._cache_output_tail = ""
+        self.cache_button.setText(
+            "Levels cached" if exit_code == 0 else "Pre-cache levels")
+        self.cache_button.setEnabled(bool(self.dat_path))
 
     # --- loading an area ----------------------------------------------
 
@@ -427,6 +510,11 @@ class LevelEditorPanel(QWidget):
         self._sprite_timer.stop()
         if not vram:
             return
+        cache_key = (scene.chunk_index, scene.progress, id(vram))
+        cached = self._sprite_cache.get(cache_key)
+        if cached is not None:
+            self.viewer.set_sprites(*cached)
+            return
         # Two banks: the one every area shares, and the area's own -
         # a handful of rewards are drawn out of the second.
         wheres = {"resident": scene.resident.get(
@@ -478,6 +566,7 @@ class LevelEditorPanel(QWidget):
             return
         if atlas is None or not quads:
             return
+        self._remember(self._sprite_cache, cache_key, (atlas, quads))
         self.viewer.set_sprites(atlas, quads)
 
     def _next_sprite_tick(self):
@@ -512,6 +601,15 @@ class LevelEditorPanel(QWidget):
         AREA_04's three moving palettes."""
         self._phases = []
         self._phase = 0
+        cache_key = (scene.chunk_index, scene.progress, id(vram), overlay)
+        cached = self._background_cache.get(cache_key)
+        if cached is not None:
+            self._phases = cached
+            self.viewer.set_background(
+                self._phases[0][0] if self._phases else None)
+            if len(self._phases) > 1 and self.viewer.animate_action.isChecked():
+                self._phase_timer.start(self._phases[0][1])
+            return
         entry = scene.by_id.get(BACKGROUND_ID)
         if not entry or not entry[1]:
             from functions import sky_gradient
@@ -548,8 +646,17 @@ class LevelEditorPanel(QWidget):
             self._phases = [(sky_gradient.under(picture, sky), ms)
                             for picture, ms in self._phases]
         self.viewer.set_background(self._phases[0][0] if self._phases else None)
+        self._remember(self._background_cache, cache_key, self._phases)
         if len(self._phases) > 1 and self.viewer.animate_action.isChecked():
             self._phase_timer.start(self._phases[0][1])
+
+    @staticmethod
+    def _remember(cache, key, value, keep=8):
+        """Small in-session LRU-ish cache; arrays and sprite atlases are big."""
+        cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > keep:
+            cache.pop(next(iter(cache)))
 
     def _background_frames(self, background, vram, offset, overlay):
         """[(picture, milliseconds), ...] over one loop of the

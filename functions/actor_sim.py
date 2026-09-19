@@ -271,7 +271,10 @@ CLIP_WARMUP = 96
 # Geometry-driven scenery reaches its cycles quickly (Water Temple is nine
 # frames). Long, non-repeating particle paths still use CLIP_FRAMES.
 MOVING_CLIP_FRAMES = 32
-POSE_CLIP_FRAMES = 24
+# Idle poses are not cut at an arbitrary preview length. Actors run until
+# their complete actor/part state repeats twice, proving the real cycle.
+# The ceiling is only protection against genuinely non-periodic logic.
+POSE_LOOP_MAX_FRAMES = 512
 POSE_CLIP_PARTS = 1
 # Frames on at which a code-drawn family is drawn to see whether it moves.
 CLIP_PROBES = (1, 2, 5, 11)
@@ -282,8 +285,6 @@ KUJARA_PLATFORM_GHOST = 0x8013AB0C
 KUJARA_SNOW_FIREFLY = 0x8013E910
 DONGLIN_SNOW_FIREFLY = 0x80140E4C
 DONGLIN_LIGHT_CUTSCENE = 0x800BFA20
-MINE_PIPE_STEAM = 0x8012E1B4
-MINE_PIPE_STEAM_FRAMES = 16
 # A07's subtype 8 is an interior-transition/warp record.  Its common
 # initializer briefly attaches 12:0, but that is not a prop at the placement
 # that should be presented as level geometry.
@@ -408,10 +409,6 @@ class Actor:
     # Opening idle poses sampled from the actor's real update routine. Kept
     # only for character-sized placed actors whose transforms actually move.
     pose_clip: tuple = ()
-    # A bounded capture that did not contain a complete exact cycle is played
-    # forward then backward.  It has no hard last-to-first jump, and needs no
-    # extra emulation frames or duplicate scene geometry.
-    pose_pingpong: bool = False
     stale: bool = False
     restaled: bool = False
 
@@ -489,6 +486,7 @@ class World:
         # actor address -> [its own polygons per frame], for one that lives
         # through the recording.
         self.actor_clips = {}
+        self.incomplete_pose_loops = ()
         self.archived_effects = []
         self._firefly_progress = None
         # scene -> records in its table, None where the spawner has none -
@@ -517,7 +515,6 @@ class World:
         # it stood once the room was entered.
         self.trail_slots = {}
         self.room_trails = {}
-        self._load_costume()
 
     # --- setup ----------------------------------------------------------
 
@@ -754,6 +751,9 @@ class World:
         """Run a scene controller's first frame (state 0 at worker +0x50),
         the way the game mode calls it: v0 and g_CurrentCooperativeWorker its
         worker record. What it starts runs inline, as when entering a room."""
+        # Only these scenes draw Tomba from slot 47; elsewhere trail
+        # resource 0 is the area's own (the mine's miners), not a costume.
+        self._load_costume()
         worker = self._alloc(WORKER_RECORD)
         previous = self.mem.read(CURRENT_WORKER, 4)
         self.mem.write(CURRENT_WORKER, 4, worker)
@@ -769,6 +769,7 @@ class World:
 
     def add_player(self):
         """Run Tomba himself from now on - see PLAYER."""
+        self._load_costume()
         actor = Actor(PLAYER, PLAYER_FRAME, player=True)
         self.actors.append(actor)
         self.by_address[PLAYER] = actor
@@ -1036,17 +1037,10 @@ class World:
         moving_active = set(moving)
         moving_end = min(frames, MOVING_CLIP_FRAMES) if moving else 0
         effect_start = warmup if effects else 0
-        # Fifteen A01 vents each jitter a tall steam sheet randomly, so they
-        # never form a byte-identical period. Sixty-four generated models per
-        # vent made the purified mine exceed a thousand scene rows. Sixteen
-        # real game ticks retain the visible breathing/jitter while keeping
-        # the level practical to load and draw.
-        effect_limits = {
-            key: (MINE_PIPE_STEAM_FRAMES if any(
-                a.handler == MINE_PIPE_STEAM and self.family(a) == key
-                for a in self.actors) else frames)
-            for key in effects
-        }
+        # Every effect gets the complete capture window. In particular, the
+        # mine's random steam is not shortened merely to reduce scene rows;
+        # persistent caching handles the resulting build cost instead.
+        effect_limits = {key: frames for key in effects}
         effect_end = (effect_start + max(effect_limits.values())
                       if effect_limits else 0)
         try:
@@ -1144,13 +1138,18 @@ class World:
             if clip is not None:
                 self.clips[key] = clip
 
-    def record_pose_clips(self, frames=POSE_CLIP_FRAMES, budget=BUDGET):
-        """Record short idle loops for placed models whose pose really moves.
+    def record_pose_clips(self, frames=POSE_LOOP_MAX_FRAMES, budget=BUDGET):
+        """Record complete, proven idle loops for placed moving models.
 
         This deliberately starts at one part: hanging mushrooms and other
         articulated props are actors too. The signature check below discards
         every static object, so widening eligibility does not manufacture
         animation for ordinary scenery.
+
+        A loop ends only after every rendered part transform repeats for two
+        adjacent cycles. Unrelated monotonic bookkeeping cannot hide a real
+        visual cycle. A completely repeated actor/part state proves a static
+        actor immediately; long animations keep every genuine frame.
         """
         candidates = [a for a in self.actors
                       if a.record is not None and not (a.dead or a.discarded or a.hidden)
@@ -1160,38 +1159,82 @@ class World:
         self._restore_poses(candidates)
         base = self.snapshot()
         recorded = {a.address: [] for a in candidates}
+        states = {a.address: [] for a in candidates}
+        pose_signatures = {a.address: [] for a in candidates}
+        sources = {}
+        active = {a.address for a in candidates}
+        loops = {}
         try:
             for _frame in range(frames):
-                for actor in candidates:
-                    live = self.by_address.get(actor.address)
+                for address in tuple(active):
+                    live = self.by_address.get(address)
                     if live is not None and not live.dead:
                         self._run_free(live, budget)
                 models, _banks = self._maps()
-                for address in recorded:
+                for address in tuple(active):
                     actor = self.by_address.get(address)
-                    recorded[address].append(
-                        self._parts(actor, models) if actor is not None and not actor.dead else [])
+                    pieces = (self._parts(actor, models)
+                              if actor is not None and not actor.dead else [])
+                    if not pieces:
+                        active.discard(address)
+                        continue
+                    frame_sources = tuple(p.source for p in pieces)
+                    if address not in sources:
+                        sources[address] = frame_sources
+                    elif sources[address] != frame_sources:
+                        # A part swap is a state change, not one stable
+                        # skeletal clip; it is displayed by the effect/model
+                        # paths that retain the swapped model.
+                        active.discard(address)
+                        continue
+                    recorded[address].append(pieces)
+                    pose_signatures[address].append(tuple((
+                        p.source,
+                        tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)),
+                        tuple(np.rint(p.position).astype(int))) for p in pieces))
+                    part_state = b"".join(
+                        self.mem.bytes(self.mem.read(address + PARTS + n * 4, 4),
+                                       PART_SIZE)
+                        for n in range(min(self.mem.read(address + PART_COUNT, 1),
+                                           MAX_PARTS))
+                        if self.mem.read(address + PARTS + n * 4, 4))
+                    states[address].append(
+                        self.mem.bytes(address, ACTOR_SIZE) + part_state)
+                    history = states[address]
+                    poses = pose_signatures[address]
+                    count = len(poses)
+                    # A completely identical local state is deterministically
+                    # static and can leave after two updates. Moving actors
+                    # use their rendered transform state: unrelated monotonic
+                    # counters must not prevent a visually exact game loop.
+                    if count >= 2 and history[-1] == history[-2]:
+                        active.discard(address)
+                        continue
+                    period = next((p for p in range(2, count // 2 + 1)
+                                   if poses[-2 * p:-p] == poses[-p:]
+                                   and len(set(poses[-p:])) > 1), None)
+                    if period is not None:
+                        loops[address] = tuple(recorded[address][-period:])
+                        active.discard(address)
+                        continue
+                    # It may maintain a timer that never repeats while its
+                    # model is genuinely still. Twenty-four unchanged game
+                    # frames preserve the old observation window and prove
+                    # there is no visible animation to put in the viewer.
+                    if count >= 24 and len(set(poses[-24:])) == 1:
+                        active.discard(address)
+                if not active:
+                    break
         finally:
             self.restore(base)
 
-        for address, clip in recorded.items():
+        self.incomplete_pose_loops = tuple(
+            address for address in active
+            if len(set(pose_signatures.get(address, ()))) > 1)
+        for address, clip in loops.items():
             actor = self.by_address.get(address)
-            if actor is None or not clip or any(not frame for frame in clip):
-                continue
-            sources = tuple(p.source for p in clip[0])
-            if any(tuple(p.source for p in frame) != sources for frame in clip):
-                continue
-            signatures = [tuple((p.source,
-                                 tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)),
-                                 tuple(np.rint(p.position).astype(int)))
-                                for p in frame) for frame in clip]
-            if len(set(signatures)) < 2:
-                continue
-            period = next((p for p in range(2, len(clip) // 2 + 1)
-                           if all(signatures[k] == signatures[k % p]
-                                  for k in range(len(clip)))), len(clip))
-            actor.pose_clip = tuple(clip[:period])
-            actor.pose_pingpong = period == len(clip)
+            if actor is not None:
+                actor.pose_clip = clip
 
     def _drawn_by(self, keys, geometry=False):
         """{family: repr of what its live actors draw now}.
@@ -2315,6 +2358,9 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         say("gated", gated)
     world.harvest()
     world.record_pose_clips()
+    if world.incomplete_pose_loops:
+        say(f"{len(world.incomplete_pose_loops)} moving pose actor(s) did not "
+            f"repeat within {POSE_LOOP_MAX_FRAMES} frame(s)")
     world.record_clips()
     world.restore_firefly_progress()
     world.restore_archived_effects()

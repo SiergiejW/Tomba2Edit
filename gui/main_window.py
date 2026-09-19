@@ -1425,6 +1425,7 @@ class MainWindow(QMainWindow):
         than a font page save - see img_dirty."""
         self.img_dirty = True
         self._chunk_vram_cache = {}
+        self._area_vram_cache = {}
         self._refresh_edit_status()
 
     def _chunk_vram(self, area):
@@ -3385,33 +3386,33 @@ class MainWindow(QMainWindow):
         area's own."""
         if chunk_index is None or not self.dat_file:
             return None
-        cd_folder = os.path.dirname(self.dat_file)
-        try:
-            with open(os.path.join(cd_folder, "TOMBA2.IDX"), "rb") as IDX, \
-                    open(os.path.join(cd_folder, "TOMBA2.IMG"), "rb") as IMG:
-                IDX.seek(chunk_index * 0x800)
-                img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
-                if img_end <= img_start:
-                    vram = None
-                else:
-                    IMG.seek(img_start)
-                    vram = decode_vram_bytes(IMG.read(img_end - img_start))
-        except Exception as e:
-            print(f"Could not load VRAM for AREA_{chunk_index:02X}: {e}")
-            return None
+        cache = getattr(self, "_area_vram_cache", None)
+        if cache is None:
+            cache = self._area_vram_cache = {}
+        key = (chunk_index, bool(merge_common))
+        if key in cache:
+            return cache[key]
+        # _chunk_vram owns the decompression cache and is invalidated whenever
+        # TOMBA2.IMG changes. Previously every Level/SMST/ANMP open inflated
+        # the same IMG chunk again even when its exact bytes were in memory.
+        vram = self._chunk_vram(chunk_index)
 
         if not merge_common or chunk_index == COMMON_VRAM_AREA:
+            cache[key] = vram
             return vram
         common = self._load_area_vram_bytes(COMMON_VRAM_AREA)
         if common is None:
+            cache[key] = vram
             return vram
         if vram is None:
+            cache[key] = common
             return common
         own = np.frombuffer(bytes(vram), dtype=np.uint8).copy()
         shared = np.frombuffer(bytes(common), dtype=np.uint8)
         empty = own == 0
         own[empty] = shared[:own.size][empty]
-        return bytearray(own.tobytes())
+        cache[key] = bytearray(own.tobytes())
+        return cache[key]
 
     def _anmp_model_vram(self, address, current_area):
         """VRAM from an SMST's own area, even in another area's ANMP view.

@@ -160,6 +160,23 @@ MERGE_GRID = 16.0
 MOVED = 128.0
 MERGE_REACH = 2000.0
 
+# CodeModels scans MAIN.EXE plus an overlay's call graph. Fresh and
+# events-done scenes use the exact same immutable analysis, as do cursed and
+# purified chunks sharing an overlay. Keep it once per process/file version.
+_CODE_MODELS = {}
+
+
+def _code_models(exe_path, overlay_path):
+    def stamp(path):
+        info = os.stat(path)
+        return os.path.normcase(os.path.abspath(path)), info.st_size, info.st_mtime_ns
+    key = stamp(exe_path), stamp(overlay_path)
+    model = _CODE_MODELS.get(key)
+    if model is None:
+        model = _CODE_MODELS[key] = handler_models.CodeModels(exe_path,
+                                                               overlay_path)
+    return model
+
 # Surfaces an environment drawer builds in code (functions/environment_meshes
 # .py) are models of the scene's own, numbered from here.
 ENVIRONMENT_ID = 0x2000
@@ -884,6 +901,18 @@ class LevelScene:
             self.world = self._simulate(idx_path)
 
         self._build_instances()
+        if progress == BOTH:
+            # The scene in hand is the complete Fresh result before the Done
+            # differences are merged. Keep it under its own key too; the Done
+            # worker already keeps its result. One default Both load therefore
+            # makes all three Progress choices instant afterwards.
+            fresh_name = scene_cache.key(
+                dat_path, idx_path, chunk_index, overlay_path or "",
+                exe_path or "", FRESH)
+            fresh_state = {k: v for k, v in self.__dict__.items()
+                           if k != "world"}
+            fresh_state["progress"] = FRESH
+            scene_cache.write(fresh_name, fresh_state)
         if done_run is not None:
             try:
                 done_run.wait(timeout=DONE_WAIT)
@@ -1299,7 +1328,7 @@ class LevelScene:
                 "objects are drawn with beyond corrections made by hand")
             return {}
         try:
-            self.code = handler_models.CodeModels(exe_path, overlay_path)
+            self.code = _code_models(exe_path, overlay_path)
         except Exception as e:
             self.notes.append(f"couldn't read the handlers' code: {e}")
             return {}
@@ -1522,8 +1551,7 @@ class LevelScene:
             # standstill: a blank part draws nothing whatever was named
             # (A05 68.3's door and boulder were two such immediates).
             guessed = self.bindings.get(record.key()) or ()
-            invisible = (self.chunk_index not in PURIFIED_CHUNKS
-                         and actor is not None and not actor.parts
+            invisible = (actor is not None and not actor.parts
                          and actor.blank and not actor.frames and guessed
                          and self.binding_source.get(record.key()) == "code"
                          and ({tuple(g) for g in guessed} <= set(actor.loaded)
@@ -1600,17 +1628,9 @@ class LevelScene:
                     frame.flip_frames = ()
                     instances.append(frame)
                     frames.append(frame.index)
-                sequence = frames
-                if getattr(actor, "pose_pingpong", False) and len(frames) > 2:
-                    # Refer to the existing pose rows in reverse; do not build
-                    # more geometry or run the game longer just to close the
-                    # preview loop without a visible snap.
-                    sequence = frames + frames[-2:0:-1]
-                head.flip_frames = tuple(sequence)
+                head.flip_frames = tuple(frames)
                 head.note = (f"{head.note}<br>" if head.note else "") + (
-                    f"{len(frames)} idle pose frames from its update routine"
-                    + (", played forward/back for a seamless bounded loop"
-                       if len(sequence) != len(frames) else ""))
+                    f"{len(frames)}-frame exact idle loop from its update routine")
             if assembly is not None:
                 assembled.append(head)
             if actor is not None:

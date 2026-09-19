@@ -20,7 +20,10 @@ CACHE = os.path.join(tempfile.gettempdir(), "tomba2-scene-cache")
 # A kept scene has no `world` - the simulation itself is not carried over -
 # so anything that wants to look at the actors turns this off first.
 enabled = True
-CACHE_KEEP = 64
+# Fresh, events-done and their merged view for every playable area fit at
+# once. The old 64-entry limit evicted early areas while a translation project
+# was still being explored, turning an exact result back into a cold load.
+CACHE_KEEP = 256
 # Bigger than this and reading it back costs more than running the area.
 CACHE_MAX_BYTES = 256 << 20
 _code = None
