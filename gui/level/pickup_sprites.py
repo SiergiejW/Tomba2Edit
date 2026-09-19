@@ -200,6 +200,12 @@ class Billboard:
     # Four corners (view space, world units) the picture is stretched across,
     # or None for a picture facing the camera.
     corners: tuple = None
+    # None is an opaque/cutout sprite; 0..3 are the PSX semi-transparent
+    # modes carried by a captured primitive's texture-page word.
+    blend: object = None
+    # The toolbar's Pickups switch must not hide fire, glare or other sprite
+    # actors merely because they share this renderer.
+    pickup: bool = False
 
     def frame_now(self, tick):
         """Which frame is showing at `tick`, or None if it has none."""
@@ -240,6 +246,7 @@ def billboards(instances, placed):
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
                              z=instance.z, steps=steps, loops=art.loops,
                              corners=getattr(instance, "quad", None),
+                             pickup=pickup is not None,
                              units=(OBJECT_UNITS if instance.role == "object"
                                     or getattr(instance, "object_sprite", False)
                                     else PICKUP_UNITS)))

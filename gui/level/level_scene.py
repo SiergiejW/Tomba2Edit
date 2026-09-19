@@ -672,6 +672,34 @@ def drawn_model(polys, to_view, uv_frames=None):
     return model
 
 
+def camera_facing_frames(frames, tolerance=2.0):
+    """Whether captured polygons are projected sprite cards.
+
+    Capture uses an identity camera, so a projected sprite is an XY card at
+    one depth. World geometry (floors, chains, meshes) has real depth. This
+    geometric test recovers fire, glare and steam as billboards without a
+    handler-name exception.
+    """
+    polygons = [poly for frame in frames for poly in frame]
+    if not polygons:
+        return False
+    for corners, _uvs, _colours, _clut, _blended, _page in polygons:
+        points = np.asarray(corners, dtype=np.float64)
+        if len(points) not in (3, 4) or np.ptp(points[:, 2]) > tolerance:
+            return False
+        if np.ptp(points[:, 0]) < 1 or np.ptp(points[:, 1]) < 1:
+            return False
+    return True
+
+
+def captured_blend(frames):
+    """The PSX blend mode used by a captured sprite, or None."""
+    modes = [((page >> 5) & 3) for frame in frames
+             for _corners, _uvs, _colours, _clut, blended, page in frame
+             if blended]
+    return collections.Counter(modes).most_common(1)[0][0] if modes else None
+
+
 def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
@@ -805,6 +833,7 @@ class LevelScene:
         # {instance index: polygon frames}. Projected sprites are converted
         # into true camera-facing billboards once the area's VRAM is present.
         self.captured_billboards = {}
+        self.captured_billboard_blends = {}
 
     # --- loading ------------------------------------------------------
 
@@ -1021,6 +1050,13 @@ class LevelScene:
                 self.models.setdefault(file_id, model)
         for file_id, content in done.content.items():
             self.content.setdefault(file_id, content)
+        for old, frames in getattr(done, "captured_billboards", {}).items():
+            new_index = index.get(old)
+            if new_index is not None:
+                self.captured_billboards[new_index] = frames
+                blend = getattr(done, "captured_billboard_blends", {}).get(old)
+                if blend is not None:
+                    self.captured_billboard_blends[new_index] = blend
         self.notes.append(f"with every event done: {len(added)} more row(s), marked ⧖")
 
     def _simulate(self, idx_path):
@@ -1187,6 +1223,36 @@ class LevelScene:
             note += (f"<br>{DISCARDED_NOTE}: "
                      + ", ".join(sorted({self.handler_name(a.handler) for a in discarded})))
         return actor_sim.Posed(name, note, pieces, riders, position, yaw, owners)
+
+    @staticmethod
+    def _append_pose_loop(instances, head, actor, assembly):
+        """Add an actor's exact captured skeletal loop behind its head row."""
+        pose_clip = getattr(actor, "pose_clip", ()) if actor is not None else ()
+        if (assembly is None or len(pose_clip) < 2
+                or tuple(assembly.sources)
+                != tuple(p.source for p in pose_clip[0])):
+            return
+        frames = [head.index]
+        for frame_number, pieces in enumerate(pose_clip):
+            posed = actor_sim.Posed(
+                assembly.name, assembly.note, pieces, assembly.riders,
+                assembly.origin, assembly.yaw, assembly.owners)
+            if frame_number == 0:
+                head.assembly = posed
+                head.sources = posed.sources
+                continue
+            frame = copy.copy(head)
+            frame.index = len(instances)
+            frame.assembly = posed
+            frame.sources = posed.sources
+            frame.label = f"{head.label} (idle frame {frame_number})"
+            frame.flip = (head.index, frame_number)
+            frame.flip_frames = ()
+            instances.append(frame)
+            frames.append(frame.index)
+        head.flip_frames = tuple(frames)
+        head.note = (f"{head.note}<br>" if head.note else "") + (
+            f"{len(frames)}-frame exact idle loop from its update routine")
     def built_actor(self, handler):
         """([(file, group), ...], offsets) for a class the code builds
         whole, or None.
@@ -1607,30 +1673,7 @@ class LevelScene:
                 authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
             head = instances[-1]
-            pose_clip = getattr(actor, "pose_clip", ()) if actor is not None else ()
-            if (assembly is not None and len(pose_clip) > 1
-                    and tuple(assembly.sources)
-                    == tuple(p.source for p in pose_clip[0])):
-                frames = [head.index]
-                for frame_number, pieces in enumerate(pose_clip):
-                    posed = actor_sim.Posed(
-                        assembly.name, assembly.note, pieces, assembly.riders,
-                        assembly.origin, assembly.yaw, assembly.owners)
-                    if frame_number == 0:
-                        head.assembly = posed
-                        continue
-                    frame = copy.copy(head)
-                    frame.index = len(instances)
-                    frame.assembly = posed
-                    frame.sources = posed.sources
-                    frame.label = f"{head.label} (idle frame {frame_number})"
-                    frame.flip = (head.index, frame_number)
-                    frame.flip_frames = ()
-                    instances.append(frame)
-                    frames.append(frame.index)
-                head.flip_frames = tuple(frames)
-                head.note = (f"{head.note}<br>" if head.note else "") + (
-                    f"{len(frames)}-frame exact idle loop from its update routine")
+            self._append_pose_loop(instances, head, actor, assembly)
             if assembly is not None:
                 assembled.append(head)
             if actor is not None:
@@ -1657,6 +1700,10 @@ class LevelScene:
             assembly = None
             actor = None
             if record.chest:
+                # Every 2.5-D chest takes its yaw from the collision plane.
+                # This must happen even when simulation supplied a posed body;
+                # previously that successful path accidentally left yaw at 0.
+                heading = self.chest_heading(record)
                 if record.type & INTERIOR_FLAG:
                     scene = record.persist + 1
                 # f_HandlePersistentChestActor, run: body and lid where its
@@ -1676,9 +1723,6 @@ class LevelScene:
                         sources = self.chest_models.get(
                             record.reward & placement_module.PICKUP_REWARD_MASK, ())
                         offsets = self.chest_offsets
-                    heading = (record.plane * 360.0 / 256.0
-                               if record.behaviour == CHEST_AUTHORED
-                               else self.chest_heading(record))
             used.update(sources)
             _model, group = self.group(sources[0] if sources else None)
             instances.append(Instance(
@@ -1754,6 +1798,7 @@ class LevelScene:
                 sources=posed.sources, x=x, y=y, z=z,
                 assembly=posed if posed.sources else None,
                 name=label, note=posed.note))
+            self._append_pose_loop(instances, instances[index], head, posed)
             used.update(posed.sources)
             take(actors, index, None)
             if not posed.sources:
@@ -1810,6 +1855,7 @@ class LevelScene:
                         label=self._spawn_label(label, posed),
                         sources=posed.sources, x=x, y=y, z=z, assembly=posed,
                         name=label, note=note, scene=scene))
+                    self._append_pose_loop(instances, instances[follow], root, posed)
                     used.update(posed.sources)
                 take(tree, follow, scene)
                 for number, rider in enumerate(posed.riders):
@@ -1838,6 +1884,7 @@ class LevelScene:
                 sources=posed.sources, x=x, y=y, z=z,
                 assembly=posed if posed.sources else None,
                 name=label, note=f"{EVENT_NOTE}<br>{posed.note}"))
+            self._append_pose_loop(instances, instances[index], anchor, posed)
             used.update(posed.sources)
             take(tree, index, None)
             if not posed.sources and posed.riders:
@@ -1882,7 +1929,8 @@ class LevelScene:
                 snow_firefly = (actor is not None
                                 and isinstance(actor.family_key, tuple)
                                 and actor.family_key[:1] == ("snow-firefly",))
-                if snow_firefly:
+                as_billboard = snow_firefly or camera_facing_frames(frames)
+                if as_billboard:
                     points = [view_point(np.asarray(point, dtype=np.float64))
                               for frame_polys in frames for poly in frame_polys
                               for point in poly[0]]
@@ -1890,15 +1938,21 @@ class LevelScene:
                         continue
                     cx, cy, cz = np.asarray(points, dtype=np.float64).mean(axis=0)
                     index = len(instances)
-                    label = f"the area: {self._actor_name(actor)}"
+                    label = (f"the area: {self._actor_name(actor)}" if actor is not None
+                             else "the area: projected effect")
                     instances.append(Instance(
                         index=index, role="spawned", label=label,
                         x=float(cx), y=float(cy), z=float(cz), name=label,
                         note=(f"{len(frames)} game-code frames; rendered as a "
-                              "camera-facing billboard. Preview origin is the "
-                              "game's stored free-flight/reward position, not "
-                              "the still-unresolved terrain trigger point.")))
+                              "camera-facing billboard."
+                              + (" Preview origin is the game's stored "
+                                 "free-flight/reward position, not the "
+                                 "still-unresolved terrain trigger point."
+                                 if snow_firefly else ""))))
                     self.captured_billboards[index] = tuple(frames)
+                    blend = captured_blend(frames)
+                    if blend is not None:
+                        self.captured_billboard_blends[index] = blend
                     continue
                 models = [drawn_model(f, view_point, stepped.get(key)) for f in frames]
                 if not any(models):
@@ -1979,6 +2033,8 @@ class LevelScene:
             instance.authored = bool(group is not None
                                      and world_placed(group, room_box))
             changed += 1
+        if changed:
+            self.__dict__.pop("_built_model", None)
         return changed
 
     # --- geometry -----------------------------------------------------
@@ -1988,6 +2044,9 @@ class LevelScene:
         gui/smst/smst_viewer.py draws - so the level viewer inherits its
         shaders, its palette grouping and its blending unchanged, with
         `groups` holding instances instead of a model's parts."""
+        kept = getattr(self, "_built_model", None)
+        if kept is not None:
+            return kept
         scene = {
             "vertices": [], "vertex_colors": [], "faces": [],
             "texture_coords": [], "texture_info": [], "face_flags": [], "face_levels": [],
@@ -2035,6 +2094,7 @@ class LevelScene:
                 scene["vertices"][instance.first_vertex:])
         scene["tri_count"] = sum(i.tris for i in self.instances)
         scene["quad_count"] = sum(i.quads for i in self.instances)
+        self._built_model = scene
         return scene
 
     @staticmethod

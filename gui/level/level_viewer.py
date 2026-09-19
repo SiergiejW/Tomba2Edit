@@ -207,7 +207,8 @@ class LevelViewer(SMSTViewer):
         self.sprite_action.setCheckable(True)
         self.sprite_action.setChecked(True)
         self.sprite_action.setToolTip(
-            "Draw the crystals and apples.\n\n"
+            "Draw the crystals and apples. Fire, glare, steam and other "
+            "sprite effects remain visible when this is off.\n\n"
             "They are sprites out of the bank every area shares rather "
             "than models, animated and recoloured per reward the way the "
             "game does it - see gui/level/pickup_sprites.py. Chests are "
@@ -300,12 +301,14 @@ class LevelViewer(SMSTViewer):
 
         # The pickups drawn as billboards - see gui/level/pickup_sprites.py.
         self.show_sprites = True
+        self.show_pickups = True
         self.sprite_vao = QOpenGLVertexArrayObject()
         self.sprite_vbo = QOpenGLBuffer()      # centres
         self.sprite_obo = QOpenGLBuffer()      # corner offsets
         self.sprite_ubo = QOpenGLBuffer()      # texture coordinates
         self.sprite_texture = None
         self.sprite_count = 0
+        self._sprite_ranges = []
         self._sprite_atlas = None       # RGBA array, None for none
         self._sprite_atlas_dirty = False
         self._sprite_quads = []         # see set_sprites()
@@ -416,7 +419,8 @@ class LevelViewer(SMSTViewer):
             self.hidden_groups = kept
 
     def _toggle_sprites(self, checked):
-        self.show_sprites = checked
+        self.show_pickups = checked
+        self._sprite_dirty = True
         self.update()
 
     def set_hidden_groups(self, hidden):
@@ -834,7 +838,60 @@ class LevelViewer(SMSTViewer):
             if hit_instance is None or distance < hit_distance:
                 self._last_face = None
                 return index
+        sprite = self._pick_sprite(x, y, origin, direction)
+        if sprite is not None and (hit_instance is None or sprite[1] < hit_distance):
+            self._last_face = None
+            return sprite[0]
         return hit_instance
+
+    def _pick_sprite(self, x, y, origin, direction):
+        """Pick the visible billboard rectangle under the cursor."""
+        if not self._sprite_quads:
+            return None
+        matrix = self._model_view_projection()
+        right, up = (np.asarray(v, dtype=np.float64) for v in self._camera_axes())
+        hidden = self.hidden_groups | self._flip_hidden()
+        best = None
+        for quad in self._sprite_quads:
+            if (quad.index in hidden
+                    or (quad.pickup and not self.show_pickups)):
+                continue
+            placed = quad.frame_now(self._sprite_tick)
+            if placed is None:
+                continue
+            if quad.corners is not None:
+                corners = [np.asarray(p, dtype=np.float64) / UNIT_SCALE
+                           for p in quad.corners]
+            else:
+                at = (self.instances[quad.index]
+                      if 0 <= quad.index < len(self.instances) else quad)
+                centre = np.array((at.x, at.y, at.z), dtype=np.float64) / UNIT_SCALE
+                units = quad.units / UNIT_SCALE
+                left = -placed.origin_x * units
+                right_px = (placed.width - placed.origin_x) * units
+                top = placed.origin_y * units
+                bottom = (placed.origin_y - placed.height) * units
+                corners = [centre + right * ox + up * oy
+                           for ox, oy in ((left, top), (left, bottom),
+                                          (right_px, bottom), (right_px, top))]
+            screen = []
+            for point in corners:
+                q = matrix.map(QVector4D(*point, 1.0))
+                if q.w() <= 0:
+                    screen = []
+                    break
+                screen.append(((q.x() / q.w() * .5 + .5) * self.width(),
+                               (.5 - q.y() / q.w() * .5) * self.height()))
+            if not screen:
+                continue
+            if not (min(p[0] for p in screen) <= x <= max(p[0] for p in screen)
+                    and min(p[1] for p in screen) <= y <= max(p[1] for p in screen)):
+                continue
+            centre = np.mean(corners, axis=0)
+            distance = float(np.dot(centre - origin, direction))
+            if distance > 0 and (best is None or distance < best[1]):
+                best = (quad.index, distance)
+        return best
 
     def _pick_marker(self, x, y, origin, direction):
         """(instance, distance along the ray) for the nearest marker the
@@ -1177,7 +1234,8 @@ class LevelViewer(SMSTViewer):
         height, width = atlas.shape[:2]
         instances, out = self.instances, []
         for quad in self._sprite_quads:
-            if quad.index in self.hidden_groups:
+            if (quad.index in self.hidden_groups
+                    or (quad.pickup and not self.show_pickups)):
                 continue
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
@@ -1355,16 +1413,17 @@ class LevelViewer(SMSTViewer):
         if not self._sprite_dirty:
             return
         self._sprite_dirty = False
-        rows = []
+        by_blend = {None: [], 0: [], 1: [], 2: [], 3: []}
         instances = self.instances
         for quad in self._sprite_quads:
-            if quad.index in self.hidden_groups:
+            if (quad.index in self.hidden_groups
+                    or (quad.pickup and not self.show_pickups)):
                 continue
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
                 continue
             if quad.corners is not None:
-                rows.extend(self._stretched(quad.corners, placed))
+                by_blend[quad.blend].extend(self._stretched(quad.corners, placed))
                 continue
             # Live, so a dragged pickup - or an apple riding a seesaw -
             # takes its picture with it.
@@ -1385,9 +1444,16 @@ class LevelViewer(SMSTViewer):
                                  (left, top, placed.u0, placed.v0),
                                  (right, bottom, placed.u1, placed.v1),
                                  (right, top, placed.u1, placed.v0)):
-                rows.append((x, y, z, ox, oy, u, v))
+                by_blend[quad.blend].append((x, y, z, ox, oy, u, v))
+        rows, ranges = [], []
+        for blend in (None, 0, 1, 2, 3):
+            group = by_blend[blend]
+            if group:
+                ranges.append((blend, len(rows), len(group)))
+                rows.extend(group)
         if not rows:
             self.sprite_count = 0
+            self._sprite_ranges = []
             return
         data = np.array(rows, dtype=np.float32)
         if not self.sprite_vao.isCreated():
@@ -1407,6 +1473,7 @@ class LevelViewer(SMSTViewer):
                                      GL.GL_FALSE, 0, None)
         self.sprite_vao.release()
         self.sprite_count = len(rows)
+        self._sprite_ranges = ranges
 
     @staticmethod
     def _stretched(corners, placed):
@@ -1448,7 +1515,7 @@ class LevelViewer(SMSTViewer):
         game draws it, rather than floating in front of it."""
         # Upload first: the count is only known once they are.
         self._sync_sprites()
-        if not (self.show_sprites and self.sprite_count):
+        if not self.sprite_count:
             return
         self.vao.release()
         self.draw_sprites()
@@ -1460,8 +1527,7 @@ class LevelViewer(SMSTViewer):
     def draw_sprites(self):
         """The pickups, after the room so they sort against it."""
         self._sync_sprites()
-        if not (self.show_sprites and self.sprite_count
-                and self.sprite_texture is not None):
+        if not (self.sprite_count and self.sprite_texture is not None):
             return
         if not self.sprite_program.bind():
             return
@@ -1478,7 +1544,23 @@ class LevelViewer(SMSTViewer):
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
         self.sprite_vao.bind()
-        GL.glDrawArrays(GL.GL_TRIANGLES, 0, self.sprite_count)
+        was_blend = GL.glIsEnabled(GL.GL_BLEND)
+        for blend, first, count in self._sprite_ranges:
+            if blend is None:
+                GL.glDisable(GL.GL_BLEND)
+                GL.glDepthMask(GL.GL_TRUE)
+            else:
+                GL.glEnable(GL.GL_BLEND)
+                GL.glDepthMask(GL.GL_FALSE)
+                self._set_blend(blend)
+            GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
+        GL.glDepthMask(GL.GL_TRUE)
+        GL.glBlendEquation(GL.GL_FUNC_ADD)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        if was_blend:
+            GL.glEnable(GL.GL_BLEND)
+        else:
+            GL.glDisable(GL.GL_BLEND)
         self.sprite_vao.release()
         self.sprite_program.release()
         if culling:

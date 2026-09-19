@@ -139,6 +139,11 @@ CUTSCENE_FRAMES = 600
 
 # A purified area runs its cursed overlay with its bit set here.
 PURIFIED_AREAS = 0x800BFE56         # src_PurifiedAreas
+# The mine's purified chunk is only reachable after all eight Cappers have
+# been removed. Merely setting src_PurifiedAreas is not enough: their own
+# lifecycle tests this separate bitfield and otherwise leaves the cursed
+# Capper plus its attached flame standing on every pipe.
+CAPPERS_REMOVED = 0x800BF9F4
 
 # A game with every event done: each byte of New Game's block an area's
 # code reads set to 0xFF, the way the game marks a finished event
@@ -276,6 +281,10 @@ MOVING_CLIP_FRAMES = 32
 # The ceiling is only protection against genuinely non-periodic logic.
 POSE_LOOP_MAX_FRAMES = 512
 POSE_CLIP_PARTS = 1
+# Scene-spawned characters were accidentally excluded by the old
+# placement-record test. Four parts keeps tiny transient model effects out
+# while admitting the smallest articulated NPC/ghost.
+POSE_SPAWNED_MIN_PARTS = 4
 # Frames on at which a code-drawn family is drawn to see whether it moves.
 CLIP_PROBES = (1, 2, 5, 11)
 # A04's unrelated platform/Koma apparition deliberately stops translating
@@ -473,6 +482,8 @@ class World:
         if purified:
             mem.write(PURIFIED_AREAS, 2,
                       mem.read(PURIFIED_AREAS, 2) | 1 << area_number)
+            if area_number == 1:
+                mem.write(CAPPERS_REMOVED, 1, 0xFF)
         self.heap = HEAP
         self.actors = []
         self.by_address = {}
@@ -1138,7 +1149,8 @@ class World:
             if clip is not None:
                 self.clips[key] = clip
 
-    def record_pose_clips(self, frames=POSE_LOOP_MAX_FRAMES, budget=BUDGET):
+    def record_pose_clips(self, candidates=None, frames=POSE_LOOP_MAX_FRAMES,
+                          budget=BUDGET):
         """Record complete, proven idle loops for placed moving models.
 
         This deliberately starts at one part: hanging mushrooms and other
@@ -1151,9 +1163,11 @@ class World:
         visual cycle. A completely repeated actor/part state proves a static
         actor immediately; long animations keep every genuine frame.
         """
-        candidates = [a for a in self.actors
-                      if a.record is not None and not (a.dead or a.discarded or a.hidden)
-                      and len(a.parts) >= POSE_CLIP_PARTS]
+        available = self.actors if candidates is None else candidates
+        candidates = [a for a in available
+                      if not (a.player or a.dead or a.discarded or a.hidden)
+                      and len(a.parts) >= (POSE_CLIP_PARTS if a.record is not None
+                                           else POSE_SPAWNED_MIN_PARTS)]
         if not candidates:
             return
         self._restore_poses(candidates)
@@ -1161,7 +1175,6 @@ class World:
         recorded = {a.address: [] for a in candidates}
         states = {a.address: [] for a in candidates}
         pose_signatures = {a.address: [] for a in candidates}
-        sources = {}
         active = {a.address for a in candidates}
         loops = {}
         try:
@@ -1176,15 +1189,6 @@ class World:
                     pieces = (self._parts(actor, models)
                               if actor is not None and not actor.dead else [])
                     if not pieces:
-                        active.discard(address)
-                        continue
-                    frame_sources = tuple(p.source for p in pieces)
-                    if address not in sources:
-                        sources[address] = frame_sources
-                    elif sources[address] != frame_sources:
-                        # A part swap is a state change, not one stable
-                        # skeletal clip; it is displayed by the effect/model
-                        # paths that retain the swapped model.
                         active.discard(address)
                         continue
                     recorded[address].append(pieces)
@@ -1228,9 +1232,10 @@ class World:
         finally:
             self.restore(base)
 
-        self.incomplete_pose_loops = tuple(
-            address for address in active
-            if len(set(pose_signatures.get(address, ()))) > 1)
+        incomplete = {address for address in active
+                      if len(set(pose_signatures.get(address, ()))) > 1}
+        self.incomplete_pose_loops = tuple(sorted(
+            set(self.incomplete_pose_loops) | incomplete))
         for address, clip in loops.items():
             actor = self.by_address.get(address)
             if actor is not None:
@@ -1761,7 +1766,10 @@ class World:
             self.run(frames, only=lambda a, s=scene: a.scene == s,
                      workers=False)
             self.harvest()
-            rooms[scene] = [a for a in self.actors if a.scene == scene]
+            room = [a for a in self.actors if a.scene == scene]
+            self.record_pose_clips(room)
+            rooms[scene] = [self.by_address[a.address] for a in room
+                            if a.address in self.by_address]
             self.room_trails[scene] = dict(self.trail_slots)
         self.restore(base)
         self.rooms = rooms
@@ -1795,6 +1803,9 @@ class World:
             if any((a.parts or a.frames) and a.position is not None
                    and max(abs(a.position[0]), abs(a.position[2])) >= max(reach, 1)
                    for a in tree):
+                self.record_pose_clips(tree)
+                tree = [self.by_address[a.address] for a in tree
+                        if a.address in self.by_address]
                 events.append((handler, tree))
         self.restore(base)
         self.events = events

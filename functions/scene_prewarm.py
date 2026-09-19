@@ -6,6 +6,7 @@ or alternate parser is involved. Once Fresh and Events done exist, building
 Both is a cheap exact merge of those cached scenes.
 """
 import concurrent.futures
+import contextlib
 import json
 import os
 import sys
@@ -16,8 +17,12 @@ from gui.level.level_scene import BOTH, EVENTS_DONE, FRESH, LevelScene
 
 def _build(job):
     dat, idx, chunk, overlay, exe = job
-    fresh = LevelScene().load(dat, idx, chunk, overlay, exe, FRESH)
-    done = LevelScene().load(dat, idx, chunk, overlay, exe, EVENTS_DONE)
+    # Interactive loads explain each simulation stage. A bulk preload would
+    # turn that into thousands of lines, so workers stay quiet and the parent
+    # emits exactly one useful completion line per area.
+    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet):
+        fresh = LevelScene().load(dat, idx, chunk, overlay, exe, FRESH)
+        done = LevelScene().load(dat, idx, chunk, overlay, exe, EVENTS_DONE)
     # This is exactly LevelScene.load(BOTH)'s merge, but both expensive actor
     # runs are already in hand. Avoid simulating Fresh a third time merely to
     # create the merged cache entry.
@@ -43,13 +48,12 @@ def main(path):
             chunk = futures[future]
             try:
                 future.result()
-                result = "ok"
+                result = f"Preloaded AREA_{chunk:02X}"
             except Exception as error:
-                result = f"failed: {error}"
+                result = f"Failed AREA_{chunk:02X}: {error}"
                 failed += 1
             done += 1
-            print(f"CACHE {done} {len(jobs)} AREA_{chunk:02X} {result}",
-                  flush=True)
+            print(f"CACHE {done} {len(jobs)} {result}", flush=True)
     return 1 if failed else 0
 
 

@@ -93,6 +93,7 @@ class LevelEditorPanel(QWidget):
         self._cache_output_tail = ""
         self._background_cache = {}
         self._sprite_cache = {}
+        self._scene_memory_cache = {}
 
         # Pre-rendered phases of the background, flipped by a timer -
         # the same trick the BGMP viewer uses, since re-rendering a
@@ -238,7 +239,7 @@ class LevelEditorPanel(QWidget):
             "Write a copy of this area's Axx.BIN with the positions and "
             "angles as they are here. Only those bytes change.")
         self.save_button.clicked.connect(self._save_overlay)
-        self.cache_button = QPushButton("Pre-cache levels", self)
+        self.cache_button = QPushButton("Preload levels", self)
         self.cache_button.setToolTip(
             "Build every area's exact Fresh, Events done, and Both scene in "
             "two background processes. This is a one-time calculation for "
@@ -250,13 +251,13 @@ class LevelEditorPanel(QWidget):
         buttons.addWidget(self.name_button)
         buttons.addWidget(self.gif_button)
         buttons.addWidget(self.save_button)
-        buttons.addWidget(self.cache_button)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         # Area on the left, Progress in the middle, Rooms on the right.
         top.addWidget(QLabel("Area", self))
         top.addWidget(self.area_box, 3)
+        top.addWidget(self.cache_button)
         top.addStretch(1)
         top.addWidget(QLabel("Progress", self))
         top.addWidget(self.progress_box, 1)
@@ -308,6 +309,7 @@ class LevelEditorPanel(QWidget):
         self.exe_path = exe_path
         self._background_cache.clear()
         self._sprite_cache.clear()
+        self._scene_memory_cache.clear()
         self._filling = True
         self.area_box.clear()
         rooms = self._areas_with_rooms()
@@ -395,7 +397,7 @@ class LevelEditorPanel(QWidget):
         lines = combined.splitlines(keepends=True)
         self._cache_output_tail = (lines.pop() if lines and
                                    not lines[-1].endswith(("\n", "\r")) else "")
-        matches = re.findall(r"CACHE (\d+) (\d+) AREA_[0-9A-F]+",
+        matches = re.findall(r"CACHE (\d+) (\d+) (?:Preloaded|Failed) AREA_[0-9A-F]+",
                              "".join(lines))
         if matches:
             done, total = matches[-1]
@@ -413,7 +415,7 @@ class LevelEditorPanel(QWidget):
         self._cache_manifest = None
         self._cache_output_tail = ""
         self.cache_button.setText(
-            "Levels cached" if exit_code == 0 else "Pre-cache levels")
+            "Levels preloaded" if exit_code == 0 else "Preload levels")
         self.cache_button.setEnabled(bool(self.dat_path))
 
     # --- loading an area ----------------------------------------------
@@ -452,8 +454,12 @@ class LevelEditorPanel(QWidget):
         # needs AREA_01 merged in, which is where the character models'
         # texture pages live (see gui/smst/smst_parser.py).
         vram = self.vram_for_area(chunk)
-        scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
-                                  self.exe_path, progress=progress)
+        memory_key = (chunk, progress)
+        scene = self._scene_memory_cache.get(memory_key)
+        if scene is None:
+            scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
+                                      self.exe_path, progress=progress)
+            self._remember(self._scene_memory_cache, memory_key, scene, keep=6)
         self.scene = scene
         print(f"AREA_{chunk:02X}: {len(scene.instances)} row(s) in "
               f"{time.perf_counter() - started:.1f}s, drawing...", flush=True)
@@ -560,6 +566,7 @@ class LevelEditorPanel(QWidget):
                     quads.append(pickup_sprites.Billboard(
                         index=index, x=instance.x, y=instance.y, z=instance.z,
                         steps=steps, loops=True,
+                        blend=getattr(scene, "captured_billboard_blends", {}).get(index),
                         units=float(captured_units[index])))
         except Exception as e:
             scene.notes.append(f"couldn't cut the pickup sprites: {e}")
@@ -1044,6 +1051,7 @@ class LevelEditorPanel(QWidget):
     def _rebuild(self, frame=False):
         """Rebuild the scene around a change, leaving the camera, the
         selection and the hidden rows where the user had them."""
+        self.scene.__dict__.pop("_built_model", None)
         selected = self.viewer.selected
         unchecked = set()
         for row in range(self.table.rowCount()):
