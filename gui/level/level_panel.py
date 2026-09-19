@@ -91,6 +91,8 @@ class LevelEditorPanel(QWidget):
         self._cache_process = None
         self._cache_manifest = None
         self._cache_output_tail = ""
+        self._cache_done = 0
+        self._cache_total = 0
         self._background_cache = {}
         self._sprite_cache = {}
         self._scene_memory_cache = {}
@@ -374,6 +376,8 @@ class LevelEditorPanel(QWidget):
             handle.close()
         self._cache_manifest = handle.name
         self._cache_output_tail = ""
+        self._cache_done = 0
+        self._cache_total = len(jobs)
         process = QProcess(self)
         self._cache_process = process
         process.setWorkingDirectory(
@@ -397,11 +401,13 @@ class LevelEditorPanel(QWidget):
         lines = combined.splitlines(keepends=True)
         self._cache_output_tail = (lines.pop() if lines and
                                    not lines[-1].endswith(("\n", "\r")) else "")
-        matches = re.findall(r"CACHE (\d+) (\d+) (?:Preloaded|Failed) AREA_[0-9A-F]+",
-                             "".join(lines))
-        if matches:
-            done, total = matches[-1]
-            self.cache_button.setText(f"Caching {done}/{total}...")
+        completed = re.findall(
+            r"^(?:Preloaded level|Failed to preload level) AREA_[0-9A-F]+",
+            "".join(lines), re.MULTILINE)
+        if completed:
+            self._cache_done += len(completed)
+            self.cache_button.setText(
+                f"Caching {self._cache_done}/{self._cache_total}...")
 
     def _cache_finished(self, exit_code, _status):
         process, self._cache_process = self._cache_process, None
@@ -414,6 +420,7 @@ class LevelEditorPanel(QWidget):
                 pass
         self._cache_manifest = None
         self._cache_output_tail = ""
+        self._cache_done = self._cache_total = 0
         self.cache_button.setText(
             "Levels preloaded" if exit_code == 0 else "Preload levels")
         self.cache_button.setEnabled(bool(self.dat_path))

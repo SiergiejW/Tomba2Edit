@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox, QStyle
 
 from functions import gltf_export
 from functions.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
-from gui.smst.smst_viewer import SMSTViewer
+from gui.smst.smst_viewer import SMSTViewer, WEIGHTS
 from gui import collision_overlay, export_dialog, theme
 
 # World units per GL unit. A room is thousands of units across, so it
@@ -1370,6 +1370,7 @@ class LevelViewer(SMSTViewer):
             in vec2 uv;
             out vec4 outColor;
             uniform sampler2D atlas;
+            uniform float blendWeight;
             void main() {
                 vec4 texel = texture(atlas, uv);
                 // A sprite is a cutout, not a blend: the PSX draws these
@@ -1377,7 +1378,7 @@ class LevelViewer(SMSTViewer):
                 // hard test keeps the edges crisp and lets the depth
                 // buffer sort them against the room.
                 if (texel.a < 0.5) discard;
-                outColor = vec4(texel.rgb, 1.0);
+                outColor = vec4(texel.rgb, blendWeight);
             }
             """)
         if not self.sprite_program.link():
@@ -1549,10 +1550,13 @@ class LevelViewer(SMSTViewer):
             if blend is None:
                 GL.glDisable(GL.GL_BLEND)
                 GL.glDepthMask(GL.GL_TRUE)
+                self.sprite_program.setUniformValue("blendWeight", 1.0)
             else:
                 GL.glEnable(GL.GL_BLEND)
                 GL.glDepthMask(GL.GL_FALSE)
                 self._set_blend(blend)
+                self.sprite_program.setUniformValue(
+                    "blendWeight", float(WEIGHTS[blend]))
             GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
         GL.glDepthMask(GL.GL_TRUE)
         GL.glBlendEquation(GL.GL_FUNC_ADD)

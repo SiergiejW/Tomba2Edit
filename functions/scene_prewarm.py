@@ -1,6 +1,6 @@
 """Build exact Level Editor caches outside the UI process.
 
-Invoked by LevelEditorPanel's ``Pre-cache levels`` button. Each worker runs
+Invoked by LevelEditorPanel's ``Preload levels`` button. Each worker runs
 the same LevelScene.load path as an interactive open; no reduced frame count
 or alternate parser is involved. Once Fresh and Events done exist, building
 Both is a cheap exact merge of those cached scenes.
@@ -20,9 +20,12 @@ def _build(job):
     # Interactive loads explain each simulation stage. A bulk preload would
     # turn that into thousands of lines, so workers stay quiet and the parent
     # emits exactly one useful completion line per area.
-    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet):
-        fresh = LevelScene().load(dat, idx, chunk, overlay, exe, FRESH)
-        done = LevelScene().load(dat, idx, chunk, overlay, exe, EVENTS_DONE)
+    with open(os.devnull, "w") as quiet:
+        with (contextlib.redirect_stdout(quiet),
+              contextlib.redirect_stderr(quiet)):
+            fresh = LevelScene().load(dat, idx, chunk, overlay, exe, FRESH)
+            done = LevelScene().load(dat, idx, chunk, overlay, exe,
+                                     EVENTS_DONE)
     # This is exactly LevelScene.load(BOTH)'s merge, but both expensive actor
     # runs are already in hand. Avoid simulating Fresh a third time merely to
     # create the merged cache entry.
@@ -40,7 +43,6 @@ def main(path):
     # Scene worlds are large. Two processes use separate CPU cores without
     # multiplying peak RAM as aggressively as a worker per logical core.
     workers = min(2, max(1, os.cpu_count() or 1), len(jobs))
-    done = 0
     failed = 0
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_build, tuple(job)): job[2] for job in jobs}
@@ -48,12 +50,11 @@ def main(path):
             chunk = futures[future]
             try:
                 future.result()
-                result = f"Preloaded AREA_{chunk:02X}"
+                result = f"Preloaded level AREA_{chunk:02X}"
             except Exception as error:
-                result = f"Failed AREA_{chunk:02X}: {error}"
+                result = f"Failed to preload level AREA_{chunk:02X}: {error}"
                 failed += 1
-            done += 1
-            print(f"CACHE {done} {len(jobs)} {result}", flush=True)
+            print(result, flush=True)
     return 1 if failed else 0
 
 

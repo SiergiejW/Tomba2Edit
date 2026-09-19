@@ -112,6 +112,7 @@ SYMBOLS = os.path.join(
         os.path.abspath(__file__)))), "decomp", "symbols_us.json")
 # What main.py answers as the events-done worker, in a built exe.
 DONE_WORKER_FLAG = "--level-done-worker"
+FOREST_GHOST_ROCK_CRAB = 0x8012EF54
 
 # An overlay's scene spawner, by its decomp name - what fills a room.
 SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
@@ -1166,6 +1167,11 @@ class LevelScene:
             reward = read(actor.address + actor_sim.SLOT, 1) & 0x7F
             art = self.reward_art.get(reward)
             return art.grants if art is not None else f"item, reward {reward}"
+        if read is not None and handler == FOREST_GHOST_ROCK_CRAB:
+            variant = (actor.born[1] if actor.born is not None
+                       else read(actor.address + actor_sim.SLOT, 1))
+            return (f"Forest ghost {variant + 1}" if variant < 3
+                    else f"Rock Crab balance actor {variant - 2}")
         return self.handler_name(actor.handler)
 
     @staticmethod
@@ -1197,7 +1203,11 @@ class LevelScene:
         pieces, owners = [], []
         discarded = [a for a in actors if a.discarded]
         for number, a in enumerate(actors):
-            if a.discarded:
+            # A zero draw-count is as definitive for a scene-spawned actor as
+            # it is for a placement actor. AREA_20's six Rock Crab balance
+            # records initialise the shared ghost/crab model but hide it;
+            # exposing those parts created six bogus identical "ghosts".
+            if a.dead or a.discarded or a.hidden:
                 continue
             for p in a.parts:
                 if self.group(p.source)[1] is not None:
@@ -1228,14 +1238,29 @@ class LevelScene:
     def _append_pose_loop(instances, head, actor, assembly):
         """Add an actor's exact captured skeletal loop behind its head row."""
         pose_clip = getattr(actor, "pose_clip", ()) if actor is not None else ()
-        if (assembly is None or len(pose_clip) < 2
-                or tuple(assembly.sources)
-                != tuple(p.source for p in pose_clip[0])):
+        if assembly is None or len(pose_clip) < 2:
             return
+        animated_sources = tuple(p.source for p in pose_clip[0])
+        if tuple(assembly.sources) == animated_sources:
+            animated_at = tuple(range(len(assembly.pieces)))
+        else:
+            # A character may carry a static child model (AREA_04's actor
+            # 0x80121978 is 18 animated body parts plus one attached prop).
+            # Owners use actor 0 for the root passed to _posed; replace only
+            # that actor's pieces and retain every attached child's pose.
+            animated_at = tuple(n for n, owner in enumerate(assembly.owners)
+                                if owner[0] == 0)
+            if (len(animated_at) != len(animated_sources)
+                    or tuple(assembly.sources[n] for n in animated_at)
+                    != animated_sources):
+                return
         frames = [head.index]
         for frame_number, pieces in enumerate(pose_clip):
+            full_pieces = list(assembly.pieces)
+            for at, piece in zip(animated_at, pieces):
+                full_pieces[at] = piece
             posed = actor_sim.Posed(
-                assembly.name, assembly.note, pieces, assembly.riders,
+                assembly.name, assembly.note, full_pieces, assembly.riders,
                 assembly.origin, assembly.yaw, assembly.owners)
             if frame_number == 0:
                 head.assembly = posed
@@ -1495,6 +1520,18 @@ class LevelScene:
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
             for actor in actors:
+                ancestor = actor
+                suppressed = actor.dead or actor.discarded
+                for _depth in range(32):
+                    ancestor = (world.by_address.get(ancestor.spawner)
+                                if world is not None else None)
+                    if ancestor is None:
+                        break
+                    if ancestor.dead or ancestor.discarded:
+                        suppressed = True
+                        break
+                if suppressed:
+                    continue
                 if id(actor) in drew or not (actor.lines or actor.polys):
                     continue
                 drew.add(id(actor))
@@ -1535,7 +1572,8 @@ class LevelScene:
                 # The shared workers' spawns are Tomba and the persistent
                 # pickups, which the scene already draws from their tables.
                 # A chest carrying its table record is drawn by its pickup row.
-                if (actor.record is None and actor.spawner is None
+                if (not (actor.dead or actor.discarded)
+                        and actor.record is None and actor.spawner is None
                         and actor.pickup is None
                         and actor.worker not in actor_sim.SHARED_WORKERS):
                     # A child built of other files, standing apart, is a
@@ -1831,7 +1869,7 @@ class LevelScene:
                 tree = actor_sim.subtree(world, root, actors)
                 gate = self._gate_note(root)
                 label = (f"{'⧖ ' if gate else ''}{interior_name(scene)}: "
-                         f"{self.handler_name(root.handler)}")
+                         f"{self._actor_name(root)}")
                 posed = self._posed(tree, root, root.position, 0, label)
                 x, y, z = view_point(root.position)
                 if posed is None:
