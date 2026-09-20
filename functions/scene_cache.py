@@ -90,9 +90,12 @@ def write(name, state):
         raw = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
         if len(raw) > CACHE_MAX_BYTES:
             return False
-        with open(path + ".part", "wb") as f:
+        # Interactive background loads and bulk preloading may finish the
+        # same scene concurrently. Each writer owns its temporary file.
+        with tempfile.NamedTemporaryFile(dir=CACHE, suffix=".part", delete=False) as f:
+            temporary = f.name
             f.write(raw)
-        os.replace(path + ".part", path)
+        os.replace(temporary, path)
         _prune()
         return True
     except (OSError, pickle.PickleError, TypeError, AttributeError, RecursionError):

@@ -839,7 +839,7 @@ class LevelScene:
     # --- loading ------------------------------------------------------
 
     def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
-             exe_path=None, progress=FRESH):
+             exe_path=None, progress=FRESH, publish=None):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
@@ -860,7 +860,7 @@ class LevelScene:
             return self
         started = time.perf_counter()
         done_run = None
-        if progress == BOTH and overlay_path and exe_path:
+        if progress == BOTH and overlay_path and exe_path and publish is None:
             done_run = _start_done(dat_path, idx_path, chunk_index, overlay_path, exe_path)
 
         dat_start, files = area_files(idx_path, chunk_index)
@@ -891,6 +891,17 @@ class LevelScene:
             except OSError:
                 pass
             self.placements = placement_module.load_placements(overlay_path)
+            if publish is not None:
+                self.instances = [Instance(index=n, role="room",
+                    label=f"Area ({where})", room=n)
+                    for n, (where, _room) in enumerate(self.rooms)]
+                for record in self.placements:
+                    x, y, z = view_point(record.position)
+                    self.instances.append(Instance(index=len(self.instances),
+                        role="object", label=f"{record.kind}.{record.slot}",
+                        placement=record, marker=True, x=x, y=y, z=z,
+                        angle=record.angle))
+                publish(self, "Room and placement markers")
             if not self.placements:
                 self.notes.append(
                     "the overlay holds no object table - a few small areas "
@@ -928,8 +939,9 @@ class LevelScene:
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
         self.model_names = placement_module.load_model_names()
         if overlay_path and exe_path:
-            self.world = self._simulate(idx_path)
+            self.world = self._simulate(idx_path, publish)
 
+        self._built_model = None
         self._build_instances()
         if progress == BOTH:
             # The scene in hand is the complete Fresh result before the Done
@@ -949,6 +961,8 @@ class LevelScene:
             except Exception:
                 done_run.kill()
         if progress == BOTH and self.world is not None:
+            if publish is not None:
+                publish(self, "Fresh scene ready; loading completed-event variants")
             # Built beside this one, or built here now - either way it is the
             # same scene, and the cache has it if the run finished.
             self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
@@ -961,6 +975,7 @@ class LevelScene:
     def _merge(self, done):
         """Add what `done` - this area run with every event done - stands and
         this does not: whatever appeared, moved or changed, marked ⧖."""
+        self._built_model = None
         def centre(instance):
             pieces = getattr(instance.assembly, "pieces", None) or ()
             points = [p.position if hasattr(p, "position") else p[1] for p in pieces]
@@ -1060,7 +1075,7 @@ class LevelScene:
                     self.captured_billboard_blends[new_index] = blend
         self.notes.append(f"with every event done: {len(added)} more row(s), marked ⧖")
 
-    def _simulate(self, idx_path):
+    def _simulate(self, idx_path, publish=None):
         """Run every placed actor's own code - see functions/actor_sim.py.
         None if it cannot be run; the scene falls back on reading models
         out of the handlers."""
@@ -1071,6 +1086,14 @@ class LevelScene:
         elif number < 0:
             return None
         spawner = self._scene_spawner()
+        def stage(world, title):
+            if publish is None:
+                return
+            self.world = world
+            self._built_model = None
+            self._build_instances()
+            publish(self, title)
+
         try:
             return actor_sim.simulate(
                 self.exe_path, self.overlay_path, self.dat_path, idx_path,
@@ -1080,8 +1103,10 @@ class LevelScene:
                 chests=[p for p in self.pickups if p.chest],
                 finished=(actor_sim.progress_bytes(self.overlay_data)
                           if self.progress == EVENTS_DONE and self.overlay_data else ()),
-                log=self._log_actors)
+                log=self._log_actors, publish=stage if publish else None)
         except Exception as e:
+            if publish is not None:
+                raise
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
 
@@ -1147,7 +1172,8 @@ class LevelScene:
             return None
         return pickup_art.RewardArt(
             reward=-1, width=0, height=0, item=-1, sequence=-1, clut=clut,
-            frames=frames, loops=actor.loops, name="")
+            frames=frames, loops=actor.loops, name="",
+            semi_transparent=actor.sprite_semi)
 
     def _actor_name(self, actor):
         """A handler's name - or, for a chest or an item some code stood
@@ -1506,6 +1532,10 @@ class LevelScene:
                         for v in room["vertices"]])
 
     def _build_instances(self):
+        self._built_model = None
+        self.drawn_polys = {}
+        self.captured_billboards = {}
+        self.captured_billboard_blends = {}
         instances = []
         self.lines, drew = [], set()
         drawn = {}                  # (owner, scene) -> textured polygons
@@ -1520,16 +1550,10 @@ class LevelScene:
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
             for actor in actors:
-                ancestor = actor
                 suppressed = actor.dead or actor.discarded
-                for _depth in range(32):
-                    ancestor = (world.by_address.get(ancestor.spawner)
-                                if world is not None else None)
-                    if ancestor is None:
-                        break
-                    if ancestor.dead or ancestor.discarded:
-                        suppressed = True
-                        break
+                # Allocation ancestry is not ownership. A captured Capper
+                # retires after creating its independent pipe-steam actor.
+                # The child's own lifecycle determines whether it is drawn.
                 if suppressed:
                     continue
                 if id(actor) in drew or not (actor.lines or actor.polys):
@@ -1957,8 +1981,12 @@ class LevelScene:
                 families = sorted(clipped.get(key, ()), key=repr)
                 frames = [polys]
                 if families:
-                    frames = [list(polys) + [p for f in families for p in clips[f][n]]
-                              for n in range(len(clips[families[0]]))]
+                    period = max(len(clips[family]) for family in families)
+                    frames = [
+                        list(polys) + [polygon for family in families
+                                       for polygon in clips[family][
+                                           frame % len(clips[family])]]
+                        for frame in range(period)]
                 if alone is not None:
                     frames, _name = solo[key]
                     families = [alone]

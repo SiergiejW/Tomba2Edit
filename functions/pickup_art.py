@@ -166,6 +166,7 @@ class RewardArt:
     frames: tuple = ()      # the sequence, expanded
     loops: bool = False     # whether it runs forever or stops on the last
     name: str = ""          # what the item it grants is called, if any
+    semi_transparent: bool = False
 
     @property
     def bank(self):

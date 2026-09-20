@@ -304,6 +304,7 @@ class LevelEditorPanel(QWidget):
         `vram_for_area` are MainWindow's - the Level Editor has no
         business working out where an Axx.BIN lives or how to decompress
         a VRAM chunk when the window already knows both."""
+        self._cancel_load()
         self.dat_path = dat_path
         self.idx_path = idx_path
         self.overlay_for_area = overlay_for_area
@@ -442,76 +443,146 @@ class LevelEditorPanel(QWidget):
             self.load_area(self.chunk, keep_camera=True,
                            keep_view=self.view_box.currentData())
 
-    def load_area(self, chunk, keep_camera=False, keep_view="all"):
-        """Open an area. `keep_camera` leaves the view where it is, so
-        switching Progress shows the same shot of the same place; `keep_view`
-        is the Rooms choice to open on, if the area has it."""
-        self._stop_cycling()
-        self._keep_view = keep_view
-        # Kept so a printed selection can say which area it is in.
-        self.chunk = chunk
-        overlay = self.overlay_for_area(chunk)
-        progress = self.progress_box.currentData()
-        started = time.perf_counter()
-        # An area's own code is run to build it, which takes seconds the
-        # first time - say so, so a quiet window doesn't read as a hang.
-        print(f"AREA_{chunk:02X}: loading ({progress})...", flush=True)
-        # The VRAM has to be in place before the scene is prepared - the
-        # palettes are cut out of it while the buffers are built - and it
-        # needs AREA_01 merged in, which is where the character models'
-        # texture pages live (see gui/smst/smst_parser.py).
-        vram = self.vram_for_area(chunk)
-        memory_key = (chunk, progress)
-        scene = self._scene_memory_cache.get(memory_key)
-        if scene is None:
-            scene = LevelScene().load(self.dat_path, self.idx_path, chunk, overlay,
-                                      self.exe_path, progress=progress)
-            self._remember(self._scene_memory_cache, memory_key, scene, keep=6)
-        self.scene = scene
-        print(f"AREA_{chunk:02X}: {len(scene.instances)} row(s) in "
-              f"{time.perf_counter() - started:.1f}s, drawing...", flush=True)
+    def _cancel_load(self):
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        for loader in getattr(self, "_loaders", ()):
+            loader.cancel()
 
+    def load_area(self, chunk, keep_camera=False, keep_view="all"):
+        """Start a cancellable background load; the GUI remains navigable."""
+        from gui.level.progressive_load import LevelLoad
+        from PyQt6.QtWidgets import QApplication
+        self._cancel_load()
+        self._stop_cycling()
+        self._sprite_timer.stop()
+        self._keep_view = keep_view
+        self.chunk = chunk
+        self._loading = True
+        self._stage_seen = False
+        self._stage_keep_camera = keep_camera
+        self._stage_overlay = self.overlay_for_area(chunk)
+        self._stage_progress = self.progress_box.currentData()
+        self._stage_started = time.perf_counter()
+        generation = self._load_generation
+        self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")
+        # Navigation, room filtering and selection remain available. Editing
+        # starts once the authoritative result arrives, so a later stage can
+        # never overwrite a user's model/position change.
+        self.viewer.loading = True
+        for button in (self.keep_button, self.name_button, self.save_button,
+                       self.gif_button):
+            button.setEnabled(False)
+        for box in self.boxes.values():
+            box.setEnabled(False)
+        self.model_box.setEnabled(False)
+        cached = self._scene_memory_cache.get((chunk, self._stage_progress))
+        if cached is not None:
+            QTimer.singleShot(0, lambda: self._accept_stage(generation, cached))
+            return
+        loader = LevelLoad((self.dat_path, self.idx_path, chunk,
+                            self._stage_overlay, self.exe_path,
+                            self._stage_progress), self)
+        if not hasattr(self, "_loaders"):
+            self._loaders = []
+        self._loaders.append(loader)
+        loader.stage.connect(lambda payload, g=generation: self._accept_stage(g, payload))
+        loader.failed.connect(lambda error, g=generation: self._load_failed(g, error))
+        loader.finished.connect(lambda job=loader: self._release_loader(job))
+        if not getattr(self, "_shutdown_hook", False):
+            QApplication.instance().aboutToQuit.connect(self._shutdown_loaders)
+            self._shutdown_hook = True
+        loader.start()
+
+    def _release_loader(self, loader):
+        if loader in self._loaders:
+            self._loaders.remove(loader)
+        loader.deleteLater()
+
+    def _shutdown_loaders(self):
+        self._cancel_load()
+        for loader in list(getattr(self, "_loaders", ())):
+            loader.wait()
+
+    def _load_failed(self, generation, error):
+        if generation != self._load_generation:
+            return
+        self._loading = False
+        self.viewer.loading = False
+        self.summary.setText("Level loading failed. The last completed stage is still "
+                             "available for viewing.\n" + error)
+        print(error, flush=True)
+
+    @staticmethod
+    def _stage_key(instance):
+        key = instance_key(instance)
+        if key is not None:
+            return (instance.role, instance.scene, repr(key))
+        return (instance.role, instance.scene, instance.label,
+                round(instance.x), round(instance.y), round(instance.z))
+
+    def _accept_stage(self, generation, payload):
+        if generation != self._load_generation:
+            return
+        state, vram, phases, sprites, prepared, title, complete = payload
+        hidden = set()
+        selected = None
+        if self._stage_seen and self.scene is not None:
+            self._keep_view = self.view_box.currentData()
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                old = self._instance(item.data(ROLE)) if item else None
+                if old is not None and item.checkState() != Qt.CheckState.Checked:
+                    hidden.add(self._stage_key(old))
+            old = self._instance(self.viewer.selected)
+            if old is not None:
+                selected = self._stage_key(old)
+        scene = LevelScene()
+        scene.__dict__.update(state)
+        self.scene = scene
         from gui.vram_viewer import vram_index_image
-        self.viewer.set_vram(vram, vram_index_image(vram) if vram else None)
-        self.viewer.export_name = f"AREA_{chunk:02X}"
-        self.viewer.load_scene(scene, frame=not keep_camera)
-        self.viewer.load_animations(overlay)
-        self._load_background(scene, vram, overlay)
-        self._load_sprites(scene, vram)
-        # The one Animate button owns palette/UV, background, sprite, effect,
-        # and skeletal-pose playback together.
-        has_motion = self.viewer.animating or len(self._phases) > 1
+        if not self._stage_seen:
+            self.viewer.set_vram(vram, vram_index_image(vram) if vram else None)
+            self.viewer.export_name = f"AREA_{self.chunk:02X}"
+        self.viewer.load_scene(scene,
+            frame=not self._stage_seen and not self._stage_keep_camera,
+            prepared=prepared[:4])
+        self.viewer.load_animations(self._stage_overlay, prepared=prepared[4])
+        self._phases, self._phase = phases, 0
+        self.viewer.set_background(phases[0][0] if phases else None)
+        self.viewer.set_sprites(*sprites)
+        self._loading = not complete
+        self.viewer.loading = not complete
+        self._populate()
+        self._filling = True
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            instance = self._instance(item.data(ROLE))
+            key = self._stage_key(instance)
+            if key in hidden:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            if key == selected:
+                self.table.selectRow(row)
+                self.viewer.select(instance.index)
+        self._filling = False
+        self._apply_view(frame=False)
+        has_motion = self.viewer.animating or len(phases) > 1
         self.viewer.animate_action.setEnabled(
             self.viewer.animate_action.isEnabled() or has_motion)
         if has_motion and self.viewer.animate_wanted:
             self.viewer.animate_action.setChecked(True)
         self._sync_motion_animation(self.viewer.animate_action.isChecked())
-        self._populate()
-        print(f"AREA_{chunk:02X}: ready in {time.perf_counter() - started:.1f}s",
-              flush=True)
-
-        placed = sum(1 for i in scene.instances
-                     if i.role == "object" and i.face_count)
-        objects = sum(1 for i in scene.instances if i.role == "object")
-        pickups = sum(1 for i in scene.instances if i.role == "pickup")
-        drawn = sum(1 for i in scene.instances
-                    if i.role == "pickup" and i.face_count)
-        lines = [f"{objects} object(s) placed by "
-                 f"{os.path.basename(overlay) if overlay else 'no overlay'}, "
-                 f"{placed} of them with a known model."]
-        if pickups:
-            lines.append(f"{pickups} crystal(s) and apple(s) from MAIN.EXE's "
-                         f"own table, {drawn} of them with a known model.")
-        rooms = {i.scene for i in scene.instances if i.scene is not None}
-        empty = [s for s in scene.room_tables
-                 if s not in rooms and s <= max(rooms, default=0)]
-        if rooms or empty:
-            lines.append(f"{len(rooms)} interior(s) with something in them, found "
-                         f"by running the area's scene spawner - pick one under "
-                         f"Rooms." + (f" {len(empty)} more with nothing to draw "
-                                      f"are listed there too." if empty else ""))
-        lines.extend(scene.notes)
-        self.summary.setText("\n".join(lines))
+        self._stage_seen = True
+        count = sum(i.flip is None for i in scene.instances)
+        self.summary.setText(f"AREA_{self.chunk:02X}: {title} — {count} objects. "
+                            + (f"Loaded in {time.perf_counter() - self._stage_started:.1f}s."
+                               if complete else "You can explore while loading continues."))
+        if complete:
+            self._remember(self._scene_memory_cache,
+                           (self.chunk, self._stage_progress), payload, keep=6)
+            for button in (self.keep_button, self.name_button, self.save_button,
+                           self.gif_button):
+                button.setEnabled(True)
+        self._show_details(self.viewer.selected)
 
     def _load_sprites(self, scene, vram):
         """Cut every frame this level's pickups need and hang them.
@@ -741,7 +812,7 @@ class LevelEditorPanel(QWidget):
 
     def _populate(self):
         self._filling = True
-        instances = self.scene.instances if self.scene else []
+        instances = [i for i in self.scene.instances if i.flip is None] if self.scene else []
         self.table.setRowCount(len(instances))
         for row, instance in enumerate(instances):
             name = QTableWidgetItem(instance.label)
@@ -926,6 +997,7 @@ class LevelEditorPanel(QWidget):
             self._filling = False
 
     def _on_instance_moved(self, index):
+        self._scene_memory_cache.clear()
         instance = self._instance(index)
         row = self._row_of(index)
         if instance is None or row is None:
@@ -1007,10 +1079,11 @@ class LevelEditorPanel(QWidget):
                 if self.model_box.itemData(row) == instance.source:
                     self.model_box.setCurrentIndex(row)
                     break
-            self.model_box.setEnabled(True)
+            self.model_box.setEnabled(not getattr(self, "_loading", False))
         self._fill_boxes(instance)
         for box in self.boxes.values():
-            box.setEnabled(instance.movable and not instance.authored)
+            box.setEnabled(instance.movable and not instance.authored
+                           and not getattr(self, "_loading", False))
         self._filling = False
 
     def _fill_boxes(self, instance):
@@ -1023,6 +1096,7 @@ class LevelEditorPanel(QWidget):
     def _on_box_changed(self, _value):
         if self._filling:
             return
+        self._scene_memory_cache.clear()
         instance = self._instance(self.viewer.selected)
         if instance is None or not instance.movable:
             return
@@ -1039,6 +1113,7 @@ class LevelEditorPanel(QWidget):
     def _on_model_changed(self, _index):
         if self._filling or self.scene is None:
             return
+        self._scene_memory_cache.clear()
         instance = self._instance(self.viewer.selected)
         if instance is None or instance.role == "room":
             return

@@ -84,6 +84,7 @@ class Placed:
     # by its corner.
     origin_x: float
     origin_y: float
+    blend: object = None
 
 
 class SpriteBank:
@@ -117,6 +118,16 @@ class SpriteBank:
             except Exception:
                 self._images[key] = None
         return self._images[key]
+
+    def blend(self, frame):
+        """The texture-page blend mode authored by a sprite frame."""
+        if not 0 <= frame < len(self.sprt.sprites):
+            return 0
+        pieces = self.sprt.sprites[frame].pieces
+        if not pieces:
+            return 0
+        from collections import Counter
+        return Counter(piece.semi_transparency for piece in pieces).most_common(1)[0][0]
 
 
 def build_atlas(banks, wanted, extra=()):
@@ -175,11 +186,14 @@ def build_atlas(banks, wanted, extra=()):
         for key, pixels, origin_x, origin_y in row:
             h, w = pixels.shape[:2]
             atlas[y:y + h, x:x + w] = pixels
+            bank = banks.get(key[0]) if isinstance(key, tuple) and key else None
+            frame = key[1] if isinstance(key, tuple) and len(key) > 1 else None
             placed[key] = Placed(
                 u0=x / width, v0=y / height,
                 u1=(x + w) / width, v1=(y + h) / height,
                 width=float(w), height=float(h),
-                origin_x=float(origin_x), origin_y=float(origin_y))
+                origin_x=float(origin_x), origin_y=float(origin_y),
+                blend=(bank.blend(frame) if bank is not None else None))
             x += w + PAD
         y += row_height
     return atlas, placed
@@ -245,6 +259,9 @@ def billboards(instances, placed):
             continue
         out.append(Billboard(index=instance.index, x=instance.x, y=instance.y,
                              z=instance.z, steps=steps, loops=art.loops,
+                             blend=(steps[0][0].blend
+                                    if getattr(art, "semi_transparent", False)
+                                    else None),
                              corners=getattr(instance, "quad", None),
                              pickup=pickup is not None,
                              units=(OBJECT_UNITS if instance.role == "object"

@@ -60,6 +60,9 @@ def main():
     app.exec()
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--level-load-worker":
+        from gui.level import load_worker
+        sys.exit(load_worker.main(sys.argv[2:]))
     # A built exe has no `python -m`, so the level editor's events-done run
     # (gui/level/done_worker.py) starts this same exe with a flag instead.
     from gui.level.level_scene import DONE_WORKER_FLAG

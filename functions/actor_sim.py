@@ -354,6 +354,7 @@ class Actor:
     parts: list = field(default_factory=list)
     bank: int = None                # file id of its sprite bank
     sprite_bank: int = None         # the bank its code chose, sequence or not
+    sprite_semi: bool = False       # f_DrawActorSpriteParts mode 1 or 3
     frames: tuple = ()              # ((frame, ticks), ...)
     loops: bool = False
     reward: int = 0
@@ -887,6 +888,16 @@ class World:
         self._transit(chosen, budget)
         self._converge(chosen, paths, budget)
         self.settle_captures()
+        # Model-less effects may initialise with zero-size geometry. Their
+        # part score never improves, so _snapshot's first-pose rule would
+        # keep that empty first frame forever (the Capper pipe vents).
+        late = [a for a in chosen if not a.parts and not a.polys
+                and self._code(self.mem.read(a.address + DRAW, 4))]
+        if late:
+            for actor in late:
+                actor.silent = {}
+                self._place(actor)
+            self.capture_lines(late)
 
     def family(self, actor):
         """Who an actor's drawing belongs to: the top of its spawner chain,
@@ -2210,6 +2221,7 @@ class World:
 
     def _sprite(self, actor, banks):
         read = self.mem.read
+        actor.sprite_semi = read(actor.address + RENDER_MODE, 1) in (1, 3)
         bank = banks.get(read(actor.address + BANK, 4))
         step = read(actor.address + SEQUENCE, 4)
         if bank is not None:
@@ -2323,7 +2335,7 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=(), finished=(), log=None):
+             chests=(), finished=(), log=None, publish=None):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
     area with no placement records is its spawner's scene 0.
@@ -2368,6 +2380,8 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         gated = world.spawn_area_gated(spawner, frames)
         say("gated", gated)
     world.harvest()
+    if publish:
+        publish(world, "Actors placed; recording animations")
     world.record_pose_clips()
     if world.incomplete_pose_loops:
         say(f"{len(world.incomplete_pose_loops)} moving pose actor(s) did not "
@@ -2375,6 +2389,8 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.record_clips()
     world.restore_firefly_progress()
     world.restore_archived_effects()
+    if publish:
+        publish(world, "Outdoor animations ready; loading interiors")
     if world.clips:
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
             f"{CLIP_FRAMES} frame(s) each")
@@ -2383,6 +2399,8 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         world.run_rooms(spawner, area_number, frames)
         for scene, actors in sorted(world.rooms.items()):
             say(f"room {scene}", actors)
+        if publish:
+            publish(world, "Interiors ready; loading event actors")
     say("looking for event actors")
     # An area with no table (the intro) is built round the origin by code.
     with open(overlay_path, "rb") as f:

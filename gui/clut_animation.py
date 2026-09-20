@@ -52,6 +52,53 @@ ANIMATE_TOOLTIP = (
     "are set here by eye against the game.")
 
 
+def prepare_animation_data(vram, model, overlay_path):
+    """Read animation tables and texture patterns without touching a widget."""
+    cluts, uvs, rules = {}, {}, ()
+    found = []
+    if overlay_path:
+        try:
+            _base, found = clut_anim.load_animations(overlay_path)
+        except OSError:
+            found = []
+        except Exception as e:
+            print(f"Could not read palette animations from "
+                  f"{overlay_path}: {e}")
+    used = {info[1] for info in (model or {}).get('texture_info', ())}
+    # Where two records drive the same CLUT - which happens, and the
+    # game runs both - the last one written is the one on screen.
+    for animation in found:
+        if animation.address in used:
+            cluts[animation.address] = animation
+
+    try:
+        uvs = {clut: animation for clut, animation
+               in uv_anim.find_animations(vram, model).items()
+               if clut in used}
+    except Exception as e:
+        print(f"Could not look for UV animations: {e}")
+        uvs = {}
+    # Stepped by a draw routine, one game frame each - read off its code
+    # (actor_sim._uv_frames), so it wins over the guess off the page.
+    for clut, frames in ((model or {}).get("uv_frames") or {}).items():
+        if clut in used:
+            uvs[clut] = uv_anim.UVAnimation(
+                clut, None, None, list(frames), ticks=1)
+
+    flags = set((model or {}).get("face_flags") or ())
+    rules = tuple(
+        rule for rule in texture_window.rules_for(overlay_path)
+        if any(value & rule.flag for value in flags))
+    # A palette whose faces a drawer's rule moves is the drawer's: the
+    # UV guess off the page would move them a second time (A0A's lava).
+    windowed = {info[1] for info, value in zip((model or {}).get("texture_info") or (),
+                                               (model or {}).get("face_flags") or ())
+                if any(value & rule.flag for rule in rules)}
+    uvs = {clut: animation for clut, animation in uvs.items()
+           if clut not in windowed}
+    return cluts, uvs, rules
+
+
 class ClutAnimationMixin:
     """Animated palettes for a viewer that draws grouped by palette.
 
@@ -92,7 +139,7 @@ class ClutAnimationMixin:
         self.animate_action = action
         return action
 
-    def load_animations(self, overlay_path):
+    def load_animations(self, overlay_path, prepared=None):
         """Bind everything this model animates. Returns how many.
 
         Call this AFTER the model is loaded and its palette groups are
@@ -107,48 +154,9 @@ class ClutAnimationMixin:
         without one, or a disc opened somewhere with no BIN folder,
         just gets no palette animation."""
         self.clear_clut_animations()
-        found = []
-        if overlay_path:
-            try:
-                _base, found = clut_anim.load_animations(overlay_path)
-            except OSError:
-                found = []
-            except Exception as e:
-                print(f"Could not read palette animations from "
-                      f"{overlay_path}: {e}")
-        used = set(self.animated_clut_addresses())
-        # Where two records drive the same CLUT - which happens, and the
-        # game runs both - the last one written is the one on screen.
-        for animation in found:
-            if animation.address in used:
-                self.clut_animations[animation.address] = animation
-
-        vram, model = self.animation_source()
-        try:
-            self.uv_animations = {clut: a for clut, a
-                                  in uv_anim.find_animations(vram, model).items()
-                                  if clut in used}
-        except Exception as e:
-            print(f"Could not look for UV animations: {e}")
-            self.uv_animations = {}
-        # Stepped by a draw routine, one game frame each - read off its code
-        # (actor_sim._uv_frames), so it wins over the guess off the page.
-        for clut, frames in ((model or {}).get("uv_frames") or {}).items():
-            if clut in used:
-                self.uv_animations[clut] = uv_anim.UVAnimation(clut, None, None,
-                                                               list(frames), ticks=1)
-
-        flags = set((model or {}).get("face_flags") or ())
-        self.window_rules = tuple(
-            rule for rule in texture_window.rules_for(overlay_path)
-            if any(value & rule.flag for value in flags))
-        # A palette whose faces a drawer's rule moves is the drawer's: the
-        # UV guess off the page would move them a second time (A0A's lava).
-        windowed = {info[1] for info, value in zip((model or {}).get("texture_info") or (),
-                                                   (model or {}).get("face_flags") or ())
-                    if any(value & rule.flag for rule in self.window_rules)}
-        self.uv_animations = {clut: a for clut, a in self.uv_animations.items()
-                              if clut not in windowed}
+        if prepared is None:
+            prepared = prepare_animation_data(*self.animation_source(), overlay_path)
+        self.clut_animations, self.uv_animations, self.window_rules = prepared
         self._apply_windows(0)
 
         total = (len(self.clut_animations) + len(self.uv_animations)

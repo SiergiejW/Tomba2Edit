@@ -328,7 +328,7 @@ class LevelViewer(SMSTViewer):
 
     # --- loading ------------------------------------------------------
 
-    def load_scene(self, scene, frame=True):
+    def load_scene(self, scene, frame=True, prepared=None):
         """Show a gui.level.level_scene.LevelScene.
 
         `frame` puts the camera back over the whole level. Off when the
@@ -353,7 +353,16 @@ class LevelViewer(SMSTViewer):
         # scene indexes a list that may be shorter.
         self._drag = None
         self.selected_part = None
-        self.prepare_buffers()
+        if prepared is None:
+            self.prepare_buffers()
+        else:
+            self.clear_clut_animations()
+            self.uv_offsets = {}
+            self._invalidate_pick_cache()
+            (self._arrays, self.draw_ranges, self._clut_arrays,
+             self._clut_transparency) = prepared
+            self._cluts_dirty = set(self._clut_arrays)
+            self._geometry_dirty = True
         self.rebuild_markers()
         self.rebuild_code_lines()
         self._rebuild_collision()
@@ -448,8 +457,10 @@ class LevelViewer(SMSTViewer):
         if not self.show_collision or self.scene is None:
             self.collision.clear()
             return
-        self.collision.set(self.scene.collision(self.view, self._room_bounds()),
-                           UNIT_SCALE)
+        lines = getattr(self.scene, "_prepared_collision", {}).get(self.view)
+        if lines is None:
+            lines = self.scene.collision(self.view, self._room_bounds())
+        self.collision.set(lines, UNIT_SCALE)
 
     def set_view(self, view):
         """Follow the panel's Show box - see self.view."""
@@ -1704,7 +1715,8 @@ class LevelViewer(SMSTViewer):
         if self._badge_cache is None:
             out, positions = [], None
             for instance in self.instances:
-                if instance.role == "room" or not instance.timed:
+                if (instance.role == "room" or not instance.timed
+                        or instance.flip is not None or instance.marker):
                     continue
                 if instance.vertex_count:
                     if positions is None:
