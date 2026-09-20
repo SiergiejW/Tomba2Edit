@@ -136,6 +136,22 @@ def follow_one(frames):
     return track if len(track) > 1 else None
 
 
+def rip_drawable_polygons(frames, vram, ms_per_frame, **kwargs):
+    """Rip the drawable cards from a mixed projected-particle packet.
+
+    A pipe emitter puts both its bubble cards and bookkeeping/non-card
+    primitives into one capture.  The previous all-or-nothing extractor
+    discarded the bubble cards because of those unrelated packets.  Preserve
+    every real card and its layout; this is deliberately not a heuristic that
+    selects a different particle family.
+    """
+    cards = [[poly for poly in frame if _patch(vram, poly) is not None]
+             for frame in frames]
+    if not cards or any(not frame for frame in cards):
+        return None
+    return rip_polygons(cards, vram, ms_per_frame, **kwargs)
+
+
 def rip_polygons(frames, vram, ms_per_frame, centred=False,
                  return_scale=False):
     """[(RGBA image, ms)] of captured sprite quads, one list of polygons a

@@ -50,15 +50,18 @@ def animation_ticks(viewer, cluts=None, windows=True):
     return out
 
 
-def _pil(image):
-    image = image.convertToFormat(QImage.Format.Format_RGB888)
+def _pil(image, alpha=False):
+    image = image.convertToFormat(
+        QImage.Format.Format_RGBA8888 if alpha else QImage.Format.Format_RGB888)
     width, height = image.width(), image.height()
     raw = bytes(image.constBits().asstring(image.sizeInBytes()))
-    return Image.frombytes("RGB", (width, height), raw, "raw", "RGB",
+    mode = "RGBA" if alpha else "RGB"
+    return Image.frombytes(mode, (width, height), raw, "raw", mode,
                            image.bytesPerLine())
 
 
-def record(viewer, ticks, set_tick, *, rate=TICK_HZ, limit=MAX_FRAMES):
+def record(viewer, ticks, set_tick, *, rate=TICK_HZ, limit=MAX_FRAMES,
+           transparent=False):
     """[(PIL image, milliseconds), ...] over `ticks` game ticks: `set_tick(t)`
     puts every clock at t, then the view is grabbed. Frames that come out
     the same are held rather than repeated."""
@@ -70,7 +73,7 @@ def record(viewer, ticks, set_tick, *, rate=TICK_HZ, limit=MAX_FRAMES):
     try:
         for tick in range(min(max(ticks, 1), max(limit, 1))):
             set_tick(tick)
-            image = _pil(viewer.grabFramebuffer())
+            image = _pil(viewer.grabFramebuffer(), alpha=transparent)
             if frames and frames[-1][0].tobytes() == image.tobytes():
                 frames[-1][1] += 1
             else:
@@ -84,7 +87,28 @@ def record(viewer, ticks, set_tick, *, rate=TICK_HZ, limit=MAX_FRAMES):
             for image, n in frames]
 
 
-def save(parent, frames, name):
+def _transparent_gif(image):
+    """GIF has one transparent palette entry, not real alpha.
+
+    Keep 255 colours for the model and reserve palette index 255 for the
+    alpha-cleared ANMP backdrop.  Semi-transparent edge pixels remain model
+    pixels; only genuinely clear pixels are keyed out.
+    """
+    rgba = image.convert("RGBA")
+    indexed = rgba.convert("RGB").quantize(colors=255)
+    pixels = bytearray(indexed.tobytes())
+    alpha = rgba.getchannel("A").tobytes()
+    for offset, value in enumerate(alpha):
+        if value == 0:
+            pixels[offset] = 255
+    indexed.frombytes(bytes(pixels))
+    palette = indexed.getpalette()
+    palette[255 * 3:255 * 3 + 3] = [0, 0, 0]
+    indexed.putpalette(palette)
+    return indexed
+
+
+def save(parent, frames, name, *, transparent=False):
     """Ask where, and write `frames` there. True if written."""
     if not frames:
         QMessageBox.information(parent, "Nothing to record",
@@ -95,10 +119,15 @@ def save(parent, frames, name):
                                           "GIF image (*.gif)")
     if not path:
         return False
-    images = [image for image, _ms in frames]
+    images = [(_transparent_gif(image) if transparent else image)
+              for image, _ms in frames]
     try:
-        images[0].save(path, save_all=True, append_images=images[1:],
-                       duration=[ms for _image, ms in frames], loop=0, disposal=2)
+        options = {"save_all": True, "append_images": images[1:],
+                   "duration": [ms for _image, ms in frames], "loop": 0,
+                   "disposal": 2}
+        if transparent:
+            options["transparency"] = 255
+        images[0].save(path, **options)
     except Exception as e:
         QMessageBox.critical(parent, "Export failed", f"Couldn't write it:\n\n{e}")
         return False

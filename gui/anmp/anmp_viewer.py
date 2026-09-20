@@ -1452,17 +1452,31 @@ class ANMPViewer(QWidget):
         was_playing = self.play_button.isChecked()
         if was_playing:
             self.play_button.setChecked(False)
+        selected_clip = self._clip
+        # A clip can be selected while the user explicitly asks for raw
+        # data.  `show_position` normally follows the selected clip, so make
+        # that scope switch real for the recorder rather than accidentally
+        # capturing the clip again.
+        if not export_clip:
+            self._clip = None
+        self.viewer.transparent_background = True
+        self.viewer.update()
         try:
             frames = view_gif.record(
-                self.viewer, ticks, self.show_position, rate=rate, limit=ticks)
+                self.viewer, ticks, self.show_position, rate=rate, limit=ticks,
+                transparent=True)
         finally:
+            self.viewer.transparent_background = False
+            self.viewer.update()
+            self._clip = selected_clip
             self.slider.setValue(position)
             self.show_position(position)
             if was_playing:
                 self.play_button.setChecked(True)
         scope = "pose animation" if export_clip else "raw poses"
         view_gif.save(self, frames,
-                      f"{self.export_name or 'animation'}-{scope}")
+                      f"{self.export_name or 'animation'}-{scope}",
+                      transparent=True)
 
     def show_rest(self):
         """Drop the animation and show the model in its rest pose - the

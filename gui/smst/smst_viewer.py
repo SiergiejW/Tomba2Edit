@@ -15,7 +15,8 @@ import math
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QImage, QMatrix4x4, QVector2D, QVector4D
+from PyQt6.QtGui import (QAction, QImage, QMatrix4x4, QSurfaceFormat,
+                          QVector2D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLShader,
@@ -119,10 +120,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        capture_format = QSurfaceFormat()
+        capture_format.setAlphaBufferSize(8)
+        self.setFormat(capture_format)
         self.model_data = None
         self.source = None
         self.blob = None
         self.camera_controls = CameraControls(self)
+        # ANMP GIF export can request an alpha clear instead of the normal
+        # neutral viewer backdrop.  Geometry still uses the same renderer.
+        self.transparent_background = False
 
         self.vao = QOpenGLVertexArrayObject()
         self.vertex_buffer = QOpenGLBuffer()
@@ -1281,7 +1288,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendEquation(GL.GL_FUNC_ADD)
         GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
-        GL.glClearColor(*theme.view_background((0.1, 0.1, 0.1)), 1.0)
+        GL.glClearColor(*theme.view_background((0.1, 0.1, 0.1)),
+                        0.0 if self.transparent_background else 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self.draw_backdrop()
         if self.culling_enabled:

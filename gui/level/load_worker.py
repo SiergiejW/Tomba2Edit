@@ -80,6 +80,12 @@ def sprites(scene, vram):
     for index, polygons in scene.captured_billboards.items():
         ripped = sprite_rip.rip_polygons(polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
         if not ripped:
+            # A pipe's bubbles share their captured packet with non-card
+            # primitives. Keep the complete drawable bubble plume instead
+            # of choosing an unrelated single particle from that packet.
+            ripped = sprite_rip.rip_drawable_polygons(
+                polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
+        if not ripped:
             continue
         frames, units[index] = ripped
         steps[index] = []
