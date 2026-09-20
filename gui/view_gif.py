@@ -58,7 +58,7 @@ def _pil(image):
                            image.bytesPerLine())
 
 
-def record(viewer, ticks, set_tick):
+def record(viewer, ticks, set_tick, *, rate=TICK_HZ, limit=MAX_FRAMES):
     """[(PIL image, milliseconds), ...] over `ticks` game ticks: `set_tick(t)`
     puts every clock at t, then the view is grabbed. Frames that come out
     the same are held rather than repeated."""
@@ -68,7 +68,7 @@ def record(viewer, ticks, set_tick):
         timer.stop()
     frames = []
     try:
-        for tick in range(min(max(ticks, 1), MAX_FRAMES)):
+        for tick in range(min(max(ticks, 1), max(limit, 1))):
             set_tick(tick)
             image = _pil(viewer.grabFramebuffer())
             if frames and frames[-1][0].tobytes() == image.tobytes():
@@ -80,7 +80,8 @@ def record(viewer, ticks, set_tick):
             timer.start()
     if len(frames) > 1 and frames[0][0].tobytes() == frames[-1][0].tobytes():
         frames[0][1] += frames.pop()[1]
-    return [(image, max(20, round(n * 1000 / TICK_HZ))) for image, n in frames]
+    return [(image, max(20, round(n * 1000 / max(rate, 1))))
+            for image, n in frames]
 
 
 def save(parent, frames, name):

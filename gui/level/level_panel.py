@@ -14,13 +14,11 @@ be kept in labels/placements.json.
 import json
 import os
 import re
-import sys
-import tempfile
 import time
 from math import gcd
 
 import numpy as np
-from PyQt6.QtCore import QProcess, Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -88,11 +86,6 @@ class LevelEditorPanel(QWidget):
         self.exe_path = None
         self.scene = None
         self._filling = False
-        self._cache_process = None
-        self._cache_manifest = None
-        self._cache_output_tail = ""
-        self._cache_done = 0
-        self._cache_total = 0
         self._background_cache = {}
         self._sprite_cache = {}
         self._scene_memory_cache = {}
@@ -241,12 +234,6 @@ class LevelEditorPanel(QWidget):
             "Write a copy of this area's Axx.BIN with the positions and "
             "angles as they are here. Only those bytes change.")
         self.save_button.clicked.connect(self._save_overlay)
-        self.cache_button = QPushButton("Preload levels", self)
-        self.cache_button.setToolTip(
-            "Build every area's exact Fresh, Events done, and Both scene in "
-            "two background processes. This is a one-time calculation for "
-            "this disc; afterwards those Level Editor loads are cache reads.")
-        self.cache_button.clicked.connect(self._precache_levels)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.keep_button)
@@ -259,7 +246,6 @@ class LevelEditorPanel(QWidget):
         # Area on the left, Progress in the middle, Rooms on the right.
         top.addWidget(QLabel("Area", self))
         top.addWidget(self.area_box, 3)
-        top.addWidget(self.cache_button)
         top.addStretch(1)
         top.addWidget(QLabel("Progress", self))
         top.addWidget(self.progress_box, 1)
@@ -351,80 +337,9 @@ class LevelEditorPanel(QWidget):
 
     def _enable(self, on):
         for widget in (self.table, self.model_box, self.progress_box,
-                       self.keep_button, self.save_button, self.cache_button,
+                       self.keep_button, self.save_button,
                        *self.boxes.values()):
             widget.setEnabled(on)
-
-    def _precache_levels(self):
-        """Compute every exact scene off the UI thread, two areas at once."""
-        if self._cache_process is not None:
-            return
-        jobs = []
-        for row in range(self.area_box.count()):
-            chunk = self.area_box.itemData(row)
-            overlay = self.overlay_for_area(chunk)
-            if overlay and self.exe_path:
-                jobs.append((self.dat_path, self.idx_path, chunk,
-                             overlay, self.exe_path))
-        if not jobs:
-            return
-        handle = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", prefix="tomba2-level-cache-",
-            encoding="utf-8", delete=False)
-        try:
-            json.dump(jobs, handle)
-        finally:
-            handle.close()
-        self._cache_manifest = handle.name
-        self._cache_output_tail = ""
-        self._cache_done = 0
-        self._cache_total = len(jobs)
-        process = QProcess(self)
-        self._cache_process = process
-        process.setWorkingDirectory(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        process.readyReadStandardOutput.connect(self._cache_output)
-        process.finished.connect(self._cache_finished)
-        self.cache_button.setEnabled(False)
-        self.cache_button.setText(f"Caching 0/{len(jobs)}...")
-        process.start(sys.executable, ["-m", "functions.scene_prewarm",
-                                       self._cache_manifest])
-
-    def _cache_output(self):
-        process = self._cache_process
-        if process is None:
-            return
-        output = bytes(process.readAllStandardOutput()).decode(
-            "utf-8", errors="replace")
-        print(output, end="", flush=True)
-        combined = self._cache_output_tail + output
-        lines = combined.splitlines(keepends=True)
-        self._cache_output_tail = (lines.pop() if lines and
-                                   not lines[-1].endswith(("\n", "\r")) else "")
-        completed = re.findall(
-            r"^(?:Preloaded level|Failed to preload level) AREA_[0-9A-F]+",
-            "".join(lines), re.MULTILINE)
-        if completed:
-            self._cache_done += len(completed)
-            self.cache_button.setText(
-                f"Caching {self._cache_done}/{self._cache_total}...")
-
-    def _cache_finished(self, exit_code, _status):
-        process, self._cache_process = self._cache_process, None
-        if process is not None:
-            process.deleteLater()
-        if self._cache_manifest:
-            try:
-                os.unlink(self._cache_manifest)
-            except OSError:
-                pass
-        self._cache_manifest = None
-        self._cache_output_tail = ""
-        self._cache_done = self._cache_total = 0
-        self.cache_button.setText(
-            "Levels preloaded" if exit_code == 0 else "Preload levels")
-        self.cache_button.setEnabled(bool(self.dat_path))
 
     # --- loading an area ----------------------------------------------
 
@@ -455,6 +370,12 @@ class LevelEditorPanel(QWidget):
         self._cancel_load()
         self._stop_cycling()
         self._sprite_timer.stop()
+        # The first progressive snapshot intentionally contains only rooms
+        # and markers.  It cannot yet list an interior's actors, so its Rooms
+        # combo may temporarily fall back to Area.  Keep the user's requested
+        # room separately until all later snapshots have had a chance to
+        # provide it; never promote that temporary fallback into the request.
+        self._requested_view = keep_view
         self._keep_view = keep_view
         self.chunk = chunk
         self._loading = True
@@ -527,7 +448,13 @@ class LevelEditorPanel(QWidget):
         hidden = set()
         selected = None
         if self._stage_seen and self.scene is not None:
-            self._keep_view = self.view_box.currentData()
+            # Preserve a deliberate room filter while the early marker stage
+            # is being replaced.  A user can still deliberately choose a
+            # non-Area entry while a load runs.
+            current_view = self.view_box.currentData()
+            if current_view is not None:
+                self._requested_view = current_view
+            self._keep_view = self._requested_view
             for row in range(self.table.rowCount()):
                 item = self.table.item(row, 0)
                 old = self._instance(item.data(ROLE)) if item else None
@@ -552,6 +479,7 @@ class LevelEditorPanel(QWidget):
         self.viewer.set_sprites(*sprites)
         self._loading = not complete
         self.viewer.loading = not complete
+        self._keep_view = getattr(self, "_requested_view", self._keep_view)
         self._populate()
         self._filling = True
         for row in range(self.table.rowCount()):

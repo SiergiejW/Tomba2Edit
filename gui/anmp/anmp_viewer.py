@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from functions import gltf_export, pairings, skeleton
-from gui import export_dialog, panel_title
+from gui import export_dialog, panel_title, view_gif
 from gui.transport_icons import set_glyph
 from gui.anmp.anmp_parser import (
     BITS_PER_VALUE, VALUES_PER_LIMB, WIDE_SLOT_BYTES, ANMPError, blend,
@@ -265,6 +265,11 @@ class ANMPViewer(QWidget):
             "Show the model in its rest pose - the skeleton with no "
             "rotation applied, which is what the animation moves from.")
         self.rest_button.clicked.connect(self.show_rest)
+        self.gif_button = QPushButton("Save GIF...")
+        self.gif_button.setToolTip(
+            "Record the selected game animation with its real tick holds and "
+            "part swaps, or all raw ANMP poses at the Raw playback rate.")
+        self.gif_button.clicked.connect(self.save_gif)
 
         transport = QVBoxLayout()
         transport.setContentsMargins(8, 4, 8, 4)
@@ -274,6 +279,7 @@ class ANMPViewer(QWidget):
         timeline.addWidget(self.play_button)
         timeline.addWidget(self.autoplay_box)
         timeline.addWidget(self.rest_button)
+        timeline.addWidget(self.gif_button)
         timeline.addWidget(self.slider, 1)
         timeline.addWidget(self.frame_label)
         details = QHBoxLayout()
@@ -1396,6 +1402,67 @@ class ANMPViewer(QWidget):
             self, "Exported",
             f"Wrote {len(self._export_bones)} bones and "
             f"{len(frames)} frames at {fps}fps.")
+
+    def save_gif(self):
+        """Record the rendered ANMP, retaining the selected playback scope.
+
+        A sequence's duration is in game ticks, whereas raw ANMP data has
+        only stored poses.  The two paths deliberately use their matching
+        clocks: this is important for held poses, tweening and actor-driven
+        part substitutions such as Tomba's hands and heads.
+        """
+        if not self.anmp or not self.model or self._pivots is None:
+            QMessageBox.warning(self, "Nothing to record",
+                                "Load an animation and a model first.")
+            return
+        export_clip = bool(self._clip)
+        if self._clip:
+            choice = QMessageBox(self)
+            choice.setWindowTitle("GIF animation scope")
+            choice.setIcon(QMessageBox.Icon.Question)
+            choice.setText("Which animation should the GIF record?")
+            clip_button = choice.addButton(
+                "Selected game animation", QMessageBox.ButtonRole.AcceptRole)
+            raw_button = choice.addButton(
+                "All raw ANMP poses", QMessageBox.ButtonRole.ActionRole)
+            choice.addButton(QMessageBox.StandardButton.Cancel)
+            choice.setDefaultButton(clip_button)
+            choice.exec()
+            if choice.clickedButton() is clip_button:
+                export_clip = True
+            elif choice.clickedButton() is raw_button:
+                export_clip = False
+            else:
+                return
+        ticks = (self._clip.duration if export_clip
+                 else len(self.anmp) * max(self.steps, 1))
+        rate = (self._tick_rate if export_clip
+                else self.fps_box.value() * max(self.steps, 1))
+        if ticks > view_gif.MAX_FRAMES:
+            answer = QMessageBox.question(
+                self, "Long GIF capture",
+                f"This export contains {ticks} rendered frames (about "
+                f"{ticks / max(rate, 1):.1f} seconds). It may take a while "
+                "and create a large GIF. Record the complete animation?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        position = self.slider.value()
+        was_playing = self.play_button.isChecked()
+        if was_playing:
+            self.play_button.setChecked(False)
+        try:
+            frames = view_gif.record(
+                self.viewer, ticks, self.show_position, rate=rate, limit=ticks)
+        finally:
+            self.slider.setValue(position)
+            self.show_position(position)
+            if was_playing:
+                self.play_button.setChecked(True)
+        scope = "pose animation" if export_clip else "raw poses"
+        view_gif.save(self, frames,
+                      f"{self.export_name or 'animation'}-{scope}")
 
     def show_rest(self):
         """Drop the animation and show the model in its rest pose - the
