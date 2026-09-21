@@ -1480,6 +1480,8 @@ class LevelViewer(SMSTViewer):
         self._sprite_dirty = False
         by_blend = {None: [], 0: [], 1: [], 2: [], 3: []}
         instances = self.instances
+        atlas_height, atlas_width = (self._sprite_atlas.shape[:2]
+                                     if self._sprite_atlas is not None else (1, 1))
         for quad in self._sprite_quads:
             if (quad.index in self.hidden_groups
                     or (quad.pickup and not self.show_pickups)):
@@ -1496,9 +1498,14 @@ class LevelViewer(SMSTViewer):
                     # Each about its own centre, where it stands.
                     x, y, z = ((at.x + shift[0]) / UNIT_SCALE, (at.y + shift[1]) / UNIT_SCALE,
                                (at.z + shift[2]) / UNIT_SCALE)
+                    # Half a texel inside its picture: on the very edge the
+                    # nearest texel can be the atlas's transparent padding,
+                    # a see-through seam where A01's two steam puffs meet.
+                    hu, hv = 0.5 / atlas_width, 0.5 / atlas_height
+                    u0, u1 = card.u0 + hu, card.u1 - hu
+                    v0, v1 = card.v0 + hv, card.v1 - hv
                     corners = [(ox / UNIT_SCALE, oy / UNIT_SCALE,
-                                card.u0 + fu * (card.u1 - card.u0),
-                                card.v0 + fv * (card.v1 - card.v0))
+                                u0 + fu * (u1 - u0), v0 + fv * (v1 - v0))
                                for (ox, oy), (fu, fv) in zip(offsets, fractions)]
                     # The PSX's v0 v1 on top, v2 v3 below.
                     for n in ((0, 1, 2, 1, 3, 2) if len(corners) == 4 else (0, 1, 2)):
