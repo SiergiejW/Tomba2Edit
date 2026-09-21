@@ -1901,6 +1901,22 @@ class LevelScene:
                     label=f"{record.name(art)}: contents", art=art,
                     x=cx, y=cy, z=cz, scene=scene,
                     note=f"reward {record.contents}, what the chest gives when opened"))
+            elif record.chest and art is not None and not art.frames:
+                # No sprite: its reward is a model - the Grapple.
+                # f_InitializeModelGroundPickupFromRewardSelector reads the
+                # reward's palette word as the file, its sequence as the group.
+                drop = (art.clut, art.sequence)
+                if self.group(drop)[1] is not None:
+                    ground = (actor.position if actor.position is not None
+                              else np.array(record.position, dtype=np.float64))
+                    cx, cy, cz = view_point(np.array(
+                        [ground[0], ground[1] - CHEST_CONTENTS_LIFT, ground[2]]))
+                    instances.append(Instance(
+                        index=len(instances), role="spawned",
+                        label=f"{record.name(art)}: contents", sources=(drop,),
+                        name=self.named((drop,)), x=cx, y=cy, z=cz, scene=scene,
+                        note=f"reward {record.contents}, what the chest gives when "
+                             "opened - a model, file and group from its reward entry"))
 
         # What the assembled objects spawn: pickups that ride them, and
         # props that stand wherever their spawner's table says.

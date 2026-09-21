@@ -337,6 +337,8 @@ WAKE_FRAMES = 4                     # frames a zone is given to wake an actor
 # A woken actor is mostly a walker, looped in place (_in_place) - its steps
 # repeat within this; the full POSE_LOOP_MAX_FRAMES only made loads slow.
 WOKEN_FRAMES = 96
+# The shortest loop a nearest return may close (_nearest_return).
+NEAREST_MIN = 24
 ZONE_FRAMES = 96
 # Blocks queue themselves on a per-frame list (FUN_A05__8010e5c4) that the
 # area's collision step resolves block on block and empties
@@ -1135,7 +1137,7 @@ class World:
                 for actor in live:
                     actor.position = self._position(actor.address)
                     actor.silent = {}
-                self.capture_lines(live, keep_draws=True)
+                self.capture_lines(live, keep_draws=True, counter=frame)
                 by_family = collections.defaultdict(list)
                 for actor in live:
                     by_family[self.family(actor)].append(
@@ -1316,6 +1318,11 @@ class World:
             else:
                 back = next((p for p in range(2, count)
                              if local[p] == local[0] and len(set(local[:p])) > 1), None)
+                if back is None:
+                    # Random pauses and choices never come back exactly (A04's
+                    # 41.0, the id-36 villager): the frame nearest the first,
+                    # a loop's worth on, closes it with the smallest jump.
+                    back = _nearest_return(standing)
                 if back is None:
                     continue
                 loops[address] = tuple(standing[:back])
@@ -2095,7 +2102,7 @@ class World:
         self.restore(base)
         self.events = events
 
-    def capture_lines(self, actors=None, budget=BUDGET, keep_draws=False):
+    def capture_lines(self, actors=None, budget=BUDGET, keep_draws=False, counter=0):
         """Run each actor's draw routine (+0x18) and then its update handler
         once with the GTE naming its vertices, and keep the line primitives
         that come out, on the actor - A00's ropes come from the first, A06's
@@ -2119,7 +2126,9 @@ class World:
             mem.load(CAMERA, struct.pack("<9h2x3i", 0x1000, 0, 0, 0, 0x1000, 0,
                                          0, 0, 0x1000, 0, 0, 0))
             mem.write(ORDERING_TABLE, 4, ot)
-            mem.write(ANIMATION_FRAME, 2, 0)
+            # A clip's frame gives its own count: a Kujara firefly's three
+            # cells step by it, and held at 0 its flipbook showed one.
+            mem.write(ANIMATION_FRAME, 2, counter)
 
             def draw(actor, offset, routine):
                 """([line], [textured polygon]) one pass puts out."""
@@ -2187,7 +2196,10 @@ class World:
                     if quiet is not None and quiet >= QUIET_CAPTURES:
                         continue
                     drawn_lines, drawn_polys = draw(actor, offset, routine)
-                    if keep_draws and offset == DRAW:
+                    # A class-4 draw steps a sprite stream kept on its actor
+                    # (Kujara's snow firefly, FUN_A04__8013cc28 at +0x78):
+                    # kept like a +0x18 draw's, or its three cells are one.
+                    if keep_draws and (offset == DRAW or routine == CLASS4_QUEUE):
                         drawn_state[actor.address] = mem.bytes(actor.address, ACTOR_SIZE)
                     lines.extend(drawn_lines)
                     (placed if routine == CLASS5_QUEUE else polys).extend(drawn_polys)
@@ -2694,9 +2706,24 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
             world.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, 0)
         for scene, actors in sorted(world.rooms.items()):
             say(f"room {scene}", actors)
+    # Event actors - Donglin's petrified Baron - before the animations too:
+    # they run from a snapshot of their own, and the clips are the slow part.
     if publish:
-        publish(world, "Interiors ready; recording animations" if spawner
-                else "Actors placed; recording animations")
+        publish(world, "Interiors ready; loading event actors" if spawner
+                else "Actors placed; loading event actors")
+    say("looking for event actors")
+    previewing = world._firefly_progress
+    if previewing is not None:
+        world.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, previewing)
+    # An area with no table (the intro) is built round the origin by code.
+    with open(overlay_path, "rb") as f:
+        world.spawn_events(installed_handlers(f.read()), frames,
+                           reach=UNPLACED if records or spawner else 1)
+    if previewing is not None:
+        world.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, 0)
+    say(f"{len(world.events)} event actor(s)", [a for _h, tree in world.events for a in tree])
+    if publish:
+        publish(world, "Event actors ready; recording animations")
     say("recording animations")
     world.record_pose_clips()
     if world.incomplete_pose_loops:
@@ -2708,15 +2735,28 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     if world.clips:
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
             f"{CLIP_FRAMES} frame(s) each")
-    if publish:
-        publish(world, "Animations ready; loading event actors")
-    say("looking for event actors")
-    # An area with no table (the intro) is built round the origin by code.
-    with open(overlay_path, "rb") as f:
-        world.spawn_events(installed_handlers(f.read()), frames,
-                           reach=UNPLACED if records or spawner else 1)
-    say(f"{len(world.events)} event actor(s)", [a for _h, tree in world.events for a in tree])
     return world
+
+
+def _nearest_return(frames):
+    """The frame, at least NEAREST_MIN on, whose pose is nearest the first -
+    or None when too few frames or nothing moved."""
+    if len(frames) <= NEAREST_MIN:
+        return None
+
+    def vector(pieces):
+        return np.concatenate([np.concatenate((p.matrix.reshape(-1) * 256, p.position))
+                               for p in pieces])
+    first = vector(frames[0])
+    best = None
+    for k in range(NEAREST_MIN, len(frames)):
+        v = vector(frames[k])
+        if v.shape != first.shape:
+            continue
+        gap = float(np.abs(v - first).max())
+        if best is None or gap < best[0]:
+            best = (gap, k)
+    return None if best is None else best[1]
 
 
 def _in_place(frames, places):

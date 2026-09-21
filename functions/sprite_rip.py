@@ -151,8 +151,12 @@ def rip_cards(frames, vram):
         return None
     out = []
     for polys in frames:
+        # Pieces that share a corner are one drawing - A01's two steam puffs
+        # meet on an edge - and turn about one centre; turned apart, a crack
+        # opened between them.
+        middles = _shared_centres(polys)
         cards = []
-        for corners, uvs, colours, clut, _blended, page in polys:
+        for number, (corners, uvs, colours, clut, _blended, page) in enumerate(polys):
             if len(corners) not in (3, 4):
                 return None
             us = [u for u, _v in uvs]
@@ -166,13 +170,40 @@ def rip_cards(frames, vram):
             rgba = palette[indices]
             tint = np.mean(np.asarray(colours, dtype=np.float64), axis=0)
             rgba[..., :3] = np.clip(rgba[..., :3] * tint, 0, 255)
-            centre = np.asarray(corners, dtype=np.float64).mean(axis=0)
+            centre = middles[number]
             offsets = tuple((float(x - centre[0]), float(centre[1] - y))
                             for x, y, _z in corners)
             fractions = tuple(((u - u0) / width, (v - v0) / height) for u, v in uvs)
             cards.append((rgba.astype(np.uint8), centre, offsets, fractions))
         out.append(cards)
     return out
+
+
+def _shared_centres(polys):
+    """Per polygon, the centre of the group of polygons it shares a corner
+    with, directly or through others."""
+    parent = list(range(len(polys)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner = {}
+    for number, poly in enumerate(polys):
+        for corner in poly[0]:
+            key = tuple(int(round(c)) for c in corner)
+            if key in owner:
+                parent[root(number)] = root(owner[key])
+            else:
+                owner[key] = number
+    groups = {}
+    for number, poly in enumerate(polys):
+        groups.setdefault(root(number), []).extend(poly[0])
+    centres = {r: np.asarray(points, dtype=np.float64).mean(axis=0)
+               for r, points in groups.items()}
+    return [centres[root(number)] for number in range(len(polys))]
 
 
 def rip_polygons(frames, vram, ms_per_frame, centred=False,
