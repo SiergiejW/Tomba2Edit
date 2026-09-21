@@ -257,7 +257,9 @@ class LevelViewer(SMSTViewer):
         self.collision_action.setToolTip(
             "Draw the area's collision as lines.\n\n"
             "A SCLD area shows each plane's surface samples and the stacks "
-            "standing on them. Coal Mining Town and Circus Village have no "
+            "standing on them, a floor sample coloured by its material - "
+            "green plain ground, any other hue a surface Tomba's footsteps "
+            "react to (water, snow, fireflies). Coal Mining Town and Circus Village have no "
             "SCLD: their streets and rooms are planes built into the "
             "overlay, outlined here - green floor, red wall edge, yellow "
             "door - see functions/town_collision.py.")

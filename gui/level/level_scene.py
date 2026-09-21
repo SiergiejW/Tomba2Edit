@@ -133,6 +133,7 @@ ROOM_REACH = 400.0
 # A purified area's chunk runs the cursed area's overlay, 22 chunks before,
 # with that area's bit set in src_PurifiedAreas.
 PURIFIED_CHUNKS = range(0x1B, 0x23)
+PURIFIED_OFFSET = 22                # a purified chunk less this is its cursed one
 
 # What the actors run from: a fresh game, every event done
 # (actor_sim.progress_bytes), or the first with the second's differences.
@@ -1089,11 +1090,19 @@ class LevelScene:
         records = {p.key(): p for p in self.placements}
         pickups = {pickup_key(p): p for p in self.pickups}
         index, added = {}, []
+        taken = set()               # done's own indices of the rows added
         for instance in done.instances:
             k = key(instance)
+            if instance.flip is not None and instance.flip[0] not in taken:
+                # A frame of a loop whose head this run already has: added,
+                # it hung off a head that does not list it - never hidden,
+                # drawn in every view with every row unticked.
+                index[instance.index] = None
+                continue
             if instance.role in ("room", "scenery") or k in mine or not plausible(instance):
                 index[instance.index] = mine.get(k)
                 continue
+            taken.add(instance.index)
             index[instance.index] = instance.index = mine[k] = len(self.instances)
             self.instances.append(instance)
             added.append(instance)
@@ -1488,7 +1497,12 @@ class LevelScene:
         the way the IDX does - see FIRST_AREA_CHUNK."""
         if self.chunk_index is None:
             return None
-        return self.chunk_index - FIRST_AREA_CHUNK
+        chunk = self.chunk_index
+        if chunk in PURIFIED_CHUNKS:
+            # The purified copy is the same area to the game (src_CurrentArea):
+            # its per-area tables - A04's area-bank Potato sprite - are that one's.
+            chunk -= PURIFIED_OFFSET
+        return chunk - FIRST_AREA_CHUNK
 
     def _bind(self, overlay_path, exe_path):
         """Work out what each object is drawn with: the handler's own code,
@@ -1890,33 +1904,34 @@ class LevelScene:
                 note=assembly.note if assembly is not None else "",
                 authored=bool(assembly is None and group is not None
                               and world_placed(group, room_box))))
-            if record.chest and art is not None and art.frames:
+            if record.chest and art is not None:
                 # What it holds, over its lid - seen once it is opened.
+                # f_UpdatePersistentChestOpeningAndSpawnDrop hands the drop the
+                # chest's item id as its object flags; with any set,
+                # f_HandleOverworldItemPickup builds a model (the Grapple) out
+                # of the reward's palette word (file) and sequence (group),
+                # else a sprite (Potato X3).
+                flags = (self.world.mem.read(actor.address + actor_sim.ITEM_ID, 1) & 0x7F
+                         if actor is not None and self.world is not None else 0)
+                drop = (art.clut & 0x7FFF, art.sequence)
+                model = bool(flags) and self.group(drop)[1] is not None
                 ground = (actor.position if actor is not None and actor.position is not None
                           else np.array(record.position, dtype=np.float64))
                 cx, cy, cz = view_point(np.array(
                     [ground[0], ground[1] - CHEST_CONTENTS_LIFT, ground[2]]))
-                instances.append(Instance(
-                    index=len(instances), role="spawned",
-                    label=f"{record.name(art)}: contents", art=art,
-                    x=cx, y=cy, z=cz, scene=scene,
-                    note=f"reward {record.contents}, what the chest gives when opened"))
-            elif record.chest and art is not None and not art.frames:
-                # No sprite: its reward is a model - the Grapple.
-                # f_InitializeModelGroundPickupFromRewardSelector reads the
-                # reward's palette word as the file, its sequence as the group.
-                drop = (art.clut, art.sequence)
-                if self.group(drop)[1] is not None:
-                    ground = (actor.position if actor.position is not None
-                              else np.array(record.position, dtype=np.float64))
-                    cx, cy, cz = view_point(np.array(
-                        [ground[0], ground[1] - CHEST_CONTENTS_LIFT, ground[2]]))
+                if model:
                     instances.append(Instance(
                         index=len(instances), role="spawned",
                         label=f"{record.name(art)}: contents", sources=(drop,),
                         name=self.named((drop,)), x=cx, y=cy, z=cz, scene=scene,
                         note=f"reward {record.contents}, what the chest gives when "
                              "opened - a model, file and group from its reward entry"))
+                elif art.frames:
+                    instances.append(Instance(
+                        index=len(instances), role="spawned",
+                        label=f"{record.name(art)}: contents", art=art,
+                        x=cx, y=cy, z=cz, scene=scene,
+                        note=f"reward {record.contents}, what the chest gives when opened"))
 
         # What the assembled objects spawn: pickups that ride them, and
         # props that stand wherever their spawner's table says.
@@ -2377,7 +2392,8 @@ class LevelScene:
         # Two colours here, not one per plane: in a level what matters is
         # what you stand on and what stops you.
         plain = dict(color_by=lambda _entry: overlay.PLAIN_SURFACE,
-                     wall_color=overlay.PLAIN_WALL)
+                     wall_color=overlay.PLAIN_WALL,
+                     record_color=overlay.material_color)
         if view in (None, "all"):
             overlay.add_scld(lines, self.planes, **plain)
         elif rooms and view in rooms:

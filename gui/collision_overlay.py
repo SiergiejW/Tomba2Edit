@@ -36,6 +36,18 @@ LINE_WIDTH = 1.0
 PLAIN_SURFACE = (0.3, 0.9, 0.4)
 PLAIN_WALL = (1.0, 0.35, 0.3)
 
+def material_color(kind):
+    """A floor sample's colour by its record's material - the kind's high
+    byte, which picks what Tomba's footsteps do there (A04's footstep actor:
+    splashes, snow, fireflies). 0, plain ground, keeps PLAIN_SURFACE; every
+    other value a fixed hue of its own."""
+    material = (kind >> 8) & 0xFF
+    if not material:
+        return PLAIN_SURFACE
+    import colorsys
+    return colorsys.hsv_to_rgb((material * 0.61803) % 1.0, 0.75, 1.0)
+
+
 TOWN_COLORS = {
     "floor": (0.3, 0.9, 0.4), "wall": (1.0, 0.35, 0.3),
     "door": (1.0, 0.85, 0.2), "ladder": (0.3, 0.7, 1.0),
@@ -74,19 +86,22 @@ class Lines:
                 pack(getattr(self, "fills", ()), getattr(self, "fill_colors", ())))
 
 
-def add_scld(lines, entries, bounds=None, color_by=None, wall_color=None):
+def add_scld(lines, entries, bounds=None, color_by=None, wall_color=None,
+             record_color=None):
     """Each entry's samples as crosses and its walls as verticals.
     `bounds` (x0, x1, z0, z1) keeps only what stands inside it;
-    `wall_color` draws every wall alike instead of in its entry's colour."""
+    `wall_color` draws every wall alike instead of in its entry's colour;
+    `record_color(kind)` colours a sample by its record's kind instead."""
     inside = scld_render.contains
     for entry in entries:
         rgb = color_by(entry) if color_by else scld_render.entry_color(entry.index)
         first = len(lines.surface)
-        for x, y, z in entry.trace():
+        for (x, y, z), r in zip(entry.trace(), entry.records()):
             if not inside(bounds, (x, y, z)):
                 continue
-            lines.line((x - TICK, y, z), (x + TICK, y, z), rgb)
-            lines.line((x, y, z - TICK), (x, y, z + TICK), rgb)
+            tone = record_color(entry.path[r].kind) if record_color else rgb
+            lines.line((x - TICK, y, z), (x + TICK, y, z), tone)
+            lines.line((x, y, z - TICK), (x, y, z + TICK), tone)
         lines.ranges[entry.index] = (first, len(lines.surface) - first)
         for a, b in entry.walls():
             if inside(bounds, a):

@@ -337,6 +337,13 @@ WAKE_FRAMES = 4                     # frames a zone is given to wake an actor
 # A woken actor is mostly a walker, looped in place (_in_place) - its steps
 # repeat within this; the full POSE_LOOP_MAX_FRAMES only made loads slow.
 WOKEN_FRAMES = 96
+# Skeletal clips (f_StartActorSkeletalAnimation / f_AdvanceActorSkeletalAnimation):
+# the current step +0x38, and the ticks left on it in +0x0E's low 12 bits.
+ANIM_STEP, ANIM_TICKS = 0x38, 0x0E
+ADVANCE_SKELETAL = 0x80076D68
+TRANSFORMS = (0x80051844, 0x800518FC, 0x800517F8)   # Scaled, ScaledOffset, Unscaled
+RAM_BASE = 0x80000000
+CLIP_STEPS = 256
 # The shortest loop a nearest return may close (_nearest_return).
 NEAREST_MIN = 24
 ZONE_FRAMES = 96
@@ -1232,6 +1239,15 @@ class World:
         pose_signatures = {a.address: [] for a in candidates}
         active = {a.address for a in candidates}
         loops = {}
+        # An actor playing a looping skeletal clip gets that clip's loop
+        # straight from its sequence (the ANMP steps its +0x7C table names),
+        # posed by the game's own step and transform routines a tick at a
+        # time - exact, and without running its handler for 512 frames.
+        for actor in candidates:
+            clip = self._clip_poses(actor, budget)
+            if clip:
+                loops[actor.address] = clip
+                active.discard(actor.address)
         try:
             for _frame in range(frames):
                 for address in tuple(active):
@@ -1499,6 +1515,70 @@ class World:
                     moving[key] = (actor, step)
         if arrived:
             self._reread(arrived)
+
+    def _clip_poses(self, actor, budget):
+        """One loop of the skeletal clip `actor` is playing, as its parts a
+        tick - or None when it plays none, it does not loop, or its handler
+        poses its parts some other way. Everything is put back."""
+        from gui.anmp.sequences import SequenceError, read_clip
+        read = self.mem.read
+        step = read(actor.address + ANIM_STEP, 4)
+        transform = self._transform_of(actor.handler)
+        if not _in_ram(step) or transform is None:
+            return None
+        try:
+            # From the step it is on: what is left of an intro, then the loop.
+            clip = read_clip(bytes(self.mem.ram), RAM_BASE, step, _ANY_POSE,
+                             max_steps=CLIP_STEPS)
+        except SequenceError:
+            return None
+        if clip.loop_start is None:
+            return None
+        left = read(actor.address + ANIM_TICKS, 2) & 0xFFF
+        if clip.loop_start == 0:
+            loop_tick = 0
+        else:
+            loop_tick = left + sum(max(s.ticks, 1) for s in clip.steps[1:clip.loop_start])
+        length = clip.duration - clip.starts[clip.loop_start]
+        if not 2 <= length <= POSE_LOOP_MAX_FRAMES:
+            return None
+        base = self.snapshot()
+        models, _banks = self._maps()
+        frames = []
+        try:
+            for tick in range(loop_tick + length):
+                if tick >= loop_tick:
+                    self.cpu.call(transform, (actor.address,), budget=budget, sp=STACK)
+                    pieces = self._parts(actor, models)
+                    if not pieces:
+                        return None
+                    frames.append(pieces)
+                self.cpu.call(ADVANCE_SKELETAL, (actor.address,), budget=budget, sp=STACK)
+        except EmuError:
+            return None
+        finally:
+            self.restore(base)
+        if len({tuple(tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)) for p in pieces)
+                for pieces in frames}) < 2:
+            return None
+        return tuple(frames)
+
+    def _transform_of(self, handler):
+        """Which of the game's part-transform routines a handler (or a
+        routine it calls) poses its parts with, or None."""
+        cache = self.__dict__.setdefault("_transform_cache", {})
+        if handler not in cache:
+            cache[handler] = None
+            level, seen = [handler], {handler}
+            for _depth in range(2):
+                for at in level:
+                    found = [t for t in self._calls(at) if t in TRANSFORMS]
+                    if found:
+                        cache[handler] = found[0]
+                        return found[0]
+                level = [t for at in level for t in self._calls(at) if t not in seen]
+                seen.update(level)
+        return cache[handler]
 
     def _zoned(self, handler):
         """Whether a handler, or a routine it calls, reads Tomba's zone
@@ -2736,6 +2816,20 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
             f"{CLIP_FRAMES} frame(s) each")
     return world
+
+
+class _AnyPose:
+    """read_clip checks poses against a file's; RAM holds whichever."""
+
+    def __contains__(self, _pose):
+        return True
+
+
+_ANY_POSE = _AnyPose()
+
+
+def _in_ram(address):
+    return RAM_BASE <= address < RAM_BASE + 0x200000 and not address & 3
 
 
 def _nearest_return(frames):
