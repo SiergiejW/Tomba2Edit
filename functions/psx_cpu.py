@@ -31,6 +31,8 @@ GPU_READY = 0x1C000000
 # a stride coprime to the screen's size so neighbours are far apart.
 CAPTURE_WIDTH, CAPTURE_HEIGHT = 320, 240
 CAPTURE_STRIDE = 7919
+# A hook that returns this only looks: the routine it sits on then runs.
+PASS = object()
 CAPTURE_DEPTH = 1000
 CAPTURE_NCLIP = 0x10000
 
@@ -96,6 +98,10 @@ class GTE:
         # A dict to name vertices: RTPS/RTPT then put out a screen position
         # that is a key here, holding the vertex's camera-space point.
         self.capture = None
+        # The names of points an effect's screen-space pieces hang from, and
+        # whether the next point named is one (see actor_sim.EFFECT_ANCHORS).
+        self.anchors = set()
+        self.anchor_next = False
 
     # --- register access ----------------------------------------------
 
@@ -277,6 +283,9 @@ class GTE:
         n = (len(self.capture) * CAPTURE_STRIDE + 1) % (CAPTURE_WIDTH * CAPTURE_HEIGHT)
         sx, sy = n % CAPTURE_WIDTH, n // CAPTURE_WIDTH
         self.capture[(sx, sy)] = point
+        if self.anchor_next:
+            self.anchors.add((sx, sy))
+            self.anchor_next = False
         d[16], d[17], d[18] = d[17], d[18], d[19]
         d[19] = CAPTURE_DEPTH
         d[12], d[13] = d[13], d[14]
@@ -324,11 +333,13 @@ class CPU:
                 raise EmuError(f"ran out of budget at 0x{pc:08X}")
             hook = hooks.get(pc)
             if hook is not None:
-                r[2] = hook(self) & MASK
-                pc = r[31]
-                npc = (pc + 4) & MASK
-                steps += 1
-                continue
+                value = hook(self)
+                if value is not PASS:
+                    r[2] = value & MASK
+                    pc = r[31]
+                    npc = (pc + 4) & MASK
+                    steps += 1
+                    continue
             ins = cache.get(pc)
             if ins is None:
                 if (pc & 0x1FFFFFFF) >= RAM_SIZE or pc & 3:

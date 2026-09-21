@@ -376,7 +376,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         # What frame_collision() measures: every sample, whether or not the
         # walls are being drawn.
-        (surface, _sc), (vertical, _vc) = lines.arrays(UNIT_SCALE)
+        (surface, _sc), (vertical, _vc), _fills = lines.arrays(UNIT_SCALE)
         self._scene_points = (surface if len(surface) else vertical).flatten()
 
     def _upload(self, vao, vbo, cbo, vertices, colors):

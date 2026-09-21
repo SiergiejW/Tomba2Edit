@@ -23,6 +23,10 @@ from gui.scld import scld_render
 TICK = 12.0                 # half a sample's cross, world units
 SURFACE_ALPHA = 1.0
 VERTICAL_ALPHA = 0.6
+# A town wall or door is also filled in, see-through, so what it covers
+# reads at a glance; floors keep their outline only, over the level.
+FILL_ALPHA = 0.3
+FILLED = ("wall", "door")
 HIDDEN = 0.5
 LINE_WIDTH = 1.0
 
@@ -47,6 +51,7 @@ class Lines:
     def __init__(self):
         self.surface, self.surface_colors = [], []
         self.vertical, self.vertical_colors = [], []
+        self.fills, self.fill_colors = [], []       # triangles
         self.ranges = {}            # entry index -> (first vertex, count) in surface
 
     def line(self, a, b, rgb, vertical=False):
@@ -65,7 +70,8 @@ class Lines:
             return (np.asarray(points, dtype=np.float32).reshape(-1, 3) / scale,
                     np.asarray(colors, dtype=np.float32).reshape(-1, 3))
         return (pack(self.surface, self.surface_colors),
-                pack(self.vertical, self.vertical_colors))
+                pack(self.vertical, self.vertical_colors),
+                pack(getattr(self, "fills", ()), getattr(self, "fill_colors", ())))
 
 
 def add_scld(lines, entries, bounds=None, color_by=None, wall_color=None):
@@ -93,10 +99,15 @@ def add_town(lines, planes, transform=lambda p: p, plain=False):
     two the level editor draws collision in."""
     for plane in planes:
         rgb = (TOWN_COLORS.get(plane.kind, TOWN_COLORS["other"]) if not plain
-               else PLAIN_WALL if plane.kind == "wall" else PLAIN_SURFACE)
+               else PLAIN_WALL if plane.kind == "wall"
+               else TOWN_COLORS["door"] if plane.kind == "door" else PLAIN_SURFACE)
         corners = [transform(p) for p in plane.outline()]
         for k, corner in enumerate(corners):
             lines.line(corner, corners[(k + 1) % len(corners)], rgb)
+        if plane.kind in FILLED and len(corners) >= 3:
+            for k in range(1, len(corners) - 1):
+                lines.fills.extend((corners[0], corners[k], corners[k + 1]))
+                lines.fill_colors.extend((rgb,) * 3)
     return lines
 
 
@@ -107,7 +118,7 @@ class Overlay:
         self._layers = [[QOpenGLVertexArrayObject(),
                          QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer),
                          QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer), 0]
-                        for _ in range(2)]
+                        for _ in range(3)]
         self._pending = None
 
     def set(self, lines, scale):
@@ -145,22 +156,31 @@ class Overlay:
         """Draw with `program` bound, untextured, taking colour per vertex
         and opacity from its `alpha` uniform."""
         self.sync()
-        wanted = ((self._layers[0], SURFACE_ALPHA, surface),
-                  (self._layers[1], VERTICAL_ALPHA, vertical))
-        if not any(layer[3] and on for layer, _a, on in wanted):
+        wanted = ((self._layers[0], SURFACE_ALPHA, surface, GL.GL_LINES),
+                  (self._layers[1], VERTICAL_ALPHA, vertical, GL.GL_LINES),
+                  (self._layers[2], FILL_ALPHA, surface, GL.GL_TRIANGLES))
+        if not any(layer[3] and on for layer, _a, on, _m in wanted):
             return
         GL.glDepthMask(GL.GL_FALSE)
         GL.glLineWidth(LINE_WIDTH)
+        blend, cull = GL.glIsEnabled(GL.GL_BLEND), GL.glIsEnabled(GL.GL_CULL_FACE)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glDisable(GL.GL_CULL_FACE)
         for func, scale in ((GL.GL_LESS, 1.0), (GL.GL_GREATER, HIDDEN)):
             GL.glDepthFunc(func)
-            for (vao, _vbo, _cbo, count), alpha, on in wanted:
+            for (vao, _vbo, _cbo, count), alpha, on, mode in wanted:
                 if not (on and count):
                     continue
                 program.setUniformValue("alpha", alpha * scale)
                 vao.bind()
-                GL.glDrawArrays(GL.GL_LINES, 0, count)
+                GL.glDrawArrays(mode, 0, count)
                 vao.release()
         GL.glDepthFunc(GL.GL_LESS)
+        if not blend:
+            GL.glDisable(GL.GL_BLEND)
+        if cull:
+            GL.glEnable(GL.GL_CULL_FACE)
         GL.glDepthMask(GL.GL_TRUE)
         program.setUniformValue("alpha", 1.0)
 

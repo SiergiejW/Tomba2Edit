@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from functions import psx_cpu
-from functions.psx_cpu import CPU, EmuError, s16, s32  # noqa: F401 - s16 used by level_scene
+from functions.psx_cpu import CPU, PASS, EmuError, s16, s32  # noqa: F401 - s16 used by level_scene
 
 EXE_HEADER = 0x800
 OVERLAY_BASE = 0x80108F9C
@@ -223,6 +223,11 @@ PART_DRAWERS = (0x8003CDD8,         # f_BuildActorModelPartPrimitives
                 0x8003C464,         # f_DrawActorSpritePartsWithScaleAndZRotation
                 0x8003C2D4)         # f_DrawActorSpritePartsWithZRotation
 SPRITE_DRAWERS = PART_DRAWERS[2:]
+# Routines that project the point an effect's screen-space pieces are laid
+# round (f_ProjectEffectPointToScreenAndDepth): only such a point anchors a
+# piece no vertex projected to. The nearest of every named point, mesh
+# vertices too, sheared A01's steam puff.
+EFFECT_ANCHORS = (0x800317CC,)
 # src_SpriteAnimationFrame: the counter draw routines step their cells by
 # (A0E's waterfall: cell (frame >> 1) & 15). 0 while capturing - _uv_frames
 # draws the other values a probe says matter.
@@ -230,7 +235,10 @@ ANIMATION_FRAME = 0x1F80017C
 # (size, crc32) -> what format_detect makes of a loaded file; shared by loads.
 FILE_KINDS = {}
 FRAME_CYCLE = 64
-FRAME_PROBES = (1, 2, 4, 8, 16, 32)
+# Counter values a UV probe tries from the same RAM, and draws in a row it
+# makes - see _uv_frames.
+UV_PROBES = (1, 2, 4, 8, 16, 32)
+UV_RUN_PROBE = 5
 
 # A scene controller retires through f_RetireSceneController and calls its
 # spawner twice (scene 0 as it starts, the next at each handoff); the
@@ -320,6 +328,15 @@ CONVERGED = 0.5
 # so a purified ranch's rock stays in the air until Tomba walks up. Each
 # zone's actors are run with Tomba in it until they rest (_settle_zones).
 ZONE, ZONE_FIELD = 0x1F800207, 0x2A
+# src_TombaApproxLocation, the RAM zone the scratch one is copied from each
+# frame - A01's creatures (FUN_A01__80116294) test this one.
+TOMBA_ZONE = 0x800E7EAA
+ZONES = (ZONE, TOMBA_ZONE)
+ZONE_VALUES = 0x40                  # zones a gate is tried with are below this
+WAKE_FRAMES = 4                     # frames a zone is given to wake an actor
+# A woken actor is mostly a walker, looped in place (_in_place) - its steps
+# repeat within this; the full POSE_LOOP_MAX_FRAMES only made loads slow.
+WOKEN_FRAMES = 96
 ZONE_FRAMES = 96
 # Blocks queue themselves on a per-frame list (FUN_A05__8010e5c4) that the
 # area's collision step resolves block on block and empties
@@ -535,6 +552,7 @@ class World:
             ALLOCATE_RECORD: self._allocate_record,
             ALLOCATE_PART: self._allocate_part,
             VISIBILITY: self._visible,
+            **{address: self._anchor_next for address in EFFECT_ANCHORS},
             LOAD_GROUP: self._load_group,
             SET_PART_MODEL: self._set_part_model,
             INIT_SINGLE_PART: self._init_single_part,
@@ -659,6 +677,12 @@ class World:
         write(part + 0x40, 4, self._model_pointer(file_id, group))
         self._note_loaded(actor, file_id, group)
         return 0
+
+    @staticmethod
+    def _anchor_next(cpu):
+        """The point this routine projects anchors screen-space pieces."""
+        cpu.gte.anchor_next = cpu.gte.capture is not None
+        return PASS
 
     def _visible(self, cpu):
         self.mem.write(cpu.r[4] + ACTIVE, 1, 1)
@@ -1178,7 +1202,7 @@ class World:
                 self.clips[key] = clip
 
     def record_pose_clips(self, candidates=None, frames=POSE_LOOP_MAX_FRAMES,
-                          budget=BUDGET):
+                          budget=BUDGET, woken=None):
         """Record complete, proven idle loops for placed moving models.
 
         This deliberately starts at one part: hanging mushrooms and other
@@ -1201,6 +1225,7 @@ class World:
         self._restore_poses(candidates)
         base = self.snapshot()
         recorded = {a.address: [] for a in candidates}
+        places = {a.address: [] for a in candidates}   # (position, yaw) a frame
         states = {a.address: [] for a in candidates}
         pose_signatures = {a.address: [] for a in candidates}
         active = {a.address for a in candidates}
@@ -1220,6 +1245,8 @@ class World:
                         active.discard(address)
                         continue
                     recorded[address].append(pieces)
+                    places[address].append((self._position(address),
+                                            s16(self.mem.read(address + TURN + 2, 2))))
                     pose_signatures[address].append(tuple((
                         p.source,
                         tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)),
@@ -1272,12 +1299,53 @@ class World:
             if back is not None:
                 loops[address] = tuple(recorded[address][:back])
                 incomplete.discard(address)
+        # A walker never comes back to where it was (A01's mine creatures,
+        # A08's 96.x once Tomba is near): its steps, less where it walked and
+        # turned to, looped where it stands.
+        for address in tuple(incomplete):
+            standing = _in_place(recorded[address], places[address])
+            local = [tuple((p.source, tuple(np.rint(p.matrix * 64).astype(int).reshape(-1)),
+                            tuple(np.rint(p.position / 2).astype(int))) for p in pieces)
+                     for pieces in standing]
+            count = len(local)
+            period = next((p for p in range(2, count // 2 + 1)
+                           if local[-2 * p:-p] == local[-p:] and len(set(local[-p:])) > 1),
+                          None)
+            if period is not None:
+                loops[address] = tuple(standing[-period:])
+            else:
+                back = next((p for p in range(2, count)
+                             if local[p] == local[0] and len(set(local[:p])) > 1), None)
+                if back is None:
+                    continue
+                loops[address] = tuple(standing[:back])
+            incomplete.discard(address)
         self.incomplete_pose_loops = tuple(sorted(
             set(self.incomplete_pose_loops) | incomplete))
         for address, clip in loops.items():
             actor = self.by_address.get(address)
             if actor is not None:
                 actor.pose_clip = clip
+        if woken is not None:
+            return
+        # Still only because Tomba is elsewhere: A08's 94.x queue themselves
+        # (and so move) only with Tomba in their slot's zone. Recorded again
+        # there, a zone at a time; the zone is put back after.
+        still = [self.by_address[a.address] for a in available
+                 if a.address not in loops and a.address in self.by_address
+                 and a in candidates and self._gate_zones(a.handler)]
+        waking = collections.defaultdict(list)
+        for actor in still:
+            zone = self._wake_zone(actor, budget)
+            if zone is not None:
+                waking[zone].append(self.by_address[actor.address])
+        if waking:
+            saved = [self.mem.read(address, 1) for address in ZONES]
+            for zone, actors in sorted(waking.items()):
+                self._set_zone(zone)
+                self.record_pose_clips(actors, min(frames, WOKEN_FRAMES), budget, woken=zone)
+            for address, value in zip(ZONES, saved):
+                self.mem.write(address, 1, value)
 
     def _drawn_by(self, keys, geometry=False):
         """{family: repr of what its live actors draw now}.
@@ -1426,13 +1494,33 @@ class World:
             self._reread(arrived)
 
     def _zoned(self, handler):
-        """Whether a handler, or a routine it calls, reads Tomba's zone."""
+        """Whether a handler, or a routine it calls, reads Tomba's zone
+        (the scratch copy) - what _settle_zones runs on."""
         cache = self.__dict__.setdefault("_zone_cache", {})
         if handler not in cache:
             cache[handler] = False
             calls = [handler]
             calls += [t for t in self._calls(handler) if t not in calls]
-            cache[handler] = any(self._reads_zone(at) for at in calls)
+            cache[handler] = any(self._reads(at, (ZONE,)) for at in calls)
+        return cache[handler]
+
+    def _gate_zones(self, handler):
+        """The zones Tomba could stand in to wake a handler gated on where
+        he is (either copy, two calls deep: A08's FUN_A08__80135388 through
+        FUN_A08__80135354, A01's FUN_A01__80116294) - each value its gate
+        compares with, and one either side - or () for one not gated."""
+        cache = self.__dict__.setdefault("_gate_cache", {})
+        if handler not in cache:
+            cache[handler] = ()
+            seen, level, found = {handler}, [handler], set()
+            for _depth in range(3):
+                for at in level:
+                    if self._reads(at, ZONES):
+                        found |= self._compared(at)
+                level = [t for at in level for t in self._calls(at) if t not in seen]
+                seen.update(level)
+            cache[handler] = tuple(sorted({v + d for v in found for d in (-1, 0, 1)
+                                           if 0 <= v + d < ZONE_VALUES}))
         return cache[handler]
 
     def _calls(self, address):
@@ -1446,18 +1534,64 @@ class World:
                 break
         return out
 
-    def _reads_zone(self, address):
+    def _reads(self, address, wanted):
+        """Whether the routine at `address` loads a byte of `wanted`."""
         high = {}
         for k in range(ZONE_SCAN):
             w = self.mem.read(address + k * 4, 4)
             op, rs, rt, imm = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
             if op == LUI:
                 high[rt] = imm << 16
-            elif op in (0x20, 0x24) and high.get(rs) == ZONE & 0xFFFF0000                     and imm == ZONE & 0xFFFF:
+            elif op in (0x20, 0x24) and rs in high and (
+                    (high[rs] + s16(imm)) & 0xFFFFFFFF) in wanted:
                 return True
             if w == JR_RA and k > 2:
                 return False
         return False
+
+    def _compared(self, address):
+        """Small constants the routine at `address` tests against: slti(u),
+        xori and li immediates - where a zone gate draws its lines."""
+        out = set()
+        for k in range(ZONE_SCAN):
+            w = self.mem.read(address + k * 4, 4)
+            op, rs, imm = w >> 26, (w >> 21) & 31, w & 0xFFFF
+            if (op in (0x0A, 0x0B, 0x0E) or (op == ADDIU and rs == 0)) and imm < ZONE_VALUES:
+                out.add(imm)
+            if w == JR_RA and k > 2:
+                break
+        return out
+
+    def _pose_now(self, actor):
+        models, _banks = self._maps()
+        return tuple((p.source, tuple(np.rint(p.matrix * 4096).astype(int).reshape(-1)),
+                      tuple(np.rint(p.position).astype(int)))
+                     for p in self._parts(actor, models))
+
+    def _wake_zone(self, actor, budget):
+        """The first zone, of those its gate names, that sets a still actor
+        moving - or None. Everything is put back after each try."""
+        zones = self._gate_zones(actor.handler)
+        own = self.mem.read(actor.address + ZONE_FIELD, 1)
+        for zone in ((own,) if own < ZONE_VALUES else ()) + zones:
+            base = self.snapshot()
+            try:
+                self._set_zone(zone)
+                live = self.by_address.get(actor.address)
+                if live is None:
+                    continue
+                before = self._pose_now(live)
+                for _frame in range(WAKE_FRAMES):
+                    self._run_free(live, budget)
+                if not live.dead and self._pose_now(live) != before:
+                    return zone
+            finally:
+                self.restore(base)
+        return None
+
+    def _set_zone(self, zone):
+        for address in ZONES:
+            self.mem.write(address, 1, zone)
 
     def _settle_zones(self, actors, budget):
         """Zone-gated actors run on with Tomba in their zone until they rest,
@@ -2009,6 +2143,7 @@ class World:
                         for address in SPRITE_DRAWERS:
                             cpu.hooks.pop(address, None)
                 cpu.gte.capture = {}
+                cpu.gte.anchors = set()
                 self.running = actor.address
                 try:
                     cpu.call(routine, (actor.address, 0, 0), budget=budget, sp=STACK)
@@ -2017,7 +2152,7 @@ class World:
                 finally:
                     self.running = None
                     cpu.hooks.update({address: _draw_nothing for address in PART_DRAWERS})
-                return self._read_primitives(ot, cpu.gte.capture)
+                return self._read_primitives(ot, cpu.gte.capture, cpu.gte.anchors)
 
             for actor in list(self.actors if actors is None else actors):
                 lines, polys, passes, painters = [], [], [], []
@@ -2152,25 +2287,40 @@ class World:
     def _uv_frames(self, paint):
         """{CLUT word: ((du, dv), ...)} - one period, a frame each, of how the
         UVs of the polygons `paint` puts out move together as ANIMATION_FRAME
-        counts from 0. Every frame is drawn from the same RAM, put back after."""
+        counts from 0. Drawn frame after frame as the game draws them, what
+        each draw keeps carried on - purified Kujara's water steps its cell
+        by its own count (8 cells, one per two draws); drawn each time from
+        the same RAM it only ever showed two. RAM is put back after."""
         mem = self.mem
         ram, scratch = bytes(mem.ram), bytes(mem.scratch)
 
         def at(frame):
-            mem.ram[:] = ram
-            mem.scratch[:] = scratch
             mem.write(ANIMATION_FRAME, 2, frame)
             return paint()
 
+        def fresh(frame):
+            mem.ram[:] = ram
+            mem.scratch[:] = scratch
+            return at(frame)
+
         try:
-            base = at(0)
-            still = [p[1] for p in base]
-            if all([p[1] for p in at(f)] == still for f in FRAME_PROBES):
+            # Most drawers never move their UVs: a counter-driven one shows at
+            # one of these counter values, a self-counting one within a few
+            # draws in a row. Only a mover is drawn the whole cycle.
+            still = [p[1] for p in fresh(0)]
+            if (all([p[1] for p in fresh(f)] == still for f in UV_PROBES)
+                    and all([p[1] for p in at(f)] == still
+                            for f in range(1, UV_RUN_PROBE))):
                 return {}
-            frames = [base] + [at(f) for f in range(1, FRAME_CYCLE)]
+            mem.ram[:] = ram
+            mem.scratch[:] = scratch
+            frames = [at(f) for f in range(FRAME_CYCLE)]
         finally:
             mem.ram[:] = ram
             mem.scratch[:] = scratch
+        base = frames[0]
+        if all([p[1] for p in polys] == [p[1] for p in base] for polys in frames):
+            return {}
         moves = {}                      # CLUT word -> [{(du, dv)} per frame]
         for polys in frames:
             if len(polys) != len(base) or any(p[3] != b[3] for p, b in zip(polys, base)):
@@ -2194,26 +2344,34 @@ class World:
         return out
 
     @staticmethod
-    def _sprite_corner(points):
+    def _sprite_corner(points, anchors=()):
         """A resolver for corners no vertex projected to: a screen-space sprite
         piece round the nearest projected point, a pixel a world unit (see
         capture_lines), or None."""
         named = list(points.items())
+        pinned = [(xy, point) for xy, point in named if xy in anchors]
 
-        def resolve(xy):
+        def resolve(xy, around=None):
+            # A polygon's corners hang from one point, the one nearest
+            # `around` (their middle): each corner from its own nearest
+            # sheared A01's steam puff, one corner caught by the vent's mesh.
+            at = xy if around is None else around
             best = None
-            for (nx, ny), point in named:
-                dx, dy = xy[0] - nx, xy[1] - ny
-                if max(abs(dx), abs(dy)) <= SPRITE_REACH and (
-                        best is None or abs(dx) + abs(dy) < best[0]):
-                    best = (abs(dx) + abs(dy), point, dx, dy)
+            for candidates in (pinned, named):
+                for (nx, ny), point in candidates:
+                    dx, dy = at[0] - nx, at[1] - ny
+                    if max(abs(dx), abs(dy)) <= SPRITE_REACH and (
+                            best is None or abs(dx) + abs(dy) < best[0]):
+                        best = (abs(dx) + abs(dy), point, nx, ny)
+                if best is not None:
+                    break
             if best is None:
                 return None
-            _d, point, dx, dy = best
-            return (point[0] + dx, point[1] + dy, point[2])
+            _d, point, nx, ny = best
+            return (point[0] + xy[0] - nx, point[1] + xy[1] - ny, point[2])
         return resolve
 
-    def _read_primitives(self, ot, points):
+    def _read_primitives(self, ot, points, anchors=()):
         """([line], [textured polygon]) linked into the ordering table."""
         out, polys = [], []
         for head in struct.unpack(f"<{OT_SLOTS}I", self.mem.bytes(ot, OT_SLOTS * 4)):
@@ -2228,7 +2386,7 @@ class World:
                 except EmuError:
                     break
                 out.extend(line_primitives(words, points))
-                resolve = self._sprite_corner(points)
+                resolve = self._sprite_corner(points, anchors)
                 polys.extend(textured_primitives(words, points, resolve))
                 polys.extend(untextured_primitives(words, points, resolve))
                 address = tag & 0xFFFFFF
@@ -2561,6 +2719,23 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     return world
 
 
+def _in_place(frames, places):
+    """Recorded poses as if the actor had stayed where it started, facing
+    the way it did: each frame's parts turned back by how far it turned and
+    moved back by how far it walked."""
+    from dataclasses import replace
+    from functions.actor_assembly import rot_y
+    if not frames:
+        return []
+    start, yaw0 = places[0]
+    out = []
+    for pieces, (at, yaw) in zip(frames, places):
+        turn = rot_y(yaw0 - yaw)
+        out.append([replace(p, matrix=turn @ p.matrix,
+                            position=turn @ (p.position - at) + start) for p in pieces])
+    return out
+
+
 def _looped(clip):
     """A recorded clip one period long, so it loops without a seam - or None
     when every frame is the same."""
@@ -2729,13 +2904,11 @@ def textured_primitives(words, points, resolve=None):
                 clut = uv >> 16
             elif corner == 1:
                 page = uv >> 16
-            corner = points.get(_xy(xy))
-            if corner is None and resolve is not None:
-                corner = resolve(_xy(xy))
-            corners.append(corner)
+            corners.append(_xy(xy))
             uvs.append((uv & 0xFF, (uv >> 8) & 0xFF))
             colours.append((1.0, 1.0, 1.0) if code & 0x01 else
                            tuple(((colour >> shift) & 0xFF) / NEUTRAL for shift in (0, 8, 16)))
+        corners = _placed(corners, points, resolve)
         # CLUT 0 names the top left of VRAM, which is the display, not a
         # palette; a polygon folded to a line or a point covers nothing.
         if (clut and all(c is not None for c in corners)
@@ -2775,17 +2948,28 @@ def untextured_primitives(words, points, resolve=None):
             if k >= len(words):
                 return out
             xy, k = words[k], k + 1
-            corner = points.get(_xy(xy))
-            if corner is None and resolve is not None:
-                corner = resolve(_xy(xy))
-            corners.append(corner)
+            corners.append(_xy(xy))
             colours.append(_rgb(colour))
+        corners = _placed(corners, points, resolve)
         if (all(c is not None for c in corners) and len(set(corners)) >= 3
                 and all(max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
                         for a in corners for b in corners)):
             out.append((tuple(corners), ((0, 0),) * corners_wanted,
                         tuple(colours), SOLID_CLUT, bool(code & 0x02), 0))
     return out
+
+
+def _placed(xys, points, resolve):
+    """A polygon's screen positions as the points they name - those that
+    name none placed together, round one point (see _sprite_corner)."""
+    corners = [points.get(xy) for xy in xys]
+    missing = [xy for xy, c in zip(xys, corners) if c is None]
+    if missing and resolve is not None:
+        middle = (sum(x for x, _y in missing) / len(missing),
+                  sum(y for _x, y in missing) / len(missing))
+        corners = [c if c is not None else resolve(xy, middle)
+                   for xy, c in zip(xys, corners)]
+    return corners
 
 
 def _xy(word):
