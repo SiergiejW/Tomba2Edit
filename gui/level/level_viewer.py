@@ -1033,6 +1033,11 @@ class LevelViewer(SMSTViewer):
         from gui.level.level_scene import CLIP_HZ
         from gui.clut_animation import TICK_HZ
         for quad in self._sprite_quads:
+            if quad.index == index and quad.cards is not None:
+                # Captured cards: laid out flat as the game's screen had them.
+                polygons = (getattr(self.scene, "captured_billboards", {}) or {}).get(index)
+                return sprite_rip.rip_polygons(polygons, getattr(self, "vram_raw_bytes", None),
+                                               1000.0 / CLIP_HZ) if polygons else None
             if quad.index == index and quad.corners is None:
                 return sprite_rip.rip_atlas(self._sprite_atlas, quad.steps,
                                             1000.0 / TICK_HZ)
@@ -1272,6 +1277,22 @@ class LevelViewer(SMSTViewer):
             if placed is None:
                 continue
             at = instances[quad.index] if 0 <= quad.index < len(instances) else quad
+            if quad.cards is not None:
+                # A card each, at its own centre, sized to its corners' box.
+                for n, (card, shift, offsets, _f) in enumerate(
+                        quad.cards[quad.step_now(self._sprite_tick)]):
+                    x0, x1 = int(round(card.u0 * width)), int(round(card.u1 * width))
+                    y0, y1 = int(round(card.v0 * height)), int(round(card.v1 * height))
+                    xs, ys = [o[0] for o in offsets], [o[1] for o in offsets]
+                    if x1 <= x0 or y1 <= y0:
+                        continue
+                    out.append({
+                        "name": f"{quad.index:03d} {getattr(at, 'label', 'sprite')} {n}",
+                        "group": "Sprites",
+                        "origin": (at.x + shift[0], at.y + shift[1], at.z + shift[2]),
+                        "sprite": (atlas[y0:y1, x0:x1], max(xs) - min(xs),
+                                   max(ys) - min(ys), -min(xs), max(ys))})
+                continue
             x0, x1 = int(round(placed.u0 * width)), int(round(placed.u1 * width))
             y0, y1 = int(round(placed.v0 * height)), int(round(placed.v1 * height))
             if x1 <= x0 or y1 <= y0:
@@ -1471,8 +1492,10 @@ class LevelViewer(SMSTViewer):
                 # turned to the camera: offsets in its plane, not the world's.
                 at = (instances[quad.index] if 0 <= quad.index < len(instances)
                       else quad)
-                x, y, z = at.x / UNIT_SCALE, at.y / UNIT_SCALE, at.z / UNIT_SCALE
-                for card, offsets, fractions in quad.cards[quad.step_now(self._sprite_tick)]:
+                for card, shift, offsets, fractions in quad.cards[quad.step_now(self._sprite_tick)]:
+                    # Each about its own centre, where it stands.
+                    x, y, z = ((at.x + shift[0]) / UNIT_SCALE, (at.y + shift[1]) / UNIT_SCALE,
+                               (at.z + shift[2]) / UNIT_SCALE)
                     corners = [(ox / UNIT_SCALE, oy / UNIT_SCALE,
                                 card.u0 + fu * (card.u1 - card.u0),
                                 card.v0 + fv * (card.v1 - card.v0))

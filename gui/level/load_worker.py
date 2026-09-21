@@ -4,6 +4,7 @@ Only plain arrays and scene snapshots cross the process boundary. Qt/OpenGL
 widgets belong exclusively to the application's GUI thread.
 """
 import contextlib
+import hashlib
 import json
 import os
 import pickle
@@ -91,7 +92,7 @@ def buffers(scene, vram):
 def sprites(scene, vram):
     from gui.level import pickup_sprites as p
     from functions import sprite_rip
-    from gui.level.level_scene import CLIP_HZ
+    from gui.level.level_scene import view_point
     if not vram:
         return None, ()
     sources = {"resident": scene.resident.get(p.RESIDENT_SPRT_ID)}
@@ -100,48 +101,42 @@ def sprites(scene, vram):
         sources["area"] = (scene.dat_start, own)
     banks = {name: p.SpriteBank(scene.dat_path, where[0], *where[1], vram)
              for name, where in sources.items() if where is not None}
-    extra, steps, units, cards = [], {}, {}, {}
+    # Every captured effect as cards: each polygon turned to the camera about
+    # its own centre, where it stands. One picture for a whole clip turned
+    # every particle - A0K's berries, eight vents' steam - about one pivot.
+    extra, cards, pictures = [], {}, {}
     for index, polygons in scene.captured_billboards.items():
-        ripped = sprite_rip.rip_polygons(polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
-        if not ripped:
-            # Not all rectangles - A01's steam puff is sheared: every
-            # polygon its own picture, drawn at its own corners.
-            cut = sprite_rip.rip_cards(polygons, vram)
-            if cut:
-                cards[index] = []
-                for n, frame in enumerate(cut):
-                    keys = []
-                    for k, (pixels, offsets, fractions) in enumerate(frame):
-                        key = ("card", index, n, k)
-                        extra.append((key, pixels, 0.0, 0.0))
-                        keys.append((key, offsets, fractions))
-                    cards[index].append(keys)
+        cut = sprite_rip.rip_cards(polygons, vram)
+        if not cut:
             continue
-        frames, units[index] = ripped
-        steps[index] = []
-        for n, (picture, _ms) in enumerate(frames):
-            key = ("captured", index, n)
-            extra.append((key, np.asarray(picture, np.uint8), picture.width / 2, picture.height / 2))
-            steps[index].append(key)
+        cards[index] = []
+        for frame in cut:
+            keys = []
+            for pixels, centre, offsets, fractions in frame:
+                # The same picture - a berry, a puff - packed once.
+                digest = (pixels.shape, hashlib.sha1(pixels.tobytes()).digest())
+                key = pictures.get(digest)
+                if key is None:
+                    key = pictures[digest] = ("card", len(pictures))
+                    extra.append((key, pixels, 0.0, 0.0))
+                keys.append((key, view_point(centre), offsets, fractions))
+            cards[index].append(keys)
     atlas, placed = p.build_atlas(banks, p.wanted_frames(scene.instances), extra=extra)
     quads = p.billboards(scene.instances, placed)
-    for index, keys in steps.items():
-        instance = scene.instances[index]
-        frames = tuple((placed[k], 1) for k in keys if k in placed)
-        if frames:
-            quads.append(p.Billboard(index=index, x=instance.x, y=instance.y, z=instance.z,
-                steps=frames, loops=True, units=float(units[index]),
-                blend=scene.captured_billboard_blends.get(index)))
     for index, frames in cards.items():
         instance = scene.instances[index]
-        made = [tuple((placed[key], offsets, fractions)
-                      for key, offsets, fractions in keys if key in placed)
+        # Each card where it stands, as a step from the row, so a dragged
+        # row takes its cards with it.
+        made = [tuple((placed[key], tuple(np.subtract(at, (instance.x, instance.y, instance.z))),
+                       offsets, fractions)
+                      for key, at, offsets, fractions in keys if key in placed)
                 for keys in frames]
         if not any(made):
             continue
         # A step's own picture is only the box round its cards - what a
         # click is tested against - one world unit a texel.
-        every = [o for frame in made for _p, offsets, _f in frame for o in offsets]
+        every = [(o[0] + shift[0], o[1] + shift[1]) for frame in made
+                 for _p, shift, offsets, _f in frame for o in offsets]
         xs, ys = [o[0] for o in every], [o[1] for o in every]
         box = p.Placed(u0=0.0, v0=0.0, u1=0.0, v1=0.0,
                        width=max(xs) - min(xs), height=max(ys) - min(ys),

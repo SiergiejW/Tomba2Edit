@@ -32,7 +32,7 @@ from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
-    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, PURIFIED_CHUNKS, LevelScene,
+    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
     area_files, instance_color, instance_key, room_entries)
 from gui.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
@@ -152,7 +152,6 @@ class LevelEditorPanel(QWidget):
             "the way the game marks a finished event.\n"
             "Both: the fresh game, plus whatever only stands once events are "
             "done, marked ⧖. Runs the area twice.")
-        self._progress_tip = self.progress_box.toolTip()
         self.progress_box.currentIndexChanged.connect(self._on_progress_changed)
 
         self.summary = QLabel("Open a disc to pick an area.", self)
@@ -389,13 +388,6 @@ class LevelEditorPanel(QWidget):
         self._stage_keep_camera = keep_camera
         self._stage_overlay = self.overlay_for_area(chunk)
         self._stage_progress = self.progress_box.currentData()
-        # A purified area always runs finished - see LevelScene.load.
-        purified = chunk in PURIFIED_CHUNKS
-        self.progress_box.setEnabled(not purified)
-        self.progress_box.setToolTip(
-            "A purified area is only reached with its cursed half finished, "
-            "so it always runs with events done." if purified
-            else self._progress_tip)
         self._stage_started = time.perf_counter()
         generation = self._load_generation
         self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")

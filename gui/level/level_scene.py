@@ -912,10 +912,6 @@ class LevelScene:
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
-        if chunk_index in PURIFIED_CHUNKS:
-            # Only reachable once the cursed area is finished: New Game's
-            # flags would stand up its cursed-only scenes (A01's hammer man).
-            progress = EVENTS_DONE
         self.__init__()
         self.dat_path = dat_path
         self.chunk_index = chunk_index

@@ -223,8 +223,9 @@ class Billboard:
     # actors merely because they share this renderer.
     pickup: bool = False
     # Per step, the polygons a captured effect drew that are no rectangle -
-    # ((Placed, 4 or 3 corner offsets (world units, x right, y up), each
-    # corner's place in its picture), ...) - or None for one picture a step.
+    # ((Placed, its centre less the row's, 4 or 3 corner offsets about that
+    # centre (world units, x right, y up), each corner's place in its
+    # picture), ...) - or None for one picture a step.
     cards: tuple = None
 
     def step_now(self, tick):

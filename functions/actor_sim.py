@@ -153,9 +153,13 @@ DONE = 0xFF
 # src_Travelling (+0x80..+0x83): travelling, mini, invisible - how Tomba is,
 # not what he has done - with the Pig Bag's count in its last byte.
 TRAVELLING = AREA_NUMBER + 0x10
+# src_MinigameMenu: bit 0x80 says a minigame is being played - a mode, not an
+# event. Set, A05's peg game (FUN_A05__8012d340) ran at level 255 on its own.
+MINIGAME_MENU = 0x800BF9C3
 WORLD_BYTES = frozenset((*range(AREA_NUMBER, AREA_NUMBER + 4),
                          *range(TRAVELLING, TRAVELLING + 4),
-                         PURIFIED_AREAS, PURIFIED_AREAS + 1, INTRO_CUTSCENE))
+                         PURIFIED_AREAS, PURIFIED_AREAS + 1, INTRO_CUTSCENE,
+                         MINIGAME_MENU))
 # The Pig Bag: f_AddInventoryQuantity appends items 0x17 to 0x1C and counts
 # them. An Evil Pig Door stands only if its item (+0x7E) is in the bag - with
 # every event done, all six are.
@@ -290,9 +294,9 @@ POSE_CLIP_PARTS = 1
 POSE_SPAWNED_MIN_PARTS = 4
 # Frames on at which a code-drawn family is drawn to see whether it moves.
 CLIP_PROBES = (1, 2, 5, 11)
-# A04's unrelated platform/Koma apparition deliberately stops translating
-# once the ranch is purified. Keep recording it, but do not confuse it with
-# the collectible three-frame Snow Firefly handled separately below.
+# A04's platform/Koma apparition - cursed only. Purified, the same handler
+# draws the ranch's water streams (palette 0x383F) with a UV cycle; the old
+# "fly it as if unpurified" preview recorded the apparition over them.
 KUJARA_PLATFORM_GHOST = 0x8013AB0C
 KUJARA_SNOW_FIREFLY = 0x8013E910
 DONGLIN_SNOW_FIREFLY = 0x80140E4C
@@ -878,6 +882,7 @@ class World:
                 return False
 
         paths = {}                      # id(follower) -> [position per frame]
+        self._clear_contacts(BLOCK_CONTACTS.get(self.area_number))
         for _frame in range(frames):
             if self.skip_messages:
                 self.mem.write(MESSAGE, 1, 0)
@@ -890,6 +895,9 @@ class World:
                 self._run_actor(actor, budget)
                 if actor.spawner is not None:
                     paths.setdefault(id(actor), []).append(self._position(actor.address))
+            # As the game's collision step does each frame: a released rock
+            # falling beside another is stopped where the game stops it.
+            self._resolve_contacts(budget)
             self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
@@ -1037,7 +1045,8 @@ class World:
         effects = {self.family(a) for a in self.actors if not a.discarded
                    and self.mem.read(a.address + CLASS, 1) == EFFECT_CLASS} & drawing
         ambient = {self.family(a) for a in self.actors
-                   if a.handler == KUJARA_PLATFORM_GHOST and a.polys and not a.discarded}
+                   if a.handler == KUJARA_PLATFORM_GHOST and a.polys and not a.discarded
+                   and not self.purified}
         # A drawer that reads src_SpriteAnimationFrame already has its exact
         # UV cycle in Actor.uv_frames. Recording that family as a geometry
         # flipbook samples frame counter 0 on every capture and consequently
@@ -1052,18 +1061,10 @@ class World:
         # UV-driven family kept only one frozen sample. Probe their polygon
         # corners (not UVs), while static waterfalls continue to use their
         # cheap UV cycle.
-        purified_bits = self.mem.read(PURIFIED_AREAS, 2)
-        preview_flight = bool(ambient and self.area_number == 4
-                              and purified_bits & (1 << self.area_number))
-        if preview_flight:
-            self.mem.write(PURIFIED_AREAS, 2,
-                           purified_bits & ~(1 << self.area_number))
         moving_uv = self._moving(uv_driven, budget, geometry=True)
         moving = self._moving(drawing - effects - uv_driven, budget) | moving_uv
         keys = effects | moving
         if not keys:
-            if preview_flight:
-                self.mem.write(PURIFIED_AREAS, 2, purified_bits)
             return
         born = {a.address for a in self.actors}
         self._restore_poses()
@@ -1135,8 +1136,6 @@ class World:
         finally:
             self.defer_capture = defer
             self.restore(base)
-            if preview_flight:
-                self.mem.write(PURIFIED_AREAS, 2, purified_bits)
         # An effect that lives and draws all through it, and moves, is its
         # own clip - and not part of its family's.  Split a family only when
         # it has one such survivor.  Turning every persistent particle into a
@@ -1482,8 +1481,7 @@ class World:
             start = {id(a): self._position(a.address) for a in group}
             still = {id(a): 0 for a in group}
             mem.write(ZONE, 1, zone)
-            contacts = BLOCK_CONTACTS.get(self.area_number)
-            self._clear_contacts(contacts)
+            self._clear_contacts(BLOCK_CONTACTS.get(self.area_number))
             for _frame in range(ZONE_FRAMES):
                 for actor in group:
                     if actor.dead:
@@ -1492,12 +1490,7 @@ class World:
                     self._run_actor(actor, budget)
                     moved = np.abs(self._position(actor.address) - was).max()
                     still[id(actor)] = still[id(actor)] + 1 if moved <= CONVERGED else 0
-                if contacts:
-                    try:
-                        self.cpu.call(contacts[0], (), budget=budget, sp=STACK)
-                    except EmuError:
-                        pass
-                    self._clear_contacts(contacts)
+                self._resolve_contacts(budget)
                 if all(n >= 2 for n in still.values()):
                     break
             for actor in group:
@@ -1523,6 +1516,16 @@ class World:
             mem.load(actor.address, final)
         if rested:
             self._reread([actor for actor, _final in rested.values()])
+
+    def _resolve_contacts(self, budget):
+        """This frame's block-on-block contacts - see BLOCK_CONTACTS."""
+        contacts = BLOCK_CONTACTS.get(self.area_number)
+        if contacts:
+            try:
+                self.cpu.call(contacts[0], (), budget=budget, sp=STACK)
+            except EmuError:
+                pass
+            self._clear_contacts(contacts)
 
     def _clear_contacts(self, contacts):
         if contacts:

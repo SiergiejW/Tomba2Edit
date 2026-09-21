@@ -139,16 +139,16 @@ def follow_one(frames):
 
 def rip_cards(frames, vram):
     """Captured projected polygons of any flat shape - A01's steam puff is
-    a sheared quad - as [[(RGBA patch, offsets, uvs)], ...] a frame: the
-    texels under each polygon's UV box, its corners relative to the whole
-    clip's centre (world units, x right, y up) and each corner's place in
-    the patch (0..1). None if there is nothing to cut."""
+    a sheared quad - as [[(RGBA patch, centre, offsets, uvs)], ...] a frame:
+    the texels under each polygon's UV box, where it stands (its own centre,
+    capture coordinates), its corners about that centre (world units, x
+    right, y up) and each corner's place in the patch (0..1). Each card turns
+    to the camera about itself: one pivot for a whole clip moved eight
+    vents' steam about as the camera went round. None if nothing to cut."""
     if not vram or not frames:
         return None
-    points = [q for polys in frames for p in polys for q in p[0]]
-    if not points:
+    if not any(polys for polys in frames):
         return None
-    centre = np.asarray(points, dtype=np.float64).mean(axis=0)
     out = []
     for polys in frames:
         cards = []
@@ -166,10 +166,11 @@ def rip_cards(frames, vram):
             rgba = palette[indices]
             tint = np.mean(np.asarray(colours, dtype=np.float64), axis=0)
             rgba[..., :3] = np.clip(rgba[..., :3] * tint, 0, 255)
+            centre = np.asarray(corners, dtype=np.float64).mean(axis=0)
             offsets = tuple((float(x - centre[0]), float(centre[1] - y))
                             for x, y, _z in corners)
             fractions = tuple(((u - u0) / width, (v - v0) / height) for u, v in uvs)
-            cards.append((rgba.astype(np.uint8), offsets, fractions))
+            cards.append((rgba.astype(np.uint8), centre, offsets, fractions))
         out.append(cards)
     return out
 
