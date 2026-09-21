@@ -20,14 +20,15 @@ import math
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
 )
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QStyle
+from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
+                             QMessageBox, QStyle)
 
 from functions import gltf_export
 from functions.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
@@ -136,6 +137,10 @@ def clamped_background_pitch(camera_pitch, vertical_span,
     limit = max(vertical_span / 2.0 - field_of_view / 2.0, 0.0)
     return max(-limit, min(limit, float(camera_pitch)))
 
+# The load status line: held this long once done, then faded out over this.
+STATUS_HOLD_MS = 4000
+STATUS_FADE_MS = 1200
+
 CONTROLS = ("Left-click: select | click it again: the part under the "
             "cursor | F: frame it\n" + CONTROLS_HINT)
 
@@ -166,6 +171,21 @@ class LevelViewer(SMSTViewer):
             if action.text() == "Frame Model":
                 action.setText("Frame Level")
         self.controls_label.setText(CONTROLS)
+
+        # What a progressive load is doing now; fades once it is done.
+        self.status_label = QLabel(self)
+        self.status_label.setObjectName("viewerOverlay")
+        self.status_label.hide()
+        self._status_fade = QGraphicsOpacityEffect(self.status_label)
+        self.status_label.setGraphicsEffect(self._status_fade)
+        self._status_animation = QPropertyAnimation(self._status_fade, b"opacity", self)
+        self._status_animation.setDuration(STATUS_FADE_MS)
+        self._status_animation.setStartValue(1.0)
+        self._status_animation.setEndValue(0.0)
+        self._status_animation.finished.connect(self.status_label.hide)
+        self._status_hold = QTimer(self)
+        self._status_hold.setSingleShot(True)
+        self._status_hold.timeout.connect(self._status_animation.start)
 
         self.gif_action.setToolTip(
             "Record the selected row alone, framed, over one loop of whatever "
@@ -1382,6 +1402,9 @@ class LevelViewer(SMSTViewer):
             out vec4 outColor;
             uniform sampler2D atlas;
             uniform float blendWeight;
+            // 0 every texel; 1 only those without the STP bit, opaque;
+            // 2 only those with it, blended (psx_vram.STP_ALPHA).
+            uniform int stpPass;
             void main() {
                 vec4 texel = texture(atlas, uv);
                 // A sprite is a cutout, not a blend: the PSX draws these
@@ -1389,7 +1412,11 @@ class LevelViewer(SMSTViewer):
                 // hard test keeps the edges crisp and lets the depth
                 // buffer sort them against the room.
                 if (texel.a < 0.5) discard;
-                outColor = vec4(texel.rgb, blendWeight);
+                // A semi-transparent draw blends only the texels whose
+                // colour has its STP bit; the rest land opaque.
+                bool stp = texel.a < 254.5 / 255.0;
+                if ((stpPass == 1 && stp) || (stpPass == 2 && !stp)) discard;
+                outColor = vec4(texel.rgb, stpPass == 1 ? 1.0 : blendWeight);
             }
             """)
         if not self.sprite_program.link():
@@ -1407,6 +1434,11 @@ class LevelViewer(SMSTViewer):
         if atlas is None:
             return
         height, width = atlas.shape[:2]
+        limit = int(GL.glGetIntegerv(GL.GL_MAX_TEXTURE_SIZE))
+        if max(width, height) > limit:
+            print(f"Sprite atlas {width}x{height} is over the GPU's {limit}; "
+                  "sprites not drawn.", flush=True)
+            return
         self.sprite_texture = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
@@ -1433,6 +1465,21 @@ class LevelViewer(SMSTViewer):
                 continue
             placed = quad.frame_now(self._sprite_tick)
             if placed is None:
+                continue
+            if quad.cards is not None:
+                # Each polygon as the game drew it, sheared or not, still
+                # turned to the camera: offsets in its plane, not the world's.
+                at = (instances[quad.index] if 0 <= quad.index < len(instances)
+                      else quad)
+                x, y, z = at.x / UNIT_SCALE, at.y / UNIT_SCALE, at.z / UNIT_SCALE
+                for card, offsets, fractions in quad.cards[quad.step_now(self._sprite_tick)]:
+                    corners = [(ox / UNIT_SCALE, oy / UNIT_SCALE,
+                                card.u0 + fu * (card.u1 - card.u0),
+                                card.v0 + fv * (card.v1 - card.v0))
+                               for (ox, oy), (fu, fv) in zip(offsets, fractions)]
+                    # The PSX's v0 v1 on top, v2 v3 below.
+                    for n in ((0, 1, 2, 1, 3, 2) if len(corners) == 4 else (0, 1, 2)):
+                        by_blend[quad.blend].append((x, y, z, *corners[n]))
                 continue
             if quad.corners is not None:
                 by_blend[quad.blend].extend(self._stretched(quad.corners, placed))
@@ -1558,16 +1605,18 @@ class LevelViewer(SMSTViewer):
         self.sprite_vao.bind()
         was_blend = GL.glIsEnabled(GL.GL_BLEND)
         for blend, first, count in self._sprite_ranges:
+            GL.glDisable(GL.GL_BLEND)
+            GL.glDepthMask(GL.GL_TRUE)
+            self.sprite_program.setUniformValue("blendWeight", 1.0)
+            self.sprite_program.setUniformValue("stpPass", 0 if blend is None else 1)
+            GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
             if blend is None:
-                GL.glDisable(GL.GL_BLEND)
-                GL.glDepthMask(GL.GL_TRUE)
-                self.sprite_program.setUniformValue("blendWeight", 1.0)
-            else:
-                GL.glEnable(GL.GL_BLEND)
-                GL.glDepthMask(GL.GL_FALSE)
-                self._set_blend(blend)
-                self.sprite_program.setUniformValue(
-                    "blendWeight", float(WEIGHTS[blend]))
+                continue
+            GL.glEnable(GL.GL_BLEND)
+            GL.glDepthMask(GL.GL_FALSE)
+            self._set_blend(blend)
+            self.sprite_program.setUniformValue("blendWeight", float(WEIGHTS[blend]))
+            self.sprite_program.setUniformValue("stpPass", 2)
             GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
         GL.glDepthMask(GL.GL_TRUE)
         GL.glBlendEquation(GL.GL_FUNC_ADD)
@@ -1849,6 +1898,25 @@ class LevelViewer(SMSTViewer):
             GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glLineWidth(1.0)
         self.shader_program.release()
+
+    def show_status(self, text, done=False):
+        """One line on what is loading, top left; `done` lets it fade."""
+        self._status_hold.stop()
+        self._status_animation.stop()
+        self._status_fade.setOpacity(1.0)
+        self.status_label.setText(text)
+        self.status_label.show()
+        self.status_label.raise_()
+        self._place_labels()
+        if done:
+            self._status_hold.start(STATUS_HOLD_MS)
+
+    def _place_labels(self):
+        super()._place_labels()
+        label = getattr(self, "status_label", None)
+        if label is not None:
+            label.adjustSize()
+            label.move(6, self.toolbar.geometry().bottom() + 6)
 
     def _update_stats_label(self):
         """The SMST viewer counts parts; a level counts what stands in

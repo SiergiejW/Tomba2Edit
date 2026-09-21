@@ -92,7 +92,7 @@ class SpriteBank:
 
     def __init__(self, dat_path, dat_start, offset, size, vram):
         self.sprt = load_sprt(dat_path, dat_start, offset, size)
-        self.textures = sprt_render.VRAMTextures(vram) if vram else None
+        self.textures = sprt_render.VRAMTextures(vram, stp=True) if vram else None
         self._images = {}
 
     def count(self):
@@ -161,7 +161,9 @@ def build_atlas(banks, wanted, extra=()):
         return None, {}
 
     width = max(64, max(a.shape[1] for _k, a, _x, _y in cut) + PAD * 2)
-    width = min(1024, max(width, int(np.sqrt(
+    # Near square: a captured effect's 64 frames stacked in a narrow atlas
+    # ran past what a GPU takes as one texture.
+    width = min(4096, max(width, int(np.sqrt(
         sum((a.shape[1] + PAD) * (a.shape[0] + PAD)
             for _k, a, _x, _y in cut)) * 1.4)))
     rows, row, row_width, row_height = [], [], 0, 0
@@ -220,21 +222,30 @@ class Billboard:
     # The toolbar's Pickups switch must not hide fire, glare or other sprite
     # actors merely because they share this renderer.
     pickup: bool = False
+    # Per step, the polygons a captured effect drew that are no rectangle -
+    # ((Placed, 4 or 3 corner offsets (world units, x right, y up), each
+    # corner's place in its picture), ...) - or None for one picture a step.
+    cards: tuple = None
 
-    def frame_now(self, tick):
-        """Which frame is showing at `tick`, or None if it has none."""
+    def step_now(self, tick):
+        """Which step is showing at `tick`, or None if it has none."""
         if not self.steps:
             return None
         total = sum(max(t, 1) for _p, t in self.steps)
         if self.loops:
             tick %= max(total, 1)
         elif tick >= total:
-            return self.steps[-1][0]
-        for placed, ticks in self.steps:
+            return len(self.steps) - 1
+        for number, (_placed, ticks) in enumerate(self.steps):
             tick -= max(ticks, 1)
             if tick < 0:
-                return placed
-        return self.steps[-1][0]
+                return number
+        return len(self.steps) - 1
+
+    def frame_now(self, tick):
+        """Which frame is showing at `tick`, or None if it has none."""
+        step = self.step_now(tick)
+        return None if step is None else self.steps[step][0]
 
 
 def billboards(instances, placed):

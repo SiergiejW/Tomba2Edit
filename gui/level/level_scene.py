@@ -693,6 +693,75 @@ def camera_facing_frames(frames, tolerance=2.0):
     return True
 
 
+def _box(polys):
+    points = np.asarray([q for poly in polys for q in poly[0]], dtype=np.float64)
+    return (*points[:, :2].min(axis=0), *points[:, :2].max(axis=0))
+
+
+def _near_groups(boxes, gap):
+    """Indices of `boxes` (x0, y0, x1, y1) linked by coming within `gap`."""
+    boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+    parent = list(range(len(boxes)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(boxes)):
+        near = np.nonzero((boxes[i + 1:, 0] <= boxes[i, 2] + gap)
+                          & (boxes[i + 1:, 2] >= boxes[i, 0] - gap)
+                          & (boxes[i + 1:, 1] <= boxes[i, 3] + gap)
+                          & (boxes[i + 1:, 3] >= boxes[i, 1] - gap))[0] + i + 1
+        for j in near:
+            a, b = root(i), root(int(j))
+            if a != b:
+                parent[b] = a
+    groups = {}
+    for i in range(len(boxes)):
+        groups.setdefault(root(i), []).append(i)
+    return sorted(groups.values())
+
+
+def family_groups(polys, families, clips, gap=1024.0):
+    """[(still polygons, [family, ...])] - a bucket's still polygons and whole
+    clip families, grouped by where they draw. One group if they are close."""
+    units = [("poly", poly) for poly in polys] + [
+        ("family", family) for family in families
+        if any(frame for frame in clips[family])]
+    if len(units) < 2:
+        return [(polys, families)]
+    boxes = [_box([what]) if kind == "poly"
+             else _box([p for frame in clips[what] for p in frame])
+             for kind, what in units]
+    groups = _near_groups(boxes, gap)
+    if len(groups) < 2:
+        return [(polys, families)]
+    return [([units[i][1] for i in group if units[i][0] == "poly"],
+             [units[i][1] for i in group if units[i][0] == "family"])
+            for group in groups]
+
+
+def spatial_parts(frames, gap=1024.0):
+    """`frames` split into groups whose polygons never come within `gap`
+    of each other on screen, over the whole clip; [frames] if one group."""
+    boxes, owners = [], []
+    for f, frame in enumerate(frames):
+        for p, poly in enumerate(frame):
+            boxes.append(_box([poly]))
+            owners.append((f, p))
+    if len(boxes) < 2:
+        return [frames]
+    groups = _near_groups(boxes, gap)
+    if len(groups) < 2:
+        return [frames]
+    sets = [{owners[i] for i in members} for members in groups]
+    return [[[poly for p, poly in enumerate(frame) if (f, p) in members]
+             for f, frame in enumerate(frames)]
+            for members in sets]
+
+
 def captured_blend(frames):
     """The PSX blend mode used by a captured sprite, or None."""
     modes = [((page >> 5) & 3) for frame in frames
@@ -843,6 +912,10 @@ class LevelScene:
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there."""
+        if chunk_index in PURIFIED_CHUNKS:
+            # Only reachable once the cursed area is finished: New Game's
+            # flags would stand up its cursed-only scenes (A01's hammer man).
+            progress = EVENTS_DONE
         self.__init__()
         self.dat_path = dat_path
         self.chunk_index = chunk_index
@@ -1165,7 +1238,8 @@ class LevelScene:
             if reward is not None and {f.frame for f in reward.frames} & {
                     f.frame for f in frames}:
                 return reward
-            clut = pickup_art.OWN_PALETTE
+            # The palette its code put over the pieces' own (+0x5C).
+            clut = getattr(actor, "sprite_clut", 0) or pickup_art.OWN_PALETTE
         elif actor.bank == AREA_SPRITES:
             clut = pickup_art.AREA_BANK
         else:
@@ -1596,8 +1670,14 @@ class LevelScene:
                 # The shared workers' spawns are Tomba and the persistent
                 # pickups, which the scene already draws from their tables.
                 # A chest carrying its table record is drawn by its pickup row.
+                # What a discarded actor let go stands on its own: a purified
+                # ranch's ice cube is gone, the item it held is not.
+                parent = (world.by_address.get(actor.spawner)
+                          if actor.spawner is not None else None)
                 if (not (actor.dead or actor.discarded)
-                        and actor.record is None and actor.spawner is None
+                        and actor.record is None
+                        and (actor.spawner is None
+                             or (parent is not None and parent.discarded))
                         and actor.pickup is None
                         and actor.worker not in actor_sim.SHARED_WORKERS):
                     # A child built of other files, standing apart, is a
@@ -1773,11 +1853,29 @@ class LevelScene:
                 # plane, or turned by the record.
                 actor = chests.get(id(record))
                 if actor is not None and actor.parts and not sources:
-                    assembly = self._posed([actor], actor,
-                                           np.array(record.position, dtype=np.float64),
-                                           0, record.name(art))
+                    # Its parts already stand where its code put them and turned
+                    # the way it turned them (+0x56): the pose is anchored
+                    # there, so the row's own angle adds nothing until edited.
+                    # Anchored at the record with yaw 0 it was turned twice -
+                    # about a point it may have slid 3000 units away from.
+                    yaw = actor_sim.s16(self.world.mem.read(
+                        actor.address + actor_sim.TURN + 2, 2))
+                    turned = round((yaw * 360.0 / 4096.0) % 360.0)
+                    anchor = (actor.position if actor.position is not None
+                              else np.array(record.position, dtype=np.float64))
+                    # The turn its parts were read with: sometimes already
+                    # the actor's, sometimes not yet (AREA_0A #46's are
+                    # square while +0x56 says 38) - the pose adds the rest.
+                    m = actor.parts[0].matrix
+                    baked = round(math.degrees(math.atan2(m[0][2], m[0][0])) % 360.0)
+                    assembly = self._posed([actor], actor, anchor,
+                                           actor_assembly.degrees_to_units(baked),
+                                           record.name(art))
                     if assembly is not None and not assembly.sources:
                         assembly = None
+                    if assembly is not None:
+                        heading = float(turned)
+                        x, y, z = view_point(np.asarray(anchor, dtype=np.float64))
                 if assembly is not None:
                     sources = assembly.sources
                 else:
@@ -1979,85 +2077,96 @@ class LevelScene:
             for key, polys in drawn.items():
                 owner, scene, alone = key
                 families = sorted(clipped.get(key, ()), key=repr)
-                frames = [polys]
-                if families:
-                    period = max(len(clips[family]) for family in families)
-                    frames = [
-                        list(polys) + [polygon for family in families
-                                       for polygon in clips[family][
-                                           frame % len(clips[family])]]
-                        for frame in range(period)]
-                if alone is not None:
-                    frames, _name = solo[key]
-                    families = [alone]
                 actor = (world.by_address.get(alone)
                          if world is not None and alone is not None else None)
                 snow_firefly = (actor is not None
                                 and isinstance(actor.family_key, tuple)
                                 and actor.family_key[:1] == ("snow-firefly",))
-                as_billboard = snow_firefly or camera_facing_frames(frames)
-                if as_billboard:
-                    points = [view_point(np.asarray(point, dtype=np.float64))
-                              for frame_polys in frames for poly in frame_polys
-                              for point in poly[0]]
-                    if not points:
-                        continue
-                    cx, cy, cz = np.asarray(points, dtype=np.float64).mean(axis=0)
-                    index = len(instances)
-                    label = (f"the area: {self._actor_name(actor)}" if actor is not None
-                             else "the area: projected effect")
-                    instances.append(Instance(
-                        index=index, role="spawned", label=label,
-                        x=float(cx), y=float(cy), z=float(cz), name=label,
-                        note=(f"{len(frames)} game-code frames; rendered as a "
-                              "camera-facing billboard."
-                              + (" Preview origin is the game's stored "
-                                 "free-flight/reward position, not the "
-                                 "still-unresolved terrain trigger point."
-                                 if snow_firefly else ""))))
-                    self.captured_billboards[index] = tuple(frames)
-                    blend = captured_blend(frames)
-                    if blend is not None:
-                        self.captured_billboard_blends[index] = blend
-                    continue
-                models = [drawn_model(f, view_point, stepped.get(key)) for f in frames]
-                if not any(models):
-                    continue
-                head = (instances[owner].label if owner is not None
-                        else interior_name(scene) if scene is not None else "the area")
+                # Unattributed projected packets from unrelated emitters -
+                # A01's pipe bubbles and a vent 8000 units away - share one
+                # bucket; each spatial group is its own row, looping on its
+                # own clips' period rather than the longest in the bucket.
+                split = alone is None and owner is None
                 if alone is not None:
-                    head = f"{head}: {solo[key][1]}"
-                    seen_heads[head] = seen_heads.get(head, 0) + 1
-                    head = f"{head} {seen_heads[head]}"
-                every = np.concatenate([np.asarray(m["vertices"], dtype=np.float64)
-                                        for m in models if m])
-                cx, cy, cz = every.mean(axis=0)
-                first = len(instances)
-                for frame, model in enumerate(models):
-                    sources = ()
-                    if model is not None:
-                        self.models[DRAWN_ID + number] = model
-                        self.drawn_polys[DRAWN_ID + number] = tuple(frames[frame])
-                        sources = ((DRAWN_ID + number, 0),)
-                        number += 1
-                    note = (f"{len(polys)} polygon(s) its draw routine put out "
-                            f"(actor_sim.capture_lines), on the page their packets name"
-                            + (", UVs stepped by the frame counter"
-                               if model and model["uv_frames"] else ""))
+                    parts = [(solo[key][0], [alone])]
+                else:
+                    parts = []
+                    for static, group in (family_groups(polys, families, clips)
+                                          if split else [(polys, families)]):
+                        frames = [list(static)]
+                        if group:
+                            period = max(len(clips[family]) for family in group)
+                            frames = [
+                                list(static) + [polygon for family in group
+                                                for polygon in clips[family][
+                                                    frame % len(clips[family])]]
+                                for frame in range(period)]
+                        parts += [(part, group) for part in
+                                  (spatial_parts(frames) if split else [frames])]
+                for frames, families in parts:
+                    as_billboard = snow_firefly or camera_facing_frames(frames)
+                    if as_billboard:
+                        points = [view_point(np.asarray(point, dtype=np.float64))
+                                  for frame_polys in frames for poly in frame_polys
+                                  for point in poly[0]]
+                        if not points:
+                            continue
+                        cx, cy, cz = np.asarray(points, dtype=np.float64).mean(axis=0)
+                        index = len(instances)
+                        label = (f"the area: {self._actor_name(actor)}" if actor is not None
+                                 else "the area: projected effect")
+                        instances.append(Instance(
+                            index=index, role="spawned", label=label,
+                            x=float(cx), y=float(cy), z=float(cz), name=label,
+                            note=(f"{len(frames)} game-code frames; rendered as a "
+                                  "camera-facing billboard."
+                                  + (" Preview origin is the game's stored "
+                                     "free-flight/reward position, not the "
+                                     "still-unresolved terrain trigger point."
+                                     if snow_firefly else ""))))
+                        self.captured_billboards[index] = tuple(frames)
+                        blend = captured_blend(frames)
+                        if blend is not None:
+                            self.captured_billboard_blends[index] = blend
+                        continue
+                    models = [drawn_model(f, view_point, stepped.get(key)) for f in frames]
+                    if not any(models):
+                        continue
+                    head = (instances[owner].label if owner is not None
+                            else interior_name(scene) if scene is not None else "the area")
+                    if alone is not None:
+                        head = f"{head}: {solo[key][1]}"
+                        seen_heads[head] = seen_heads.get(head, 0) + 1
+                        head = f"{head} {seen_heads[head]}"
+                    every = np.concatenate([np.asarray(m["vertices"], dtype=np.float64)
+                                            for m in models if m])
+                    cx, cy, cz = every.mean(axis=0)
+                    first = len(instances)
+                    for frame, model in enumerate(models):
+                        sources = ()
+                        if model is not None:
+                            self.models[DRAWN_ID + number] = model
+                            self.drawn_polys[DRAWN_ID + number] = tuple(frames[frame])
+                            sources = ((DRAWN_ID + number, 0),)
+                            number += 1
+                        note = (f"{len(polys)} polygon(s) its draw routine put out "
+                                f"(actor_sim.capture_lines), on the page their packets name"
+                                + (", UVs stepped by the frame counter"
+                                   if model and model["uv_frames"] else ""))
+                        if families:
+                            note = (f"a moving effect: {len(frames)} frames of what its code "
+                                    f"draws, run on as the game runs it (actor_sim.record_clips)"
+                                    f" and played back at {CLIP_HZ} a second")
+                        instances.append(Instance(
+                            index=len(instances), role="spawned",
+                            label=f"{head}: drawn by its code"
+                                  + (f" (frame {frame})" if frame else ""),
+                            sources=sources, authored=True, scene=scene,
+                            x=float(cx), y=float(cy), z=float(cz),
+                            name=f"{head}: drawn by its code", note=note,
+                            flip=(first, frame) if frame else None))
                     if families:
-                        note = (f"a moving effect: {len(frames)} frames of what its code "
-                                f"draws, run on as the game runs it (actor_sim.record_clips)"
-                                f" and played back at {CLIP_HZ} a second")
-                    instances.append(Instance(
-                        index=len(instances), role="spawned",
-                        label=f"{head}: drawn by its code"
-                              + (f" (frame {frame})" if frame else ""),
-                        sources=sources, authored=True, scene=scene,
-                        x=float(cx), y=float(cy), z=float(cz),
-                        name=f"{head}: drawn by its code", note=note,
-                        flip=(first, frame) if frame else None))
-                if families:
-                    instances[first].flip_frames = tuple(range(first, len(instances)))
+                        instances[first].flip_frames = tuple(range(first, len(instances)))
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():

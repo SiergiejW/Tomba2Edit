@@ -12,6 +12,30 @@ import sys
 import numpy as np
 
 
+class _StatusTee:
+    """stderr for diagnostics; each stage line (LevelScene._log_actors) also
+    goes down the protocol as `status <line>` for the viewport."""
+
+    def __init__(self, log, protocol):
+        self.log, self.protocol = log, protocol
+
+    def write(self, text):
+        self.log.write(text)
+        for line in text.splitlines():
+            if line.startswith("AREA_"):
+                # Drop the class tally: "... - 9 actor(s): 2x f_..., ..."
+                head, _sep, _classes = line.partition(" actor(s)")
+                status(self.protocol, head + (" actor(s)" if _sep else ""))
+        return len(text)
+
+    def flush(self):
+        self.log.flush()
+
+
+def status(protocol, text):
+    print("status " + " ".join(text.split()), file=protocol, flush=True)
+
+
 def load_vram(dat, idx, chunk):
     from gui.img.img_viewer import chunk_bounds
     from gui.vram_viewer import decode_vram_bytes
@@ -76,16 +100,22 @@ def sprites(scene, vram):
         sources["area"] = (scene.dat_start, own)
     banks = {name: p.SpriteBank(scene.dat_path, where[0], *where[1], vram)
              for name, where in sources.items() if where is not None}
-    extra, steps, units = [], {}, {}
+    extra, steps, units, cards = [], {}, {}, {}
     for index, polygons in scene.captured_billboards.items():
         ripped = sprite_rip.rip_polygons(polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
         if not ripped:
-            # A pipe's bubbles share their captured packet with non-card
-            # primitives. Keep the complete drawable bubble plume instead
-            # of choosing an unrelated single particle from that packet.
-            ripped = sprite_rip.rip_drawable_polygons(
-                polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
-        if not ripped:
+            # Not all rectangles - A01's steam puff is sheared: every
+            # polygon its own picture, drawn at its own corners.
+            cut = sprite_rip.rip_cards(polygons, vram)
+            if cut:
+                cards[index] = []
+                for n, frame in enumerate(cut):
+                    keys = []
+                    for k, (pixels, offsets, fractions) in enumerate(frame):
+                        key = ("card", index, n, k)
+                        extra.append((key, pixels, 0.0, 0.0))
+                        keys.append((key, offsets, fractions))
+                    cards[index].append(keys)
             continue
         frames, units[index] = ripped
         steps[index] = []
@@ -102,6 +132,23 @@ def sprites(scene, vram):
             quads.append(p.Billboard(index=index, x=instance.x, y=instance.y, z=instance.z,
                 steps=frames, loops=True, units=float(units[index]),
                 blend=scene.captured_billboard_blends.get(index)))
+    for index, frames in cards.items():
+        instance = scene.instances[index]
+        made = [tuple((placed[key], offsets, fractions)
+                      for key, offsets, fractions in keys if key in placed)
+                for keys in frames]
+        if not any(made):
+            continue
+        # A step's own picture is only the box round its cards - what a
+        # click is tested against - one world unit a texel.
+        every = [o for frame in made for _p, offsets, _f in frame for o in offsets]
+        xs, ys = [o[0] for o in every], [o[1] for o in every]
+        box = p.Placed(u0=0.0, v0=0.0, u1=0.0, v1=0.0,
+                       width=max(xs) - min(xs), height=max(ys) - min(ys),
+                       origin_x=-min(xs), origin_y=max(ys))
+        quads.append(p.Billboard(index=index, x=instance.x, y=instance.y, z=instance.z,
+            steps=tuple((box, 1) for _frame in made), loops=True, units=1.0,
+            blend=scene.captured_billboard_blends.get(index), cards=tuple(made)))
     return atlas, quads
 
 
@@ -136,6 +183,7 @@ def main(argv):
 
     def publish(scene, title, complete=False):
         nonlocal sequence, phases
+        status(protocol, f"Preparing the view: {title}")
         prepared = buffers(scene, vram)
         from gui.clut_animation import prepare_animation_data
         prepared = (*prepared, prepare_animation_data(vram, scene.build(), args[3]))
@@ -166,7 +214,7 @@ def main(argv):
         print(os.path.basename(path), file=protocol, flush=True)
 
     # stdout is the snapshot protocol; normal diagnostics stay on stderr.
-    with contextlib.redirect_stdout(sys.stderr):
+    with contextlib.redirect_stdout(_StatusTee(sys.stderr, protocol)):
         scene = LevelScene().load(*args, publish=publish)
         publish(scene, "Ready", complete=True)
     return 0

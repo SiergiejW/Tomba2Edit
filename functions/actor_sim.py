@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from functions import psx_cpu
-from functions.psx_cpu import CPU, EmuError, s16, s32
+from functions.psx_cpu import CPU, EmuError, s16, s32  # noqa: F401 - s16 used by level_scene
 
 EXE_HEADER = 0x800
 OVERLAY_BASE = 0x80108F9C
@@ -266,6 +266,9 @@ POSITION, SEQUENCE, BANK, TURN = 0x2C, 0x38, 0x3C, 0x54
 CLASS = 0x0C                        # allocation class; 6 is a transient effect
 EFFECT_CLASS = 6
 RENDER_KIND, QUAD_KIND, QUAD_CORNERS = 0x0B, 0x14, 0x60
+# f_DrawActorSpriteParts puts this over every piece's CLUT when non-zero - a
+# released ground pickup's g_GroundPickupRewardDefinitions palette.
+SPRITE_CLUT = 0x5C
 PARTS = 0xC0
 DESTROY_STATE = 3
 RENDER_MODE, RENDER_MODE_MASK, SEMI_SWITCH = 0x0D, 0x0B, 0x1B
@@ -308,6 +311,19 @@ SETTLE_FRAMES = 2
 # step is this short, and is read there.
 CONVERGE_FRAMES = 48
 CONVERGED = 0.5
+# src_sp_ApproxLocation: the zone Tomba is in. Some handlers run their
+# physics only while it is theirs (+0x2A) - A05's blocks, FUN_A05__8012b118 -
+# so a purified ranch's rock stays in the air until Tomba walks up. Each
+# zone's actors are run with Tomba in it until they rest (_settle_zones).
+ZONE, ZONE_FIELD = 0x1F800207, 0x2A
+ZONE_FRAMES = 96
+# Blocks queue themselves on a per-frame list (FUN_A05__8010e5c4) that the
+# area's collision step resolves block on block and empties
+# (FUN_A05__8010e4b0): area -> (that pass, the list's count; its cursor
+# follows). Without it a falling rock goes through the one below.
+BLOCK_CONTACTS = {5: (0x8010D0C4, 0x80140E38)}
+# How far a zone test is looked for: the handler, and what it calls.
+ZONE_SCAN = 512
 # Frames an actor with parts no run has drawn runs on while its state still
 # moves: a purified area's ice cube (FUN_A05__8012a0c8) goes to its release
 # state and is destroyed two frames on.
@@ -355,6 +371,7 @@ class Actor:
     bank: int = None                # file id of its sprite bank
     sprite_bank: int = None         # the bank its code chose, sequence or not
     sprite_semi: bool = False       # f_DrawActorSpriteParts mode 1 or 3
+    sprite_clut: int = 0            # +0x5C, the CLUT it swaps in; 0 none
     frames: tuple = ()              # ((frame, ticks), ...)
     loops: bool = False
     reward: int = 0
@@ -887,6 +904,7 @@ class World:
         chosen = [a for a in self.actors if not a.dead and (only is None or only(a))]
         self._transit(chosen, budget)
         self._converge(chosen, paths, budget)
+        self._settle_zones(chosen, budget)
         self.settle_captures()
         # Model-less effects may initialise with zero-size geometry. Their
         # part score never improves, so _snapshot's first-pose rule would
@@ -1245,6 +1263,16 @@ class World:
 
         incomplete = {address for address in active
                       if len(set(pose_signatures.get(address, ()))) > 1}
+        # No exact period - a random wait between its moves (A01's hammer
+        # man, FUN_A01__80123078). Loop from its first pose to where it first
+        # comes back to it: seamless, if not every variation it has.
+        for address in tuple(incomplete):
+            poses = pose_signatures[address]
+            back = next((p for p in range(2, len(poses))
+                         if poses[p] == poses[0] and len(set(poses[:p])) > 1), None)
+            if back is not None:
+                loops[address] = tuple(recorded[address][:back])
+                incomplete.discard(address)
         self.incomplete_pose_loops = tuple(sorted(
             set(self.incomplete_pose_loops) | incomplete))
         for address, clip in loops.items():
@@ -1398,6 +1426,109 @@ class World:
         if arrived:
             self._reread(arrived)
 
+    def _zoned(self, handler):
+        """Whether a handler, or a routine it calls, reads Tomba's zone."""
+        cache = self.__dict__.setdefault("_zone_cache", {})
+        if handler not in cache:
+            cache[handler] = False
+            calls = [handler]
+            calls += [t for t in self._calls(handler) if t not in calls]
+            cache[handler] = any(self._reads_zone(at) for at in calls)
+        return cache[handler]
+
+    def _calls(self, address):
+        """jal targets in the routine at `address`, up to its jr ra."""
+        out = []
+        for k in range(ZONE_SCAN):
+            w = self.mem.read(address + k * 4, 4)
+            if w >> 26 == 3:
+                out.append(0x80000000 | (w & 0x03FFFFFF) << 2)
+            if w == JR_RA and k > 2:
+                break
+        return out
+
+    def _reads_zone(self, address):
+        high = {}
+        for k in range(ZONE_SCAN):
+            w = self.mem.read(address + k * 4, 4)
+            op, rs, rt, imm = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
+            if op == LUI:
+                high[rt] = imm << 16
+            elif op in (0x20, 0x24) and high.get(rs) == ZONE & 0xFFFF0000                     and imm == ZONE & 0xFFFF:
+                return True
+            if w == JR_RA and k > 2:
+                return False
+        return False
+
+    def _settle_zones(self, actors, budget):
+        """Zone-gated actors run on with Tomba in their zone until they rest,
+        and read there. Only what the rested ones became is kept: RAM, the
+        heap, the actor list and every other actor are put back as they
+        were (A08's zoned actors spawned lines and moved an effect)."""
+        import copy
+        read, mem = self.mem.read, self.mem
+        zoned = [a for a in actors if a.parts and not (a.dead or a.discarded or a.player)
+                 and self._zoned(a.handler)]
+        if not zoned:
+            return
+        ram, scratch, heap = bytes(mem.ram), bytes(mem.scratch), self.heap
+        count, pool_used = len(self.actors), collections.Counter(self.pool_used)
+        trail_slots = dict(self.trail_slots)
+        states = {id(a): copy.copy(a.__dict__) for a in self.actors}
+        size = ACTOR_SIZE + MAX_PARTS * 4
+        rested = {}
+        for zone in sorted({read(a.address + ZONE_FIELD, 1) for a in zoned}):
+            group = [a for a in zoned if read(a.address + ZONE_FIELD, 1) == zone]
+            start = {id(a): self._position(a.address) for a in group}
+            still = {id(a): 0 for a in group}
+            mem.write(ZONE, 1, zone)
+            contacts = BLOCK_CONTACTS.get(self.area_number)
+            self._clear_contacts(contacts)
+            for _frame in range(ZONE_FRAMES):
+                for actor in group:
+                    if actor.dead:
+                        continue
+                    was = self._position(actor.address)
+                    self._run_actor(actor, budget)
+                    moved = np.abs(self._position(actor.address) - was).max()
+                    still[id(actor)] = still[id(actor)] + 1 if moved <= CONVERGED else 0
+                if contacts:
+                    try:
+                        self.cpu.call(contacts[0], (), budget=budget, sp=STACK)
+                    except EmuError:
+                        pass
+                    self._clear_contacts(contacts)
+                if all(n >= 2 for n in still.values()):
+                    break
+            for actor in group:
+                if actor.dead or still[id(actor)] < 2:
+                    continue
+                if np.abs(self._position(actor.address) - (
+                        start[id(actor)] if actor.position is None
+                        else actor.position)).max() > CONVERGED:
+                    # Moved since its reading - here, or falling through the
+                    # run after the first frame was read (a released rock).
+                    rested[id(actor)] = (actor, mem.bytes(actor.address, size))
+        mem.ram[:] = ram
+        mem.scratch[:] = scratch
+        self.heap, self.pool_used, self.trail_slots = heap, pool_used, trail_slots
+        for actor in self.actors[count:]:
+            self.by_address.pop(actor.address, None)
+        del self.actors[count:]
+        for actor in self.actors:
+            actor.__dict__.update(states[id(actor)])
+            self.by_address[actor.address] = actor
+        self._map_cache = None
+        for actor, final in rested.values():
+            mem.load(actor.address, final)
+        if rested:
+            self._reread([actor for actor, _final in rested.values()])
+
+    def _clear_contacts(self, contacts):
+        if contacts:
+            self.mem.write(contacts[1], 2, 0)
+            self.mem.write(contacts[1] + 4, 4, contacts[1])
+
     def _reread(self, actors):
         """A fresh reading of these actors, and their lines."""
         models, banks = self._maps()
@@ -1450,8 +1581,14 @@ class World:
                     self.pool_used[actor.pool] -= 1
                 actor.dead = True
             else:
-                actor.discarded |= not actor.shown and not self.finished
-                mem.load(actor.address, before)
+                # A purified area always runs finished (LevelScene.load), and
+                # its ice cubes destroy themselves there unseen - gone.
+                actor.discarded |= not actor.shown and (
+                    not self.finished or self.purified)
+                # Put back so a culled actor keeps standing - but one never
+                # drawn dies: a purified ranch's cube must not hold rocks up.
+                if not actor.discarded:
+                    mem.load(actor.address, before)
         actor.changed = (mem.bytes(actor.address + LIFECYCLE, 2)
                          != before[LIFECYCLE:LIFECYCLE + 2])
 
@@ -2222,6 +2359,7 @@ class World:
     def _sprite(self, actor, banks):
         read = self.mem.read
         actor.sprite_semi = read(actor.address + RENDER_MODE, 1) in (1, 3)
+        actor.sprite_clut = read(actor.address + SPRITE_CLUT, 2)
         bank = banks.get(read(actor.address + BANK, 4))
         step = read(actor.address + SEQUENCE, 4)
         if bank is not None:
@@ -2380,8 +2518,25 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         gated = world.spawn_area_gated(spawner, frames)
         say("gated", gated)
     world.harvest()
+    if spawner:
+        # Before the outdoor clips, which are most of a load: the rooms
+        # run from their own snapshot, so the order changes nothing else.
+        if publish:
+            publish(world, "Actors placed; loading interiors")
+        say("running every room")
+        # The firefly preview's cleared cutscene byte is not the rooms'.
+        previewing = world._firefly_progress
+        if previewing is not None:
+            world.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, previewing)
+        world.run_rooms(spawner, area_number, frames)
+        if previewing is not None:
+            world.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, 0)
+        for scene, actors in sorted(world.rooms.items()):
+            say(f"room {scene}", actors)
     if publish:
-        publish(world, "Actors placed; recording animations")
+        publish(world, "Interiors ready; recording animations" if spawner
+                else "Actors placed; recording animations")
+    say("recording animations")
     world.record_pose_clips()
     if world.incomplete_pose_loops:
         say(f"{len(world.incomplete_pose_loops)} moving pose actor(s) did not "
@@ -2389,18 +2544,11 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.record_clips()
     world.restore_firefly_progress()
     world.restore_archived_effects()
-    if publish:
-        publish(world, "Outdoor animations ready; loading interiors")
     if world.clips:
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
             f"{CLIP_FRAMES} frame(s) each")
-    if spawner:
-        say("running every room")
-        world.run_rooms(spawner, area_number, frames)
-        for scene, actors in sorted(world.rooms.items()):
-            say(f"room {scene}", actors)
-        if publish:
-            publish(world, "Interiors ready; loading event actors")
+    if publish:
+        publish(world, "Animations ready; loading event actors")
     say("looking for event actors")
     # An area with no table (the intro) is built round the origin by code.
     with open(overlay_path, "rb") as f:
@@ -2418,8 +2566,19 @@ def _looped(clip):
         return None
     period = next((p for p in range(2, len(names) // 2 + 1)
                    if all(names[k] == names[k % p] for k in range(len(names)))),
-                  len(names))
-    return list(clip[:period])
+                  None)
+    if period is not None:
+        return list(clip[:period])
+    # A start-up, then a cycle: A01's steam vents grow for a few frames and
+    # then hold (FUN_A01__80132fd0 phase 2). Loop the cycle only, once it has
+    # repeated three times - the start-up never plays again in the game.
+    for start in range(1, len(names) // 2):
+        tail = names[start:]
+        for p in range(2, len(tail) // 3 + 1):
+            if (len(set(tail[:p])) > 1
+                    and all(tail[k] == tail[k % p] for k in range(len(tail)))):
+                return list(clip[start:start + p])
+    return list(clip)
 
 
 def installed_handlers(overlay):

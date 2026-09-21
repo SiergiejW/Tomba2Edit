@@ -56,9 +56,10 @@ class VRAMTextures:
     for so far kept around - a sprite bank reuses a handful of CLUTs
     across hundreds of pieces."""
 
-    def __init__(self, vram_bytes):
+    def __init__(self, vram_bytes, stp=False):
         self.vram = check_vram(vram_bytes)
         self._palettes = {}
+        self.stp = stp          # see psx_vram.STP_ALPHA
 
     def palette(self, piece):
         """This piece's CLUT as RGBA tuples. A colour of 0x0000 is the
@@ -72,7 +73,7 @@ class VRAMTextures:
             return cached
 
         colors = read_palette(self.vram, piece.clut_address,
-                              256 if piece.is_8bpp else 16)
+                              256 if piece.is_8bpp else 16, stp=self.stp)
         self._palettes[key] = colors
         return colors
 

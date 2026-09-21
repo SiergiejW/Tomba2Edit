@@ -65,7 +65,8 @@ def _patch(vram, poly):
         return None
     indices, count = _texels(vram, page, min(us), min(vs), width, height)
     palette = np.array(psx_vram.read_palette(vram, psx_vram.clut_address(clut), count,
-                                             transparent_zero=True), dtype=np.float64)
+                                             transparent_zero=True, stp=True),
+                       dtype=np.float64)
     rgba = palette[indices]
     tint = np.mean(np.asarray(colours, dtype=np.float64), axis=0)
     rgba[..., :3] = np.clip(rgba[..., :3] * tint, 0, 255)
@@ -136,20 +137,41 @@ def follow_one(frames):
     return track if len(track) > 1 else None
 
 
-def rip_drawable_polygons(frames, vram, ms_per_frame, **kwargs):
-    """Rip the drawable cards from a mixed projected-particle packet.
-
-    A pipe emitter puts both its bubble cards and bookkeeping/non-card
-    primitives into one capture.  The previous all-or-nothing extractor
-    discarded the bubble cards because of those unrelated packets.  Preserve
-    every real card and its layout; this is deliberately not a heuristic that
-    selects a different particle family.
-    """
-    cards = [[poly for poly in frame if _patch(vram, poly) is not None]
-             for frame in frames]
-    if not cards or any(not frame for frame in cards):
+def rip_cards(frames, vram):
+    """Captured projected polygons of any flat shape - A01's steam puff is
+    a sheared quad - as [[(RGBA patch, offsets, uvs)], ...] a frame: the
+    texels under each polygon's UV box, its corners relative to the whole
+    clip's centre (world units, x right, y up) and each corner's place in
+    the patch (0..1). None if there is nothing to cut."""
+    if not vram or not frames:
         return None
-    return rip_polygons(cards, vram, ms_per_frame, **kwargs)
+    points = [q for polys in frames for p in polys for q in p[0]]
+    if not points:
+        return None
+    centre = np.asarray(points, dtype=np.float64).mean(axis=0)
+    out = []
+    for polys in frames:
+        cards = []
+        for corners, uvs, colours, clut, _blended, page in polys:
+            if len(corners) not in (3, 4):
+                return None
+            us = [u for u, _v in uvs]
+            vs = [v for _u, v in uvs]
+            u0, v0 = min(us), min(vs)
+            width, height = max(1, max(us) - u0), max(1, max(vs) - v0)
+            indices, count = _texels(vram, page, u0, v0, width, height)
+            palette = np.array(psx_vram.read_palette(
+                vram, psx_vram.clut_address(clut), count, transparent_zero=True, stp=True),
+                dtype=np.float64)
+            rgba = palette[indices]
+            tint = np.mean(np.asarray(colours, dtype=np.float64), axis=0)
+            rgba[..., :3] = np.clip(rgba[..., :3] * tint, 0, 255)
+            offsets = tuple((float(x - centre[0]), float(centre[1] - y))
+                            for x, y, _z in corners)
+            fractions = tuple(((u - u0) / width, (v - v0) / height) for u, v in uvs)
+            cards.append((rgba.astype(np.uint8), offsets, fractions))
+        out.append(cards)
+    return out
 
 
 def rip_polygons(frames, vram, ms_per_frame, centred=False,

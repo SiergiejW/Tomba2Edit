@@ -108,7 +108,12 @@ def atlas_uv(u, v, texpage):
             ((texpage // ATLAS_COLUMNS) * ATLAS_PAGE + v + 0.5) / ATLAS_HEIGHT)
 
 
-def read_palette(vram, address, count=16, transparent_zero=True):
+# Alpha a sprite texel with its STP bit set gets from read_palette(stp=True):
+# on a semi-transparent draw only those texels blend, the rest stay opaque.
+STP_ALPHA = 254
+
+
+def read_palette(vram, address, count=16, transparent_zero=True, stp=False):
     """`count` colours from VRAM at `address`, as RGBA tuples.
 
     PSX colours are BGR555 - red in the low five bits - and a colour of
@@ -116,6 +121,8 @@ def read_palette(vram, address, count=16, transparent_zero=True):
     decides whether that's honoured: a sprite piece needs it to have a
     cut-out shape, while a background is drawn opaque and wants the
     same colour as plain black.
+
+    `stp` marks a colour with bit 15 set by STP_ALPHA instead of 255.
 
     Reads past the end of VRAM come back black rather than raising - a
     256-colour palette on the last row does run off the end."""
@@ -127,6 +134,7 @@ def read_palette(vram, address, count=16, transparent_zero=True):
             (value & 0x1F) * 8,
             ((value >> 5) & 0x1F) * 8,
             ((value >> 10) & 0x1F) * 8,
-            0 if (transparent_zero and value == 0) else 255,
+            0 if (transparent_zero and value == 0)
+            else STP_ALPHA if (stp and value & 0x8000) else 255,
         ))
     return colors

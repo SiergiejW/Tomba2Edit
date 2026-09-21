@@ -12,6 +12,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 class LevelLoad(QThread):
     stage = pyqtSignal(object)
+    status = pyqtSignal(str)
     failed = pyqtSignal(str)
 
     def __init__(self, args, parent=None):
@@ -45,6 +46,9 @@ class LevelLoad(QThread):
                         if self.cancelled.is_set():
                             break
                         name = line.strip()
+                        if name.startswith("status "):
+                            self.status.emit(name[len("status "):])
+                            continue
                         if not (name.startswith("stage-") and name.endswith(".pickle")
                                 and os.path.basename(name) == name):
                             continue

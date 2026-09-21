@@ -32,7 +32,7 @@ from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
 from gui.level.level_scene import (
-    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
+    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, PURIFIED_CHUNKS, LevelScene,
     area_files, instance_color, instance_key, room_entries)
 from gui.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
@@ -134,6 +134,7 @@ class LevelEditorPanel(QWidget):
             "through a door - the actors its scene table spawns, and the "
             "chests that only appear in there.")
         self.view_box.currentIndexChanged.connect(self._apply_view)
+        self.view_box.activated.connect(self._on_view_chosen)
 
         # Which game the actors run in - see LevelScene.load.
         self.progress_box = QComboBox(self)
@@ -151,6 +152,7 @@ class LevelEditorPanel(QWidget):
             "the way the game marks a finished event.\n"
             "Both: the fresh game, plus whatever only stands once events are "
             "done, marked ⧖. Runs the area twice.")
+        self._progress_tip = self.progress_box.toolTip()
         self.progress_box.currentIndexChanged.connect(self._on_progress_changed)
 
         self.summary = QLabel("Open a disc to pick an area.", self)
@@ -377,15 +379,27 @@ class LevelEditorPanel(QWidget):
         # provide it; never promote that temporary fallback into the request.
         self._requested_view = keep_view
         self._keep_view = keep_view
+        # A Progress switch keeps the scene in hand - and the room it shows -
+        # until the other one is complete, rather than starting from markers.
+        self._hold_stages = (keep_camera and self.scene is not None
+                             and self.chunk == chunk)
         self.chunk = chunk
         self._loading = True
-        self._stage_seen = False
+        self._stage_seen = self._hold_stages
         self._stage_keep_camera = keep_camera
         self._stage_overlay = self.overlay_for_area(chunk)
         self._stage_progress = self.progress_box.currentData()
+        # A purified area always runs finished - see LevelScene.load.
+        purified = chunk in PURIFIED_CHUNKS
+        self.progress_box.setEnabled(not purified)
+        self.progress_box.setToolTip(
+            "A purified area is only reached with its cursed half finished, "
+            "so it always runs with events done." if purified
+            else self._progress_tip)
         self._stage_started = time.perf_counter()
         generation = self._load_generation
         self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")
+        self.viewer.show_status(f"AREA_{chunk:02X}: loading room and background…")
         # Navigation, room filtering and selection remain available. Editing
         # starts once the authoritative result arrives, so a later stage can
         # never overwrite a user's model/position change.
@@ -407,6 +421,7 @@ class LevelEditorPanel(QWidget):
             self._loaders = []
         self._loaders.append(loader)
         loader.stage.connect(lambda payload, g=generation: self._accept_stage(g, payload))
+        loader.status.connect(lambda text, g=generation: self._load_status(g, text))
         loader.failed.connect(lambda error, g=generation: self._load_failed(g, error))
         loader.finished.connect(lambda job=loader: self._release_loader(job))
         if not getattr(self, "_shutdown_hook", False):
@@ -431,7 +446,16 @@ class LevelEditorPanel(QWidget):
         self.viewer.loading = False
         self.summary.setText("Level loading failed. The last completed stage is still "
                              "available for viewing.\n" + error)
+        self.viewer.show_status(f"AREA_{self.chunk:02X}: loading failed", done=True)
         print(error, flush=True)
+
+    def _on_view_chosen(self, _row):
+        """The user's pick, which later load stages keep."""
+        self._requested_view = self._keep_view = self.view_box.currentData()
+
+    def _load_status(self, generation, text):
+        if generation == self._load_generation and self._loading:
+            self.viewer.show_status(text)
 
     @staticmethod
     def _stage_key(instance):
@@ -445,15 +469,13 @@ class LevelEditorPanel(QWidget):
         if generation != self._load_generation:
             return
         state, vram, phases, sprites, prepared, title, complete = payload
+        if self._hold_stages and not complete:
+            return
         hidden = set()
         selected = None
         if self._stage_seen and self.scene is not None:
-            # Preserve a deliberate room filter while the early marker stage
-            # is being replaced.  A user can still deliberately choose a
-            # non-Area entry while a load runs.
-            current_view = self.view_box.currentData()
-            if current_view is not None:
-                self._requested_view = current_view
+            # The room asked for - by load_area, or picked from the combo
+            # meanwhile (_on_view_chosen) - never a stage's own fallback.
             self._keep_view = self._requested_view
             for row in range(self.table.rowCount()):
                 item = self.table.item(row, 0)
@@ -505,6 +527,9 @@ class LevelEditorPanel(QWidget):
                             + (f"Loaded in {time.perf_counter() - self._stage_started:.1f}s."
                                if complete else "You can explore while loading continues."))
         if complete:
+            self.viewer.show_status(
+                f"AREA_{self.chunk:02X} loaded in "
+                f"{time.perf_counter() - self._stage_started:.1f}s", done=True)
             self._remember(self._scene_memory_cache,
                            (self.chunk, self._stage_progress), payload, keep=6)
             for button in (self.keep_button, self.name_button, self.save_button,
@@ -741,16 +766,29 @@ class LevelEditorPanel(QWidget):
     def _populate(self):
         self._filling = True
         instances = [i for i in self.scene.instances if i.flip is None] if self.scene else []
-        self.table.setRowCount(len(instances))
-        for row, instance in enumerate(instances):
-            name = QTableWidgetItem(instance.label)
-            name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            name.setCheckState(Qt.CheckState.Checked)
-            name.setData(ROLE, instance.index)
-            # The modern theme's dot: the colour it is marked in in the view.
-            name.setData(DOT_COLOR, instance_color(instance))
-            self.table.setItem(row, 0, name)
-            self._fill_row(row, instance)
+        # A ResizeToContents column re-measures every row on each setItem:
+        # 2.3s of a stalled window for AREA_0A's 329 rows. Measure once.
+        header = self.table.horizontalHeader()
+        fitted = [c for c in range(self.table.columnCount())
+                  if header.sectionResizeMode(c) == QHeaderView.ResizeMode.ResizeToContents]
+        for column in fitted:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setRowCount(len(instances))
+            for row, instance in enumerate(instances):
+                name = QTableWidgetItem(instance.label)
+                name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                name.setCheckState(Qt.CheckState.Checked)
+                name.setData(ROLE, instance.index)
+                # The modern theme's dot: the colour it is marked in in the view.
+                name.setData(DOT_COLOR, instance_color(instance))
+                self.table.setItem(row, 0, name)
+                self._fill_row(row, instance)
+        finally:
+            for column in fitted:
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            self.table.setUpdatesEnabled(True)
         self._filling = False
         self.table.clearSelection()
         self.viewer.set_hidden_groups(())
