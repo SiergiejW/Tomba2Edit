@@ -28,6 +28,7 @@ the sequence it looked up. Nothing here is guessed at: the sequence
 walker is pickup_art's, and the two sequences above are what the fire
 object in AREA_09 really shows.
 """
+from functions import game_build
 from functions import mips
 from functions import pickup_art
 
@@ -41,7 +42,10 @@ TABLE_ARG, INDEX_ARG = 5, 6        # a1, a2
 HANDLER_SPAN = 512
 
 # Where an overlay lands, and how far a handler can be inside one.
-OVERLAY_BASE = pickup_art.OVERLAY_BASE
+OVERLAY_BASE = 0x80108F9C
+
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=("START_SEQUENCE", "OVERLAY_BASE"))
 
 
 class Sequence:

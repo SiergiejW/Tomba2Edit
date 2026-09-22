@@ -62,7 +62,7 @@ import os
 import struct
 from dataclasses import dataclass
 
-from functions import clut_anim, skeleton
+from functions import clut_anim, game_build, skeleton
 from functions.mips import LOADS, STORES, Image
 
 # MAIN.EXE is a PS-EXE: a 0x800 header, then the body, loaded where the
@@ -82,6 +82,8 @@ MODEL_FIELD = 0x40
 # in AREA_04 and AREA_05; it is what MAIN.EXE's own object classes index
 # their model tables by, since they serve every area at once.
 OVERLAY_NUMBER = 0x800BF870
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=("FILE_TABLE_HINT", "OVERLAY_NUMBER"))
 
 # The object's slot is a byte at +3 of its record - every per-slot table
 # on the disc is indexed by that load.

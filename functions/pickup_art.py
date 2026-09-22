@@ -50,7 +50,7 @@ shares, and the sequence table above.
 import struct
 from dataclasses import dataclass
 
-from functions import psx_vram
+from functions import game_build, psx_vram
 
 # The PS-EXE header holds the load address at 0x18 and the image from
 # 0x800 - the same two numbers functions/placement.py reads.
@@ -135,6 +135,12 @@ OFFSET = struct.Struct("<hhh")
 ITEM_TABLE = 0x800A2BE8
 ITEM = struct.Struct("<BBBBII")
 ITEM_COUNT = 0xA8
+
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=(
+    "REWARD_TABLE", "SEQUENCE_TABLE", "AREA_SEQUENCES", "OVERLAY_BASE",
+    "CHEST_MODELS", "CHEST_OFFSETS", "ITEM_TABLE"),
+    slots=("AREA_BANK_FILE", "CHEST_FILE"))
 
 # A name ends at a nul and breaks over a newline in the menus.
 NUL = b"\x00"

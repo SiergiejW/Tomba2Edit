@@ -402,8 +402,11 @@ def find_area_scld_location(idx_path: str, chunk_index: int):
         raw = idx.read(pointer_amount * 4)
     pointers = struct.unpack(f"<{pointer_amount}I", raw)
     entries = [(v >> 24, v & 0xFFFFFF) for v in pointers]
+    # Slot 7 on every build but the demos (functions/game_build.py).
+    from functions import game_build
+    collision = game_build.slot(7)
     for i, (id_, offset) in enumerate(entries):
-        if id_ == 7:
+        if id_ == collision:
             next_offset = entries[i + 1][1] if i + 1 < len(entries) else dat_end - dat_start
             return dat_start, offset, next_offset - offset
     return None

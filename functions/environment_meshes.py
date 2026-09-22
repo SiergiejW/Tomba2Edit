@@ -18,9 +18,8 @@ import struct
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from functions import psx_vram, texture_window
+from functions import game_build, psx_vram, texture_window
 
-OVERLAY_BASE = 0x80108F9C
 ONE = 4096
 
 
@@ -63,17 +62,20 @@ def models(overlay_name, data, purified, view_point):
     if purified or not data:
         return []
     out = []
-    for surface in SURFACES.get(overlay_name.upper()[:3], ()):
-        pairs = struct.unpack_from(f"<{surface.count * 2}h", data,
-                                   surface.vertices - OVERLAY_BASE)
-        phases = struct.unpack_from(f"<{surface.count}h", data,
-                                    surface.phases - OVERLAY_BASE)
+    image = overlay_name.upper()[:3]
+    for surface in SURFACES.get(image, ()):
+        # US retail's addresses, found in the open build's overlay.
+        at = {name: game_build.overlay_offset(image, getattr(surface, name))
+              for name in ("vertices", "phases", "quads")}
+        if None in at.values():
+            continue
+        pairs = struct.unpack_from(f"<{surface.count * 2}h", data, at["vertices"])
+        phases = struct.unpack_from(f"<{surface.count}h", data, at["phases"])
         points = [(pairs[k * 2] + (rcos(phases[k]) >> 4),
                    (rcos(phases[k] >> 2) >> 6) + surface.base_y,
                    pairs[k * 2 + 1] + (rsin(phases[k]) >> 4))
                   for k in range(surface.count)]
-        quads = data[surface.quads - OVERLAY_BASE:
-                     surface.quads - OVERLAY_BASE + surface.quad_count * 5]
+        quads = data[at["quads"]:at["quads"] + surface.quad_count * 5]
         model = {"vertices": [], "vertex_colors": [], "texture_coords": [],
                  "faces": [], "texture_info": [], "face_flags": [],
                  "tri_count": 0, "quad_count": surface.quad_count}

@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from functions import psx_cpu
+from functions import game_build, psx_cpu
 from functions.psx_cpu import CPU, PASS, EmuError, s16, s32  # noqa: F401 - s16 used by level_scene
 
 EXE_HEADER = 0x800
@@ -215,6 +215,11 @@ SOLID_CLUT = -1
 # Captures after its actor ran that a pass may draw nothing in before it is
 # no longer run.
 QUIET_CAPTURES = 2
+# In a recording a draw pass is dropped after this many empty frames in a
+# row: an actor's update pass, run again only to name vertices, is empty
+# for most, and re-running every pass every frame was half a load's time.
+# Long enough that a draw flickering every other frame is kept.
+RECORD_QUIET = 8
 # While capturing, the routines that put out an actor's model and sprite
 # parts do nothing: those are read from the parts and sequences already, and
 # drawn a second time as captured polygons they cover the level.
@@ -392,6 +397,33 @@ ARG_CURSED_ONLY, ARG_TIME_RUNNING = 1, 2
 MAX_STEPS = 64
 
 TRAILER_BYTES = 0x700
+# The purified mine's upward steam, whose handler keeps whole coordinates.
+MINE_STEAM = 0x80133D74
+
+# Every address above is US retail's; another build's are put in their place
+# while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=(
+    "OVERLAY_BASE", "AREA_BASE", "FILE_TABLE", "PART_BUDGET", "POOL_FREE",
+    "NEW_GAME", "INTRO_CUTSCENE", "AREA_NUMBER", "ALLOCATE_RECORD",
+    "ALLOCATE_PART", "VISIBILITY", "LOAD_GROUP", "PLAY_SOUND", "YIELD",
+    "SET_PART_MODEL", "INIT_SINGLE_PART", "START_WORKERS", "START_PLANES",
+    "RUN_WORKERS", "WORKER_SLOTS", "WORKER_TABLE", "INSIDE", "INTERIOR",
+    "TRANSITION", "ENTER_INTERIOR", "START_WORKER", "TERMINATE_WORKER",
+    "CURRENT_WORKER", "MESSAGE", "PLAYER", "PLAYER_FRAME", "PLAYER_START",
+    "PURIFIED_AREAS", "CAPPERS_REMOVED", "SAVE_BLOCK", "TRAVELLING",
+    "MINIGAME_MENU", "WORLD_BYTES", "PIG_BAG_COUNT", "PIG_BAG",
+    "PRIMITIVE_CURSOR", "ORDERING_TABLE", "CAMERA", "CLASS4_QUEUE",
+    "QUEUE_HELD", "QUEUE_COUNT", "QUEUE_LIST", "CLASS5_QUEUE", "QUEUE5_COUNT",
+    "QUEUE5_LIST", "QUEUE_CLASS5", "PART_DRAWERS", "SPRITE_DRAWERS",
+    "EFFECT_ANCHORS", "ANIMATION_FRAME", "RETIRE_SCENE", "ALLOCATE_ACTOR",
+    "CHEST_HANDLER", "SECONDARY_ITEM_HANDLER", "GROUND_FIREFLY_UP",
+    "DONGLIN_LIGHT_CUTSCENE", "ZONE", "TOMBA_ZONE", "ZONES",
+    "ADVANCE_SKELETAL", "TRANSFORMS"),
+    overlay={"KUJARA_PLATFORM_GHOST": "A04", "KUJARA_SNOW_FIREFLY": "A04",
+             "DONGLIN_SNOW_FIREFLY": "A06", "NONVISUAL_PLACEMENTS": "A07",
+             "MINE_STEAM": "A01"},
+    per_area=("PLAYER_POSE", "GROUND_FIREFLY_SPAWNERS", "BLOCK_CONTACTS"),
+    slots=("TOMBA_SLOT",))
 
 
 @dataclass
@@ -497,6 +529,8 @@ class World:
                  area_number, resident_chunks=(0, 1, 2), purified=False,
                  finished=()):
         from gui.level.level_scene import area_files
+        # The addresses below are this build's, not only US retail's.
+        game_build.use(exe_path)
         self.cpu = cpu = CPU()
         self.mem = mem = cpu.mem
         with open(exe_path, "rb") as f:
@@ -1060,6 +1094,7 @@ class World:
             except EmuError:
                 return
             ours = set(a.address for a in self.actors[first:])
+            hushed = set()              # silent passes reset once, not a frame
             flier = self.actors[first].address if len(self.actors) > first else None
             for frame in range(frames):
                 if self.skip_messages:
@@ -1075,8 +1110,10 @@ class World:
                     break
                 for actor in live:
                     actor.position = self._position(actor.address)
-                    actor.silent = {}
-                self.capture_lines(live, keep_draws=True, counter=frame)
+                    if actor.address not in hushed:
+                        actor.silent, _ = {}, hushed.add(actor.address)
+                self.capture_lines(live, keep_draws=True, counter=frame,
+                                   quiet_after=RECORD_QUIET)
                 flight.append(tuple(p for a in live for p in a.polys))
                 if flier is not None and struct.unpack("<h", struct.pack(
                         "<H", self.mem.read(flier + FLIGHT_TIMER, 2)))[0] > FLIGHT_LIFE:
@@ -1179,6 +1216,10 @@ class World:
         if not keys:
             return
         born = {a.address for a in self.actors}
+        # A model drawn by its parts and nothing else (A08's 95.x, 18 of
+        # them) runs with its family but is not captured: its capture cost
+        # more than the four polygons its bubbles draw.
+        modelled = {a.address for a in self.actors if a.parts and not a.polys}
         self._restore_poses()
         base = self.snapshot()
         defer, self.defer_capture = self.defer_capture, False
@@ -1197,6 +1238,7 @@ class World:
         effect_end = (effect_start + max(effect_limits.values())
                       if effect_limits else 0)
         effect_marks = {}           # family -> a hash per recorded frame
+        hushed = set()              # silent passes reset once, not a frame
         try:
             for frame in range(max(moving_end, effect_end)):
                 if self.skip_messages:
@@ -1226,11 +1268,14 @@ class World:
                 if not capture:
                     continue
                 live = [a for a in self.actors
-                        if not a.dead and self.family(a) in capture]
+                        if not a.dead and self.family(a) in capture
+                        and a.address not in modelled]
                 for actor in live:
                     actor.position = self._position(actor.address)
-                    actor.silent = {}
-                self.capture_lines(live, keep_draws=True, counter=frame)
+                    if actor.address not in hushed:
+                        actor.silent, _ = {}, hushed.add(actor.address)
+                self.capture_lines(live, keep_draws=True, counter=frame,
+                                   quiet_after=RECORD_QUIET)
                 by_family = collections.defaultdict(list)
                 for actor in live:
                     by_family[self.family(actor)].append(
@@ -1261,8 +1306,8 @@ class World:
                     if len(marks) < 6 or len(marks) % 8:
                         continue
                     period = next((p for p in range(2, len(marks) // 3 + 1)
-                                   if all(marks[n] == marks[n % p] for n in range(len(marks)))),
-                                  None)
+                                   if len(set(marks[-p:])) > 1
+                                   and marks[-3 * p:-p] == marks[-2 * p:]), None)
                     if period is not None:
                         effect_limits[key] = done
                 if (staged is not None and done in stages
@@ -1317,6 +1362,7 @@ class World:
         base = self.snapshot()
         defer, self.defer_capture = self.defer_capture, False
         taken, marks = [], []
+        hushed = set()                  # silent passes reset once, not a frame
         group = {root} | members
         try:
             if zone is not None:
@@ -1333,22 +1379,29 @@ class World:
                 # What the group spawns while it runs - the next ring - is its own.
                 group |= {a.address for a in self.actors
                           if isinstance(a.spawner, int) and a.spawner in group}
-                live = [a for a in self.actors if a.address in group and not a.dead]
+                # Only what draws lines is captured: the spawner's own
+                # model (94.x, 15 parts) cost more than all its rings.
+                live = [a for a in self.actors if a.address in group and not a.dead
+                        and (a.address != root or a.lines)]
                 for actor in live:
                     actor.position = self._position(actor.address)
-                    actor.silent = {}
-                self.capture_lines(live, keep_draws=True, counter=frame)
+                    if actor.address not in hushed:
+                        actor.silent, _ = {}, hushed.add(actor.address)
+                self.capture_lines(live, keep_draws=True, counter=frame,
+                                   quiet_after=RECORD_QUIET)
                 lines = tuple(line for a in live for line in a.lines)
                 taken.append(lines)
                 marks.append(hash(repr(lines)))
                 if len(marks) >= 8 and len(set(marks)) == 1:
                     return None                             # still
                 if len(marks) >= 6 and not len(marks) % 4:
+                    # A cycle three times over at the end - after whatever
+                    # start-up (the rings its init left) came first.
                     period = next((p for p in range(2, len(marks) // 3 + 1)
-                                   if all(marks[n] == marks[n % p] for n in range(len(marks)))),
-                                  None)
+                                   if len(set(marks[-p:])) > 1
+                                   and marks[-3 * p:-p] == marks[-2 * p:]), None)
                     if period is not None:
-                        return taken[:period]
+                        return taken[-period:]
         finally:
             self.defer_capture = defer
             self.restore(base)
@@ -1719,7 +1772,9 @@ class World:
         poses its parts some other way. Everything is put back."""
         from gui.anmp.sequences import SequenceError, read_clip
         read = self.mem.read
-        step = read(actor.address + ANIM_STEP, 4)
+        # KUSEG 0x00xxxxxx is the same RAM as 0x80xxxxxx: A08's 96.x and
+        # 95.x hold their step that way, and fell to recording.
+        step = _kseg0(read(actor.address + ANIM_STEP, 4))
         transform = self._transform_of(actor.handler)
         if not _in_ram(step) or transform is None:
             return None
@@ -1729,14 +1784,17 @@ class World:
                              max_steps=CLIP_STEPS)
         except SequenceError:
             return None
-        if clip.loop_start is None:
-            return None
         left = read(actor.address + ANIM_TICKS, 2) & 0xFFF
-        if clip.loop_start == 0:
+        if clip.loop_start is None:
+            # A clip that ends rather than loops (its code starts the next):
+            # all of it from the step it is on, played round.
+            loop_tick, length = 0, clip.duration
+        elif clip.loop_start == 0:
             loop_tick = 0
+            length = clip.duration - clip.starts[clip.loop_start]
         else:
             loop_tick = left + sum(max(s.ticks, 1) for s in clip.steps[1:clip.loop_start])
-        length = clip.duration - clip.starts[clip.loop_start]
+            length = clip.duration - clip.starts[clip.loop_start]
         if not 2 <= length <= POSE_LOOP_MAX_FRAMES:
             return None
         base = self.snapshot()
@@ -2379,7 +2437,8 @@ class World:
         self.restore(base)
         self.events = events
 
-    def capture_lines(self, actors=None, budget=BUDGET, keep_draws=False, counter=0):
+    def capture_lines(self, actors=None, budget=BUDGET, keep_draws=False, counter=0,
+                      quiet_after=QUIET_CAPTURES):
         """Run each actor's draw routine (+0x18) and then its update handler
         once with the GTE naming its vertices, and keep the line primitives
         that come out, on the actor - A00's ropes come from the first, A06's
@@ -2471,7 +2530,7 @@ class World:
                     # A pass that has drawn nothing twice since its actor ran
                     # is not run again: re-reads repeat it for every actor.
                     quiet = actor.silent.get(offset, 0)
-                    if quiet is not None and quiet >= QUIET_CAPTURES:
+                    if quiet is not None and quiet >= quiet_after:
                         continue
                     before = mem.bytes(actor.address, ACTOR_SIZE) if offset == CALLBACK else None
                     drawn_lines, drawn_polys = draw(actor, offset, routine)
@@ -2756,7 +2815,7 @@ class World:
             return np.array([float(s16(read(address + POSITION + k * 2, 2)))
                              for k in range(3)])
         callback = read(address + CALLBACK, 4)
-        if ((self.area_number == 1 and callback == 0x80133D74)
+        if ((self.area_number == 1 and callback == MINE_STEAM)
                 or (self.area_number == 4 and callback == KUJARA_SNOW_FIREFLY)
                 or (self.area_number == 6 and callback == DONGLIN_SNOW_FIREFLY)):
             # Purified Mine's upward steam is a model-part attachment.  Its
@@ -3055,6 +3114,13 @@ _ANY_POSE = _AnyPose()
 
 def _in_ram(address):
     return RAM_BASE <= address < RAM_BASE + 0x200000 and not address & 3
+
+
+def _kseg0(address):
+    """A RAM pointer in the 0x80000000 segment, from any of its mirrors."""
+    if (address & 0x1FFFFFFF) < 0x200000:
+        return RAM_BASE | (address & 0x1FFFFF)
+    return address
 
 
 def _nearest_return(frames):

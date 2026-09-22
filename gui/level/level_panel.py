@@ -31,8 +31,9 @@ from functions import placement as placement_module
 from gui.bgmp import bgmp_render
 from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from gui.clut_animation import TICK_HZ
+from gui.level import level_scene
 from gui.level.level_scene import (
-    ASSET_PACK_ID, BACKGROUND_ID, BOTH, EVENTS_DONE, FRESH, LevelScene,
+    BOTH, EVENTS_DONE, FRESH, LevelScene,
     area_files, instance_color, instance_key, room_entries)
 from gui.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
@@ -330,7 +331,7 @@ class LevelEditorPanel(QWidget):
                 _start, files = area_files(self.idx_path, chunk)
             except (OSError, ValueError):
                 continue
-            pack = any(file_id == ASSET_PACK_ID and size > 0
+            pack = any(file_id == level_scene.ASSET_PACK_ID and size > 0
                        for _i, file_id, _o, size in files)
             if pack or room_entries(self.idx_path, self.dat_path, chunk):
                 out.append(chunk)
@@ -652,7 +653,7 @@ class LevelEditorPanel(QWidget):
             if len(self._phases) > 1 and self.viewer.animate_action.isChecked():
                 self._phase_timer.start(self._phases[0][1])
             return
-        entry = scene.by_id.get(BACKGROUND_ID)
+        entry = scene.by_id.get(level_scene.BACKGROUND_ID)
         if not entry or not entry[1]:
             from functions import sky_gradient
             sky = sky_gradient.image(overlay)

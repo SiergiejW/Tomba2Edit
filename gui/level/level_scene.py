@@ -48,6 +48,7 @@ import numpy as np
 
 import gui.mdat.mdat as mdat
 from functions import format_detect
+from functions import game_build
 from functions import labels
 from functions import handler_models
 from functions import actor_models
@@ -113,6 +114,11 @@ SYMBOLS = os.path.join(
 # What main.py answers as the events-done worker, in a built exe.
 DONE_WORKER_FLAG = "--level-done-worker"
 FOREST_GHOST_ROCK_CRAB = 0x8012EF54
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(
+    globals(), overlay={"FOREST_GHOST_ROCK_CRAB": "A06"},
+    slots=("ROOM_ID", "BACKGROUND_ID", "ASSET_PACK_ID", "RESIDENT_SPRITES",
+           "AREA_SPRITES"))
 
 # An overlay's scene spawner, by its decomp name - what fills a room.
 SPAWNER = re.compile(r"f_Spawn\w*ActorsFromPlacementTable$")
@@ -200,6 +206,23 @@ ENVIRONMENT_ID = 0x2000
 DRAWN_ID, DRAWN_END = 0x3000, 0x4000
 # Game frames a second - a recorded effect clip plays a frame each.
 CLIP_HZ = 30
+
+
+_FILE_LABELS = None
+
+
+def file_label(content):
+    """A file's name in the tree's labels (labels/*.json, by content hash),
+    less a trailing 'Model(s)' - or ""."""
+    global _FILE_LABELS
+    if _FILE_LABELS is None:
+        _FILE_LABELS = {}
+        for label_set in labels.builtin():
+            for key, entry in label_set.entries.items():
+                if entry.name and key not in _FILE_LABELS:
+                    _FILE_LABELS[key] = entry.name
+    name = _FILE_LABELS.get(content or "", "")
+    return re.sub(r"\s+Models?$", "", name)
 
 
 def interior_name(scene):
@@ -862,6 +885,8 @@ class LevelScene:
         self.dat_path = None
         self.overlay_path = None
         self.overlay_data = b""
+        # Which build the disc is - see functions/game_build.py.
+        self.build = game_build.REFERENCE
         # The area's actors, run - see functions/actor_sim.py.
         self.world = None
         self._symbols = None
@@ -936,6 +961,9 @@ class LevelScene:
         self.overlay_path = overlay_path
         self.exe_path = exe_path
         self.progress = progress
+        # Every address the loaders know is US retail's until this says
+        # which build the disc is.
+        self.build = game_build.use(exe_path).name
 
         # The same area, built from the same disc and the same code, is the
         # same scene - functions/scene_cache.py keeps it.
@@ -1317,7 +1345,10 @@ class LevelScene:
             names = {}
         for name, (where, address) in names.items():
             if where == tag and SPAWNER.match(name):
-                return address
+                # The decomp's is US retail's address.
+                found = game_build.current().overlay(tag, address)
+                if found:
+                    return found
         return (actor_sim.find_scene_spawner(self.overlay_data)
                 if self.overlay_data else None)
 
@@ -1334,7 +1365,9 @@ class LevelScene:
                 pass
         tag = "MAIN" if handler < actor_sim.OVERLAY_BASE else os.path.basename(
             self.overlay_path or "")[:3].upper()
-        return self._symbols.get((tag, handler), f"0x{handler:08X}")
+        # The decomp names US retail's addresses.
+        us = game_build.current().us(handler, tag)
+        return self._symbols.get((tag, us), f"0x{handler:08X}")
 
     def _sim_art(self, actor):
         """A simulated sprite as art the billboards can draw."""
@@ -1940,9 +1973,11 @@ class LevelScene:
                             "its code sets its draw count (+0x08) to 0: nothing of it is drawn")
             if gate:
                 note = f"{note}<br>{gate}" if note else gate
+            called = self.file_named(sources)
             instances.append(Instance(
                 index=len(instances), role="object",
-                label=f"{'⧖ ' if gate else ''}{record.kind}.{record.slot}",
+                label=(f"{'⧖ ' if gate else ''}{record.kind}.{record.slot}"
+                       + (f" {called}" if called else "")),
                 sources=tuple(sources), offsets=offsets, x=x, y=y, z=z,
                 name=(assembly.name if assembly is not None
                       else self.named(sources)),
@@ -2634,8 +2669,20 @@ class LevelScene:
         if len({f for f, _g in sources}) == 1 and len(sources) > 1:
             group = None
         self.model(file_id)          # so its hash is known
-        return placement_module.model_name(self.model_names,
+        name = placement_module.model_name(self.model_names,
                                            self.content.get(file_id), group)
+        if not name and group is None:
+            name = file_label(self.content.get(file_id))
+        return name
+
+    def file_named(self, sources):
+        """The name the tree gives the file most of `sources` come from
+        (labels/*.json) - 'Flying Spiker Enemy' - or ""."""
+        if not sources:
+            return ""
+        file_id = collections.Counter(f for f, _g in sources).most_common(1)[0][0]
+        self.model(file_id)
+        return file_label(self.content.get(file_id))
 
     def model_choices(self):
         """[(label, (file id, group)), ...] every part this area could

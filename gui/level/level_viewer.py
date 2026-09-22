@@ -30,7 +30,7 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
                              QMessageBox, QStyle)
 
-from functions import gltf_export
+from functions import game_build, gltf_export
 from functions.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
 from gui.smst.smst_viewer import SMSTViewer, WEIGHTS
 from gui import collision_overlay, export_dialog, theme
@@ -83,6 +83,8 @@ EXPORT_GROUPS = {
 # A whole character is one file's many groups; the asset pack is props.
 CHARACTER_PARTS = 8
 ASSET_PACK = 12
+# Slot 12 on every build but the demos (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), slots=("ASSET_PACK",))
 
 
 def selection_kind(instance):
@@ -280,6 +282,17 @@ class LevelViewer(SMSTViewer):
         self.lines_action.toggled.connect(self._toggle_lines)
         self.toolbar.insertAction(self.collision_action, self.lines_action)
 
+        self.orbit_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+            "Orbit selection", self)
+        self.orbit_action.setCheckable(True)
+        self.orbit_action.setToolTip(
+            "Middle-drag circles the selected object instead of whatever is "
+            "in the middle of the view. Off, orbiting works as usual even "
+            "with something still selected.")
+        self.toolbar.insertAction(self.lines_action, self.orbit_action)
+        self.camera_controls.orbit_target = self._orbit_target
+
         # Line overlays, both built on the CPU and uploaded from paintGL
         # for the same reason everything else here is: an area can be
         # picked before Qt has given this widget a context.
@@ -344,6 +357,7 @@ class LevelViewer(SMSTViewer):
         self._pick_vertices = None
         self._pick_faces = None
         self._face_instance = None
+        self._room_rows = None
         self._drag = None
         self._last_face = None
         self.selected_part = None
@@ -374,6 +388,7 @@ class LevelViewer(SMSTViewer):
         self.model_data = scene.build() if scene is not None else None
         self._badge_cache = None
         self._face_instance = None
+        self._room_rows = None
         # A drag in progress refers to the instance list being replaced,
         # so it cannot survive the reload - dragging on into the new
         # scene indexes a list that may be shorter.
@@ -566,11 +581,23 @@ class LevelViewer(SMSTViewer):
             return
         super().keyPressEvent(event)
 
-    def frame_selection(self):
-        """Ease the camera onto what is selected - the picked part of it if
-        there is one - keeping the angle it is looked at from."""
+    def _orbit_target(self):
+        """The selection's centre, in view units, while Orbit selection is
+        on - or None."""
+        if not self.orbit_action.isChecked():
+            return None
+        box = self._selection_box()
+        if box is None:
+            return None
+        x0, x1, y0, y1, z0, z1 = box
+        return ((x0 + x1) / 2 / UNIT_SCALE, (y0 + y1) / 2 / UNIT_SCALE,
+                (z0 + z1) / 2 / UNIT_SCALE)
+
+    def _selection_box(self):
+        """(x0, x1, y0, y1, z0, z1) round what is selected - the picked
+        part of it if there is one - or None."""
         if self.selected is None or self.selected >= len(self.instances):
-            return
+            return None
         instance = self.instances[self.selected]
         box = (self._part_box(instance, self.selected_part)
                or self._instance_box(instance))
@@ -580,6 +607,12 @@ class LevelViewer(SMSTViewer):
                                       + instance.vertex_count] * UNIT_SCALE
             low, high = verts.min(axis=0), verts.max(axis=0)
             box = (low[0], high[0], low[1], high[1], low[2], high[2])
+        return box
+
+    def frame_selection(self):
+        """Ease the camera onto what is selected - the picked part of it if
+        there is one - keeping the angle it is looked at from."""
+        box = self._selection_box()
         if box is None:
             return
         x0, x1, y0, y1, z0, z1 = box
@@ -639,6 +672,7 @@ class LevelViewer(SMSTViewer):
         self._build_selection()
         self._badge_cache = None
         self._face_instance = None
+        self._room_rows = None
         self._sprite_dirty = True
         self.update()
 
@@ -813,6 +847,7 @@ class LevelViewer(SMSTViewer):
         is skipped and the ray test subscripts None."""
         super()._invalidate_pick_cache()
         self._face_instance = None
+        self._room_rows = None
 
     def _build_face_index(self):
         """Which instance each triangle belongs to, and the arrays the
@@ -869,6 +904,22 @@ class LevelViewer(SMSTViewer):
                 hit &= ~np.isin(self._face_instance,
                                 np.fromiter(hidden, dtype=np.int64))
             if hit.any():
+                # A room is picked only when the ray meets nothing else: a
+                # click into it lands on its floor or far wall before, or
+                # beside, what stands inside, and that is what was meant.
+                rooms = getattr(self, "_room_rows", None)
+                if rooms is None:
+                    # An interior's shell is an actor of its own (A08's
+                    # f_UpdateWaterTempleInteriorEnvironmentActor).
+                    rooms = self._room_rows = np.fromiter(
+                        (i.index for i in self.instances
+                         if getattr(i, "role", None) == "room"
+                         or "EnvironmentActor" in (getattr(i, "label", "") or "")),
+                        dtype=np.int64)
+                if len(rooms):
+                    inside = hit & ~np.isin(self._face_instance, rooms)
+                    if inside.any():
+                        hit = inside
                 which = int(np.argmin(np.where(hit, t, np.inf)))
                 hit_instance = int(self._face_instance[which])
                 # A recorded effect's frame is its first frame's row.

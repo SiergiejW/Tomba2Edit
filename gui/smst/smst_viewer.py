@@ -79,6 +79,8 @@ QUARTER = 3     # B + F/4
 # function supplies the rest of the sum; this is the part of it that
 # varies per texel, so it goes through the shader instead.
 WEIGHTS = {HALF: 0.5, ADD: 1.0, SUBTRACT: 1.0, QUARTER: 0.25}
+# _draw_pass's blend for every blended range in order, each its own mode.
+ORDERED = "ordered"
 
 # The selection outline, matching gui/mdat/mdat_viewer.py: yellow for the
 # picked polygon, a dimmer amber for the rest of the part it sits in.
@@ -601,6 +603,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         info = self.model_data["texture_info"]
         for group in self.groups:
             by_clut = {}
+            runs = []               # semi-transparent faces, in their order
             for f in range(group.first_face, group.first_face + group.face_count):
                 entry = info[f]
                 clut, transparent = entry[1], entry[2]
@@ -609,8 +612,18 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 # per face, and the four of them cannot be drawn in one
                 # call because each needs its own blend function.
                 key = (clut, transparent, blend)
+                if transparent:
+                    # Kept in draw order: the PSX blends one after another,
+                    # clamping each time - a town fire's smoke subtracted
+                    # from all its flames at once muddied them.
+                    if runs and runs[-1][0] == key:
+                        runs[-1][1].extend(faces[f])
+                    else:
+                        runs.append((key, list(faces[f])))
+                    continue
                 by_clut.setdefault(key, []).extend(faces[f])
-            for (clut, transparent, blend), face_indices in by_clut.items():
+            for (clut, transparent, blend), face_indices in (
+                    list(by_clut.items()) + runs):
                 ranges.append((group.index, clut, len(indices) * 4,
                                len(face_indices), transparent, blend))
                 indices.extend(face_indices)
@@ -1358,17 +1371,13 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self._draw_between_passes()
 
         if modes:
-            # Then the texels that really do blend, one pass per mode.
-            # The PSX has four; treating them all as additive - which is
-            # what this did - washes out everything that asked for the
-            # half-and-half mix, and that is most of them. The boss pigs
-            # are 70% HALF, which is why they came out as ghosts.
+            # Then the texels that really do blend, each face with its own
+            # of the PSX's four modes, in the order they were drawn.
+            # Treating them all as additive washed out everything that
+            # asked for the half-and-half mix (the boss pigs, 70% HALF).
             GL.glDepthMask(GL.GL_FALSE)
             self.shader_program.setUniformValue("texelClass", 2)
-            for mode in modes:
-                self._set_blend(mode)
-                self.shader_program.setUniformValue("blendWeight", WEIGHTS[mode])
-                self._draw_pass(transparent=True, blend=mode)
+            self._draw_pass(transparent=True, blend=ORDERED)
             GL.glBlendEquation(GL.GL_FUNC_ADD)
             GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
             GL.glDepthMask(GL.GL_TRUE)
@@ -1410,14 +1419,22 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
     def _draw_pass(self, transparent, blend=None):
+        """Draw the ranges of one kind. `blend` ORDERED draws every
+        blended range in buffer order, each with its own mode."""
         bound = None
         alpha = None
         shifted = None
+        mode = None
         for (group_index, clut, offset, count, is_transparent,
              face_blend) in self.draw_ranges:
             if is_transparent != transparent or group_index in self.hidden_groups:
                 continue
-            if blend is not None and face_blend != blend:
+            if blend is ORDERED:
+                if face_blend != mode:
+                    self._set_blend(face_blend)
+                    self.shader_program.setUniformValue("blendWeight", WEIGHTS[face_blend])
+                    mode = face_blend
+            elif blend is not None and face_blend != blend:
                 continue
             want = (DIMMED_ALPHA if self.highlighted_group not in (None, group_index)
                     else 1.0)

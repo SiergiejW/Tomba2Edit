@@ -54,6 +54,7 @@ from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
     content_hashes, row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
+from functions import game_build
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
@@ -3451,6 +3452,10 @@ class MainWindow(QMainWindow):
         # each placed object draws with is in here (see
         # functions/handler_models.py), not in any file on the disc.
         self.mainexe_path = exe_path
+        # Which build this is decides where every routine and variable the
+        # level code knows by address has moved to - functions/game_build.py.
+        build = game_build.use(exe_path)
+        print(f"Code build: {build.label}")
         """Load exe_path into the MAIN.EXE tab, or clear it with a clear
         reason if that's not possible - either no file was found (None)
         or it's not the specific build mainbin_editor.py's pointer tables

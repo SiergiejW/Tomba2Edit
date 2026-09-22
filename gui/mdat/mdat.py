@@ -1,7 +1,7 @@
 import struct
 import io
 
-from functions import draw_order, psx_vram
+from functions import draw_order, game_build, psx_vram
 from functions.texture_window import QUAD
 
 
@@ -18,8 +18,10 @@ def find_area_mdat_location(idx_path, chunk_index):
         raw = idx.read(pointer_amount * 4)
     pointers = struct.unpack(f"<{pointer_amount}I", raw)
     entries = [(v >> 24, v & 0xFFFFFF) for v in pointers]
+    # Slot 8 on every build but the demos (functions/game_build.py).
+    room = game_build.slot(8)
     for id_, offset in entries:
-        if id_ == 8:
+        if id_ == room:
             return dat_start, offset
     return None
 
@@ -41,10 +43,11 @@ def area_mdat_entries(idx_path, dat_path, chunk_index):
         raw = idx.read(pointer_amount * 4)
     pointers = struct.unpack(f"<{pointer_amount}I", raw)
     entries = []
+    room = game_build.slot(8)
     with open(dat_path, "rb") as dat:
         for i, value in enumerate(pointers):
             id_, offset = value >> 24, value & 0xFFFFFF
-            if id_ != 8 and id_ < 18:
+            if id_ != room and id_ < 18:
                 continue
             next_offset = (pointers[i + 1] & 0xFFFFFF if i + 1 < len(pointers)
                            else dat_end - dat_start)

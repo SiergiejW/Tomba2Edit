@@ -32,7 +32,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from functions.placement import OVERLAY_BASE
+from functions import game_build
+
+OVERLAY_BASE = 0x80108F9C
 
 ANGLE_UNITS = 4096
 
@@ -466,7 +468,19 @@ class FishingRod(Assembly):
 
 # --- which --------------------------------------------------------------
 
-RECIPES = {SEESAW_HANDLER: Seesaw, ROD_HANDLER: FishingRod}
+# US retail's A00.BIN; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=("OVERLAY_BASE",), overlay={
+    name: "A00" for name in (
+        "SEESAW_HANDLER", "SEESAW_VARIANT", "SEESAW_CONFIG", "SEESAW_TWIN",
+        "SEESAW_SINGLE", "PIPE_COUNTS", "PIPE_LAYOUTS", "PLANT_SPOTS",
+        "INDEXED_PICKUPS", "ROD_HANDLER", "ROD_LENGTHS")})
+
+
+_SLOTS = game_build.Addresses(globals(), slots=("SEESAW_FILE", "PIPE_FILE", "ASSET_PACK"))
+
+
+def recipes():
+    return {SEESAW_HANDLER: Seesaw, ROD_HANDLER: FishingRod}
 
 
 def _looks_right(data):
@@ -482,7 +496,7 @@ def _looks_right(data):
 
 def assemble(data, record):
     """The Assembly for one placement record, or None."""
-    recipe = RECIPES.get(record.handler)
+    recipe = recipes().get(record.handler)
     if recipe is None or not data or not _looks_right(data):
         return None
     if recipe is Seesaw and not 0 <= record.slot < SEESAW_SLOTS:

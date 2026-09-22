@@ -73,6 +73,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from functions import game_build
+
 RECORD = struct.Struct("<BBhhhBBhhhI")
 RECORD_SIZE = RECORD.size          # 20
 
@@ -127,6 +129,15 @@ OVERLAY_BASE = 0x80108F9C
 # owns a table is worked out by parsing it - see find_pickups().
 PICKUP_TABLES = 0x800A3EE0
 PICKUP_TABLE_COUNT = 42
+# How far past the overlay base a table can be, and the shortest run a scan
+# for tables by shape takes as one.
+OVERLAY_REACH = 0x80000
+MIN_PICKUPS = 2
+
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(
+    globals(), main=("AREA_TABLES", "OVERLAY_BASE", "PICKUP_TABLES"),
+    per_area=("SECTIONS",))
 
 #     u8  type      \  what the actor is allocated as. 0xFF here ends
 #     u8  alloc     /  the table; alloc is 2 or 5 on the whole disc
@@ -428,8 +439,13 @@ def find_pickups(data, exe_path):
     that read as a table there. Reading as one is a high bar: the save
     bits inside a table are numbered in order, and requiring that leaves
     no entry that two overlays both claim."""
+    addresses = pickup_addresses(exe_path)
+    if not _pointer_array(addresses):
+        # The demos keep no such array (functions/game_build.py): the
+        # tables are found by their shape instead.
+        return scan_pickups(data)
     tables = []
-    for number, address in enumerate(pickup_addresses(exe_path)):
+    for number, address in enumerate(addresses):
         if not address:
             continue
         at, run = address - OVERLAY_BASE, []
@@ -446,6 +462,38 @@ def find_pickups(data, exe_path):
         for i, record in enumerate(run):
             record.index, record.table = i, number
         tables.append(run)
+    return tables
+
+
+def _pointer_array(addresses):
+    """Whether what was read for the array of pickup tables is one: every
+    entry null or a pointer into the overlay window."""
+    return bool(addresses) and all(
+        not a or OVERLAY_BASE <= a < OVERLAY_BASE + OVERLAY_REACH for a in addresses)
+
+
+def scan_pickups(data):
+    """find_pickups() without MAIN.EXE's array: every run of pickup records
+    that ends on 0xFF with its save bits in order, found by shape the way
+    find_tables() finds placements."""
+    placed = {offset for table in find_tables(data) for record in table
+              for offset in range(record.offset, record.offset + RECORD_SIZE)}
+    tables, at = [], 0
+    while at + PICKUP_SIZE <= len(data):
+        if at in placed or _pickup(data, at) is None:
+            at += 2
+            continue
+        run, end = [], at
+        while (record := _pickup(data, end)) is not None and end not in placed:
+            run.append(record)
+            end += PICKUP_SIZE
+        if (len(run) >= MIN_PICKUPS and end < len(data) and data[end] == END
+                and all(_ordered(r.bit for r in run if r.apple is which)
+                        for which in (True, False))):
+            for i, record in enumerate(run):
+                record.index, record.table = i, len(tables)
+            tables.append(run)
+        at = max(end, at + 2)
     return tables
 
 
@@ -567,15 +615,35 @@ def _read_bindings(path=None):
         return {}
 
 
-def _rows_to_bindings(rows):
+def _image(overlay_name, handler):
+    """Which image a handler lives in: its overlay's, or MAIN.EXE's."""
+    if game_build.US_OVERLAY_BASE <= handler < game_build.US_AREA_BASE:
+        return os.path.splitext(overlay_name)[0].upper()
+    return game_build.MAIN
+
+
+def _rows_to_bindings(rows, overlay_name=""):
+    # Kept under US retail's handler addresses, looked up by the open build's.
+    build = game_build.current()
     out = {}
     for row in rows or ():
         try:
-            out[(int(row["kind"]), int(row["slot"]),
-                 int(row["handler"], 16))] = (int(row["file"]), int(row["group"]))
+            handler = int(row["handler"], 16)
+            here = build.address(handler, _image(overlay_name, handler))
+            if not here:
+                continue
+            out[(int(row["kind"]), int(row["slot"]), here)] = (
+                int(row["file"]), int(row["group"]))
         except (KeyError, TypeError, ValueError):
             continue
     return out
+
+
+def _us_handler(overlay_name, handler):
+    build = game_build.current()
+    image = (os.path.splitext(overlay_name)[0].upper()
+             if build.overlay_base <= handler < build.area_base else game_build.MAIN)
+    return build.us(handler, image) or handler
 
 
 def load_bindings(overlay_name, path=None, section=None):
@@ -593,7 +661,8 @@ def load_bindings(overlay_name, path=None, section=None):
     sections = (section,) if section else (CORRECTED,)
     out = {}
     for name in sections:
-        out.update(_rows_to_bindings((data.get(name) or {}).get(overlay_name)))
+        out.update(_rows_to_bindings((data.get(name) or {}).get(overlay_name),
+                                     overlay_name))
     return out
 
 
@@ -640,7 +709,8 @@ def _bindings_to_rows(overlays):
         # what an object starts as, so writing it down would only be
         # recording that nothing is known.
         rows[name] = [
-            {"kind": kind, "slot": slot, "handler": f"0x{handler:08X}",
+            {"kind": kind, "slot": slot,
+             "handler": f"0x{_us_handler(name, handler):08X}",
              "file": source[0], "group": source[1]}
             for (kind, slot, handler), source in sorted(bindings.items())
             if source is not None

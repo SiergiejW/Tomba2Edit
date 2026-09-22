@@ -22,15 +22,21 @@ Two kinds of slack get looked for, because they hide different things:
 import os
 import struct
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRectF, Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel,
+    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
-from functions import img_codec
+from functions import img_codec, psx_vram
 from gui import panel_title
-from gui.img.img_viewer import IMGViewer
+from gui.vram_viewer import VRAMViewer, decode_vram_bytes
+
+# The first row of the list: every chunk's shards in one VRAM, each over
+# the ones before it - the whole of the file at a glance.
+ALL_CHUNKS = "(all chunks)"
 
 IDX_STRIDE = 0x800
 
@@ -129,13 +135,23 @@ class IMGBrowser(QWidget):
         self.dump.setEnabled(False)
         self.dump.clicked.connect(self._dump_unreferenced)
 
-        self.viewer = IMGViewer(self)
+        self.shards_box = QCheckBox("Outline shards", self)
+        self.shards_box.setToolTip(
+            "Ring each shard of the chosen chunk where it lands in VRAM - "
+            "the rectangles the IMG stores separately compressed.")
+        self.shards_box.toggled.connect(self._outline_shards)
+
+        # One big view: the same VRAM viewer the tree's .VRAM rows open -
+        # Textured, every reading, the CLUT crosshair.
+        self.viewer = VRAMViewer()
+        self._shards = []
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(panel_title.make_panel_title("TOMBA2.IMG"))
         left_layout.addWidget(self.table, 1)
+        left_layout.addWidget(self.shards_box)
         left_layout.addWidget(self.summary)
         left_layout.addWidget(self.dump)
 
@@ -144,7 +160,7 @@ class IMGBrowser(QWidget):
         splitter.addWidget(self.viewer)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([560, 900])
+        splitter.setSizes([360, 1100])
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -165,11 +181,12 @@ class IMGBrowser(QWidget):
             self.summary.setText(f"Couldn't read TOMBA2.IMG: {e}")
             self.dump.setEnabled(False)
             return
-        self._chunks = chunks
+        self._chunks = [None] + chunks          # row 0: every chunk at once
         self._gaps = gaps
 
-        self.table.setRowCount(len(chunks))
-        for row, c in enumerate(chunks):
+        self.table.setRowCount(len(chunks) + 1)
+        self.table.setItem(0, 0, QTableWidgetItem(ALL_CHUNKS))
+        for row, c in enumerate(chunks, start=1):
             cells = (f"AREA_{c['chunk']:02X}",
                      f"0x{c['start']:X}", f"0x{c['end']:X}",
                      f"0x{c['size']:X}",
@@ -207,15 +224,61 @@ class IMGBrowser(QWidget):
         if not rows or rows[0].row() >= len(self._chunks):
             return
         c = self._chunks[rows[0].row()]
-        if not c["size"]:
-            self.viewer.summary.setText(
-                f"AREA_{c['chunk']:02X} has no IMG chunk.")
-            return
         path = os.path.join(self.cd_folder, "TOMBA2.IMG")
+        if c is None:
+            self._show_all(path)
+            return
+        if not c["size"]:
+            self.viewer.info_label.setText(f"AREA_{c['chunk']:02X} has no IMG chunk.")
+            return
         with open(path, "rb") as img:
             img.seek(c["start"])
             data = img.read(c["size"])
-        self.viewer.load_chunk(data, f"AREA_{c['chunk']:02X}.IMG", c["start"])
+        try:
+            self._shards = [s[:4] for s in img_codec.read_chunk_header(data)[0]]
+        except Exception:
+            self._shards = []
+        # What Textured needs to find this area's own art.
+        self.viewer.set_area_source(os.path.join(self.cd_folder, "TOMBA2.IDX"),
+                                    os.path.join(self.cd_folder, "TOMBA2.DAT"),
+                                    c["chunk"])
+        self.viewer.set_vram_bytes(decode_vram_bytes(data), f"AREA_{c['chunk']:02X}.IMG")
+        self._outline_shards(self.shards_box.isChecked())
+        print(f"selected: AREA_{c['chunk']:02X}.IMG  chunk @ 0x{c['start']:X}  "
+              f"{len(self._shards)} shard(s)")
+
+    def _show_all(self, path):
+        """Every chunk decoded into one VRAM, later areas over earlier."""
+        vram = bytearray(psx_vram.VRAM_SIZE)
+        shards = []
+        with open(path, "rb") as img:
+            for c in self._chunks[1:]:
+                if not c["size"]:
+                    continue
+                img.seek(c["start"])
+                data = img.read(c["size"])
+                try:
+                    decoded = img_codec.decompress_chunk(data)
+                except Exception:
+                    continue
+                for (x, y, w, h, _packed), pixels in decoded:
+                    shards.append((x, y, w, h))
+                    row_bytes = w * 2
+                    for row in range(h):
+                        at = (y + row) * psx_vram.VRAM_STRIDE + x * 2
+                        vram[at:at + row_bytes] = pixels[row * row_bytes:(row + 1) * row_bytes]
+        self._shards = shards
+        self.viewer._area_source = None          # no one area's art to look for
+        self.viewer.set_vram_bytes(vram, "TOMBA2.IMG (all chunks)")
+        self._outline_shards(self.shards_box.isChecked())
+        print(f"selected: TOMBA2.IMG  all chunks  {len(shards)} shard(s)")
+
+    def _outline_shards(self, on):
+        canvas = self.viewer.canvas
+        span = canvas.texels_per_halfword
+        canvas.highlights = ([(QRectF(x * span, y, w * span, h), QColor(255, 220, 40), "")
+                              for x, y, w, h in self._shards] if on else [])
+        canvas.update()
 
     def _dump_unreferenced(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox

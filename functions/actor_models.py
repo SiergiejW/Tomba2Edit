@@ -38,11 +38,13 @@ worse, since it attaches single parts all over the place).
 """
 import struct
 
-from functions import mips
+from functions import game_build, mips
 
 # The routine that builds a whole actor, and where its arguments land.
 MULTI_PART = 0x800519E0
 COUNT_ARG, MODEL_ARG, LAYOUT_ARG = 5, 6, 7      # a1, a2, a3
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=("MULTI_PART",))
 
 # One part of the layout: parent, then where it sits on that parent.
 PART = struct.Struct("<hhhh")

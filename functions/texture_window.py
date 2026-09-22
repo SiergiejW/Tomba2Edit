@@ -44,8 +44,9 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from functions import game_build
+
 CELL = 64
-OVERLAY_BASE = 0x80108F9C
 # Faces functions/environment_meshes.py builds carry this flag - past the
 # packet byte, so it never meets a real one.
 GENERATED = 0x100
@@ -99,10 +100,13 @@ def rules_for(overlay_path):
             overlay = f.read()
     except OSError:
         return ()
+    image = os.path.basename(overlay_path)[:3].upper()
     out = []
     for rule in rules:
         if rule.cell_table:
-            at = rule.cell_table - OVERLAY_BASE
+            at = game_build.overlay_offset(image, rule.cell_table)
+            if at is None:
+                continue
             raw = overlay[at:at + rule.cell_count * 2]
             rule = replace(rule, cells=tuple(zip(raw[0::2], raw[1::2])))
         out.append(rule)

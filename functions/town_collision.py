@@ -25,6 +25,8 @@ checked against decomp/town collision (725 planes over 5 datasets).
 import struct
 from dataclasses import dataclass
 
+from functions import game_build
+
 OVERLAY_BASE = 0x80108F9C
 GRID = 64
 CELL = 512
@@ -34,6 +36,9 @@ EMPTY = 0xFFFF
 ONE = 4096
 MAX_STREAM = 0x4000
 NAME_LIMIT = 24
+
+# US retail's; another build's while it is open (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), main=("OVERLAY_BASE",))
 
 KINDS = (("kabe", "wall"), ("doa", "door"), ("yuka", "floor"),
          ("uka", "floor"), ("hasigo", "ladder"), ("ami", "net"),

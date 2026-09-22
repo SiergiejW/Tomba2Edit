@@ -68,7 +68,8 @@ def parse(decomp_text):
                  and c != name]
         labels = collections.defaultdict(list)
         for tag, address in _LOCAL_LABEL.findall(body):
-            labels[tag].append(int(address, 16))
+            # Ghidra may keep an overlay at 0x00xxxxxx (the JP demo's does).
+            labels[tag].append(int(address, 16) | 0x80000000)
         image = None
         fm, fo = _FUN_MAIN.match(name), _FUN_OVL.match(name)
         if fo:
@@ -81,7 +82,7 @@ def parse(decomp_text):
     return out
 
 
-def load_images(exe_path, bin_folder):
+def load_images(exe_path, bin_folder, overlay_base=OVERLAY_BASE):
     images = {}
     with open(exe_path, "rb") as f:
         data = f.read()
@@ -90,7 +91,7 @@ def load_images(exe_path, bin_folder):
         path = os.path.join(bin_folder, f"{tag}.BIN")
         if os.path.exists(path):
             with open(path, "rb") as f:
-                images[tag] = Image(f.read(), OVERLAY_BASE)
+                images[tag] = Image(f.read(), overlay_base)
     return images
 
 
@@ -141,11 +142,12 @@ def _calls_in(image, tag, images, start, end):
     return out
 
 
-def resolve(decomp_path, exe_path, bin_folder, rounds=12):
-    """{name: (image tag, address)}."""
+def resolve(decomp_path, exe_path, bin_folder, rounds=12, overlay_base=OVERLAY_BASE):
+    """{name: (image tag, address)}. `overlay_base` is where the build's
+    overlays load - see functions/game_build.overlay_base."""
     with open(decomp_path, encoding="utf-8", errors="replace") as f:
         functions = parse(f.read())
-    images = load_images(exe_path, bin_folder)
+    images = load_images(exe_path, bin_folder, overlay_base)
     starts = _starts(images)
     known = {}
     for fn in functions:
@@ -153,7 +155,7 @@ def resolve(decomp_path, exe_path, bin_folder, rounds=12):
         if fm:
             known[fn.name] = (MAIN, int(fm.group(1), 16))
         elif fo and fo.group(1) in images:
-            known[fn.name] = (fo.group(1), int(fo.group(2), 16))
+            known[fn.name] = (fo.group(1), int(fo.group(2), 16) | 0x80000000)
     for tag, addresses in list(starts.items()):
         addresses.update(a for t, a in known.values() if t == tag)
     ordered = {tag: sorted(a) for tag, a in starts.items()}

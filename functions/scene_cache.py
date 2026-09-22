@@ -55,6 +55,10 @@ def _code_stamp():
                     continue
                 parts += [_stamp(os.path.join(base, n))
                           for n in sorted(names) if n.endswith(".py")]
+        # Each build's address map decides what its code runs as.
+        maps = os.path.join(root, "decomp", "builds")
+        if os.path.isdir(maps):
+            parts += [_stamp(os.path.join(maps, n)) for n in sorted(os.listdir(maps))]
         _code = hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
     return _code
 

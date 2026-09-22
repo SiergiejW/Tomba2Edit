@@ -184,6 +184,10 @@ class CameraControls:
         self.orbit_distance = DEFAULT_SCENE_RADIUS
         self.orbit_mode = None            # None, "orbit" or "pan"
         self._orbit_pivot = None
+        # A view can name what to circle instead - the Level Editor's
+        # selection, while its Orbit selection toggle is on. None, or a
+        # callable returning a world point or None.
+        self.orbit_target = None
 
         # Key states
         self.keys_pressed = {
@@ -367,6 +371,21 @@ class CameraControls:
         if self.camera_mode:
             return                    # the freecam has the mouse
         self.orbit_mode = "pan" if panning else "orbit"
+        target = self.orbit_target() if (self.orbit_target and not panning) else None
+        if target is not None:
+            # Circle the named point: turned to face it, at the distance it
+            # is now, so the first move does not jump the view.
+            eye = self._eye()
+            dx, dy, dz = (target[k] - eye[k] for k in range(3))
+            self.orbit_distance = max(math.sqrt(dx * dx + dy * dy + dz * dz),
+                                      self.scene_radius * MIN_ORBIT)
+            flat = math.hypot(dx, dz)
+            self.camera_angle_h = math.degrees(math.atan2(dx, -dz))
+            self.camera_angle_v = max(-89.0, min(89.0, math.degrees(math.atan2(-dy, flat))))
+            self._orbit_pivot = tuple(target)
+            self.look_at(self._orbit_pivot, self.orbit_distance)
+            self.widget.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+            return
         # What the middle of the view is looking at, out of the depth buffer,
         # so a drag circles the thing on screen - pushed out to ORBIT_REACH
         # when that is right in front of the camera.

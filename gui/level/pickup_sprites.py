@@ -39,6 +39,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from functions import game_build
 from gui.sprt import sprt_render
 from gui.sprt.sprt_parser import load_sprt
 
@@ -47,6 +48,8 @@ from gui.sprt.sprt_parser import load_sprt
 # which is SDAT id 10 (see functions/pickup_art.py).
 RESIDENT_SPRT_ID = 0
 AREA_SPRT_ID = 10
+# The demos number their slots their own way (functions/game_build.py).
+_BUILD = game_build.Addresses(globals(), slots=("RESIDENT_SPRT_ID", "AREA_SPRT_ID"))
 
 # The scale the pickup routine gives the actor, in the PSX's 4096ths.
 ACTOR_SCALE = 0x1300
