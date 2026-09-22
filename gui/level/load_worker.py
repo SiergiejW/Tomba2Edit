@@ -181,7 +181,12 @@ def main(argv):
         status(protocol, f"Preparing the view: {title}")
         prepared = buffers(scene, vram)
         from gui.clut_animation import prepare_animation_data
-        prepared = (*prepared, prepare_animation_data(vram, scene.build(), args[3]))
+        # UV animations are looked for in the rooms themselves: the level's
+        # other faces with the same palette are captured drawings, which
+        # already carry the frames they were recorded in.
+        prepared = (*prepared, prepare_animation_data(
+            vram, scene.build(), args[3],
+            uv_models=[room for _where, room in scene.rooms]))
         positions = scene.positions(scene.build())
         bounds = {}
         for instance in scene.instances:

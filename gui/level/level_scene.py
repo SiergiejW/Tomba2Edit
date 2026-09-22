@@ -2713,13 +2713,38 @@ class LevelScene:
         self.model(file_id)
         return file_label(self.content.get(file_id), self.slots.get(file_id))
 
+    def smst_files(self):
+        """Every file of this area's chunk that reads as an SMST.
+
+        Not only the ones something loaded: a build can carry a model no
+        code stands up - the JP demo ships the magic flower's - and it is
+        still the area's own art, so it can be picked by hand."""
+        kept = getattr(self, "_smst_files", None)
+        if kept is not None:
+            return kept
+        kept = []
+        for file_id, (offset, size) in sorted(self.by_id.items()):
+            if size <= 0:
+                continue
+            if self.models.get(file_id) is not None:
+                kept.append(file_id)
+                continue
+            try:
+                best = format_detect.identify_at(self.dat_path,
+                                                 self.dat_start + offset, size)
+            except Exception:
+                continue
+            if best and best[0].kind == "SMST":
+                kept.append(file_id)
+        self._smst_files = kept
+        return kept
+
     def model_choices(self):
         """[(label, (file id, group)), ...] every part this area could
         draw an object with - the asset pack first, since that is where
-        a level's props live, then whatever else is already loaded."""
+        a level's props live, then the rest of its models."""
         out = [("(no model - marker only)", None)]
-        ids = [ASSET_PACK_ID] + sorted(
-            i for i in self.by_id if i != ASSET_PACK_ID and self.models.get(i))
+        ids = [ASSET_PACK_ID] + [i for i in self.smst_files() if i != ASSET_PACK_ID]
         for file_id in ids:
             model = self.model(file_id)
             for group in (model or {}).get("groups") or ():

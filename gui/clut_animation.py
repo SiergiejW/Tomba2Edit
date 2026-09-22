@@ -52,8 +52,15 @@ ANIMATE_TOOLTIP = (
     "are set here by eye against the game.")
 
 
-def prepare_animation_data(vram, model, overlay_path):
-    """Read animation tables and texture patterns without touching a widget."""
+def prepare_animation_data(vram, model, overlay_path, uv_models=None):
+    """Read animation tables and texture patterns without touching a widget.
+
+    `uv_models` are the models to look for UV animations in, when they are
+    not `model` itself: a UV animation is a run of frames one drawing steps
+    through, so it is found in the drawing that steps it. A whole level is
+    several of those at once (the Water Temple's waterfall quads, and the
+    captured falls beside them, which carry the frames they were recorded
+    in) and nothing in it sits in one cell - see functions/uv_anim.py."""
     cluts, uvs, rules = {}, {}, ()
     found = []
     if overlay_path:
@@ -71,13 +78,13 @@ def prepare_animation_data(vram, model, overlay_path):
         if animation.address in used:
             cluts[animation.address] = animation
 
-    try:
-        uvs = {clut: animation for clut, animation
-               in uv_anim.find_animations(vram, model).items()
-               if clut in used}
-    except Exception as e:
-        print(f"Could not look for UV animations: {e}")
-        uvs = {}
+    for source in (model,) if uv_models is None else uv_models:
+        try:
+            uvs.update({clut: animation for clut, animation
+                        in uv_anim.find_animations(vram, source).items()
+                        if clut in used})
+        except Exception as e:
+            print(f"Could not look for UV animations: {e}")
     # Stepped by a draw routine, one game frame each - read off its code
     # (actor_sim._uv_frames), so it wins over the guess off the page.
     for clut, frames in ((model or {}).get("uv_frames") or {}).items():

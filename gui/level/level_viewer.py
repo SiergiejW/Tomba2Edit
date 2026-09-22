@@ -470,6 +470,19 @@ class LevelViewer(SMSTViewer):
         finally:
             self.hidden_groups = kept
 
+    def uv_offset_for(self, group_index, clut):
+        """A UV animation moves the room's own faces and nothing else.
+
+        The frames it steps through are a run of cells on one texture page
+        (functions/uv_anim.py); a level draws other things on that page with
+        the same palette - the Water Temple's captured falls, which already
+        carry the frames they were recorded in - and shifting those too
+        would move them twice."""
+        rows = self.instances
+        if group_index < len(rows) and getattr(rows[group_index], "role", None) != "room":
+            return (0.0, 0.0)
+        return self.uv_offsets.get(clut, (0.0, 0.0))
+
     def _toggle_sprites(self, checked):
         self.show_pickups = checked
         self._sprite_dirty = True

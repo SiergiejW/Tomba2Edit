@@ -811,6 +811,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.uv_offsets.update(offsets)
         self.update()
 
+    def uv_offset_for(self, _group_index, clut):
+        """How far a range drawn with this palette is shifted. Every part
+        of a model steps together; the Level Editor draws more than one
+        thing at once and overrides this."""
+        return self.uv_offsets.get(clut, (0.0, 0.0))
+
     def apply_clut_palettes(self, palettes):
         """ClutAnimationMixin's hook - put palettes on screen.
 
@@ -1441,7 +1447,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             if want != alpha:
                 self.shader_program.setUniformValue("alpha", want)
                 alpha = want
-            uv = self.uv_offsets.get(clut, (0.0, 0.0))
+            uv = self.uv_offset_for(group_index, clut)
             if uv != shifted:
                 self.shader_program.setUniformValue("uvOffset", QVector2D(*uv))
                 shifted = uv
