@@ -331,6 +331,19 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self._highlight_phase += 0.12
         self.update()
 
+    def mousePressEvent(self, event):
+        """A click prints the collision record under it, the way the other
+        views print what they select - gui/collision_overlay.sample_text."""
+        if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_lines", None):
+            point = event.position().toPoint()
+            hit = collision_overlay.pick_sample(
+                self._lines, self._model_view_projection(), UNIT_SCALE,
+                point.x(), point.y(), self.width(), self.height())
+            if hit is not None:
+                print(f"selected: SCLD @ 0x{getattr(self, '_scld_address', 0):X}  "
+                      + collision_overlay.sample_text(*hit))
+        super().mousePressEvent(event)
+
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
         """Parse and load an SCLD blob. Every record is drawn where its
         cell puts it (see SCLDEntry.trace()). `chunk_index` (the area's
@@ -338,6 +351,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         this area's matching MDAT room."""
         try:
             self.scld_data = load_scld(dat_file_path, dat_start, offset, size)
+            self._scld_address = dat_start + offset
             self._dat_file_path = dat_file_path
             self._chunk_index = chunk_index
             if chunk_index != self._level_loaded_for_chunk:
@@ -360,9 +374,13 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         self.entry_label_pos = {}
         entries = self.scld_data.entries
+        # The level editor's colours, or - the Slope toggle - each entry by
+        # its gradient.
+        style = (dict(color_by=unkn_color) if self.color_by_unkn
+                 else collision_overlay.LEVEL)
+        lines = collision_overlay.add_scld(collision_overlay.Lines(), entries, **style)
+        self._lines = lines
         tint = unkn_color if self.color_by_unkn else None
-        lines = collision_overlay.add_scld(collision_overlay.Lines(), entries,
-                                           color_by=tint)
         self.collision.set(lines, UNIT_SCALE)
         # entry -> its crosses in the surface layer, for the highlight pulse.
         self.entry_point_ranges = lines.ranges
@@ -750,3 +768,12 @@ class SCLDDebugPanel(QWidget):
         item = self.table.item(rows[0].row(), 0)
         entry_index = item.data(Qt.ItemDataRole.UserRole)
         self.viewer.set_highlighted_entry(entry_index)
+        entry = next((e for e in (self.viewer.scld_data.entries if self.viewer.scld_data else ())
+                      if e.index == entry_index), None)
+        if entry is not None:
+            kinds = sorted({entry.path[r].kind for r, _c in entry.placed()})
+            print(f"selected: SCLD @ 0x{getattr(self.viewer, '_scld_address', 0):X}  entry {entry.index}  "
+                  f"{entry.ls:02X}_into_{entry.le:02X}  base 0x{entry.base:X}  "
+                  f"{len(entry.path)} records  slope {entry.slope:+.4f}  "
+                  f"kinds {', '.join(f'0x{k:X}' for k in kinds[:12])}"
+                  + (" ..." if len(kinds) > 12 else ""))

@@ -4137,75 +4137,23 @@ class MainWindow(QMainWindow):
                         self.img_viewer.load_chunk(chunk, item_name, start)
                     return
 
-                # Check if this is a VRAM file
-                if item_name.endswith('.VRAM') or item_name.endswith('.CVRAM'):
-                    if item_name.endswith('.VRAM'):
-                        # Get the parent item to find the AREA index
-                        parent = selected_item.parent()
-                        if parent:
-                            grandparent = parent.parent()
-                            if grandparent:
-                                area_name = grandparent.text()
-                            else:
-                                area_name = parent.text()
-
-                            # Extract the area number (handle cases like "AREA_07 (18)")
-                            if area_name.startswith('AREA_'):
-                                area_part = area_name.split('_')[1].split()[0]  # Gets "07" from "AREA_07 (18)"
-                                try:
-                                    chunk_index = int(area_part, 16)
-                                    # Load the VRAM data
-                                    img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
-                                    with open(img_path, "rb") as IMG:
-                                        IDX_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
-                                        with open(IDX_path, "rb") as IDX:
-                                            chunk_size = 0x800
-                                            IDX.seek(chunk_index * chunk_size)
-                                            img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
-                                            IMG.seek(img_start)
-                                            imgdata = IMG.read(img_end - img_start)
-
-                                            # Show VRAM viewer
-                                            self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
-                                            # For the Textured mode - see
-                                            # functions/vram_preview.py.
-                                            self.vram_viewer.set_area_source(
-                                                IDX_path, self.dat_file, chunk_index)
-                                            self.vram_viewer.load_vram_data(imgdata)
-                                            return
-                                except ValueError as e:
-                                    print(f"Error parsing area number: {e}")
-                                    QMessageBox.critical(self, "Error", f"Failed to parse area number: {e}")
-                                    return
-                    elif item_name.endswith('.CVRAM'):
-                        parent = selected_item.parent()
-                        if parent:
-                            grandparent = parent.parent()
-                            if grandparent:
-                                area_name = grandparent.text()
-                            else:
-                                area_name = parent.text()
-
-                        if area_name.startswith('AREA_'):
-                            area_part = area_name.split('_')[1].split()[0]
-                            chunk_index = int(area_part, 16)
-
-                            img_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IMG")
-                            with open(img_path, "rb") as IMG:
-                                idx_path = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
-                                with open(idx_path, "rb") as IDX:
-                                    chunk_size = 0x800
-                                    IDX.seek(chunk_index * chunk_size)
-                                    img_start, img_end, _, _, _ = struct.unpack("<5I", IDX.read(20))
-                                    IMG.seek(img_start)
-                                    imgdata = IMG.read(img_end - img_start)
-
-                                    # Instead of decompressing, just load raw CVRAM
-                                    self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
-                                    self.vram_viewer.set_area_source(
-                                        idx_path, self.dat_file, chunk_index)
-                                    self.vram_viewer.load_cvrm_data(imgdata)  # <-- NEW FUNCTION
-
+                # An area's VRAM: Textured, plain and CVRAM views.
+                data = selected_item.data(Qt.ItemDataRole.UserRole) or ()
+                if item_name.endswith('.VRAM') and len(data) == 5                         and data[0] == "vram_uncompressed":
+                    _kind, chunk_index, img_start, size, img_path = data
+                    try:
+                        with open(img_path, "rb") as IMG:
+                            IMG.seek(img_start)
+                            imgdata = IMG.read(size)
+                    except OSError as e:
+                        QMessageBox.critical(self, "Error",
+                                             f"Couldn't read TOMBA2.IMG:\n\n{e}")
+                        return
+                    self.widgets_area.setCurrentWidget(self.widgets["VRAM"])
+                    self.vram_viewer.set_area_source(
+                        os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX"),
+                        self.dat_file, chunk_index)
+                    self.vram_viewer.load_area(imgdata, item_name, img_start)
                     return
 
                 # selection handling code...

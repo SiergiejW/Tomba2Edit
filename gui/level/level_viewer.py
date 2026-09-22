@@ -483,6 +483,7 @@ class LevelViewer(SMSTViewer):
         if lines is None:
             lines = self.scene.collision(self.view, self._room_bounds())
         self.collision.set(lines, UNIT_SCALE)
+        self._collision_lines = lines
 
     def set_view(self, view):
         """Follow the panel's Show box - see self.view."""
@@ -847,7 +848,10 @@ class LevelViewer(SMSTViewer):
             qvec = np.cross(tvec, edge1)
             v = np.einsum("j,ij->i", direction, qvec) * inv
             t = np.einsum("ij,ij->i", edge2, qvec) * inv
-            hit = (live & (u >= -1e-6) & (v >= -1e-6)
+            # Only a face turned towards the camera (det < 0 in these axes,
+            # measured against what a cast ray sees first): a click passes
+            # through a face's back to whatever is behind it.
+            hit = (live & (det < 0) & (u >= -1e-6) & (v >= -1e-6)
                    & (u + v <= 1 + 1e-6) & (t > 1e-6))
             hidden = self.hidden_groups | self._flip_hidden()
             if hidden:
@@ -984,6 +988,13 @@ class LevelViewer(SMSTViewer):
             self.select_part(None if part == self.selected_part else part)
             return
         self.select(index)
+        if index is None and self.show_collision and getattr(self, "_collision_lines", None):
+            hit = collision_overlay.pick_sample(
+                self._collision_lines, self._model_view_projection(), UNIT_SCALE,
+                point.x(), point.y(), self.width(), self.height())
+            if hit is not None:
+                print(f"selected: {self.export_name or 'area'}  "
+                      + collision_overlay.sample_text(*hit))
 
     # --- what the toolbar toggles -------------------------------------
 

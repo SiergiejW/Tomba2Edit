@@ -249,7 +249,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                              if self.model_data else None)
         lines = collision_overlay.add_scld(
             collision_overlay.Lines(), entries_in_bounds(entries, bounds),
-            bounds=bounds)
+            bounds=bounds, **collision_overlay.LEVEL)
         self.collision.set(lines, UNIT_SCALE)
 
     # --- picking out of the drawmap -----------------------------------

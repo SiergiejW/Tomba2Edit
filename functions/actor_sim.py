@@ -307,6 +307,12 @@ CLIP_PROBES = (1, 2, 5, 11)
 # "fly it as if unpurified" preview recorded the apparition over them.
 KUJARA_PLATFORM_GHOST = 0x8013AB0C
 KUJARA_SNOW_FIREFLY = 0x8013E910
+# What stands up a firefly under Tomba's feet (f_SpawnSnowFireflyActor,
+# f_SpawnDonglinSnowFireflyActor), by area.
+GROUND_FIREFLY_SPAWNERS = {4: 0x8013EBE4, 6: 0x80141020}
+# Set while one is out; the spawner refuses another until it is caught.
+# Donglin's also wants Tomba's zone at most 12 - the forest's first part.
+GROUND_FIREFLY_UP = {4: 0x800BF858, 6: 0x800BF85C}
 DONGLIN_SNOW_FIREFLY = 0x80140E4C
 DONGLIN_LIGHT_CUTSCENE = 0x800BFA20
 # A07's subtype 8 is an interior-transition/warp record.  Its common
@@ -1016,6 +1022,39 @@ class World:
             self.actors.append(actor)
             self.by_address[actor.address] = actor
 
+    def spawn_ground_fireflies(self, points, budget=BUDGET):
+        """A firefly where Tomba's footsteps would raise one: each point
+        (game x, y, z) handed to the area's own spawner the way its footstep
+        routine does (FUN_A04__80115978 / FUN_A06__8011403c: position, mode
+        2), then run a few frames so it is up and flying."""
+        spawner = GROUND_FIREFLY_SPAWNERS.get(self.area_number)
+        if spawner is None:
+            return
+        made = []
+        for x, y, z in points:
+            at = self._alloc(12)
+            self.mem.load(at, struct.pack("<3i", int(x) << 16, int(y) << 16, int(z) << 16))
+            first = len(self.actors)
+            # The game keeps one up at a time (this flag, cleared when it is
+            # caught); the editor shows every spot one could rise from.
+            self.mem.write(GROUND_FIREFLY_UP[self.area_number], 4, 0)
+            try:
+                self.cpu.call(spawner, (at, 2, 0), budget=budget, sp=STACK)
+            except EmuError:
+                continue
+            for actor in self.actors[first:]:
+                # Its own clip and row, not one pooled "projected effect".
+                actor.family_key = ("ground-firefly", actor.address)
+                made.append(actor)
+        if not made:
+            return
+        for _frame in range(3):
+            for actor in made:
+                if not actor.dead:
+                    self._run_actor(actor, budget)
+            self._read()
+        self.settle_captures()
+
     def add_firefly_previews(self, budget=BUDGET):
         """Stand up collectible Snow Fireflies hidden behind terrain triggers.
 
@@ -1189,7 +1228,7 @@ class World:
             family = actor_family.get(address)
             expected = len(raw.get(family, ()))
             snow = (isinstance(getattr(actor, "family_key", None), tuple)
-                    and actor.family_key[:1] == ("snow-firefly",))
+                    and actor.family_key[:1] in (("snow-firefly",), ("ground-firefly",)))
             if (actor is not None and len(clip) == expected and all(clip)
                     and (self.mem.read(address + CLASS, 1) == EFFECT_CLASS or snow)):
                 looped = _looped(clip)
@@ -2726,7 +2765,7 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=(), finished=(), log=None, publish=None):
+             chests=(), finished=(), log=None, publish=None, ground_fireflies=()):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
     area with no placement records is its spawner's scene 0.
@@ -2758,6 +2797,9 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     say(f"running the area, {frames} frame(s)")
     world.run(frames)
     world.add_firefly_previews()
+    if ground_fireflies:
+        say(f"standing up {len(ground_fireflies)} ground firefly(ies)")
+        world.spawn_ground_fireflies(ground_fireflies)
     say("the area stood up", world.actors)
     # An area's controller stands part of the chest table up itself; the
     # rest are stood up here, the way f_SpawnPersistentPickupPlacementTable does.

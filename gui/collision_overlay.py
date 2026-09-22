@@ -36,6 +36,43 @@ LINE_WIDTH = 1.0
 PLAIN_SURFACE = (0.3, 0.9, 0.4)
 PLAIN_WALL = (1.0, 0.35, 0.3)
 
+def pick_sample(lines, mvp, scale, x, y, width, height, reach=10):
+    """(entry, record) of the collision cross nearest widget point (x, y),
+    within `reach` pixels, or None. `mvp` is the view's QMatrix4x4 over
+    positions divided by `scale`."""
+    samples = getattr(lines, "samples", None) or ()
+    if not samples:
+        return None
+    points = np.array([(px, py, pz, 1.0) for px, py, pz, _e, _r in samples]) / (
+        scale, scale, scale, 1.0)
+    matrix = np.array(mvp.data(), dtype=np.float64).reshape(4, 4).T
+    clip = points @ matrix.T
+    w = clip[:, 3]
+    ahead = w > 1e-6
+    sx = (clip[:, 0] / np.where(ahead, w, 1) * 0.5 + 0.5) * width
+    sy = (1.0 - (clip[:, 1] / np.where(ahead, w, 1) * 0.5 + 0.5)) * height
+    gap = np.hypot(sx - x, sy - y)
+    gap[~ahead] = np.inf
+    best = int(np.argmin(gap))
+    if gap[best] > reach:
+        return None
+    _px, _py, _pz, entry, record = samples[best]
+    return entry, record
+
+
+def sample_text(entry, record):
+    """One SCLD record, the way every collision view prints it."""
+    rec = entry.path[record]
+    kind = rec.kind
+    what = [name for bit, name in ((0x01, "floor"), (0x04, "wall"), (0x08, "wall back"))
+            if kind & bit] or ["other"]
+    cell = next((c for r, c in entry.placed() if r == record), None)
+    return (f"SCLD entry {entry.index}  record {record}  kind 0x{kind:X} "
+            f"({'/'.join(what)}, material {(kind >> 8) & 0xFF})  "
+            f"height {-rec.pos}  rise {rec.elevation}  normal {rec.normal}"
+            + (f"  cell ({cell.col}, {cell.row})" if cell is not None else ""))
+
+
 def material_color(kind):
     """A floor sample's colour by its record's material - the kind's high
     byte, which picks what Tomba's footsteps do there (A04's footstep actor:
@@ -46,6 +83,12 @@ def material_color(kind):
         return PLAIN_SURFACE
     import colorsys
     return colorsys.hsv_to_rgb((material * 0.61803) % 1.0, 0.75, 1.0)
+
+
+# The level editor's look, which every collision view uses: plain green
+# floor, red walls, a floor sample in its material's colour.
+LEVEL = dict(color_by=lambda _entry: PLAIN_SURFACE, wall_color=PLAIN_WALL,
+             record_color=material_color)
 
 
 TOWN_COLORS = {
@@ -64,6 +107,7 @@ class Lines:
         self.surface, self.surface_colors = [], []
         self.vertical, self.vertical_colors = [], []
         self.fills, self.fill_colors = [], []       # triangles
+        self.samples = []           # (x, y, z, entry, record) per cross - see pick_sample
         self.ranges = {}            # entry index -> (first vertex, count) in surface
 
     def line(self, a, b, rgb, vertical=False):
@@ -102,6 +146,7 @@ def add_scld(lines, entries, bounds=None, color_by=None, wall_color=None,
             tone = record_color(entry.path[r].kind) if record_color else rgb
             lines.line((x - TICK, y, z), (x + TICK, y, z), tone)
             lines.line((x, y, z - TICK), (x, y, z + TICK), tone)
+            lines.samples.append((x, y, z, entry, r))
         lines.ranges[entry.index] = (first, len(lines.surface) - first)
         for a, b in entry.walls():
             if inside(bounds, a):

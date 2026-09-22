@@ -134,6 +134,10 @@ ROOM_REACH = 400.0
 # with that area's bit set in src_PurifiedAreas.
 PURIFIED_CHUNKS = range(0x1B, 0x23)
 PURIFIED_OFFSET = 22                # a purified chunk less this is its cursed one
+# The floor material Tomba's footsteps raise a firefly from, by area number,
+# and how far above it (FUN_A04__80115978 spawns 0x28 over the surface).
+FIREFLY_MATERIALS = {4: 5, 6: 8}
+FIREFLY_LIFT = 0x28
 
 # What the actors run from: a fresh game, every event done
 # (actor_sim.progress_bytes), or the first with the second's differences.
@@ -1181,12 +1185,33 @@ class LevelScene:
                 chests=[p for p in self.pickups if p.chest],
                 finished=(actor_sim.progress_bytes(self.overlay_data)
                           if self.progress == EVENTS_DONE and self.overlay_data else ()),
-                log=self._log_actors, publish=stage if publish else None)
+                log=self._log_actors, publish=stage if publish else None,
+                ground_fireflies=self._firefly_ground(number))
         except Exception as e:
             if publish is not None:
                 raise
             self.notes.append(f"couldn't run the objects' own code: {e}")
             return None
+
+    def _firefly_ground(self, area_number):
+        """Where a ground firefly rises, as game (x, y, z): a floor of the
+        material Tomba's footsteps raise them from - Kujara Ranch's 5 (0x501,
+        FUN_A04__80115978: one in eight steps), Donglin's 8 (0x801,
+        FUN_A06__8011403c: one in sixteen while running). One per collision
+        entry holding any, at its middle such record, a little above it."""
+        material = FIREFLY_MATERIALS.get(area_number)
+        if material is None:
+            return ()
+        out = []
+        for entry in self.planes:
+            points = [p for p, r in zip(entry.trace(), entry.records())
+                      if entry.path[r].kind & 1
+                      and (entry.path[r].kind >> 8) & 0xF == material]
+            if points:
+                vx, vy, vz = points[len(points) // 2]
+                # The viewers' axes back to the game's (see SCLDEntry.trace).
+                out.append((vz, -vy - FIREFLY_LIFT, vx))
+        return tuple(out)
 
     def _log_actors(self, message, actors=None):
         """One line of simulate()'s progress on the console: the stage, and
@@ -1272,6 +1297,8 @@ class LevelScene:
             reward = read(actor.address + actor_sim.SLOT, 1) & 0x7F
             art = self.reward_art.get(reward)
             return art.grants if art is not None else f"item, reward {reward}"
+        if isinstance(actor.family_key, tuple) and actor.family_key[:1] == ("ground-firefly",):
+            return "ground firefly (rises under Tomba's feet on this floor)"
         if read is not None and handler == FOREST_GHOST_ROCK_CRAB:
             variant = (actor.born[1] if actor.born is not None
                        else read(actor.address + actor_sim.SLOT, 1))
@@ -1289,6 +1316,15 @@ class LevelScene:
             return "⧖ its init waits on progress a fresh game has not made"
         return ""
 
+    def _part_named(self, sources):
+        """A character's name when its file has none: its first named part
+        (the SMST viewer names parts one by one)."""
+        for source in sources:
+            name = self.named((source,))
+            if name:
+                return name
+        return ""
+
     def _spawn_label(self, label, posed):
         """A spawned row's name: what its model is called, or which file
         it is and how big, after what made it."""
@@ -1296,7 +1332,8 @@ class LevelScene:
             return label
         files = collections.Counter(f for f, _g in posed.sources)
         file_id, _n = files.most_common(1)[0]
-        named = self.named(tuple(s for s in posed.sources if s[0] == file_id))
+        named = (self.named(tuple(s for s in posed.sources if s[0] == file_id))
+                 or self._part_named(posed.sources))
         where = (f"trail {file_id - actor_sim.TRAIL_ID:#x}"
                  if file_id >= actor_sim.TRAIL_ID else f"id {file_id}")
         what = named or f"{where}, {len(posed.sources)} parts"
@@ -2108,7 +2145,8 @@ class LevelScene:
                          if world is not None and alone is not None else None)
                 snow_firefly = (actor is not None
                                 and isinstance(actor.family_key, tuple)
-                                and actor.family_key[:1] == ("snow-firefly",))
+                                and actor.family_key[:1] in (("snow-firefly",),
+                                                             ("ground-firefly",)))
                 # Unattributed projected packets from unrelated emitters -
                 # A01's pipe bubbles and a vent 8000 units away - share one
                 # bucket; each spatial group is its own row, looping on its
@@ -2391,9 +2429,7 @@ class LevelScene:
         lines = overlay.Lines()
         # Two colours here, not one per plane: in a level what matters is
         # what you stand on and what stops you.
-        plain = dict(color_by=lambda _entry: overlay.PLAIN_SURFACE,
-                     wall_color=overlay.PLAIN_WALL,
-                     record_color=overlay.material_color)
+        plain = overlay.LEVEL
         if view in (None, "all"):
             overlay.add_scld(lines, self.planes, **plain)
         elif rooms and view in rooms:

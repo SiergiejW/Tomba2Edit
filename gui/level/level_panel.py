@@ -480,6 +480,9 @@ class LevelEditorPanel(QWidget):
         scene = LevelScene()
         scene.__dict__.update(state)
         self.scene = scene
+        # Textured VRAM colours what this stage saw drawn.
+        from functions import vram_preview
+        vram_preview.publish_level(self.chunk, vram_preview.scene_regions(scene))
         from gui.vram_viewer import vram_index_image
         if not self._stage_seen:
             self.viewer.set_vram(vram, vram_index_image(vram) if vram else None)
@@ -891,13 +894,13 @@ class LevelEditorPanel(QWidget):
                     f"{len(members)} part(s) - {parts}<br>" + text)
         self.details.setText(text + "<br>" + self.details.text())
         print(f"selected part: '{instance.label}' part {part} = id {file_id} "
-              f"group {group}")
+              f"group {group}" + (f" '{named}'" if named else ""))
 
     def _fill_row(self, row, instance):
         if instance.assembly is not None and len(instance.sources) > 1:
             model = f"{instance.name} ({len(instance.sources)} parts)"
         elif instance.sources:
-            model = " + ".join(f"id {f} g{g}" for f, g in instance.sources)
+            model = " + ".join(self._source_text(s) for s in instance.sources)
         elif instance.drawn_as_sprite:
             model = "sprite"
         else:
@@ -973,6 +976,13 @@ class LevelEditorPanel(QWidget):
             return None
         return instances[index]
 
+    def _source_text(self, source):
+        """'id 12 g17' - with the part's name, given in the SMST viewer, if
+        it has one."""
+        file_id, group = source
+        name = self.scene.named((source,)) if self.scene is not None else ""
+        return f"id {file_id} g{group}" + (f" '{name}'" if name else "")
+
     def _print_selection(self, instance):
         """Name what was picked in the level by where it is written.
 
@@ -1001,8 +1011,8 @@ class LevelEditorPanel(QWidget):
         if instance.room is not None:
             bits.append(f"room MDAT {instance.room}")
         if instance.sources:
-            bits.append("model " + ", ".join(f"id {f} g{g}"
-                                             for f, g in instance.sources))
+            bits.append("model " + ", ".join(self._source_text(s)
+                                             for s in instance.sources))
         bits.append("at ({:.0f}, {:.0f}, {:.0f})".format(*instance.game_position)
                     + f" turned {instance.angle:.0f} deg")
         print("selected: " + "  ".join(bits))

@@ -551,31 +551,6 @@ def parse_idx_file(main_window, cd_folder):
 
                 sdat_item.appendRow(file_item)
 
-        if imgdata:
-            vram_item = QStandardItem(folder_icon, f"{chunk_index:02X}_VRAM")
-            vram_item.setFlags(vram_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            area_item.appendRow(vram_item)
-
-            # The chunk as it sits in TOMBA2.IMG - the shard table and
-            # what each shard cost - rather than the VRAM it builds.
-            img_item = QStandardItem(main_window.cvram_icon,
-                                     f"{chunk_index:02X}.IMG")
-            img_item.setFlags(img_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            img_item.setData(("img_chunk", img_start, img_end - img_start,
-                              img_path), Qt.ItemDataRole.UserRole)
-            img_item.setToolTip(
-                f"TOMBA2.IMG chunk {chunk_index:02X}: 0x{img_start:X} to "
-                f"0x{img_end:X}, {img_end - img_start} bytes compressed.")
-            vram_item.appendRow(img_item)
-
-            vram_u_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.VRAM")
-            vram_u_item.setFlags(vram_u_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            vram_u_item.setData(("vram_uncompressed", chunk_index), Qt.ItemDataRole.UserRole)
-            vram_u_item.setToolTip(
-                "The decompressed 1024x512 PSX VRAM. Choose indexed grey, "
-                "one CLUT, direct RGB555, or Textured (as used) in the viewer.")
-            vram_item.appendRow(vram_u_item)
-
         if traildata:
             trail_item = QStandardItem(folder_icon, f"{chunk_index:02X}_TRAIL")
             trail_item.setFlags(trail_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -601,11 +576,22 @@ def parse_idx_file(main_window, cd_folder):
                 main_window.content_item.setdefault(content, trail_file_item)
                 trail_item.appendRow(trail_file_item)
 
+        if imgdata:
+            # One row, last, for both views of it - Textured VRAM and the
+            # plain readings - see gui/vram_viewer.py.
+            vram_item = QStandardItem(main_window.vram_icon, f"{chunk_index:02X}.VRAM")
+            vram_item.setFlags(vram_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            vram_item.setData(("vram_uncompressed", chunk_index, img_start,
+                               img_end - img_start, img_path), Qt.ItemDataRole.UserRole)
+            vram_item.setToolTip(
+                f"TOMBA2.IMG chunk {chunk_index:02X}: 0x{img_start:X} to "
+                f"0x{img_end:X}, {img_end - img_start} bytes compressed. "
+                "Textured VRAM or the plain readings in the viewer.")
+            area_item.appendRow(vram_item)
+
         main_window.update_folder_name(area_item)
         if datdata:
             main_window.update_folder_name(sdat_item)
-        if imgdata:
-            main_window.update_folder_name(vram_item)
         if traildata:
             main_window.update_folder_name(trail_item)
 

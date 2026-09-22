@@ -22,9 +22,13 @@ one static image. And, same as texture migration's own preview, this
 knows nothing about what the game uploads into VRAM itself while
 running.
 """
+import copy
 import struct
 
 from functions import format_detect, psx_vram
+
+# The cell every region's colour is spread to - see render().
+CELL = 16
 
 # Which formats a plain SDAT scan bothers to survey - MDAT is gathered
 # separately, through area_mdat_entries()/exportMDAT() rather than
@@ -45,7 +49,7 @@ class Patch:
 
     __slots__ = ("u0", "v0", "ww", "hh", "hflip", "vflip",
                 "page_byte_x", "page_row0", "clut_address", "clut_index",
-                "is_8bpp")
+                "is_8bpp", "__weakref__")
 
     def __init__(self, page, clut_address, u0, v0, w, h, eight_bit=False):
         self.u0, self.v0 = u0 % psx_vram.UV_WRAP, v0 % psx_vram.UV_WRAP
@@ -53,7 +57,11 @@ class Patch:
         self.hflip = self.vflip = False
         self.page_byte_x, self.page_row0 = psx_vram.page_origin(page)
         self.clut_address = clut_address
-        self.clut_index = psx_vram.clut_index(clut_address)
+        # The CLUT word, which VRAMTextures caches palettes by - masking
+        # the byte address gave palettes 0x10000 apart one key, and the
+        # town's grass came out in a water palette.
+        x, y = psx_vram.clut_address_xy(clut_address)
+        self.clut_index = (y << 6) | (x >> 4)
         self.is_8bpp = eight_bit
 
     @property
@@ -106,29 +114,25 @@ def regions_from_sprt(sprt_data):
 
 
 def regions_from_bgmp(bgmp):
-    """[Patch] from a parsed BGMP background - one region per distinct
-    palette its tiles actually use.
+    """[Patch] from a parsed BGMP background - one per tile, through that
+    tile's own palette.
 
     A tile does not have to use the file's own base CLUT: BGMPTile.raw
     carries a palette index of its own into the PALETTE_COUNT palettes
-    stacked below it (see gui/bgmp/bgmp_parser.py). One box per palette,
-    the bounding rectangle of whichever cells use it - not necessarily
-    the full page."""
+    stacked below it (see gui/bgmp/bgmp_parser.py). One box per palette
+    covering all its tiles painted over tiles of other palettes lying
+    between them - Ranch Summit's and the Town of Fishermen's skies in
+    the wrong colours."""
     from gui.bgmp.bgmp_parser import PALETTE_STRIDE, TILE
 
-    if not bgmp.tiles:
-        return []
-    by_palette = {}
+    seen, out = set(), []
     for tile in bgmp.tiles:
-        by_palette.setdefault(tile.palette, []).append(tile)
-    out = []
-    for palette, tiles in by_palette.items():
-        xs = [t.page_x for t in tiles]
-        ys = [t.page_y for t in tiles]
-        u0, u1 = min(xs), max(xs) + TILE
-        v0, v1 = min(ys), max(ys) + TILE
-        clut = bgmp.clut_address + palette * PALETTE_STRIDE
-        out.append(Patch(bgmp.texpage, clut, u0, v0, u1 - u0, v1 - v0))
+        key = (tile.page_x, tile.page_y, tile.palette)
+        if key in seen:
+            continue
+        seen.add(key)
+        clut = bgmp.clut_address + tile.palette * PALETTE_STRIDE
+        out.append(Patch(bgmp.texpage, clut, tile.page_x, tile.page_y, TILE, TILE))
     return out
 
 
@@ -213,6 +217,90 @@ def area_regions(idx_path, dat_path, chunk_index):
     return regions
 
 
+def regions_from_captured(polys, uv_frames=None):
+    """[Patch] from polygons actor_sim captured being drawn - (corners,
+    uvs, colours, CLUT word, blended, page word) - each box also at every
+    UV step its CLUT's `uv_frames` ({CLUT address: ((du, dv), ...)})
+    moves it through, so a stepped stream colours all its cells."""
+    out = []
+    for _corners, uvs, _colours, clut, _blended, page in polys or ():
+        if clut < 0 or not uvs:
+            continue
+        address = psx_vram.clut_address(clut)
+        us = [u for u, _v in uvs]
+        vs = [v for _u, v in uvs]
+        u0, v0 = min(us), min(vs)
+        w, h = max(us) - u0 + 1, max(vs) - v0 + 1
+        steps = set((uv_frames or {}).get(address) or ()) | {(0, 0)}
+        for du, dv in steps:
+            out.append(Patch(page, address, u0 + du, v0 + dv, w, h,
+                             eight_bit=(page >> 7) & 3 == 1))
+    return out
+
+
+def scene_regions(scene):
+    """[Patch] for what a loaded level editor scene saw drawn: every
+    captured polygon (effects, drawn-by-code props, billboards), with
+    stepped UVs spread over every cell they step to."""
+    out = []
+    models = getattr(scene, "models", {}) or {}
+    for key, polys in (getattr(scene, "drawn_polys", {}) or {}).items():
+        model = models.get(key) or {}
+        # drawn_model keyed its steps by CLUT address already.
+        out += regions_from_captured(polys, model.get("uv_frames"))
+    for frames in (getattr(scene, "captured_billboards", {}) or {}).values():
+        for polys in frames:
+            out += regions_from_captured(polys)
+    return out
+
+
+# Regions the level editor found, per area chunk, and who to tell when
+# they change - the level editor loads progressively.
+_level_regions = {}
+_listeners = []
+
+
+def publish_level(chunk_index, regions):
+    _level_regions[chunk_index] = regions
+    for listener in list(_listeners):
+        listener(chunk_index)
+
+
+def level_regions(chunk_index):
+    return _level_regions.get(chunk_index, [])
+
+
+def on_level_regions(listener):
+    _listeners.append(listener)
+
+
+def clut_spans(regions):
+    """{(CLUT address, colour count)} the regions draw through."""
+    return {(r.clut_address, 256 if r.is_8bpp else 16) for r in regions}
+
+
+def paint_cluts(rgba, vram_bytes, spans):
+    """Draw each palette row in `spans` in its own colours, straight into
+    a (512, 4096, 4) array - a halfword is four pixels wide there."""
+    import numpy as np
+
+    raw = bytes(vram_bytes)
+    for address, count in spans:
+        x, y = psx_vram.clut_address_xy(address)
+        if y >= psx_vram.VRAM_ROWS:
+            continue
+        count = min(count, psx_vram.VRAM_STRIDE // 2 - x)
+        words = np.frombuffer(raw, dtype="<u2", count=count,
+                              offset=y * psx_vram.VRAM_STRIDE + x * 2)
+        colour = np.empty((count, 4), dtype=np.uint8)
+        colour[:, 0] = (words & 0x1F) * 255 // 31
+        colour[:, 1] = ((words >> 5) & 0x1F) * 255 // 31
+        colour[:, 2] = ((words >> 10) & 0x1F) * 255 // 31
+        colour[:, 3] = 255
+        rgba[y, x * 4:(x + count) * 4] = np.repeat(colour, 4, axis=0)
+    return rgba
+
+
 def render(vram_bytes, regions):
     """The flat grey index view, with every known region painted
     through its own CLUT - the reconstruction this module exists for.
@@ -224,7 +312,6 @@ def render(vram_bytes, regions):
     import numpy as np
     from PIL import Image
 
-    from gui.sprt.sprt_render import VRAMTextures
     from gui.vram_viewer import TEXEL_HEIGHT, TEXEL_WIDTH, vram_texels
 
     grey = vram_texels(vram_bytes) * 17
@@ -232,19 +319,66 @@ def render(vram_bytes, regions):
     rgba[..., 0] = rgba[..., 1] = rgba[..., 2] = grey
     rgba[..., 3] = 255
     base = Image.fromarray(rgba, "RGBA")
+    base.alpha_composite(render_layer(vram_bytes, regions))
+    return base
 
+
+def render_layer(vram_bytes, regions, cells=True):
+    """Just the painted regions, transparent everywhere else - so a
+    caller can put them over any reading of the rest without redoing
+    this (a CLUT crosshair steps far faster than this paints)."""
+    import numpy as np
+    from PIL import Image
+
+    from gui.sprt.sprt_render import VRAMTextures
+    from gui.vram_viewer import TEXEL_HEIGHT, TEXEL_WIDTH
+
+    base = Image.new("RGBA", (TEXEL_WIDTH, TEXEL_HEIGHT), (0, 0, 0, 0))
     textures = VRAMTextures(vram_bytes)
+    # Every 16x16 cell a region touches, whole, first: a face paints only
+    # its own UV box, and the texels between faces stayed grey outlines.
+    # The exact boxes go on top after. A cell takes the CLUT covering most
+    # of it - the first one to touch it could be a neighbour's, which put
+    # the town's grass through a water palette.
+    cover = {}                      # cell key -> {CLUT address: (texels, region)}
+    for region in regions if cells else ():
+        for cu in range(region.u0 // CELL * CELL, region.u0 + region.ww, CELL):
+            for cv in range(region.v0 // CELL * CELL, region.v0 + region.hh, CELL):
+                if cu >= psx_vram.UV_WRAP or cv >= psx_vram.UV_WRAP:
+                    continue
+                area = ((min(cu + CELL, region.u0 + region.ww) - max(cu, region.u0))
+                        * (min(cv + CELL, region.v0 + region.hh) - max(cv, region.v0)))
+                key = (region.page_byte_x, region.page_row0, region.is_8bpp, cu, cv)
+                by_clut = cover.setdefault(key, {})
+                total, first = by_clut.get(region.clut_address, (0, region))
+                by_clut[region.clut_address] = (total + area, first)
+    fills = []
+    for (_x, _y, _eight, cu, cv), by_clut in cover.items():
+        _area, region = max(by_clut.values(), key=lambda found: found[0])
+        cell = copy.copy(region)
+        cell.u0, cell.v0, cell.ww, cell.hh = cu, cv, CELL, CELL
+        fills.append(cell)
+    # Where palettes compete for the same texels (one texture drawn as
+    # grass, dirt and rock), the one covering most of the page goes last.
+    weight = {}
     for region in regions:
+        key = (region.page_byte_x, region.page_row0, region.clut_address)
+        weight[key] = weight.get(key, 0) + region.ww * region.hh
+    exact = sorted(regions, key=lambda r: weight[(r.page_byte_x, r.page_row0,
+                                                  r.clut_address)])
+    for region in fills + exact:
         try:
-            patch = textures.piece_image(region)
-            if region.is_8bpp:
-                patch = patch.resize((patch.width * 2, patch.height), Image.Resampling.NEAREST)
-            # A region that wraps off the right edge of its own page,
-            # or sits at the very edge of VRAM, can land partly outside
-            # the 4096x512 canvas - alpha_composite refuses that rather
-            # than clipping it, and one odd region should not lose every
-            # other one already painted.
-            base.alpha_composite(patch, dest=region.dest)
+            patch = np.array(textures.piece_image(region).convert("RGBA"))
         except (IndexError, ValueError):
             continue
+        # Opaque, colour 0 as the black it holds: a transparent texel let
+        # the palette painted under it show through as speckles.
+        clear = patch[..., 3] == 0
+        patch[clear, :3] = 0
+        patch[..., 3] = 255
+        patch = Image.fromarray(patch, "RGBA")
+        if region.is_8bpp:
+            patch = patch.resize((patch.width * 2, patch.height), Image.Resampling.NEAREST)
+        # paste clips a patch running off the canvas's edge.
+        base.paste(patch, region.dest)
     return base
