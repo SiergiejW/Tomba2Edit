@@ -14,9 +14,23 @@ up say where each US instruction now is. Variables come from the code that
 uses them: a `lui`/`addiu` (or `lui`/`lw`) pair in US names one address, the
 same pair in the build names another, and every such pair is a vote.
 
-`generate` does that once with both discs to hand and keeps the result in
-decomp/builds/<build>.json; opening a build needs only that file. US retail
-itself needs none - its map is the identity.
+A routine that changed too much to line up whole is settled on its own
+(_realign_routines): its callers' jals, the handler tables that point at it
+and, for the JP demo, its own annotated decomp all say where it might start,
+and the candidate whose first words are most like US retail's wins. One that
+still lands in the middle of another routine is recorded as missing, and
+translates to nothing rather than to a guess - the demos have no
+f_LoadResourceChunkIntoGroup at all.
+
+The demos also number the area's file table differently (the MDAT is slot 6,
+not 8); the code that loads each slot says how, and Build.slot translates.
+
+`generate` does all that once with both discs to hand and keeps the result
+in decomp/builds/<build>.json; opening a build needs only that file. US
+retail itself needs none - its map is the identity. To make them again:
+
+    python -m functions.game_build <US retail folder> eu-retail=<folder> ...
+        jp-demo=<folder>,decomp/MAIN.EXE_JPDEMO_DECOMP.c
 
 An address in an overlay is only meaningful in that overlay - all of them
 load at the same address - so overlay addresses are translated per image
@@ -32,7 +46,7 @@ import struct
 import sys
 
 EXE_HEADER = 0x800
-T_ADDR, T_SIZE, PC0 = 0x18, 0x1C, 0x10
+T_ADDR, T_SIZE = 0x18, 0x1C
 MAIN = "MAIN"
 REFERENCE = "us-retail"
 
@@ -266,7 +280,6 @@ class Build:
         self.area_base = area_base
         # {US slot: this build's}, where the code says; the rest are the same.
         self._slots = {int(k): v for k, v in (slots or {}).items()}
-        self._us_slots = {v: k for k, v in self._slots.items()}
         # image -> ([code run starts], runs, [data range starts], ranges)
         self._images = {}
         # image -> US routine starts this build has no routine for.
@@ -282,6 +295,17 @@ class Build:
     @property
     def identity(self):
         return not self._images
+
+    @property
+    def japanese(self):
+        """Whether its MAIN.EXE's strings are Shift-JIS."""
+        return self.name.startswith("jp-")
+
+    @property
+    def same_layout(self):
+        """Whether its areas keep US retail's files in US retail's slots -
+        every build but the demos, whose file tables are numbered anew."""
+        return not self._slots
 
     def __repr__(self):
         return f"Build({self.name!r})"
@@ -342,9 +366,6 @@ class Build:
     def slot(self, us_slot):
         """The file-table slot this build keeps US retail's `us_slot` in."""
         return self._slots.get(us_slot, us_slot)
-
-    def us_slot(self, slot):
-        return self._us_slots.get(slot, slot)
 
     # -- this build -> US -------------------------------------------
 
@@ -890,12 +911,39 @@ def generate(reference_dir, build_dir, name, out_dir=MAPS, anchors=None):
     return table
 
 
+def decomp_anchors(decomp_path, build_dir, name, out_dir=None):
+    """Routine starts an annotated decomp of the build names, as anchors for
+    generate(): its names are placed on the build's own code (functions/
+    decomp_symbols.py) and kept as decomp/symbols_<name>.json, then paired
+    with US retail's (decomp/symbols_us.json)."""
+    from functions import decomp_symbols
+    folder = out_dir or os.path.dirname(MAPS)
+    exe = os.path.join(build_dir, "MAIN.EXE")
+    bins = _bins(build_dir)
+    first = os.path.join(bins, OVERLAYS[0] + ".BIN")
+    base = overlay_base(_read(first)) if os.path.exists(first) else US_OVERLAY_BASE
+    symbols = decomp_symbols.resolve(decomp_path, exe, bins, overlay_base=base)
+    with open(os.path.join(folder, f"symbols_{name}.json"), "w") as f:
+        json.dump(symbols, f, indent=0, sort_keys=True)
+    with open(os.path.join(folder, "symbols_us.json")) as f:
+        us_symbols = {k: tuple(v) for k, v in json.load(f).items()}
+    return anchors_from_symbols(us_symbols, symbols)
+
+
 if __name__ == "__main__":
-    # python -m functions.game_build <US retail folder> <name>=<folder> ...
+    # python -m functions.game_build <US retail folder> <name>=<folder>[,<decomp.c>] ...
+    #
+    # Each folder is an extracted disc (MAIN.EXE, BIN/). A build with an
+    # annotated decomp of its own - the JP demo's, decomp/
+    # MAIN.EXE_JPDEMO_DECOMP.c - gives it after a comma: its routine names
+    # are weighed with the rest (see _realign_routines).
     reference = sys.argv[1]
     for arg in sys.argv[2:]:
         name, folder = arg.split("=", 1)
-        t = generate(reference, folder, name)
+        folder, _comma, decomp = folder.partition(",")
+        anchors = decomp_anchors(decomp, folder, name) if decomp else None
+        t = generate(reference, folder, name, anchors=anchors)
         print(f"{name}: overlay base 0x{t['overlay_base']:08X}, area base "
               f"0x{t['area_base']:08X}, {sum(len(i['code']) for i in t['images'].values())} "
-              f"code runs, {sum(len(i.get('data', ())) for i in t['images'].values())} data ranges")
+              f"code runs, {sum(len(i.get('data', ())) for i in t['images'].values())} data ranges, "
+              f"{sum(len(i.get('unsettled', ())) for i in t['images'].values())} routines missing")

@@ -437,8 +437,11 @@ def find_pickups(data, exe_path):
     Only one overlay is in memory at a time, so every entry of the array
     points into the same window and an area's own entries are the ones
     that read as a table there. Reading as one is a high bar: the save
-    bits inside a table are numbered in order, and requiring that leaves
-    no entry that two overlays both claim."""
+    bits inside a table are numbered in order, and on US retail that
+    leaves no entry that two overlays both claim. On the other builds
+    another area's entry can land partway into one of this area's tables
+    and read as its tail; no real table starts inside another, since each
+    ends on a terminator of its own, so such a tail is dropped."""
     addresses = pickup_addresses(exe_path)
     if not _pointer_array(addresses):
         # The demos keep no such array (functions/game_build.py): the
@@ -462,7 +465,9 @@ def find_pickups(data, exe_path):
         for i, record in enumerate(run):
             record.index, record.table = i, number
         tables.append(run)
-    return tables
+    spans = [(t[0].offset, t[-1].offset + PICKUP_SIZE) for t in tables]
+    return [t for t in tables
+            if not any(lo < t[0].offset < hi for lo, hi in spans)]
 
 
 def _pointer_array(addresses):

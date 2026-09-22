@@ -144,12 +144,14 @@ a = Analysis(
     # are read beside the executable at runtime (sys._MEIPASS when
     # frozen).
     # decomp/symbols_us.json names handlers and finds each overlay's scene
-    # spawner for the level editor; decomp/builds/ says where each other
+    # spawner for the level editor (symbols_jp-demo.json the JP demo's own
+    # handlers); decomp/builds/ says where each other
     # build keeps those addresses (functions/game_build.py). The rest of
     # decomp/ is not read.
     datas=_icon_files() + [('labels', 'labels'), ('audio_names', 'audio_names'),
                            ('fonts', 'fonts'),
                            ('decomp/symbols_us.json', 'decomp'),
+                           ('decomp/symbols_jp-demo.json', 'decomp'),
                            ('decomp/builds', 'decomp/builds')] + _multimedia_plugins(),
     # QtMultimedia is imported inside the functions that play audio, so
     # the analysis does not always see it; naming it here is what gets

@@ -211,17 +211,32 @@ CLIP_HZ = 30
 _FILE_LABELS = None
 
 
-def file_label(content):
+_SLOT_LABELS = None
+
+
+def file_label(content, slot=None):
     """A file's name in the tree's labels (labels/*.json, by content hash),
-    less a trailing 'Model(s)' - or ""."""
-    global _FILE_LABELS
+    less a trailing 'Model(s)' - or "".
+
+    `slot` is (chunk, index in it): a build laid out like US retail - every
+    one but the demos (functions/game_build.py) - keeps the same files in
+    the same places, so a file whose bytes differ is still named by where
+    it is, as the tree does (labels.LabelSet.by_slot)."""
+    global _FILE_LABELS, _SLOT_LABELS
     if _FILE_LABELS is None:
         _FILE_LABELS = {}
         for label_set in labels.builtin():
             for key, entry in label_set.entries.items():
                 if entry.name and key not in _FILE_LABELS:
                     _FILE_LABELS[key] = entry.name
+        _SLOT_LABELS = [s for s in labels.builtin() if s.build == game_build.REFERENCE]
     name = _FILE_LABELS.get(content or "", "")
+    if not name and slot is not None and game_build.current().same_layout:
+        for label_set in _SLOT_LABELS:
+            entry = label_set.by_slot(*slot)
+            if entry is not None and entry.name:
+                name = entry.name
+                break
     return re.sub(r"\s+Models?$", "", name)
 
 
@@ -886,10 +901,11 @@ class LevelScene:
         self.overlay_path = None
         self.overlay_data = b""
         # Which build the disc is - see functions/game_build.py.
-        self.build = game_build.REFERENCE
+        self.build_name = game_build.REFERENCE
         # The area's actors, run - see functions/actor_sim.py.
         self.world = None
         self._symbols = None
+        self._own_symbols = None
         self.dat_start = 0
         self.dat_end = 0
         self.files = []                 # (index, id, offset, size)
@@ -929,6 +945,9 @@ class LevelScene:
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
         self.resident = {}
+        # {file id: (chunk, index in it)} - where a name is looked up when
+        # this build's bytes differ from the labelled one's (file_label).
+        self.slots = {}
         self.bindings = {}
         # Where each binding came from - "code" or "corrected".
         self.binding_source = {}
@@ -963,7 +982,7 @@ class LevelScene:
         self.progress = progress
         # Every address the loaders know is US retail's until this says
         # which build the disc is.
-        self.build = game_build.use(exe_path).name
+        self.build_name = game_build.use(exe_path).name
 
         # The same area, built from the same disc and the same code, is the
         # same scene - functions/scene_cache.py keeps it.
@@ -984,12 +1003,14 @@ class LevelScene:
                                        default=0)
         self.files = files
         self.by_id = {}
-        for _index, file_id, offset, size in files:
+        for index, file_id, offset, size in files:
             self.by_id.setdefault(file_id, (offset, size))
+            self.slots.setdefault(file_id, (chunk_index, index))
 
         resident_start, resident = area_files(idx_path, RESIDENT_CHUNK)
-        for _index, file_id, offset, size in resident:
+        for index, file_id, offset, size in resident:
             self.resident.setdefault(file_id, (resident_start, (offset, size)))
+            self.slots.setdefault(file_id, (RESIDENT_CHUNK, index))
 
         for address, _size, where in room_entries(idx_path, dat_path, chunk_index):
             try:
@@ -1353,19 +1374,27 @@ class LevelScene:
                 if self.overlay_data else None)
 
     def handler_name(self, handler):
-        """What the decomp calls a handler, or its address."""
+        """What the decomp calls a handler, or its address: the build's own
+        decomp first, where it has one (decomp/symbols_jp-demo.json), else
+        US retail's for the same routine."""
         if self._symbols is None:
-            self._symbols = {}
-            try:
-                with open(SYMBOLS) as f:
-                    for name, (tag, address) in json.load(f).items():
-                        if not name.startswith("FUN_"):
-                            self._symbols.setdefault((tag, address), name)
-            except (OSError, ValueError):
-                pass
+            self._symbols, self._own_symbols = {}, {}
+            own = os.path.join(os.path.dirname(SYMBOLS),
+                               f"symbols_{self.build_name}.json")
+            for path, into in ((SYMBOLS, self._symbols), (own, self._own_symbols)):
+                try:
+                    with open(path) as f:
+                        for name, (tag, address) in json.load(f).items():
+                            if not name.startswith("FUN_"):
+                                into.setdefault((tag, address), name)
+                except (OSError, ValueError):
+                    pass
         tag = "MAIN" if handler < actor_sim.OVERLAY_BASE else os.path.basename(
             self.overlay_path or "")[:3].upper()
-        # The decomp names US retail's addresses.
+        name = self._own_symbols.get((tag, handler))
+        if name:
+            return name
+        # US retail's decomp names US retail's addresses.
         us = game_build.current().us(handler, tag)
         return self._symbols.get((tag, us), f"0x{handler:08X}")
 
@@ -2672,7 +2701,7 @@ class LevelScene:
         name = placement_module.model_name(self.model_names,
                                            self.content.get(file_id), group)
         if not name and group is None:
-            name = file_label(self.content.get(file_id))
+            name = file_label(self.content.get(file_id), self.slots.get(file_id))
         return name
 
     def file_named(self, sources):
@@ -2682,7 +2711,7 @@ class LevelScene:
             return ""
         file_id = collections.Counter(f for f, _g in sources).most_common(1)[0][0]
         self.model(file_id)
-        return file_label(self.content.get(file_id))
+        return file_label(self.content.get(file_id), self.slots.get(file_id))
 
     def model_choices(self):
         """[(label, (file id, group)), ...] every part this area could

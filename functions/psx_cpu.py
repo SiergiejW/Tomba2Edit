@@ -311,6 +311,9 @@ class CPU:
 
     def call(self, address, args=(), budget=2_000_000, sp=None):
         """Run the routine at `address` with a0.. = args; returns v0."""
+        if not address:
+            # A routine this build has none of (functions/game_build.py).
+            raise EmuError("no such routine in this build")
         r = self.r
         for n, value in enumerate(args):
             r[4 + n] = value & MASK

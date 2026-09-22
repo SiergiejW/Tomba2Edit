@@ -26,6 +26,25 @@ OPTIONAL_FILES = ("MAIN.EXE", "SOP.BIN")
 __all__ = ["ISOHandler", "ISOFormatError", "REQUIRED_FILES", "OPTIONAL_FILES"]
 
 
+def _game_folder(reader, lba=None, size=None, depth=0, max_depth=3):
+    """(lba, size) of the directory whose CD\ holds TOMBA2.DAT, or None."""
+    if lba is None:
+        lba, size = reader.root_lba, reader.root_size
+    entries = reader.list_directory(lba, size)
+    for e in entries:
+        if e.is_dir and e.name.upper() == "CD" and any(
+                f.name.upper() == "TOMBA2.DAT"
+                for f in reader.list_directory(e.lba, e.size)):
+            return lba, size
+    if depth < max_depth:
+        for e in entries:
+            if e.is_dir:
+                found = _game_folder(reader, e.lba, e.size, depth + 1, max_depth)
+                if found:
+                    return found
+    return None
+
+
 class ISOHandler:
     """Extracts files out of a PlayStation ISO9660 disc image."""
 
@@ -57,7 +76,13 @@ class ISOHandler:
 
             reader = ISO9660Reader(raw)
             wanted = set(REQUIRED_FILES) | set(OPTIONAL_FILES)
-            locations = reader.find_files(reader.root_lba, reader.root_size, wanted)
+            # The game's own folder: the root on a Tomba! 2 disc, TOMBA2            # on the US demo disc, whose root MAIN.EXE is its menu's.
+            home = _game_folder(reader) or (reader.root_lba, reader.root_size)
+            locations = reader.find_files(*home, wanted)
+            if home != (reader.root_lba, reader.root_size):
+                for name, where in reader.find_files(
+                        reader.root_lba, reader.root_size, wanted).items():
+                    locations.setdefault(name, where)
 
             missing = [name for name in REQUIRED_FILES if name not in locations]
             if missing:
@@ -80,7 +105,7 @@ class ISOHandler:
             self.extracted_files = files_found
 
             bin_dir = next(
-                (e for e in reader.list_directory(reader.root_lba, reader.root_size)
+                (e for e in reader.list_directory(*home)
                  if e.is_dir and e.name.upper() == "BIN"),
                 None,
             )

@@ -300,6 +300,9 @@ def item_names(exe_path):
     A name is stored as a pointer, so this follows it; the newline the
     game breaks the name over in a menu is turned back into a space."""
     data, base = _image(exe_path)
+    # The Japanese builds keep their strings as byte Shift-JIS; the European
+    # ones' accents are Latin-1 (0xE1 is the Spanish a-acute).
+    codec = "shift_jis" if game_build.current().japanese else "latin-1"
     out = {}
     for item in range(ITEM_COUNT):
         try:
@@ -314,7 +317,7 @@ def item_names(exe_path):
         last = data.find(NUL, first)
         text = data[first:last if last >= 0 else first]
         if text:
-            out[item] = text.decode("ascii", "replace").replace(BREAK, " ")
+            out[item] = text.decode(codec, "replace").replace(BREAK, " ")
     return out
 
 
