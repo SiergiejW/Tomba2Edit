@@ -302,6 +302,13 @@ class Build:
         return self.name.startswith("jp-")
 
     @property
+    def demo(self):
+        """Whether it is one of the two demo discs - an older engine, which
+        numbers the file table its own way and keeps a longer reward
+        record than the full builds."""
+        return self.name.endswith("-demo")
+
+    @property
     def same_layout(self):
         """Whether its areas keep US retail's files in US retail's slots -
         every build but the demos, whose file tables are numbered anew."""

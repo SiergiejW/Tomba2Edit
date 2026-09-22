@@ -61,6 +61,11 @@ EXE_TEXT = 0x800
 REWARD_TABLE = 0x800A29CC
 REWARD = struct.Struct("<hHBBh")
 REWARD_SIZE = REWARD.size          # 8
+# The demos' record is ten bytes: the box's doubled width and height sit
+# beside the plain ones rather than being worked out, and the item follows.
+# f_InitializeSpriteGroundPickupFromRewardSelector reads +4..+7 and +8
+# there, where US retail reads +4, +5 and +6.
+DEMO_REWARD = struct.Struct("<hHBBBBh")
 
 # The table has no terminator, so it is read to a length. Fifty is where
 # it stops making sense - entry 50 asks for sprite 2912 out of a bank of
@@ -371,6 +376,15 @@ def _area_sequence(exe, exe_base, overlay, area, index):
     return tuple(frames), False
 
 
+def _reward(record, data, at):
+    """(sequence, clut, width, height, item) out of either record."""
+    fields = record.unpack_from(data, at)
+    if record is REWARD:
+        return fields
+    sequence, clut, width, _doubled, height, _doubled_too, item = fields
+    return sequence, clut, width, height, item
+
+
 def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
     """{reward: RewardArt} for every reward MAIN.EXE describes.
 
@@ -379,10 +393,11 @@ def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
     no frames rather than wrong ones."""
     data, base = _image(exe_path)
     names = item_names(exe_path)
+    record = DEMO_REWARD if game_build.current().demo else REWARD
     out = {}
     for reward in range(count):
-        at = _at(data, base, REWARD_TABLE + reward * REWARD_SIZE, REWARD_SIZE)
-        sequence, clut, width, height, item = REWARD.unpack_from(data, at)
+        at = _at(data, base, REWARD_TABLE + reward * record.size, record.size)
+        sequence, clut, width, height, item = _reward(record, data, at)
         art = RewardArt(reward=reward, width=width, height=height, item=item,
                         sequence=sequence, clut=clut,
                         name=names.get(item, ""))
