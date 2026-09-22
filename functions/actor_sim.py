@@ -288,10 +288,12 @@ RENDER_MODE, RENDER_MODE_MASK, SEMI_SWITCH = 0x0D, 0x0B, 0x1B
 # Frames of a code-drawn effect recorded as a clip, after running it this
 # many first so its particles are coming and going steadily - record_clips.
 CLIP_FRAMES = 64
-# What the progressive load shows first, then next, before the full clips:
-# effects move at once, loop longer later, and run their whole length last.
-CLIP_STAGES = (16, 64)
+# The progressive load shows effects once at this many frames, then at
+# their full length - each stage costs the editor a rebuild, so only one.
+CLIP_STAGES = (32,)
 CLIP_FULL_FRAMES = 192
+# Lines cost no rows: long enough for A08's 94.x to surface, ripple and dive.
+LINE_CLIP_FRAMES = 600
 CLIP_WARMUP = 96
 # Geometry-driven scenery reaches its cycles quickly (Water Temple is nine
 # frames). Long, non-repeating particle paths still use CLIP_FRAMES.
@@ -482,6 +484,8 @@ class Actor:
     # Opening idle poses sampled from the actor's real update routine. Kept
     # only for character-sized placed actors whose transforms actually move.
     pose_clip: tuple = ()
+    # Its lines a frame, when they change as it runs (record_line_clips).
+    line_clip: tuple = None
     stale: bool = False
     restaled: bool = False
 
@@ -1060,6 +1064,7 @@ class World:
             for frame in range(frames):
                 if self.skip_messages:
                     self.mem.write(MESSAGE, 1, 0)
+                self.mem.write(ANIMATION_FRAME, 2, frame)
                 for actor in list(self.actors):
                     if not actor.dead and actor.address in ours:
                         self._run_free(actor, budget)
@@ -1191,14 +1196,21 @@ class World:
         effect_limits = {key: frames for key in effects}
         effect_end = (effect_start + max(effect_limits.values())
                       if effect_limits else 0)
+        effect_marks = {}           # family -> a hash per recorded frame
         try:
             for frame in range(max(moving_end, effect_end)):
                 if self.skip_messages:
                     self.mem.write(MESSAGE, 1, 0)
+                # Updates see the frame counter step, as in the game - one
+                # held still never reached a periodic spawner's beat.
+                self.mem.write(ANIMATION_FRAME, 2, frame)
                 active_effects = {
                     key for key, limit in effect_limits.items()
                     if frame < effect_start + limit
                 }
+                if (frame >= effect_start and frame >= moving_end
+                        and not active_effects):
+                    break           # every effect's loop closed
                 updating = active_effects | (
                     moving_active if frame < moving_end else set())
                 if any(isinstance(k, tuple) for k in updating):
@@ -1241,12 +1253,20 @@ class World:
                         raw[key] = raw[key][:period]
                         moving_active.remove(key)
                 done = frame + 1 - effect_start
-                # Moving scenery is done long before the effects' warm-up is:
-                # shown then (done 0), the effects not yet.
-                scenery = moving and frame + 1 == moving_end and moving_end < effect_start
-                if (staged is not None and (done in stages or scenery)
+                # An effect whose loop has shown three times is recorded no
+                # longer: the full length is only for ones that never repeat.
+                for key in active_effects & capture:
+                    marks = effect_marks.setdefault(key, [])
+                    marks.append(hash(repr(raw[key][-1])))
+                    if len(marks) < 6 or len(marks) % 8:
+                        continue
+                    period = next((p for p in range(2, len(marks) // 3 + 1)
+                                   if all(marks[n] == marks[n % p] for n in range(len(marks)))),
+                                  None)
+                    if period is not None:
+                        effect_limits[key] = done
+                if (staged is not None and done in stages
                         and frame + 1 < max(moving_end, effect_end)):
-                    done = 0 if scenery else done
                     here = self.snapshot()
                     self.defer_capture = defer
                     self.restore(base)
@@ -1258,6 +1278,83 @@ class World:
             self.defer_capture = defer
             self.restore(base)
         self._keep_clips(*self._clips_from(raw, keys, born))
+
+    def record_line_clips(self, frames=LINE_CLIP_FRAMES, budget=BUDGET):
+        """Lines that change as their actors run - A08's 94.x ripple: rings
+        its code keeps spawning, each growing and fading - as a clip on the
+        actor that spawns them (actor.line_clip, its lines a frame, one loop
+        long; the rings' own frozen lines are dropped with line_clip ()).
+        The spawner runs too, in the zone that wakes it, so new rings are
+        caught as they appear. Still lines (ropes, chains) stay as read.
+        RAM and the actors are left as they were."""
+        drawers = [a for a in self.actors if a.lines and not (a.dead or a.discarded)]
+        groups = collections.defaultdict(list)
+        for actor in drawers:
+            root = self.by_address.get(actor.spawner) if isinstance(actor.spawner, int) else None
+            if root is None or root.dead or root.discarded:
+                root = actor
+            groups[root.address].append(actor.address)
+        if not groups:
+            return
+        self._restore_poses()
+        found = {}
+        for root_address, members in groups.items():
+            root = self.by_address.get(root_address)
+            zone = self._wake_zone(root, budget) if self._gate_zones(root.handler) else None
+            clip = self._line_clip(root_address, set(members), zone, frames, budget)
+            if clip is not None:
+                found[root_address] = (clip, members)
+        for root_address, (clip, members) in found.items():
+            for address in members:
+                actor = self.by_address.get(address)
+                if actor is not None:
+                    actor.line_clip = ()
+            self.by_address[root_address].line_clip = clip
+
+    def _line_clip(self, root, members, zone, frames, budget):
+        """One spawner group's lines a frame (see record_line_clips), or None
+        when they never change."""
+        base = self.snapshot()
+        defer, self.defer_capture = self.defer_capture, False
+        taken, marks = [], []
+        group = {root} | members
+        try:
+            if zone is not None:
+                self._set_zone(zone)
+            for frame in range(frames):
+                if self.skip_messages:
+                    self.mem.write(MESSAGE, 1, 0)
+                # The game's frame counter, as its update code reads it: the
+                # ripple spawns a ring when it reaches 0 or 32 (& 63).
+                self.mem.write(ANIMATION_FRAME, 2, frame)
+                for actor in list(self.actors):
+                    if actor.address in group and not actor.dead:
+                        self._run_free(actor, budget)
+                # What the group spawns while it runs - the next ring - is its own.
+                group |= {a.address for a in self.actors
+                          if isinstance(a.spawner, int) and a.spawner in group}
+                live = [a for a in self.actors if a.address in group and not a.dead]
+                for actor in live:
+                    actor.position = self._position(actor.address)
+                    actor.silent = {}
+                self.capture_lines(live, keep_draws=True, counter=frame)
+                lines = tuple(line for a in live for line in a.lines)
+                taken.append(lines)
+                marks.append(hash(repr(lines)))
+                if len(marks) >= 8 and len(set(marks)) == 1:
+                    return None                             # still
+                if len(marks) >= 6 and not len(marks) % 4:
+                    period = next((p for p in range(2, len(marks) // 3 + 1)
+                                   if all(marks[n] == marks[n % p] for n in range(len(marks)))),
+                                  None)
+                    if period is not None:
+                        return taken[:period]
+        finally:
+            self.defer_capture = defer
+            self.restore(base)
+        if len(set(marks)) < 2:
+            return None
+        return _looped(taken)
 
     def _keep_clips(self, clips, actor_clips):
         # Merged: clips probed elsewhere (a cutscene's) stay.
@@ -2581,6 +2678,9 @@ class World:
         out, polys = [], []
         for head in struct.unpack(f"<{OT_SLOTS}I", self.mem.bytes(ot, OT_SLOTS * 4)):
             address, walked = head & 0xFFFFFF, 0
+            # The draw mode (E1) a DR_MODE packet sets ahead of the polygons
+            # linked after it: an untextured polygon's only blend mode.
+            mode = 0
             while address and address != 0xFFFFFF and walked < 4096:
                 walked += 1
                 base = 0x80000000 | address
@@ -2593,7 +2693,10 @@ class World:
                 out.extend(line_primitives(words, points))
                 resolve = self._sprite_corner(points, anchors)
                 polys.extend(textured_primitives(words, points, resolve))
-                polys.extend(untextured_primitives(words, points, resolve))
+                polys.extend(untextured_primitives(words, points, resolve, mode))
+                for word in words:
+                    if word >> 24 == 0xE1:
+                        mode = word & 0x1FF
                 address = tag & 0xFFFFFF
         return out, polys
 
@@ -2927,15 +3030,11 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
             f"repeat within {POSE_LOOP_MAX_FRAMES} frame(s)")
     staged = None
     if publish:
-        publish(world, "Poses ready; recording moving effects")
-
         def staged(done):
-            if not done:
-                publish(world, "Moving scenery ready; warming up effects")
-                return
             say(f"moving effects: {done} frame(s) recorded")
             publish(world, f"Effects: first {done} frames; recording longer")
     world.record_clips(frames=CLIP_FULL_FRAMES, stages=CLIP_STAGES, staged=staged)
+    world.record_line_clips()
     world.restore_firefly_progress()
     world.restore_archived_effects()
     if world.clips:
@@ -3180,17 +3279,24 @@ def textured_primitives(words, points, resolve=None):
     return out
 
 
-def untextured_primitives(words, points, resolve=None):
+def untextured_primitives(words, points, resolve=None, mode=0):
     """Captured PSX F3/F4/G3/G4 packets in the textured-poly shape.
 
     Mine steam vents use these shaded, untextured polygons.  Keeping the
     common tuple shape lets the generated level model and its flipbooks use
     the same path as captured textured effects; ``SOLID_CLUT`` tells the
     renderer to multiply by white instead of sampling a real palette.
+
+    Their page word is the draw mode (E1) in force, `mode` from a packet
+    before or an E1 in this one: its bits 5-6 are how a semi-transparent
+    one blends. Held at 0 it was averaged - A1F's black quads showed dark
+    where the game adds them, and black added is nothing.
     """
     out, k = [], 0
     while k < len(words):
         code = words[k] >> 24
+        if code == 0xE1:
+            mode = words[k] & 0x1FF
         if code == 0 or 0xE1 <= code <= 0xE6:
             k += 1
             continue
@@ -3215,7 +3321,7 @@ def untextured_primitives(words, points, resolve=None):
                 and all(max(abs(p - q) for p, q in zip(a, b)) <= LINE_REACH
                         for a in corners for b in corners)):
             out.append((tuple(corners), ((0, 0),) * corners_wanted,
-                        tuple(colours), SOLID_CLUT, bool(code & 0x02), 0))
+                        tuple(colours), SOLID_CLUT, bool(code & 0x02), mode))
     return out
 
 

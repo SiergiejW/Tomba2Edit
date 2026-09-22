@@ -362,6 +362,10 @@ class LevelViewer(SMSTViewer):
         # Each recorded effect's frame instances, in order - one shows a tick.
         self._flips = [i.flip_frames for i in scene.instances
                        if getattr(i, "flip_frames", ())]
+        # Whether any code-drawn line is a frame of a recorded clip: then the
+        # lines are rebuilt as the clock steps (A08's ripple rings).
+        self._line_flips = any(getattr(line, "period", None)
+                               for line in getattr(scene, "lines", None) or ())
         self.selected = None
         self.hidden_groups = set()
         self.highlighted_group = None
@@ -421,6 +425,8 @@ class LevelViewer(SMSTViewer):
             return
         self._sprite_tick += ticks
         self._sprite_dirty = True
+        if getattr(self, "_line_flips", False):
+            self.rebuild_code_lines()
         self.update()
 
     @property
@@ -500,9 +506,14 @@ class LevelViewer(SMSTViewer):
         """The code-drawn lines that show: an owned line with its row, a
         loose one with its room."""
         out = []
+        hidden = self.hidden_groups
+        tick = self._sprite_tick
         for line in getattr(self.scene, "lines", None) or ():
+            period = getattr(line, "period", None)
+            if period and tick % period != line.frame:
+                continue
             if line.owner is not None:
-                if line.owner in self.hidden_groups:
+                if line.owner in hidden:
                     continue
             elif not (self.view == "all" or line.scene == self.view):
                 continue

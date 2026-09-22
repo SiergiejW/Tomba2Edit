@@ -219,6 +219,9 @@ class SceneLine:
     color_a: tuple
     color_b: tuple
     blended: bool = False           # semi-transparent: drawn additively
+    # Of a recorded clip of lines: shown on this frame of `period`, looping.
+    frame: int = None
+    period: int = None
 
 # How much of an IDX chunk the trailer takes, at the end of it.
 TRAILER_BYTES = 0x700
@@ -1138,12 +1141,15 @@ class LevelScene:
                 instance.label = f"⧖ {instance.label}"
             instance.note = f"{instance.note}<br>{AFTER_EVENTS}" if instance.note else AFTER_EVENTS
         new = {i.index for i in added}
-        seen = {(line.scene, line.a, line.b) for line in self.lines}
+        seen = {(line.scene, line.a, line.b, getattr(line, "frame", None))
+                for line in self.lines}
         for line in done.lines:
             owner = index.get(line.owner) if line.owner is not None else None
-            if owner in new or (line.scene, line.a, line.b) not in seen:
+            frame = getattr(line, "frame", None)
+            if owner in new or (line.scene, line.a, line.b, frame) not in seen:
                 self.lines.append(SceneLine(owner, line.scene, line.a, line.b,
-                                            line.color_a, line.color_b, line.blended))
+                                            line.color_a, line.color_b, line.blended,
+                                            frame, getattr(line, "period", None)))
         # Captured polygons are numbered per run: the other's move past ours.
         base = max((k + 1 for k in self.models if DRAWN_ID <= k < DRAWN_END), default=DRAWN_ID)
         for instance in added:
@@ -1741,6 +1747,7 @@ class LevelScene:
         # row: (owner, scene, address) -> (frames, handler name).
         actor_clips = getattr(self.world, "actor_clips", {}) if self.world is not None else {}
         solo = {}
+        moving_lines = []           # (owner, scene, frames of lines, name)
 
         def take(actors, owner, scene):
             """The lines and polygons these actors drew, under `owner`'s row."""
@@ -1751,7 +1758,8 @@ class LevelScene:
                 # The child's own lifecycle determines whether it is drawn.
                 if suppressed:
                     continue
-                if id(actor) in drew or not (actor.lines or actor.polys):
+                if id(actor) in drew or not (actor.lines or actor.polys
+                                             or getattr(actor, "line_clip", None)):
                     continue
                 drew.add(id(actor))
                 family = self.world.family(actor) if actor.polys and clips else None
@@ -1767,6 +1775,13 @@ class LevelScene:
                 elif actor.polys:
                     drawn.setdefault((owner, scene, None), []).extend(actor.polys)
                     stepped.setdefault((owner, scene, None), {}).update(actor.uv_frames or {})
+                line_clip = getattr(actor, "line_clip", None)
+                if line_clip:
+                    # Drawn frame by frame from its clip, on a row of its own.
+                    moving_lines.append((owner, scene, line_clip,
+                                         self._actor_name(actor)))
+                if line_clip is not None:
+                    continue            # its lines are in a clip (its spawner's)
                 for a, b, color_a, color_b, blended in actor.lines:
                     self.lines.append(SceneLine(owner, scene, view_point(a),
                                                 view_point(b), color_a, color_b,
@@ -2306,6 +2321,33 @@ class LevelScene:
                             flip=(first, frame) if frame else None))
                     if families:
                         instances[first].flip_frames = tuple(range(first, len(instances)))
+
+        # Every line drawer under one row is one clip - A08's ripple is a
+        # ring an actor - on a row of its own, its lines each on its frame.
+        grouped = collections.defaultdict(list)
+        for owner, scene, frames, name in moving_lines:
+            grouped[(owner, scene)].append((frames, name))
+        for (owner, scene), clips in grouped.items():
+            period = max(len(frames) for frames, _name in clips)
+            points = np.array([view_point(p) for frames, _name in clips for lines in frames
+                               for line in lines for p in line[:2]], dtype=np.float64)
+            if not len(points):
+                continue
+            cx, cy, cz = points.mean(axis=0)
+            head = instances[owner].label if owner is not None else "the area"
+            label = f"{head}: moving lines drawn by its code"
+            index = len(instances)
+            instances.append(Instance(
+                index=index, role="spawned", scene=scene, label=label, name=label,
+                x=float(cx), y=float(cy), z=float(cz),
+                note=(f"{period} frames of the lines {len(clips)} actor(s) "
+                      f"({clips[0][1]}) draw, recorded as they run "
+                      f"(actor_sim.record_line_clips), played back at {CLIP_HZ} a second")))
+            for frame in range(period):
+                for frames, _name in clips:
+                    for a, b, color_a, color_b, blended in frames[frame % len(frames)]:
+                        self.lines.append(SceneLine(index, scene, view_point(a), view_point(b),
+                                                    color_a, color_b, blended, frame, period))
 
         flight = getattr(world, "firefly_flight", None) if world is not None else None
         if flight and self._firefly_spots:

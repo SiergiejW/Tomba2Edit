@@ -463,6 +463,8 @@ class LevelEditorPanel(QWidget):
         state, vram, phases, sprites, prepared, title, complete = payload
         if self._hold_stages and not complete:
             return
+        # Each stage blocks the UI while it is applied: timed, to see which.
+        marks = [("start", time.perf_counter())]
         hidden = set()
         selected = None
         if self._stage_seen and self.scene is not None:
@@ -490,10 +492,12 @@ class LevelEditorPanel(QWidget):
         self.viewer.load_scene(scene,
             frame=not self._stage_seen and not self._stage_keep_camera,
             prepared=prepared[:4])
+        marks.append(("scene", time.perf_counter()))
         self.viewer.load_animations(self._stage_overlay, prepared=prepared[4])
         self._phases, self._phase = phases, 0
         self.viewer.set_background(phases[0][0] if phases else None)
         self.viewer.set_sprites(*sprites)
+        marks.append(("animations+sprites", time.perf_counter()))
         self._loading = not complete
         self.viewer.loading = not complete
         self._keep_view = getattr(self, "_requested_view", self._keep_view)
@@ -509,7 +513,12 @@ class LevelEditorPanel(QWidget):
                 self.table.selectRow(row)
                 self.viewer.select(instance.index)
         self._filling = False
+        marks.append(("table", time.perf_counter()))
         self._apply_view(frame=False)
+        marks.append(("view", time.perf_counter()))
+        print(f"stage '{title}' applied in {marks[-1][1] - marks[0][1]:.2f}s: "
+              + ", ".join(f"{name} {t - marks[n][1]:.2f}s"
+                          for n, (name, t) in enumerate(marks[1:])))
         has_motion = self.viewer.animating or len(phases) > 1
         self.viewer.animate_action.setEnabled(
             self.viewer.animate_action.isEnabled() or has_motion)
