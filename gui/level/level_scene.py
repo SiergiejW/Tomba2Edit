@@ -138,6 +138,16 @@ PURIFIED_OFFSET = 22                # a purified chunk less this is its cursed o
 # and how far above it (FUN_A04__80115978 spawns 0x28 over the surface).
 FIREFLY_MATERIALS = {4: 5, 6: 8}
 FIREFLY_LIFT = 0x28
+# The snow-depth surface a firefly floor needs in its cell - what
+# f_QueryActorTerrainSurface finds over Tomba's feet - by area number.
+FIREFLY_DEPTH_MATERIAL = {4: 6}
+# A floor Tomba crosses under the game's control (a ladder between planes)
+# has this in its kind's low byte; no footstep runs there.
+AUTO_FLOOR = 0x10
+# The ground firefly's replay: how many spots it rises at in one loop, and
+# the frames it stays gone between flights.
+FLIGHT_SPOTS = 8
+FLIGHT_GAP = 45
 
 # What the actors run from: a fresh game, every event done
 # (actor_sim.progress_bytes), or the first with the second's differences.
@@ -1186,7 +1196,7 @@ class LevelScene:
                 finished=(actor_sim.progress_bytes(self.overlay_data)
                           if self.progress == EVENTS_DONE and self.overlay_data else ()),
                 log=self._log_actors, publish=stage if publish else None,
-                ground_fireflies=self._firefly_ground(number))
+                ground_fireflies=self._firefly_spots)
         except Exception as e:
             if publish is not None:
                 raise
@@ -1194,24 +1204,88 @@ class LevelScene:
             return None
 
     def _firefly_ground(self, area_number):
-        """Where a ground firefly rises, as game (x, y, z): a floor of the
-        material Tomba's footsteps raise them from - Kujara Ranch's 5 (0x501,
-        FUN_A04__80115978: one in eight steps), Donglin's 8 (0x801,
-        FUN_A06__8011403c: one in sixteen while running). One per collision
-        entry holding any, at its middle such record, a little above it."""
+        """Every spot a ground firefly can rise from, as game (x, y, z), a
+        little above the floor (FUN_A04__80115978 spawns 0x28 over it).
+
+        A footstep on the area's firefly material raises one (Kujara
+        Ranch's 5, one in eight steps; Donglin's 8, one in sixteen while
+        running) - but only where Tomba's feet are under the surface
+        f_QueryActorTerrainSurface picks, which is the cell's last floor
+        record: Kujara's 0x601 snow depth after each 0x501 ground. A floor
+        with no such record (Kujara's planes 29 and 30) raises none, nor
+        does one Tomba is carried over (AUTO_FLOOR - the ladder of plane 8)."""
         material = FIREFLY_MATERIALS.get(area_number)
         if material is None:
             return ()
+        depth = FIREFLY_DEPTH_MATERIAL.get(area_number)
         out = []
         for entry in self.planes:
-            points = [p for p, r in zip(entry.trace(), entry.records())
-                      if entry.path[r].kind & 1
-                      and (entry.path[r].kind >> 8) & 0xF == material]
-            if points:
-                vx, vy, vz = points[len(points) // 2]
-                # The viewers' axes back to the game's (see SCLDEntry.trace).
-                out.append((vz, -vy - FIREFLY_LIFT, vx))
+            where = dict(zip(entry.records(), entry.trace()))
+            for cell in entry.cells():
+                if not cell.leaf:
+                    continue
+                records = range(cell.first, min(cell.first + cell.count, len(entry.path)))
+                floors = [r for r in records if entry.path[r].kind & 1]
+                for at, r in enumerate(floors):
+                    kind = entry.path[r].kind
+                    if (kind >> 8) & 0xF != material or kind & AUTO_FLOOR or r not in where:
+                        continue
+                    if depth is not None and not any(
+                            (entry.path[q].kind >> 8) & 0xF == depth
+                            for q in floors[at + 1:]):
+                        continue
+                    vx, vy, vz = where[r]
+                    # The viewers' axes back to the game's (see SCLDEntry.trace).
+                    out.append((vz, -vy - FIREFLY_LIFT, vx))
         return tuple(out)
+
+    @property
+    def _firefly_spots(self):
+        spots = getattr(self, "_firefly_cache", None)
+        if spots is None:
+            number = handler_models.overlay_number(self.overlay_path)
+            spots = self._firefly_cache = (
+                self._firefly_ground(number) if number is not None else ())
+        return spots
+
+    def _add_firefly_flight(self, instances, flight, spots):
+        """The one ground firefly the game keeps up at a time: its recorded
+        flight replayed at one spot after another, picked at random, gone
+        FLIGHT_GAP frames between."""
+        import random
+        origin, frames = flight
+        rng = random.Random(self.chunk_index)
+        order, last = [], None
+        for _ in range(min(FLIGHT_SPOTS, len(spots))):
+            pick = rng.randrange(len(spots))
+            if pick == last and len(spots) > 1:
+                pick = (pick + 1) % len(spots)
+            order.append(pick)
+            last = pick
+        out = []
+        for pick in order:
+            shift = [spots[pick][k] - origin[k] for k in range(3)]
+            for polys in frames:
+                out.append(tuple(
+                    (tuple((c[0] + shift[0], c[1] + shift[1], c[2] + shift[2])
+                           for c in poly[0]),) + tuple(poly[1:])
+                    for poly in polys))
+            out.extend([()] * FLIGHT_GAP)
+        points = [view_point(spots[pick]) for pick in order]
+        cx, cy, cz = np.asarray(points, dtype=np.float64).mean(axis=0)
+        index = len(instances)
+        label = "the area: ground firefly"
+        instances.append(Instance(
+            index=index, role="spawned", label=label,
+            x=float(cx), y=float(cy), z=float(cz), name=label,
+            note=(f"one firefly at a time, as the game keeps it: its whole "
+                  f"{len(frames)}-frame flight (actor_sim.record_firefly_flight) "
+                  f"replayed at {len(order)} of the {len(spots)} spots a "
+                  f"footstep could raise it from, picked at random.")))
+        self.captured_billboards[index] = tuple(out)
+        blend = captured_blend(frames)
+        if blend is not None:
+            self.captured_billboard_blends[index] = blend
 
     def _log_actors(self, message, actors=None):
         """One line of simulate()'s progress on the console: the stage, and
@@ -2232,6 +2306,10 @@ class LevelScene:
                             flip=(first, frame) if frame else None))
                     if families:
                         instances[first].flip_frames = tuple(range(first, len(instances)))
+
+        flight = getattr(world, "firefly_flight", None) if world is not None else None
+        if flight and self._firefly_spots:
+            self._add_firefly_flight(instances, flight, self._firefly_spots)
 
         pack = self.model(ASSET_PACK_ID)
         for group in (pack or {}).get("groups") or ():

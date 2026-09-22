@@ -28,6 +28,7 @@ functions/decomp_symbols.py from the US decomp:
 The state is a fresh game: every progress flag is zero.
 """
 import collections
+import math
 import struct
 from dataclasses import dataclass, field
 
@@ -287,6 +288,10 @@ RENDER_MODE, RENDER_MODE_MASK, SEMI_SWITCH = 0x0D, 0x0B, 0x1B
 # Frames of a code-drawn effect recorded as a clip, after running it this
 # many first so its particles are coming and going steadily - record_clips.
 CLIP_FRAMES = 64
+# What the progressive load shows first, then next, before the full clips:
+# effects move at once, loop longer later, and run their whole length last.
+CLIP_STAGES = (16, 64)
+CLIP_FULL_FRAMES = 192
 CLIP_WARMUP = 96
 # Geometry-driven scenery reaches its cycles quickly (Water Temple is nine
 # frames). Long, non-repeating particle paths still use CLIP_FRAMES.
@@ -313,6 +318,11 @@ GROUND_FIREFLY_SPAWNERS = {4: 0x8013EBE4, 6: 0x80141020}
 # Set while one is out; the spawner refuses another until it is caught.
 # Donglin's also wants Tomba's zone at most 12 - the forest's first part.
 GROUND_FIREFLY_UP = {4: 0x800BF858, 6: 0x800BF85C}
+# The longest a ground firefly's flight is followed, at the game's 30 a
+# second, and its life: f_UpdateCapturedSnowFireflyMotion retires it once
+# +0x40 passes 0x96 off-screen - which, rising 4 a frame, it long is.
+FLIGHT_FRAMES = 900
+FLIGHT_TIMER, FLIGHT_LIFE = 0x40, 0x96
 DONGLIN_SNOW_FIREFLY = 0x80140E4C
 DONGLIN_LIGHT_CUTSCENE = 0x800BFA20
 # A07's subtype 8 is an interior-transition/warp record.  Its common
@@ -554,6 +564,7 @@ class World:
         self.incomplete_pose_loops = ()
         self.archived_effects = []
         self._firefly_progress = None
+        self.firefly_flight = None          # see record_firefly_flight
         # scene -> records in its table, None where the spawner has none -
         # every scene up to the last with a table, run or not.
         self.room_tables = {}
@@ -1022,38 +1033,56 @@ class World:
             self.actors.append(actor)
             self.by_address[actor.address] = actor
 
-    def spawn_ground_fireflies(self, points, budget=BUDGET):
-        """A firefly where Tomba's footsteps would raise one: each point
-        (game x, y, z) handed to the area's own spawner the way its footstep
-        routine does (FUN_A04__80115978 / FUN_A06__8011403c: position, mode
-        2), then run a few frames so it is up and flying."""
+    def record_firefly_flight(self, point, frames=FLIGHT_FRAMES, budget=BUDGET):
+        """One ground firefly's whole flight, frame by frame at game rate:
+        risen at `point` (game x, y, z) the way a footstep raises it, run
+        until the game would retire it (FLIGHT_LIFE). Kept as (point, [polygons per frame]) in
+        self.firefly_flight; the world is put back as it was, since the game
+        has only one up at a time and the scene replays this at its spots."""
         spawner = GROUND_FIREFLY_SPAWNERS.get(self.area_number)
         if spawner is None:
             return
-        made = []
-        for x, y, z in points:
+        base = self.snapshot()
+        defer, self.defer_capture = self.defer_capture, False
+        flight = []
+        try:
             at = self._alloc(12)
+            x, y, z = point
             self.mem.load(at, struct.pack("<3i", int(x) << 16, int(y) << 16, int(z) << 16))
             first = len(self.actors)
-            # The game keeps one up at a time (this flag, cleared when it is
-            # caught); the editor shows every spot one could rise from.
             self.mem.write(GROUND_FIREFLY_UP[self.area_number], 4, 0)
             try:
                 self.cpu.call(spawner, (at, 2, 0), budget=budget, sp=STACK)
             except EmuError:
-                continue
-            for actor in self.actors[first:]:
-                # Its own clip and row, not one pooled "projected effect".
-                actor.family_key = ("ground-firefly", actor.address)
-                made.append(actor)
-        if not made:
-            return
-        for _frame in range(3):
-            for actor in made:
-                if not actor.dead:
-                    self._run_actor(actor, budget)
-            self._read()
-        self.settle_captures()
+                return
+            ours = set(a.address for a in self.actors[first:])
+            flier = self.actors[first].address if len(self.actors) > first else None
+            for frame in range(frames):
+                if self.skip_messages:
+                    self.mem.write(MESSAGE, 1, 0)
+                for actor in list(self.actors):
+                    if not actor.dead and actor.address in ours:
+                        self._run_free(actor, budget)
+                # What it spawns (a sparkle trail) is part of its flight.
+                ours |= {a.address for a in self.actors[first:]}
+                live = [a for a in self.actors if not a.dead and a.address in ours]
+                if not live:
+                    break
+                for actor in live:
+                    actor.position = self._position(actor.address)
+                    actor.silent = {}
+                self.capture_lines(live, keep_draws=True, counter=frame)
+                flight.append(tuple(p for a in live for p in a.polys))
+                if flier is not None and struct.unpack("<h", struct.pack(
+                        "<H", self.mem.read(flier + FLIGHT_TIMER, 2)))[0] > FLIGHT_LIFE:
+                    break
+        finally:
+            self.defer_capture = defer
+            self.restore(base)
+        while flight and not flight[-1]:
+            flight.pop()
+        if flight:
+            self.firefly_flight = (tuple(point), flight)
 
     def add_firefly_previews(self, budget=BUDGET):
         """Stand up collectible Snow Fireflies hidden behind terrain triggers.
@@ -1103,7 +1132,8 @@ class World:
             self.mem.write(DONGLIN_LIGHT_CUTSCENE, 1, self._firefly_progress)
             self._firefly_progress = None
 
-    def record_clips(self, frames=CLIP_FRAMES, warmup=CLIP_WARMUP, budget=BUDGET):
+    def record_clips(self, frames=CLIP_FRAMES, warmup=CLIP_WARMUP, budget=BUDGET,
+                     stages=(), staged=None):
         """Run each family that draws transient effects - or draws something
         else a few frames on - on for `frames` frames the way the game does:
         updated, then drawn, its draws' own state kept (an effect's sprite
@@ -1111,7 +1141,12 @@ class World:
         family draws a frame goes in `clips`, and what each actor that lives
         through it draws in `actor_clips` - a Seed of Strength, one of five.
         Particle families are run `warmup` frames first, to a steady state.
-        RAM and the actors are left as they were."""
+        RAM and the actors are left as they were.
+
+        At each effect frame count in `stages`, the clips so far are made
+        and `staged(frames)` is called with the world as it was before the
+        recording - so a progressive load shows short clips at once, then
+        longer ones - and the recording then carries on where it was."""
         painters = [a for a in self.actors if a.polys and not a.discarded]
         drawing = {self.family(a) for a in painters}
         effects = {self.family(a) for a in self.actors if not a.discarded
@@ -1205,9 +1240,34 @@ class World:
                     if period is not None:
                         raw[key] = raw[key][:period]
                         moving_active.remove(key)
+                done = frame + 1 - effect_start
+                # Moving scenery is done long before the effects' warm-up is:
+                # shown then (done 0), the effects not yet.
+                scenery = moving and frame + 1 == moving_end and moving_end < effect_start
+                if (staged is not None and (done in stages or scenery)
+                        and frame + 1 < max(moving_end, effect_end)):
+                    done = 0 if scenery else done
+                    here = self.snapshot()
+                    self.defer_capture = defer
+                    self.restore(base)
+                    self._keep_clips(*self._clips_from(raw, keys, born))
+                    staged(done)
+                    self.restore(here)
+                    self.defer_capture = False
         finally:
             self.defer_capture = defer
             self.restore(base)
+        self._keep_clips(*self._clips_from(raw, keys, born))
+
+    def _keep_clips(self, clips, actor_clips):
+        # Merged: clips probed elsewhere (a cutscene's) stay.
+        self.clips.update(clips)
+        self.actor_clips.update(actor_clips)
+
+    def _clips_from(self, raw, keys, born):
+        """({family: clip}, {address: clip}) from what record_clips has
+        recorded so far, per family per frame [(address, polygons)]."""
+        clips, actor_clips = {}, {}
         # An effect that lives and draws all through it, and moves, is its
         # own clip - and not part of its family's.  Split a family only when
         # it has one such survivor.  Turning every persistent particle into a
@@ -1239,7 +1299,7 @@ class World:
             if family is None or len(found) != 1:
                 continue
             address, looped = found[0]
-            self.actor_clips[address] = looped
+            actor_clips[address] = looped
             own.add(address)
         for key in keys:
             clip = [tuple(p for address, polys in entries
@@ -1247,7 +1307,8 @@ class World:
                     for entries in raw[key]]
             clip = _looped(clip)
             if clip is not None:
-                self.clips[key] = clip
+                clips[key] = clip
+        return clips, actor_clips
 
     def record_pose_clips(self, candidates=None, frames=POSE_LOOP_MAX_FRAMES,
                           budget=BUDGET, woken=None):
@@ -2308,18 +2369,31 @@ class World:
                             counted[0] = True
                         return read(mem, address, size)
                     mem.read = watched
+                updated = None           # (before, after) the update pass
                 for offset, routine in passes:
                     # A pass that has drawn nothing twice since its actor ran
                     # is not run again: re-reads repeat it for every actor.
                     quiet = actor.silent.get(offset, 0)
                     if quiet is not None and quiet >= QUIET_CAPTURES:
                         continue
+                    before = mem.bytes(actor.address, ACTOR_SIZE) if offset == CALLBACK else None
                     drawn_lines, drawn_polys = draw(actor, offset, routine)
+                    if before is not None:
+                        updated = (before, mem.bytes(actor.address, ACTOR_SIZE))
                     # A class-4 draw steps a sprite stream kept on its actor
                     # (Kujara's snow firefly, FUN_A04__8013cc28 at +0x78):
                     # kept like a +0x18 draw's, or its three cells are one.
+                    # What the update pass itself changed is not kept - it
+                    # ran after the frame's own update, and a clip moved its
+                    # actor twice a frame (Kujara's ground firefly rose 8).
                     if keep_draws and (offset == DRAW or routine == CLASS4_QUEUE):
-                        drawn_state[actor.address] = mem.bytes(actor.address, ACTOR_SIZE)
+                        state = bytearray(mem.bytes(actor.address, ACTOR_SIZE))
+                        if updated is not None:
+                            was, now = updated
+                            for k in range(ACTOR_SIZE):
+                                if was[k] != now[k] and state[k] == now[k]:
+                                    state[k] = was[k]
+                        drawn_state[actor.address] = bytes(state)
                     lines.extend(drawn_lines)
                     (placed if routine == CLASS5_QUEUE else polys).extend(drawn_polys)
                     if drawn_polys:
@@ -2798,8 +2872,8 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     world.run(frames)
     world.add_firefly_previews()
     if ground_fireflies:
-        say(f"standing up {len(ground_fireflies)} ground firefly(ies)")
-        world.spawn_ground_fireflies(ground_fireflies)
+        say("recording a ground firefly's flight")
+        world.record_firefly_flight(ground_fireflies[0])
     say("the area stood up", world.actors)
     # An area's controller stands part of the chest table up itself; the
     # rest are stood up here, the way f_SpawnPersistentPickupPlacementTable does.
@@ -2851,12 +2925,22 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     if world.incomplete_pose_loops:
         say(f"{len(world.incomplete_pose_loops)} moving pose actor(s) did not "
             f"repeat within {POSE_LOOP_MAX_FRAMES} frame(s)")
-    world.record_clips()
+    staged = None
+    if publish:
+        publish(world, "Poses ready; recording moving effects")
+
+        def staged(done):
+            if not done:
+                publish(world, "Moving scenery ready; warming up effects")
+                return
+            say(f"moving effects: {done} frame(s) recorded")
+            publish(world, f"Effects: first {done} frames; recording longer")
+    world.record_clips(frames=CLIP_FULL_FRAMES, stages=CLIP_STAGES, staged=staged)
     world.restore_firefly_progress()
     world.restore_archived_effects()
     if world.clips:
         say(f"{len(world.clips)} moving effect(s) recorded, up to "
-            f"{CLIP_FRAMES} frame(s) each")
+            f"{CLIP_FULL_FRAMES} frame(s) each")
     return world
 
 
@@ -3139,6 +3223,21 @@ def _placed(xys, points, resolve):
     """A polygon's screen positions as the points they name - those that
     name none placed together, round one point (see _sprite_corner)."""
     corners = [points.get(xy) for xy in xys]
+    # A corner offset in screen space from one of its own polygon's named
+    # corners (A07's rope: two projected, two pushed out by its width) hangs
+    # from that corner. Names are scattered, so the nearest name overall
+    # was another vertex of the rope, far along it.
+    own = [(xy, c) for xy, c in zip(xys, corners) if c is not None]
+    ribbon = _ribbon(xys, corners)
+    if ribbon is not None:
+        return ribbon
+    if own and len(own) < len(xys):
+        for n, (xy, c) in enumerate(zip(xys, corners)):
+            if c is not None:
+                continue
+            (nx, ny), point = min(own, key=lambda o: abs(o[0][0] - xy[0]) + abs(o[0][1] - xy[1]))
+            if max(abs(xy[0] - nx), abs(xy[1] - ny)) <= SPRITE_REACH:
+                corners[n] = (point[0] + xy[0] - nx, point[1] + xy[1] - ny, point[2])
     missing = [xy for xy, c in zip(xys, corners) if c is None]
     if missing and resolve is not None:
         middle = (sum(x for x, _y in missing) / len(missing),
@@ -3146,6 +3245,43 @@ def _placed(xys, points, resolve):
         corners = [c if c is not None else resolve(xy, middle)
                    for xy, c in zip(xys, corners)]
     return corners
+
+
+def _ribbon(xys, corners):
+    """A screen-space ribbon quad's corners in the world, or None.
+
+    FUN_80029664 draws a line as quads [a-o, b-o, a, b] and [a, b, a+o,
+    b+o]: o its width turned square to the segment's direction on screen.
+    Captured screen names are scattered, so that direction was any at all
+    and each segment's width pointed its own way (A08's ring of 36, twisted
+    bowties). The width is kept; its direction is rebuilt square to the
+    world segment, towards the game's up, the side from which half of the
+    quad is named (A07's rope, [a, b, a+o, b+o], hangs down as it did)."""
+    if len(xys) != 4:
+        return None
+    named = [c is not None for c in corners]
+    if named == [True, True, False, False]:
+        pairs, side = ((0, 2), (1, 3)), 1.0
+    elif named == [False, False, True, True]:
+        pairs, side = ((2, 0), (3, 1)), -1.0
+    else:
+        return None
+    a, b = (np.asarray(corners[n], dtype=np.float64) for n, _m in pairs)
+    along = b - a
+    length = np.linalg.norm(along)
+    if length < 1e-6:
+        return None
+    along /= length
+    down = np.array((0.0, 1.0, 0.0))            # the game's y grows downwards
+    square = down - along * float(np.dot(down, along))
+    if np.linalg.norm(square) < 0.1:            # a vertical line: out sideways
+        square = np.array((1.0, 0.0, 0.0)) - along * along[0]
+    square /= np.linalg.norm(square)
+    out = list(corners)
+    for n, m in pairs:
+        width = math.hypot(xys[m][0] - xys[n][0], xys[m][1] - xys[n][1])
+        out[m] = tuple(np.asarray(corners[n], dtype=np.float64) + side * width * square)
+    return out
 
 
 def _xy(word):
