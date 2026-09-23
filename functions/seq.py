@@ -147,6 +147,42 @@ def events(data, at):
     return out
 
 
+def length(data, at):
+    """How many bytes the SEQ at `at` actually occupies.
+
+    The distance to the next SEQ is not the same thing: they are laid
+    out with slack between them, and repacking against that slack would
+    spend a budget on padding. This walks the track the way events()
+    does and stops after the end marker."""
+    pos, running, end = at + HEADER, 0, len(data)
+    while pos < end:
+        while pos < end:
+            byte = data[pos]
+            pos += 1
+            if not byte & 0x80:
+                break
+        if pos >= end:
+            break
+        status = data[pos]
+        if status & 0x80:
+            pos += 1
+            if status < 0xF0:
+                running = status
+        else:
+            status = running
+        if status == 0xFF:
+            kind = data[pos] if pos < end else 0x2F
+            if kind != 0x51:
+                # End of track: the marker and its length byte.
+                return min(end, pos + 2) - at
+            pos += 4
+            continue
+        if not status:
+            break
+        pos += 1 if status & 0xF0 in (0xC0, 0xD0) else 2
+    return min(pos, end) - at
+
+
 def instruments(snd, bank):
     """{program: (volume, pan, [Tone])} of one VAB. Each program with tones
     has a block of 16 VagAtr after the program table, in program order."""

@@ -39,7 +39,7 @@ FILTER = "Tomba 2 project (*.t2p)"
 # does not live inside TOMBA2.DAT or TOMBA2.IMG is added here - which
 # is how the voice edits and the tree's names got in, and is where
 # anything similar should go rather than growing a second container.
-EXTRA_KEYS = ("main_exe", "sop_bin", "labels",
+EXTRA_KEYS = ("main_exe", "sop_bin", "snd", "labels",
               "voice_index", "voice_blob")
 
 # Deflate, not store. The DAT and IMG are mostly tables and indexed

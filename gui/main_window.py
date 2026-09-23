@@ -55,7 +55,7 @@ from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
     content_hashes, row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
-from functions import game_build, project_file, source_disc
+from functions import game_build, project_file, snd_edit, source_disc
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
@@ -336,6 +336,14 @@ class MainWindow(QMainWindow):
         # the directory it is unpacked into while it is open.
         self._project_file_path = None
         self._project_work = None
+        # TOMBA2.SND - the music and the sound effects - held the way
+        # MAIN.EXE and SOP.BIN are, so a sequence or a swapped sound can
+        # be edited and saved with no disc attached.
+        self.snd_edits = snd_edit.SndEdits()
+        # The Music tab edits sequences straight into that store, so an
+        # imported MIDI is kept by a project save like any other edit.
+        self.music_panel.snd_edits = self.snd_edits
+        self.sfx_panel.snd_edits = self.snd_edits
         self._sweep_stale_work_dirs()
 
         # The names on the tree's file rows, and where they came from.
@@ -1983,6 +1991,10 @@ class MainWindow(QMainWindow):
         # have to be told about a disc the rest of the window already
         # has. A 2048-byte ISO has no usable voice in it whatever we do
         # (see functions/voice), and each panel says so for itself.
+        # The music and the sound effects come off the disc once and
+        # are held from then on, so they can be edited and saved into a
+        # project that the disc is not attached to.
+        self._load_snd(track)
         for panel in (self.voice_panel, self.music_panel, self.sfx_panel):
             try:
                 panel.set_image(track)
@@ -1999,6 +2011,20 @@ class MainWindow(QMainWindow):
                 "sector, and nothing can put it back. For those, open the "
                 "disc's .cue or its Track 1 .bin instead.")
         return track
+
+    def _load_snd(self, track):
+        """Take TOMBA2.SND off the disc, unless a project brought one.
+
+        A project's own copy wins: it is the one with the edits in it,
+        and the disc is only ever the place the first copy came from."""
+        if self.snd_edits.loaded() and self.snd_edits.count():
+            return
+        try:
+            data = voice.extract_file(track, "TOMBA2.SND")
+        except Exception:
+            data = None
+        if data:
+            self.snd_edits.set_source(data)
 
     def require_source_disc(self, reason, ask=True):
         """The disc's data track - remembered, found, or asked for.
@@ -3111,6 +3137,11 @@ class MainWindow(QMainWindow):
                                     self.bins_viewer.sop_viewer.entries,
                                     sop_edits, sop)
                     replacements["SOP.BIN"] = open(sop, "rb").read()
+                # The music and sound effects live in TOMBA2.SND, not
+                # in the DAT, so an edited sequence reaches the disc
+                # the same way MAIN.EXE's text does - as a whole file.
+                if self.snd_edits.count():
+                    replacements["TOMBA2.SND"] = self.snd_edits.rebuild()
             except Exception as exc:
                 QMessageBox.critical(self, "Save failed",
                                      f"Could not rebuild the files: {exc}")
@@ -3549,6 +3580,20 @@ class MainWindow(QMainWindow):
                 # are the exceptions: the tree's names live nowhere on
                 # the disc, and a staged voice clip is raw sectors aimed
                 # at the disc image rather than at anything in here.
+                # The music and the sound effects. Held whole like
+                # MAIN.EXE rather than as a list of patches, so a
+                # project carries its own audio and can be worked on
+                # with no disc attached.
+                stage_snd = None
+                if self.snd_edits.loaded():
+                    stage_snd = os.path.join(stage, "TOMBA2.SND")
+                    try:
+                        with open(stage_snd, "wb") as f:
+                            f.write(self.snd_edits.rebuild())
+                    except (OSError, snd_edit.SndEditError) as exc:
+                        raise RuntimeError(
+                            f"The music couldn't be written: {exc}") from exc
+
                 stage_labels = None
                 if self.labels is not None:
                     stage_labels = os.path.join(stage, "labels.json")
@@ -3576,6 +3621,7 @@ class MainWindow(QMainWindow):
                     "cd_folder": game_folder_name,
                     "main_exe": "MAIN.EXE" if exe_path else None,
                     "sop_bin": "BIN/SOP.BIN" if sop_path else None,
+                    "snd": "TOMBA2.SND" if stage_snd else None,
                     "labels": "labels.json" if stage_labels else None,
                     "voice_index": ("voice/edits.json"
                                     if stage_voice_index else None),
@@ -3603,6 +3649,9 @@ class MainWindow(QMainWindow):
                 if stage_sop:
                     os.makedirs(os.path.dirname(output_sop), exist_ok=True)
                     os.replace(stage_sop, output_sop)
+                if stage_snd:
+                    os.replace(stage_snd,
+                               os.path.join(project_dir, "TOMBA2.SND"))
                 if stage_labels:
                     os.replace(stage_labels,
                                os.path.join(project_dir, "labels.json"))
@@ -3931,6 +3980,7 @@ class MainWindow(QMainWindow):
         self._load_bins(self.iso_handler.bin_overlays, self.iso_handler.extracted_files.get("SOP.BIN"))
 
         self.current_iso_path = iso_path
+        self._load_snd(iso_path)
         self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
         # The Dialogues tab reads its audio out of the same track, so
         # opening the disc is enough - it should not have to be opened a
@@ -4136,6 +4186,16 @@ class MainWindow(QMainWindow):
         inside the TOMBA2.DAT this project just opened. The tree's names
         and any staged voice are the two things with nowhere on the disc
         to live, so they travel as files of their own."""
+        relative = manifest.get("snd")
+        if relative:
+            path = os.path.join(project_root, relative)
+            if os.path.isfile(path):
+                try:
+                    with open(path, "rb") as f:
+                        self.snd_edits.set_source(f.read())
+                except OSError:
+                    pass
+
         relative = manifest.get("labels")
         if relative:
             path = os.path.join(project_root, relative)

@@ -148,6 +148,28 @@ class MusicPanel(QWidget):
         self.export_all.clicked.connect(self._save_all)
         self.export_all.setEnabled(False)
 
+        # Editing a sequence happens in a sequencer, not here: a SEQ is
+        # near enough a MIDI file that it can go out as one, be worked
+        # on in whatever the person already knows, and come back.
+        # MainWindow sets snd_edits to the store that holds TOMBA2.SND,
+        # which is what makes an imported sequence survive a save.
+        self.snd_edits = None
+        self.export_midi = QPushButton("Export MIDI...")
+        self.export_midi.setToolTip(
+            "Write the selected sequence out as a .mid to edit in any "
+            "sequencer. Note timing is exact; the instruments are the "
+            "game's own sound bank, so it will not sound right elsewhere")
+        self.export_midi.clicked.connect(self._export_midi)
+        self.export_midi.setEnabled(False)
+
+        self.import_midi = QPushButton("Import MIDI...")
+        self.import_midi.setToolTip(
+            "Replace the selected sequence with an edited .mid. All ten "
+            "share one fixed region on the disc, so there is a byte budget "
+            "and it is shown after every import")
+        self.import_midi.clicked.connect(self._import_midi)
+        self.import_midi.setEnabled(False)
+
         self.status = QLabel(
             "No disc open. The music is streamed CD-XA, which only survives "
             "in a raw data track - not a CD folder or an ISO.")
@@ -156,6 +178,8 @@ class MusicPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
+        top.addWidget(self.export_midi)
+        top.addWidget(self.import_midi)
         top.addWidget(self.transport.save_wav)
         top.addWidget(self.transport.save_mp3)
         top.addWidget(self.export_all)
@@ -408,10 +432,22 @@ class MusicPanel(QWidget):
     def _load_sequences(self, path):
         """List every SEQ: TOMBA2.SND's ten, then the overlays' own."""
         self._seqs, self._seq_cache = {}, {}
-        try:
-            snd = voice.extract_file(path, "TOMBA2.SND")
-        except Exception:
-            snd = None
+        # The edited TOMBA2.SND when there is one, so an imported
+        # sequence plays back straight away and the list shows its new
+        # length - the disc's own copy is only the starting point.
+        snd = None
+        if self.snd_edits is not None and self.snd_edits.loaded():
+            try:
+                snd = self.snd_edits.rebuild()
+            except Exception:
+                snd = None
+        if snd is None:
+            try:
+                snd = voice.extract_file(path, "TOMBA2.SND")
+            except Exception:
+                snd = None
+            if snd and self.snd_edits is not None:
+                self.snd_edits.set_source(snd)
         self._snd = snd
         if not snd:
             self.transport.set_entries([], table=self.sequence_list)
@@ -432,7 +468,10 @@ class MusicPanel(QWidget):
         entries = []
         for number, (slot, origin, data, at, bank, use) in enumerate(found, 1):
             key = f"{origin}:{at:X}"
-            self._seqs[key] = (data, at, bank)
+            # The slot and where it came from ride along now: importing
+            # needs to know which of TOMBA2.SND's ten it is replacing,
+            # and an overlay's sequence is not one of them.
+            self._seqs[key] = (data, at, bank, slot, origin)
             try:
                 _notes, length = seq.perform(data, at)
                 used = seq.played(data, at, snd, bank)
@@ -445,6 +484,99 @@ class MusicPanel(QWidget):
         self.seq_names.load(path)
         self.transport.set_entries(entries, self.seq_names.names(),
                                    table=self.sequence_list)
+        # Enabled once there is anything to act on rather than on the
+        # selection: the list has no "something was picked" signal, and
+        # a button that says which sequence it wants beats one that is
+        # greyed out for a reason nobody can see.
+        self.export_midi.setEnabled(bool(self._seqs))
+        self.import_midi.setEnabled(bool(self._seqs)
+                                    and self.snd_edits is not None)
+
+    # --- sequences out as MIDI, and back ------------------------------
+
+    def _selected_sequence(self):
+        """(key, data, at, bank, slot, origin) for the picked sequence."""
+        key = self.transport.current_key()
+        if key in self._seqs:
+            return (key,) + self._seqs[key]
+        return None
+
+    def _export_midi(self):
+        from functions import midi
+
+        chosen = self._selected_sequence()
+        if chosen is None:
+            self.status.setText("Pick a sequence on the right first.")
+            return
+        key, data, at, _bank, slot, origin = chosen
+        name = self.seq_names.names().get(key) or (
+            f"{origin} slot {slot}" if slot is not None else f"{origin} {at:X}")
+        suggested = "".join(c for c in name if c.isalnum() or c in " -_") + ".mid"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export sequence as MIDI", suggested,
+            "MIDI file (*.mid);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "wb") as f:
+                f.write(midi.from_seq(data, at))
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Could not write that: {exc}")
+            return
+        resolution, _tempo = seq.header(data, at)
+        self.status.setText(
+            f"Wrote {os.path.basename(path)} - {resolution} ticks per beat. "
+            "Keep that division when you save it back, and keep it a single "
+            "track: a SEQ has no way to express either being different.")
+
+    def _import_midi(self):
+        from functions import midi, snd_edit
+
+        chosen = self._selected_sequence()
+        if chosen is None:
+            self.status.setText("Pick a sequence on the right first.")
+            return
+        key, data, at, _bank, slot, origin = chosen
+        if self.snd_edits is None or not self.snd_edits.loaded():
+            self.status.setText(
+                "The music file isn't loaded, so there is nowhere to put an "
+                "imported sequence. Open the disc or a project first.")
+            return
+        if origin != "TOMBA2.SND" or slot is None:
+            # An overlay's sequences sit inside A0x.BIN, which is a
+            # different file with a different layout. Saying so beats
+            # writing into the wrong one.
+            self.status.setText(
+                f"{origin}'s sequences are inside the area overlay, not "
+                "TOMBA2.SND, and replacing those isn't supported yet. The "
+                "ten in TOMBA2.SND can be replaced.")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import a MIDI over this sequence", "",
+            "MIDI file (*.mid *.midi);;All files (*)")
+        if not path:
+            return
+        resolution, _tempo = seq.header(data, at)
+        try:
+            with open(path, "rb") as f:
+                blob = midi.to_seq(f.read(), resolution=resolution)
+        except (OSError, midi.MidiError, ValueError) as exc:
+            self.status.setText(f"Couldn't use that MIDI: {exc}")
+            return
+        try:
+            state = self.snd_edits.stage_sequence(slot, blob)
+        except snd_edit.SndEditError as exc:
+            self.status.setText(str(exc))
+            return
+
+        self._seq_cache.pop(key, None)
+        self._load_sequences(self.image)
+        self.status.setText(
+            f"Slot {slot} replaced from {os.path.basename(path)}. "
+            f"Sequences now use {state['used']} of {state['capacity']} bytes "
+            f"- {state['free']} free. Save the project to keep it, or Build "
+            "Disc to hear it in the game.")
 
     def _seq_wanted(self, key):
         if key not in self._seqs or self._snd is None:
@@ -455,7 +587,7 @@ class MusicPanel(QWidget):
             return
         self._stop_render()
         self.status.setText("Playing the sequence on its instruments...")
-        data, at, bank = self._seqs[key]
+        data, at, bank, _slot, _origin = self._seqs[key]
         self._render = _Render(key, data, at, self._snd, bank)
         self._render.done.connect(self._seq_rendered)
         self._render.start()
@@ -473,7 +605,7 @@ class MusicPanel(QWidget):
         if key not in self._seqs or self._snd is None:
             return
         if key not in self._seq_cache:
-            data, at, bank = self._seqs[key]
+            data, at, bank, _slot, _origin = self._seqs[key]
             stereo, _used = seq.render(data, at, self._snd, bank)
             self._seq_cache[key] = xa.wav_bytes_raw(seq.pcm(stereo), seq.RATE, 2)
         self._write(path, self._seq_cache[key])

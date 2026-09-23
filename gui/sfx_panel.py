@@ -51,6 +51,19 @@ class SfxPanel(QWidget):
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save_one)
 
+        # Swapping a sound. MainWindow points snd_edits at the store
+        # that holds TOMBA2.SND, which is what makes a swap survive a
+        # project save and reach the disc.
+        self.snd_edits = None
+        self.replace_btn = QPushButton("Replace with WAV...")
+        self.replace_btn.setToolTip(
+            "Swap the selected sound for a WAV. It is resampled to the "
+            "rate the game plays this one at and encoded to the SPU's "
+            "ADPCM; the bank's waveforms share a fixed area, so there is "
+            "a byte budget and it is shown after every swap")
+        self.replace_btn.clicked.connect(self._replace)
+        self.replace_btn.setEnabled(False)
+
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every waveform into a folder, "
                                    "using the names given here")
@@ -68,6 +81,7 @@ class SfxPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
+        top.addWidget(self.replace_btn)
         top.addWidget(self.transport.save_wav)
         top.addWidget(self.transport.save_mp3)
         top.addWidget(self.export_all)
@@ -99,6 +113,15 @@ class SfxPanel(QWidget):
                 f"{os.path.basename(path)} has no TOMBA2.SND in it.")
             self.transport.set_entries([])
             return
+        # A project's edited copy wins over the disc's, so a swapped
+        # sound is the one that plays and the one that gets listed.
+        if self.snd_edits is not None and self.snd_edits.loaded():
+            try:
+                data = self.snd_edits.rebuild()
+            except Exception:
+                pass
+        elif self.snd_edits is not None:
+            self.snd_edits.set_source(data)
         self._snd = data
         try:
             exe = voice.extract_file(path, "MAIN.EXE")
@@ -131,6 +154,7 @@ class SfxPanel(QWidget):
             ))
         self.transport.set_entries(entries, self.names.names())
         self.export_all.setEnabled(True)
+        self.replace_btn.setEnabled(self.snd_edits is not None)
         named = len(self.names.names())
         self.status.setText(
             f"{os.path.basename(path)}: {len(slots)} waveforms in "
@@ -174,6 +198,57 @@ class SfxPanel(QWidget):
             self.status.setText(f"Could not save: {exc}")
             return
         self.status.setText(f"Wrote {os.path.basename(path)}.")
+
+    def _replace(self):
+        """Swap the selected waveform for a WAV file."""
+        from functions import snd_edit, vag
+
+        key = self.transport.current_key()
+        if key not in self._by_key:
+            self.status.setText("Pick a sound in the list first.")
+            return
+        if self.snd_edits is None or not self.snd_edits.loaded():
+            self.status.setText(
+                "The sound file isn't loaded, so there is nowhere to put a "
+                "replacement. Open the disc or a project first.")
+            return
+        bank, index = (int(part) for part in key.split(":"))
+        offset, size, held = self._by_key[key]
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Replace this sound with a WAV", "",
+            "WAV audio (*.wav);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                samples, rate = vag.from_wav(f.read())
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Couldn't use that WAV: {exc}")
+            return
+
+        # Resampled to whatever rate the game plays this slot at, so the
+        # replacement comes out at the pitch and length the sound was
+        # asked for rather than at whatever the file happened to be.
+        target = self._rates.get(key) or sfx.RATE
+        samples = vag.resample(samples, rate, target)
+        blob = vag.encode(samples, loop_start=0 if held else None,
+                          repeat=held)
+        try:
+            state = self.snd_edits.stage_sound(bank, index, blob)
+        except snd_edit.SndEditError as exc:
+            self.status.setText(str(exc))
+            return
+
+        self._cache.pop(key, None)
+        self.set_image(self.image)
+        self.status.setText(
+            f"Sound {key} replaced from {os.path.basename(path)} - "
+            f"{len(samples):,} samples at {target} Hz"
+            + (", looping." if held else ".")
+            + f" Bank {bank} now uses {state['used']:,} of "
+            f"{state['capacity']:,} bytes - {state['free']:,} free. Save the "
+            "project to keep it.")
 
     def _save_all(self):
         folder = QFileDialog.getExistingDirectory(
