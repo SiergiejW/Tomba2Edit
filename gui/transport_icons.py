@@ -7,7 +7,8 @@ glyph in a property (theme.GLYPH_PROPERTY) and theme.apply_theme repaints it
 on a switch. The word it replaces becomes the tooltip.
 """
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
+from PyQt6.QtGui import (QColor, QIcon, QPainter, QPainterPath,
+                         QPainterPathStroker, QPixmap)
 from PyQt6.QtWidgets import QApplication
 
 from gui import theme
@@ -18,7 +19,8 @@ BUTTON_SIZE = 32
 NAMES = {"play": "Play", "pause": "Pause", "stop": "Stop",
          "previous": "Previous", "next": "Next",
          "first": "First frame", "last": "Last frame",
-         "step_back": "Previous frame", "step_forward": "Next frame"}
+         "step_back": "Previous frame", "step_forward": "Next frame",
+         "undo": "Undo", "redo": "Redo"}
 
 
 def _colour(name):
@@ -68,6 +70,25 @@ def _shape(name):
         _triangle(path, 4.5, 3, 7, 10, pointing_right=False)
     elif name == "step_forward":
         _triangle(path, 4.5, 3, 7, 10)
+    elif name in ("undo", "redo"):
+        # An arrow curling back on itself: a stroked arc for the curl,
+        # a filled head on the end it points at. Mirrored for redo, so
+        # the pair reads as one gesture in two directions.
+        back = name == "undo"
+        curl = QPainterPath()
+        curl.moveTo(3.0, 9.5)
+        curl.cubicTo(3.0, 3.0, 13.0, 3.0, 13.0, 9.5)
+        stroked = QPainterPathStroker()
+        stroked.setWidth(2.0)
+        stroked.setCapStyle(Qt.PenCapStyle.RoundCap)
+        arc = stroked.createStroke(curl)
+        head = QPainterPath()
+        tip = 3.0 if back else 13.0
+        head.moveTo(tip, 13.0)
+        head.lineTo(tip - 3.4, 8.2)
+        head.lineTo(tip + 3.4, 8.2)
+        head.closeSubpath()
+        path = arc.united(head)
     return path
 
 

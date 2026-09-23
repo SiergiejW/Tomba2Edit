@@ -506,8 +506,12 @@ class MusicPanel(QWidget):
     # --- sequences out as MIDI, and back ------------------------------
 
     def _selected_sequence(self):
-        """(key, data, at, bank, slot, origin) for the picked sequence."""
-        key = self.transport.current_key()
+        """(key, data, at, bank, slot, origin) for the picked sequence.
+
+        Asked of the sequence list by name rather than of whichever list
+        the transport is pointed at: clicking in the BGM list moves that
+        pointer, and these buttons are about the sequences either way."""
+        key = self.transport.key_in(self.sequence_list)
         if key in self._seqs:
             return (key,) + self._seqs[key]
         return None
@@ -555,13 +559,20 @@ class MusicPanel(QWidget):
                 "The music file isn't loaded, so an edit would have nowhere "
                 "to go. Open the disc or a project first.")
             return
-        if origin != "TOMBA2.SND" or slot is None:
-            self.status.setText(
-                f"{origin}'s sequences live in the area overlay rather than "
-                "TOMBA2.SND, and editing those isn't supported yet.")
-            return
+        # An overlay's sequences open the same way; what they cannot do
+        # is be written back, because they live inside A0x.BIN rather
+        # than TOMBA2.SND. Refusing to open them at all meant the button
+        # appeared to do nothing, which is a worse answer than showing
+        # the music and saying where it lives.
+        editable = origin == "TOMBA2.SND" and slot is not None
+        refusal = ("" if editable else
+                   f"This one lives in {origin}, the area's own overlay, "
+                   "not in TOMBA2.SND - so it can be played with and "
+                   "exported, but not applied back to the disc yet.")
 
         def budget(blob):
+            if not editable:
+                return refusal
             state = self.snd_edits.would_fit(slot, blob)
             if state["free"] < 0:
                 return (f"{-state['free']} bytes too big for the "
@@ -569,10 +580,10 @@ class MusicPanel(QWidget):
             return (f"{state['used']} of {state['capacity']} bytes used "
                     f"across all ten - {state['free']} free.")
 
-        editor = SequenceEditor(data, at, slot, budget=budget,
-                                snd=self._snd, bank=_bank,
+        editor = SequenceEditor(data, at, slot if slot is not None else origin,
+                                budget=budget, snd=self._snd, bank=_bank,
                                 instrument_names=self._instrument_names(_bank),
-                                parent=self)
+                                applyable=editable, parent=self)
         if not editor.exec() or editor.result_blob is None:
             return
         try:

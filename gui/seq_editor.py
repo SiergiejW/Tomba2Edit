@@ -22,13 +22,16 @@ import os
 
 from PyQt6.QtCore import (QBuffer, QByteArray, QRect, QSize, Qt, QThread,
                           pyqtSignal)
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (QColor, QFont, QKeySequence, QPainter, QPen,
+                         QPixmap, QShortcut)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QHBoxLayout, QLabel, QPushButton, QScrollArea,
                              QSpinBox, QVBoxLayout, QWidget)
 
 from functions import midi, seq, seq_notes, xa
+from gui import theme
+from gui.transport_icons import set_glyph
 
 # One channel, one colour. Sixteen distinguishable hues beats a legend.
 CHANNEL_COLOURS = [
@@ -46,6 +49,9 @@ RULER = 20              # the strip along the top: bar numbers, and where
                         # note area would fight drawing notes
 MIN_SCALE = 0.01        # pixels per tick
 MAX_SCALE = 1.20
+UNDO_DEPTH = 100        # snapshots kept; a few hundred notes each, so
+                        # the whole stack is smaller than one rendered
+                        # second of the audio it is editing
 
 
 class _Render(QThread):
@@ -124,6 +130,18 @@ class Audition:
     def stop(self):
         self.player.stop()
 
+    def pause(self):
+        self.player.pause()
+
+    def resume(self):
+        self.player.play()
+
+    def state(self):
+        return self.player.playbackState()
+
+    def paused(self):
+        return self.state() == QMediaPlayer.PlaybackState.PausedState
+
     def note_wav(self, note, program):
         """One note on its own, as WAV bytes - or None if it can't be."""
         if not self.ready():
@@ -155,6 +173,11 @@ class PianoRoll(QWidget):
     scrubbed = pyqtSignal(int)
     # A note was selected, so the instrument box can follow it.
     picked = pyqtSignal(object)
+    # About to change something - the moment to remember for undo. Sent
+    # once per gesture rather than once per pixel of a drag, so undoing
+    # a drag puts the note back where it started rather than one step
+    # along it.
+    begin_edit = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,6 +205,19 @@ class PianoRoll(QWidget):
         self.low, self.high = seq_notes.key_range(notes)
         self.selected = None
         self._resize()
+
+    def refresh_notes(self):
+        """The list changed underneath - an undo or a redo put other
+        notes in it. The key range only widens: narrowing it would
+        scroll the view on undo, and an undo that also moves the page
+        is hard to follow."""
+        low, high = seq_notes.key_range(self.notes)
+        self.low = min(self.low, low)
+        self.high = max(self.high, high)
+        # The note it pointed at may not be in the list any more.
+        self.selected = None
+        self._resize()
+        self.update()
 
     def _resize(self):
         width = int(max(1, seq_notes.span(self.notes) + self.resolution * 2)
@@ -225,18 +261,25 @@ class PianoRoll(QWidget):
 
     def paintEvent(self, _event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#1e1f22"))
-        painter.fillRect(0, 0, self.width(), RULER, QColor("#2a2c30"))
+        # Asked for on every repaint rather than cached: the theme can
+        # be changed with the editor open, and a roll that stayed dark
+        # under a light window would be the bug this fixes.
+        paint = theme.roll_colours()
+        bright = theme.is_bright()
+        painter.fillRect(self.rect(), QColor(paint["ground"]))
+        painter.fillRect(0, 0, self.width(), RULER, QColor(paint["ruler"]))
         width = self.width()
 
         # Key lanes: the black notes shaded, so pitch is readable
         # without a keyboard drawn down the side.
+        lane = QColor(paint["lane"])
+        octave = QPen(QColor(paint["octave"]))
         for key in range(self.low, self.high + 1):
             y = self.y_of(key)
             if key % 12 in BLACK_KEYS:
-                painter.fillRect(0, y, width, self.row - 1, QColor("#26282c"))
+                painter.fillRect(0, y, width, self.row - 1, lane)
             if key % 12 == 0:
-                painter.setPen(QPen(QColor("#3a3d42")))
+                painter.setPen(octave)
                 painter.drawLine(0, y + self.row - 1, width, y + self.row - 1)
 
         # Bar lines every four beats, beat lines between, and the bar
@@ -248,10 +291,11 @@ class PianoRoll(QWidget):
             while self.x_of(tick) < width:
                 x = self.x_of(tick)
                 bar = (tick // beat) % 4 == 0
-                painter.setPen(QPen(QColor("#43464c" if bar else "#2c2f33")))
+                painter.setPen(QPen(QColor(
+                    paint["bar"] if bar else paint["beat"])))
                 painter.drawLine(x, RULER, x, self.height())
                 if bar:
-                    painter.setPen(QPen(QColor("#7e838c")))
+                    painter.setPen(QPen(QColor(paint["mark"])))
                     painter.drawLine(x, RULER - 5, x, RULER)
                     if beat * 4 * self.per_tick >= 26:
                         painter.drawText(x + 3, RULER - 6,
@@ -262,20 +306,25 @@ class PianoRoll(QWidget):
             rect = self._rect(note)
             colour = QColor(CHANNEL_COLOURS[note.channel % 16])
             if note is self.selected:
-                colour = colour.lighter(150)
+                # Away from the background, not simply lighter: on a
+                # light theme a lighter note is a fainter note, which
+                # is the wrong way round for the one that is selected.
+                colour = colour.darker(135) if bright else colour.lighter(150)
             painter.fillRect(rect, colour)
-            painter.setPen(QPen(colour.darker(160)))
+            painter.setPen(QPen(colour.darker(160),
+                                2 if note is self.selected else 1))
             painter.drawRect(rect)
 
         # The playhead last, over everything, so it is never hidden
         # behind a note.
         x = self.x_of(self.playhead)
-        painter.setPen(QPen(QColor("#e8b84b"), 1))
+        head = QColor(paint["playhead"])
+        painter.setPen(QPen(head, 1))
         painter.drawLine(x, 0, x, self.height())
-        painter.fillRect(x - 4, 0, 9, 7, QColor("#e8b84b"))
+        painter.fillRect(x - 4, 0, 9, 7, head)
 
         if not self.notes:
-            painter.setPen(QPen(QColor("#8a8f98")))
+            painter.setPen(QPen(QColor(paint["text"])))
             painter.setFont(QFont("", 10))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                              "No notes in this sequence.\n"
@@ -336,6 +385,7 @@ class PianoRoll(QWidget):
             # Held down it keeps rubbing out whatever it is dragged
             # over, which is what deleting a run of notes wants to be.
             self._erasing = True
+            self.begin_edit.emit()
             self._erase_at(position)
             return
         if event.button() != Qt.MouseButton.LeftButton:
@@ -348,6 +398,7 @@ class PianoRoll(QWidget):
             if channel is None:
                 used = seq_notes.channels_used(self.notes)
                 channel = used[0] if used else 0
+            self.begin_edit.emit()
             note = seq_notes.Note(
                 self._snapped(self.tick_of(position.x())),
                 self.snap or self.resolution // 4,
@@ -360,6 +411,7 @@ class PianoRoll(QWidget):
             self.update()
             return
         self.selected = note
+        self.begin_edit.emit()
         self._drag = (("length" if on_edge else "move"), position,
                       note.tick, note.length, note.key)
         # Picking a note plays it, the way picking one anywhere else
@@ -469,6 +521,7 @@ class PianoRoll(QWidget):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if self.selected in self.notes:
+                self.begin_edit.emit()
                 self.notes.remove(self.selected)
                 self.selected = None
                 self.changed.emit()
@@ -476,6 +529,8 @@ class PianoRoll(QWidget):
             return
         step = 12 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
         if self.selected is not None:
+            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                self.begin_edit.emit()
             if event.key() == Qt.Key.Key_Up:
                 self.selected.key = min(127, self.selected.key + step)
             elif event.key() == Qt.Key.Key_Down:
@@ -494,11 +549,16 @@ class SequenceEditor(QDialog):
     """The piano roll, with the budget under it and Apply at the end."""
 
     def __init__(self, data, at, slot, budget=None, snd=None, bank=None,
-                 instrument_names=None, parent=None):
+                 instrument_names=None, applyable=True, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Edit sequence - slot {slot}")
+        self.setWindowTitle(
+            f"Edit sequence - {slot}" if isinstance(slot, str)
+            else f"Edit sequence - slot {slot}")
         self.resize(940, 600)
         self._budget = budget or (lambda blob: None)
+        # False for a sequence that can be looked at and played with but
+        # not written back - an overlay's, which lives in A0x.BIN.
+        self.applyable = applyable
         self.result_blob = None
 
         self.resolution, self.tempo = seq.header(data, at)
@@ -514,6 +574,13 @@ class SequenceEditor(QDialog):
         self.sound.bank = bank
         self.sound.resolution = self.resolution
         self.sound.tempo = self.tempo
+        # Undo as whole snapshots of the notes rather than a list of
+        # reversible operations: a sequence is a few hundred notes, a
+        # snapshot is a few hundred small objects, and the alternative
+        # is an inverse for every gesture and a bug in whichever one
+        # gets written last.
+        self._undo = []
+        self._redo = []
         self._render = None
         self._rendered = None        # the WAV for the edit as it stands
         self._rendered_channel = None    # ... and which channel it holds
@@ -526,6 +593,7 @@ class SequenceEditor(QDialog):
         self.roll.zoomed.connect(self._zoomed)
         self.roll.scrubbed.connect(self._scrubbed)
         self.roll.picked.connect(self._picked)
+        self.roll.begin_edit.connect(self._push_undo)
 
         # Where the playhead belongs at any moment of the audio. Built
         # from the events rather than from a tempo alone, so a tempo
@@ -602,13 +670,14 @@ class SequenceEditor(QDialog):
         # tooltip nobody hovers over. It never changes, so it costs one
         # line of layout and saves the guessing.
         self.help = QLabel(
-            "<span style='color:#8a8f98'>"
+            f"<span style='color:{theme.colours()['dim']}'>"
             "<b>Drag</b> a note to move · its <b>right edge</b> to "
             "lengthen · <b>empty space</b> to draw · <b>right-drag</b> "
             "to rub out<br>"
             "<b>Middle-drag</b> pans · <b>Ctrl+wheel</b> zooms "
             "(<b>+Shift</b> taller) · <b>top strip</b> moves the "
-            "playhead · <b>↑↓</b> nudge · <b>Del</b> removes"
+            "playhead · <b>↑↓</b> nudge · <b>Del</b> removes · "
+            "<b>Ctrl+Z</b> undoes"
             "</span>")
         self.help.setWordWrap(True)
 
@@ -629,15 +698,35 @@ class SequenceEditor(QDialog):
         self.apply_button = buttons.button(
             QDialogButtonBox.StandardButton.Apply)
         self.apply_button.clicked.connect(self._apply)
+        if not self.applyable:
+            self.apply_button.setEnabled(False)
+            self.apply_button.setToolTip(
+                "This sequence can't be written back yet - see the note "
+                "beside Zippo.")
         buttons.rejected.connect(self.reject)
 
-        self.play_button = QPushButton("Play")
-        self.play_button.setToolTip(
-            "Play the sequence as it stands now, on its own instruments")
+        self.play_button = QPushButton()
+        set_glyph(self.play_button, "play",
+                  "Play the sequence as it stands now, on its own "
+                  "instruments")
         self.play_button.clicked.connect(self._play)
-        self.stop_button = QPushButton("Stop")
+        self.pause_button = QPushButton()
+        set_glyph(self.pause_button, "pause", "Pause, and carry on from here")
+        self.pause_button.clicked.connect(self._pause)
+        self.pause_button.setEnabled(False)
+        self.stop_button = QPushButton()
+        set_glyph(self.stop_button, "stop")
         self.stop_button.clicked.connect(self._stop)
         self.stop_button.setEnabled(False)
+
+        self.undo_button = QPushButton()
+        set_glyph(self.undo_button, "undo", "Undo  (Ctrl+Z)")
+        self.undo_button.clicked.connect(self._undo_once)
+        self.undo_button.setEnabled(False)
+        self.redo_button = QPushButton()
+        set_glyph(self.redo_button, "redo", "Redo  (Ctrl+Shift+Z)")
+        self.redo_button.clicked.connect(self._redo_once)
+        self.redo_button.setEnabled(False)
         self.loop_box = QCheckBox("Loop")
         self.loop_box.setToolTip("Keep repeating until Stop")
         self.hear_notes = QCheckBox("Hear notes")
@@ -645,8 +734,8 @@ class SequenceEditor(QDialog):
         self.hear_notes.setToolTip(
             "Sound each note as it is drawn or moved to a new pitch")
         if not self.sound.ready():
-            for widget in (self.play_button, self.stop_button,
-                           self.loop_box, self.hear_notes):
+            for widget in (self.play_button, self.pause_button,
+                           self.stop_button, self.loop_box, self.hear_notes):
                 widget.setEnabled(False)
                 widget.setToolTip("The sound bank isn't loaded, so this "
                                   "sequence can't be played here.")
@@ -657,10 +746,13 @@ class SequenceEditor(QDialog):
         # narrower than 1292 pixels.
         transport = QHBoxLayout()
         transport.addWidget(self.play_button)
+        transport.addWidget(self.pause_button)
         transport.addWidget(self.stop_button)
         transport.addWidget(self.loop_box)
         transport.addWidget(self.hear_notes)
         transport.addStretch(1)
+        transport.addWidget(self.undo_button)
+        transport.addWidget(self.redo_button)
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Show:"))
@@ -690,6 +782,17 @@ class SequenceEditor(QDialog):
         layout.addWidget(buttons)
         self._show_instrument()
         self._recount()
+
+        for keys, slot in ((QKeySequence.StandardKey.Undo, self._undo_once),
+                           (QKeySequence.StandardKey.Redo, self._redo_once),
+                           ("Ctrl+Shift+Z", self._redo_once)):
+            # Window-wide: the roll has the focus while editing, but so
+            # can a spin box, and Ctrl+Z has to mean the same in both.
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(slot)
+        # Qt does not tell the buttons the sound ran out on its own.
+        self.sound.player.playbackStateChanged.connect(self._playback_state)
 
     # -- controls ------------------------------------------------------
 
@@ -853,6 +956,13 @@ class SequenceEditor(QDialog):
     def _play(self):
         if not self.sound.ready():
             return
+        # Play on a paused sequence means carry on, not start again -
+        # unless it was edited while it sat there, in which case what
+        # is paused is no longer the music being looked at.
+        if self.sound.paused() and self.sound.following and not self._dirty:
+            self.sound.resume()
+            self._playback_state()
+            return
         # Showing one channel means hearing one channel; the filter
         # would be half a filter otherwise.
         channel = self.roll.channel
@@ -862,7 +972,7 @@ class SequenceEditor(QDialog):
             if self.roll.playhead:
                 self.sound.player.setPosition(int(seq_notes.seconds_at(
                     self._timeline, self.roll.playhead) * 1000))
-            self.stop_button.setEnabled(True)
+            self._playback_state()
             return
         try:
             blob = self.encoded(channel)
@@ -886,7 +996,7 @@ class SequenceEditor(QDialog):
         if self.roll.playhead:
             self.sound.player.setPosition(int(seq_notes.seconds_at(
                 self._timeline, self.roll.playhead) * 1000))
-        self.stop_button.setEnabled(True)
+        self._playback_state()
         # Puts the byte count back over "Rendering..." - and has to come
         # before the flag is cleared, because counting marks the render
         # stale and here it is exactly as fresh as it gets.
@@ -896,6 +1006,80 @@ class SequenceEditor(QDialog):
     def _stop(self):
         self.sound.stop()
         self.stop_button.setEnabled(False)
+
+    def _pause(self):
+        """Hold it where it is, or carry on from there."""
+        if self.sound.paused():
+            self.sound.resume()
+        else:
+            self.sound.pause()
+        self._playback_state()
+
+    def _playback_state(self, *_state):
+        """Put the transport buttons where the player actually is.
+
+        Driven from the player rather than from the clicks, so a
+        sequence that simply ends does not leave Stop lit and Pause
+        offering to pause silence."""
+        if not self.sound.ready():
+            return
+        playing = self._is_playing()
+        paused = self.sound.paused() and self.sound.following
+        self.stop_button.setEnabled(playing or paused)
+        self.pause_button.setEnabled(playing or paused)
+        set_glyph(self.pause_button, "play" if paused else "pause",
+                  "Carry on from here" if paused
+                  else "Pause, and carry on from here")
+
+    # -- undo ----------------------------------------------------------
+    #
+    # Whole snapshots of the notes, taken before a gesture rather than
+    # after it: the roll emits begin_edit the moment it is about to
+    # change something, which is the only point at which the state
+    # being replaced still exists. Drawing, erasing, dragging, resizing
+    # and nudging all go through it, so each is one step - a drag is
+    # not forty.
+
+    def _snapshot(self):
+        return [note.as_tuple() for note in self.notes]
+
+    def _push_undo(self):
+        shot = self._snapshot()
+        # A gesture that announced itself and then changed nothing - a
+        # click that missed, a drag that went nowhere - should not cost
+        # a step.
+        if self._undo and self._undo[-1] == shot:
+            return
+        self._undo.append(shot)
+        del self._undo[:-UNDO_DEPTH]
+        self._redo.clear()
+        self._undo_state()
+
+    def _restore(self, shot):
+        # In place: the roll holds this same list, and handing it a new
+        # one would leave it drawing the old notes.
+        self.notes[:] = [seq_notes.Note(*item) for item in shot]
+        self.roll.refresh_notes()
+        self._show_instrument()
+        self._recount()
+
+    def _undo_once(self):
+        if not self._undo:
+            return
+        self._redo.append(self._snapshot())
+        self._restore(self._undo.pop())
+        self._undo_state()
+
+    def _redo_once(self):
+        if not self._redo:
+            return
+        self._undo.append(self._snapshot())
+        self._restore(self._redo.pop())
+        self._undo_state()
+
+    def _undo_state(self):
+        self.undo_button.setEnabled(bool(self._undo))
+        self.redo_button.setEnabled(bool(self._redo))
 
     def closeEvent(self, event):
         # A render still running holds the sound file; Qt takes the
@@ -924,16 +1108,19 @@ class SequenceEditor(QDialog):
                       f"{'over' if difference > 0 else 'under'}")
         channels = len(seq_notes.channels_used(self.notes))
         over = note is not None and "too big" in note
+        dim = theme.colours()["dim"]
         self.status.setText(
             f"<b>{len(self.notes)}</b> notes on <b>{channels}</b> "
             f"channel{'' if channels == 1 else 's'} &nbsp;·&nbsp; "
-            f"<b>{size}</b> bytes <span style='color:#8a8f98'>"
+            f"<b>{size}</b> bytes <span style='color:{dim}'>"
             f"({shape})</span>"
-            + (f"<br><span style='color:{'#d65f4f' if over else '#8a8f98'}'>"
+            + (f"<br><span style='color:{'#d65f4f' if over else dim}'>"
                f"{note}</span>" if note else ""))
-        self.apply_button.setEnabled(not over)
+        self.apply_button.setEnabled(self.applyable and not over)
 
     def _apply(self):
+        if not self.applyable:
+            return
         try:
             self.result_blob = self.encoded()
         except Exception as exc:

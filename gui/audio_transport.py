@@ -315,7 +315,29 @@ class AudioTransport(QWidget):
         return self._make_list(list(columns or []), source)
 
     def _use(self, table):
+        if table is self.list:
+            return
         self.list = table
+        # Two lists, one player. A row left highlighted in the other one
+        # reads as a second, half-lit selection - Qt draws an unfocused
+        # selection in a paler colour - and worse, it is ambiguous which
+        # one the buttons are about. Exactly one row is shown as chosen.
+        for other in self.lists:
+            if other is not table:
+                other.blockSignals(True)
+                other.clearSelection()
+                other.blockSignals(False)
+
+    def key_in(self, table):
+        """The key of `table`'s current row, whichever list is in use.
+
+        current_key() answers for the list the controls are pointed at,
+        which is the right question for playing and the wrong one for
+        "what is selected over there" - an owner with two lists needs to
+        ask about one of them by name."""
+        row = table.currentRow()
+        item = table.item(row, 0) if row >= 0 else None
+        return item.data(KEY) if item is not None else None
 
     def _play_from(self, table, row):
         self._use(table)

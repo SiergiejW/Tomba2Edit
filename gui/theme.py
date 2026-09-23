@@ -112,7 +112,7 @@ QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {
     color: #ffffff;
 }
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
-    background-color: #dceeff;
+    background-color: #f0f0f2;
 }
 """
 
@@ -172,6 +172,10 @@ def colours(name=None):
     c["accent_hover"] = _mix(c["accent"], "#000000" if bright else "#ffffff", 0.15)
     # A selected row: the accent, faint, over the pane.
     c["accent_dim"] = _mix(c["panel"], c["accent"], 0.18 if bright else 0.22)
+    # A row under the mouse. Deliberately far weaker than accent_dim:
+    # at the same strength the two are indistinguishable at a glance
+    # and a list looks like it has two rows selected.
+    c["row_hover"] = _mix(c["panel"], c["text"], 0.06)
     luminance = (0.299 * accent.red() + 0.587 * accent.green() + 0.114 * accent.blue()) / 255
     c["accent_text"] = "#141414" if luminance > 0.55 else "#ffffff"
     return c
@@ -605,14 +609,20 @@ QTreeView, QListView, QTableView, QTreeWidget, QListWidget, QTableWidget {{
 }}
 QTreeView::item, QListView::item, QTableView::item {{
     padding: 3px 4px;
-    border: none;
+    /* Transparent rather than none: the selected row draws a border,
+       and without the space already reserved the text jumps a pixel
+       the moment a row is clicked. */
+    border: 1px solid transparent;
     border-radius: 5px;
 }}
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {{
-    background-color: {c["hover"]};
+    background-color: {c["row_hover"]};
 }}
-QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {{
+QTreeView::item:selected, QListView::item:selected, QTableView::item:selected,
+QTreeView::item:selected:hover, QListView::item:selected:hover,
+QTableView::item:selected:hover {{
     background-color: {c["accent_dim"]};
+    border-color: {c["accent"]};
     color: {c["text"]};
 }}
 
@@ -869,6 +879,45 @@ def current_theme():
 
 def is_modern():
     return _current_theme in _GREYS
+
+
+def is_bright():
+    """Whether the theme in use puts dark text on a light ground."""
+    return _current_theme in ("modern_bright", "bright")
+
+
+def roll_colours():
+    """{role: QColor-able string} for the piano roll.
+
+    Its own palette rather than the stylesheet's, because it is painted
+    by hand: a canvas, lanes, grid lines and a playhead, none of which
+    a widget style has a word for. Everything is derived from the
+    theme's ground and text, so the shading is the same distance from
+    the background whichever way round the two are - which is what
+    makes the roll light under a light theme instead of a dark hole in
+    the middle of a bright window.
+
+    colours() answers with modern greys under the classic themes, so
+    the base is chosen here by brightness rather than by name."""
+    bright = is_bright()
+    c = colours("modern_bright" if bright else "modern")
+    ground = _mix(c["panel"], c["text"], 0.03)
+    return {
+        "ground": ground,
+        "ruler": _mix(ground, c["text"], 0.10),
+        # Black-key lanes: away from the ground in whichever direction
+        # the ground is not, so they read as shaded either way.
+        "lane": _mix(ground, c["text"], 0.07),
+        "octave": _mix(ground, c["text"], 0.22),
+        "bar": _mix(ground, c["text"], 0.24),
+        "beat": _mix(ground, c["text"], 0.09),
+        "mark": c["dim"],
+        "text": c["dim"],
+        # The playhead is the one thing that must never be lost against
+        # the notes, so it keeps a colour of its own rather than taking
+        # the accent, which a channel colour can sit right next to.
+        "playhead": "#b8791a" if bright else "#e8b84b",
+    }
 
 
 # A 3D view's ground under the classic bright theme; the classic dark theme
