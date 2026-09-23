@@ -17,7 +17,8 @@ from gui.margin_text_edit import MarginTextEdit
 from gui.transport_icons import set_glyph
 from gui.txtd.font_preview import FontPreview
 from gui.voice_import import confirm_length
-from gui import panel_title
+from gui import mascot, panel_title
+from gui import theme
 
 
 # Import the necessary icons
@@ -299,6 +300,9 @@ class TXTDViewer(QWidget):
         font.setWeight(QFont.Weight.Bold)
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text_edit.setFont(font)
+        # A modern theme's stylesheet would otherwise override the
+        # font just set - see theme.SCRIPT_EDITOR.
+        self.text_edit.setObjectName(theme.SCRIPT_EDITOR)
 
         # Optional: Increase the minimum width for better readability
         self.text_edit.setMinimumWidth(400)
@@ -392,7 +396,7 @@ class TXTDViewer(QWidget):
         self.import_voice_button.clicked.connect(self._import_voice_line)
         self.import_voice_button.setEnabled(False)
         self.autoplay_voice = QCheckBox("Autoplay")
-        self.autoplay_voice.setChecked(True)
+        self.autoplay_voice.setChecked(False)
         self.autoplay_voice.setToolTip(
             "Play the line's voice as soon as it is selected")
         self.voice_note = QLabel("")
@@ -402,11 +406,23 @@ class TXTDViewer(QWidget):
         voice_row.addWidget(self.import_voice_button)
         voice_row.addWidget(self.autoplay_voice)
         voice_row.addStretch(1)
-        right_layout.addLayout(voice_row)
+        # Zippo stands to the left of the whole voice block - the
+        # buttons, and under them whichever master and channel the
+        # line turned out to speak through.
+        voice_side = QVBoxLayout()
+        voice_side.setContentsMargins(0, 0, 0, 0)
+        voice_side.setSpacing(2)
+        voice_side.addLayout(voice_row)
         # On its own line rather than crammed beside the buttons - a
         # real status ("master 2, channel 9...") or the one-time resolve
         # notice both run long enough to make that row wrap messily.
-        right_layout.addWidget(self.voice_note)
+        voice_side.addWidget(self.voice_note)
+        voice_block = QHBoxLayout()
+        voice_block.setContentsMargins(0, 0, 0, 0)
+        voice_block.setSpacing(8)
+        voice_block.addWidget(mascot.label())
+        voice_block.addLayout(voice_side, 1)
+        right_layout.addLayout(voice_block)
         self._edits = VoiceEditStore()
         self._resolve_thread = None
         # The budget line stays under both halves, where it reads as

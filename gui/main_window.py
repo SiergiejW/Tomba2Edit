@@ -344,6 +344,11 @@ class MainWindow(QMainWindow):
         # imported MIDI is kept by a project save like any other edit.
         self.music_panel.snd_edits = self.snd_edits
         self.sfx_panel.snd_edits = self.snd_edits
+        # An edited sequence or a swapped sound is a pending edit like
+        # any other, so the status line and the tab markers have to
+        # hear about it.
+        self.music_panel.edits_changed.connect(self._refresh_edit_status)
+        self.sfx_panel.edits_changed.connect(self._refresh_edit_status)
         self._sweep_stale_work_dirs()
 
         # The names on the tree's file rows, and where they came from.
@@ -1883,6 +1888,9 @@ class MainWindow(QMainWindow):
         n_files = len(self.pending_file_edits)
         n_mainexe = len(self.mainexe_viewer.pending_edits())
         n_sop = len(self.bins_viewer.pending_edits())
+        # Sequences and swapped sound effects, both edits to TOMBA2.SND.
+        n_seq = len(self.snd_edits.sequences)
+        n_sfx = len(self.snd_edits.sounds)
 
         staged = n_txtd or n_files
         # By widget rather than by index: these were fixed positions, so
@@ -1891,23 +1899,38 @@ class MainWindow(QMainWindow):
                 (self.splitter, "Indexed View (IDX)", staged),
                 (self.dat_panel, "Data View (DAT)", staged),
                 (self.mainexe_viewer, "MAIN.EXE", n_mainexe),
-                (self.bins_viewer, "BINs", n_sop)):
+                (self.bins_viewer, "BINs", n_sop),
+                (self.music_panel, "Music", n_seq),
+                (self.sfx_panel, "SFX", n_sfx)):
             at = self.main_tabs.indexOf(widget)
             if at >= 0:
                 self.main_tabs.setTabText(at, label + ("*" if dirty else ""))
 
         renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
 
-        if n_txtd == 0 and n_files == 0 and n_mainexe == 0 and n_sop == 0:
+        if not (n_txtd or n_files or n_mainexe or n_sop or n_seq or n_sfx):
             self.statusBar().showMessage(
                 ("No pending edits." + renamed) if renamed else "No pending edits.")
         else:
+            # Built from whatever is actually pending rather than
+            # listing every kind with a zero beside it - the line is
+            # read at a glance and five zeroes bury the one number
+            # that is not.
+            parts = []
+            for count, one, many in (
+                    (n_txtd, "disc file", "disc files"),
+                    (n_files, "replaced file", "replaced files"),
+                    (n_mainexe, "MAIN.EXE entry", "MAIN.EXE entries"),
+                    (n_sop, "SOP.BIN line", "SOP.BIN lines"),
+                    (n_seq, "sequence", "sequences"),
+                    (n_sfx, "sound effect", "sound effects")):
+                if count:
+                    parts.append(f"{count} {one if count == 1 else many}")
+            listed = parts[0] if len(parts) == 1 else (
+                ", ".join(parts[:-1]) + " and " + parts[-1])
             self.statusBar().showMessage(
-                f"{n_txtd} disc file(s), {n_files} replaced file(s), "
-                f"{n_mainexe} MAIN.EXE entry(ies), and {n_sop} "
-                f"SOP.BIN line(s) have pending edits - use the 'Save ISO' button "
-                f"when ready.{renamed}"
-            )
+                f"Pending edits: {listed} - use Build Disc or Save "
+                f"Project when ready.{renamed}")
 
     def _font_page_folder(self):
         """The CD folder of the disc that is open, or None with a note."""
@@ -3097,7 +3120,12 @@ class MainWindow(QMainWindow):
         voice_mismatch = bool(self.voice_edits.count() and not voice_edits)
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.img_dirty and not voice_edits):
+                and not self.img_dirty and not voice_edits
+                # An edited sequence or a swapped sound effect is an
+                # edit to TOMBA2.SND, which this writes further down -
+                # leaving it out of the count made Build Disc refuse a
+                # disc it was perfectly able to build.
+                and not self.snd_edits.count()):
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
@@ -3238,13 +3266,14 @@ class MainWindow(QMainWindow):
         # would silently get dropped from this one.
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
+        snd_edited = self.snd_edits.count()
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.img_dirty):
+                and not self.img_dirty and not snd_edited):
             QMessageBox.information(
                 self, "Nothing to export",
-                "No text, replaced file, MAIN.EXE, SOP.BIN or font page "
-                "edits are pending.")
+                "No text, replaced file, MAIN.EXE, SOP.BIN, music or font "
+                "page edits are pending.")
             return
 
         if not getattr(self, 'dat_file', None):
@@ -3292,6 +3321,19 @@ class MainWindow(QMainWindow):
                 return
             output_paths.append(output_exe)
 
+        if snd_edited:
+            # The music and the sound effects are a whole file, not a
+            # list of patches - the same way Build Disc ships them.
+            output_snd = os.path.join(out_dir, "TOMBA2.SND")
+            try:
+                with open(output_snd, "wb") as f:
+                    f.write(self.snd_edits.rebuild())
+            except (OSError, snd_edit.SndEditError) as e:
+                QMessageBox.critical(self, "Export failed",
+                                     f"Failed to rebuild TOMBA2.SND: {e}")
+                return
+            output_paths.append(output_snd)
+
         if sop_edits:
             output_sop = os.path.join(out_dir, "SOP.BIN")
             try:
@@ -3309,6 +3351,8 @@ class MainWindow(QMainWindow):
             extras.append("MAIN.EXE")
         if sop_edits:
             extras.append("SOP.BIN")
+        if snd_edited:
+            extras.append("TOMBA2.SND")
         extras_suffix = "".join(f" + {name}" for name in extras)
         QMessageBox.information(
             self, "Export complete",

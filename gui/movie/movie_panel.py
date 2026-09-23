@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
                              QWidget)
 
 from functions import audio_export, psxstr
-from gui import panel_title
+from gui import mascot, panel_title
 from gui.movie import movie_export
 from gui.transport_icons import set_glyph
 from gui.movie.movie_screen import MovieScreen, clock
@@ -279,7 +279,7 @@ class MoviePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(splitter, 1)
-        layout.addWidget(self.status)
+        layout.addWidget(mascot.beside(self.status))
         self._enable(False)
 
     # --- opening -------------------------------------------------------

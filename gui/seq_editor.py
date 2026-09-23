@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QSpinBox, QVBoxLayout, QWidget)
 
 from functions import midi, seq, seq_notes, xa
-from gui import theme
+from gui import mascot, theme
 from gui.transport_icons import set_glyph
 
 # One channel, one colour. Sixteen distinguishable hues beats a legend.
@@ -47,6 +47,9 @@ EDGE = 5                # pixels at a note's right edge that resize it
 RULER = 20              # the strip along the top: bar numbers, and where
                         # the playhead is dragged - dragging it in the
                         # note area would fight drawing notes
+PLAY_HINT = ("Play the sequence as it stands now, on its own "
+             "instruments")
+PAUSE_HINT = "Pause, and carry on from here"
 MIN_SCALE = 0.01        # pixels per tick
 MAX_SCALE = 1.20
 UNDO_DEPTH = 100        # snapshots kept; a few hundred notes each, so
@@ -582,6 +585,10 @@ class SequenceEditor(QDialog):
         self._undo = []
         self._redo = []
         self._render = None
+        # Where playback has to be put back to once the audio is
+        # running again - see _resume_at.
+        self._pending_seek = 0
+        self._resume_to = 0
         self._rendered = None        # the WAV for the edit as it stands
         self._rendered_channel = None    # ... and which channel it holds
         self._dirty = True           # ... or None/True when it is stale
@@ -647,19 +654,7 @@ class SequenceEditor(QDialog):
         # Zippo sits with the numbers. The byte budget is the one thing
         # in here that says no, and a bare figure in a corner reads as a
         # telling-off; next to him it reads as him telling you.
-        self.mascot = QLabel()
-        zippo = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "icons", "tomba", "zippo.png")
-        if os.path.isfile(zippo):
-            picture = QPixmap(zippo)
-            if not picture.isNull():
-                # Nearest neighbour: he is a 34x42 sprite off a
-                # PlayStation disc and smoothing him just makes him
-                # blurry. Doubling exactly keeps the pixels square.
-                self.mascot.setPixmap(picture.scaledToHeight(
-                    84, Qt.TransformationMode.FastTransformation))
-        self.mascot.setAlignment(Qt.AlignmentFlag.AlignBottom
-                                 | Qt.AlignmentFlag.AlignLeft)
+        self.mascot = mascot.label()
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -705,15 +700,12 @@ class SequenceEditor(QDialog):
                 "beside Zippo.")
         buttons.rejected.connect(self.reject)
 
+        # One button for both: it shows what pressing it will do, which
+        # two side by side never quite manage - a pause that turns into
+        # a play, sitting next to a play, is a riddle.
         self.play_button = QPushButton()
-        set_glyph(self.play_button, "play",
-                  "Play the sequence as it stands now, on its own "
-                  "instruments")
-        self.play_button.clicked.connect(self._play)
-        self.pause_button = QPushButton()
-        set_glyph(self.pause_button, "pause", "Pause, and carry on from here")
-        self.pause_button.clicked.connect(self._pause)
-        self.pause_button.setEnabled(False)
+        set_glyph(self.play_button, "play", PLAY_HINT)
+        self.play_button.clicked.connect(self._play_pause)
         self.stop_button = QPushButton()
         set_glyph(self.stop_button, "stop")
         self.stop_button.clicked.connect(self._stop)
@@ -734,8 +726,8 @@ class SequenceEditor(QDialog):
         self.hear_notes.setToolTip(
             "Sound each note as it is drawn or moved to a new pitch")
         if not self.sound.ready():
-            for widget in (self.play_button, self.pause_button,
-                           self.stop_button, self.loop_box, self.hear_notes):
+            for widget in (self.play_button, self.stop_button,
+                           self.loop_box, self.hear_notes):
                 widget.setEnabled(False)
                 widget.setToolTip("The sound bank isn't loaded, so this "
                                   "sequence can't be played here.")
@@ -746,7 +738,6 @@ class SequenceEditor(QDialog):
         # narrower than 1292 pixels.
         transport = QHBoxLayout()
         transport.addWidget(self.play_button)
-        transport.addWidget(self.pause_button)
         transport.addWidget(self.stop_button)
         transport.addWidget(self.loop_box)
         transport.addWidget(self.hear_notes)
@@ -793,6 +784,7 @@ class SequenceEditor(QDialog):
             shortcut.activated.connect(slot)
         # Qt does not tell the buttons the sound ran out on its own.
         self.sound.player.playbackStateChanged.connect(self._playback_state)
+        self.sound.player.mediaStatusChanged.connect(self._media_status)
 
     # -- controls ------------------------------------------------------
 
@@ -860,9 +852,16 @@ class SequenceEditor(QDialog):
         if not found:
             rewritten.append((0, 0xC0 | channel, program, 0))
         self.others = sorted(rewritten, key=lambda item: item[0])
+        playing = self._is_playing()
+        at = self.roll.playhead
         self._recount()
         if self.roll.selected is not None and self.hear_notes.isChecked():
             self._hear_note(self.roll.selected)
+        # Same as switching channel: the point of changing the
+        # instrument while it plays is to hear the difference, and the
+        # rendered audio is the old instrument until it is built again.
+        if playing:
+            self._play(resume_at=at)
 
     def _picked(self, _note):
         self._show_instrument()
@@ -875,6 +874,7 @@ class SequenceEditor(QDialog):
 
     def _channel(self):
         playing = self._is_playing()
+        at = self.roll.playhead
         self.roll.channel = self.channel_pick.currentData()
         self.roll.update()
         self._show_instrument()
@@ -886,7 +886,7 @@ class SequenceEditor(QDialog):
         # where it had got to - picking a channel and then having to
         # stop and start again to hear it is the long way round.
         if playing and self._dirty:
-            self._play()
+            self._play(resume_at=at)
 
     def _snap(self):
         self.roll.snap = self.snap_pick.currentData()
@@ -953,25 +953,38 @@ class SequenceEditor(QDialog):
         if wav:
             self.sound.play(wav, follow=False)
 
-    def _play(self):
+    def _play_pause(self):
+        """The one transport button: start, hold, or carry on."""
         if not self.sound.ready():
             return
-        # Play on a paused sequence means carry on, not start again -
-        # unless it was edited while it sat there, in which case what
-        # is paused is no longer the music being looked at.
+        if self._is_playing():
+            self.sound.pause()
+            self._playback_state()
+            return
+        # Carrying on from where it was held - unless it was edited
+        # while it sat there, in which case what is paused is no longer
+        # the music being looked at and it has to be built again.
         if self.sound.paused() and self.sound.following and not self._dirty:
             self.sound.resume()
             self._playback_state()
             return
+        self._play()
+
+    def _play(self, resume_at=None):
+        """Start the sequence, from `resume_at` or from the playhead."""
+        if not self.sound.ready():
+            return
+        # Read now, because starting the audio walks the playhead back
+        # to the top before anything gets a chance to seek - see
+        # _resume_at.
+        at = self.roll.playhead if resume_at is None else resume_at
         # Showing one channel means hearing one channel; the filter
         # would be half a filter otherwise.
         channel = self.roll.channel
         if (self._rendered is not None and not self._dirty
                 and self._rendered_channel == channel):
             self.sound.play(self._rendered, self.loop_box.isChecked())
-            if self.roll.playhead:
-                self.sound.player.setPosition(int(seq_notes.seconds_at(
-                    self._timeline, self.roll.playhead) * 1000))
+            self._resume_at(at)
             self._playback_state()
             return
         try:
@@ -980,6 +993,7 @@ class SequenceEditor(QDialog):
             self.status.setText(f"Can't play that: {exc}")
             return
         self._rendered_channel = channel
+        self._resume_to = at
         self.play_button.setEnabled(False)
         self.status.setText("Rendering on the sound bank...")
         self._render = _Render(blob, self.sound.snd, self.sound.bank)
@@ -988,14 +1002,13 @@ class SequenceEditor(QDialog):
 
     def _played(self, wav, note):
         self.play_button.setEnabled(True)
+        at, self._resume_to = self._resume_to, 0
         if wav is None:
             self.status.setText(f"Could not play that: {note}")
             return
         self._rendered = wav
         self.sound.play(wav, self.loop_box.isChecked())
-        if self.roll.playhead:
-            self.sound.player.setPosition(int(seq_notes.seconds_at(
-                self._timeline, self.roll.playhead) * 1000))
+        self._resume_at(at)
         self._playback_state()
         # Puts the byte count back over "Rendering..." - and has to come
         # before the flag is cleared, because counting marks the render
@@ -1003,17 +1016,38 @@ class SequenceEditor(QDialog):
         self._recount()
         self._dirty = False
 
+    def _resume_at(self, tick):
+        """Put the audio and the playhead back to `tick` after a start.
+
+        Starting a fresh render plays from zero, and the player says so
+        loudly enough to drag the playhead up with it - which is why
+        switching channel or instrument mid-play threw the cursor back
+        to the beginning. The tick is read before the restart and put
+        back here.
+
+        Applied again when the media finishes loading, not only now: a
+        seek against a source the player has just been handed is
+        allowed to do nothing, and doing nothing is the bug."""
+        self._pending_seek = max(0, int(tick))
+        self._apply_seek()
+
+    def _apply_seek(self):
+        if self._pending_seek <= 0:
+            return
+        self.roll.set_playhead(self._pending_seek)
+        self.sound.player.setPosition(int(seq_notes.seconds_at(
+            self._timeline, self._pending_seek) * 1000))
+
+    def _media_status(self, status):
+        if status in (QMediaPlayer.MediaStatus.LoadedMedia,
+                      QMediaPlayer.MediaStatus.BufferedMedia):
+            self._apply_seek()
+            self._pending_seek = 0
+
     def _stop(self):
         self.sound.stop()
+        self._pending_seek = 0
         self.stop_button.setEnabled(False)
-
-    def _pause(self):
-        """Hold it where it is, or carry on from there."""
-        if self.sound.paused():
-            self.sound.resume()
-        else:
-            self.sound.pause()
-        self._playback_state()
 
     def _playback_state(self, *_state):
         """Put the transport buttons where the player actually is.
@@ -1026,10 +1060,10 @@ class SequenceEditor(QDialog):
         playing = self._is_playing()
         paused = self.sound.paused() and self.sound.following
         self.stop_button.setEnabled(playing or paused)
-        self.pause_button.setEnabled(playing or paused)
-        set_glyph(self.pause_button, "play" if paused else "pause",
-                  "Carry on from here" if paused
-                  else "Pause, and carry on from here")
+        # The button shows what pressing it will do next, not what the
+        # player is doing now.
+        set_glyph(self.play_button, "pause" if playing else "play",
+                  PAUSE_HINT if playing else PLAY_HINT)
 
     # -- undo ----------------------------------------------------------
     #

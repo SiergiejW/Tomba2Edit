@@ -11,10 +11,12 @@ disc is opened and kept.
 """
 import os
 
-from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMessageBox,
+                             QPushButton, QVBoxLayout, QWidget)
 
 from functions import audio_export, sfx, voice, xa
+from gui import mascot
 from gui.audio_transport import AudioTransport
 from gui.name_store import NameStore
 
@@ -27,6 +29,10 @@ def seconds(samples, rate):
 
 
 class SfxPanel(QWidget):
+    # Raised when a sound is swapped, so the window can put the
+    # pending-edit count and the tab's "*" back in step.
+    edits_changed = pyqtSignal()
+
     """Browse, play and name the sound effects."""
 
     def __init__(self, parent=None):
@@ -88,7 +94,7 @@ class SfxPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.transport, 1)
-        layout.addWidget(self.status)
+        layout.addWidget(mascot.beside(self.status))
 
     # --- opening ------------------------------------------------------
 
@@ -234,21 +240,73 @@ class SfxPanel(QWidget):
         samples = vag.resample(samples, rate, target)
         blob = vag.encode(samples, loop_start=0 if held else None,
                           repeat=held)
+
+        # Too long for the room the bank has? Offer to cut it rather
+        # than just saying no. A sound that is too SHORT needs nothing
+        # asked: it already fits, and the bytes left over at the end of
+        # the bank are zero-filled by the repack.
+        room = self._room_for(bank, index)
+        if len(blob) > room:
+            kept = (room // sfx.BLOCK) * sfx.BLOCK_SAMPLES
+            if kept <= 0:
+                self.status.setText(
+                    f"There is no room at all for sound {key}: the other "
+                    f"waveforms in bank {bank} already fill it.")
+                return
+            lost = (len(samples) - kept) / float(target)
+            ask = QMessageBox(self)
+            ask.setIcon(QMessageBox.Icon.Question)
+            ask.setWindowTitle("Longer than the slot")
+            ask.setText(
+                f"That sound is {len(blob) - room:,} byte(s) too big for "
+                f"bank {bank}.")
+            ask.setInformativeText(
+                f"The waveforms in this bank share {room:,} bytes before "
+                "the next bank begins, and the banks cannot move.\n\n"
+                f"It can be cut to the first {kept / float(target):.2f} "
+                f"seconds, losing {lost:.2f} seconds off the end.")
+            cut = ask.addButton("Cut it to fit",
+                                QMessageBox.ButtonRole.AcceptRole)
+            ask.addButton(QMessageBox.StandardButton.Cancel)
+            ask.setDefaultButton(cut)
+            ask.exec()
+            if ask.clickedButton() is not cut:
+                self.status.setText("Left alone - the sound was too long.")
+                return
+            samples = samples[:kept]
+            blob = vag.encode(samples, loop_start=0 if held else None,
+                              repeat=held)
+            trimmed = True
+        else:
+            trimmed = False
+
         try:
             state = self.snd_edits.stage_sound(bank, index, blob)
         except snd_edit.SndEditError as exc:
             self.status.setText(str(exc))
             return
+        self.edits_changed.emit()
 
         self._cache.pop(key, None)
         self.set_image(self.image)
         self.status.setText(
             f"Sound {key} replaced from {os.path.basename(path)} - "
             f"{len(samples):,} samples at {target} Hz"
+            + (" (cut to fit)" if trimmed else "")
             + (", looping." if held else ".")
             + f" Bank {bank} now uses {state['used']:,} of "
             f"{state['capacity']:,} bytes - {state['free']:,} free. Save the "
             "project to keep it.")
+
+    def _room_for(self, bank, index):
+        """How many bytes this one waveform is allowed to take.
+
+        The bank's whole area, less what every OTHER sound in it needs -
+        so it counts against the replacements already staged, not
+        against what the disc shipped."""
+        state = self.snd_edits.compute_sounds(bank)
+        held_now = self.snd_edits.sound(bank, index)
+        return state["capacity"] - (state["used"] - len(held_now or b""))
 
     def _save_all(self):
         folder = QFileDialog.getExistingDirectory(

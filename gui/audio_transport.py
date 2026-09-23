@@ -43,7 +43,8 @@ own key -> data mapping rather than a plain list indexed by row.
 """
 import os
 
-from PyQt6.QtCore import (QBuffer, QByteArray, Qt, QUrl, pyqtSignal)
+from PyQt6.QtCore import (QBuffer, QByteArray, QEvent, Qt, QUrl,
+                          pyqtSignal)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
                              QHBoxLayout, QHeaderView, QLabel, QPushButton,
@@ -305,8 +306,29 @@ class AudioTransport(QWidget):
         # an edit whenever a chosen row is clicked again.
         table.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)
         table.itemChanged.connect(self._item_changed)
+        # Return plays the highlighted row. Browsing with the arrow
+        # keys and then having to reach for the mouse to hear anything
+        # is the long way round, and it is what a list of sounds is
+        # expected to do. An event filter rather than a subclass: the
+        # same handful of lines would otherwise have to be repeated for
+        # every table this transport is given.
+        table.installEventFilter(self)
         self.lists.append(table)
         return table
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.Type.KeyPress
+                and watched in self.lists
+                # Not while a name is being typed in: Return there
+                # means "finish the rename", and the editor is a child
+                # of the table, so the table never sees that key.
+                and watched.state() != QAbstractItemView.State.EditingState
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+            row = watched.currentRow()
+            if row >= 0:
+                self._play_from(watched, row)
+                return True
+        return super().eventFilter(watched, event)
 
     def add_list(self, columns=None, source="Audio"):
         """Another list playing through this same player, for the owner to

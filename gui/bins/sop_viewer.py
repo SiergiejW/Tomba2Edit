@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QTreeView, QWidget, QVBoxLayout, QSplitter,
 from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
 from gui.margin_text_edit import MarginTextEdit
 from gui import panel_title
+from gui import theme
 from gui.txtd.font_preview import FontPreview
 from gui.bins.sop_editor import sop_entries, compute_pool_state, detect_build, UnsupportedSopError, SCREEN_CHAR_LIMIT
 from gui.mainbin import mainbin_parser
@@ -72,6 +73,9 @@ class SopViewer(QWidget):
         font.setWeight(QFont.Weight.Bold)
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text_edit.setFont(font)
+        # A modern theme's stylesheet would otherwise override the
+        # font just set - see theme.SCRIPT_EDITOR.
+        self.text_edit.setObjectName(theme.SCRIPT_EDITOR)
         self.text_edit.setMinimumWidth(400)
         self._highlighter = EntryTextHighlighter(self.text_edit.document())
 

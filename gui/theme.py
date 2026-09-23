@@ -54,6 +54,13 @@ PANEL_TITLE = "panelTitle"
 # A widget property naming the gui/transport_icons.py glyph it shows, so a
 # theme switch can repaint it in the new colours.
 GLYPH_PROPERTY = "themeGlyph"
+# The object name the script editors carry - MAIN.EXE, SOP, TXT2,
+# TXTD - so the modern stylesheet can hand them back the fixed
+# width font it would otherwise take off them. See SCRIPT_FONT.
+SCRIPT_EDITOR = "scriptEditor"
+# What those editors are set to in code, and what the classic
+# themes therefore show. Kept here so the two agree.
+SCRIPT_FONT = '"Courier New", Consolas, monospace'
 
 # Applied in the two classic themes - tightens the native style's unusually
 # wide gap between top-level menu bar entries, and gives them a visible
@@ -825,6 +832,21 @@ QLabel#panelTitle {{
     font-size: 11px;
     font-weight: 600;
     padding: 6px 4px 3px 4px;
+}}
+
+/* The script editors - MAIN.EXE, SOP, TXT2, TXTD.
+
+   They are set to Courier New 12pt bold in code, which is what the
+   classic themes show. The universal font rule at the top of this
+   sheet is a stylesheet, and a stylesheet beats setFont(), so under a
+   modern theme they silently lost it and came out in the UI's own
+   proportional face. That is the wrong font for the job: these boxes
+   hold text on a fixed byte budget, where a space and two spaces have
+   to be told apart and columns have to line up. Put it back. */
+QTextEdit#{SCRIPT_EDITOR}, QPlainTextEdit#{SCRIPT_EDITOR} {{
+    font-family: {SCRIPT_FONT};
+    font-size: 12pt;
+    font-weight: bold;
 }}
 """
 

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                              QPushButton, QSplitter, QVBoxLayout, QWidget)
 
 from functions import audio_export, bgm, seq, voice, xa
+from gui import mascot
 from gui.audio_transport import AudioTransport, clock
 from gui.name_store import NameStore
 
@@ -87,6 +88,9 @@ class _Render(QThread):
 
 
 class MusicPanel(QWidget):
+    # Raised when a sequence is staged - see SfxPanel.edits_changed.
+    edits_changed = pyqtSignal()
+
     """Play the music that is on the disc."""
 
     def __init__(self, parent=None):
@@ -121,7 +125,7 @@ class MusicPanel(QWidget):
             # Music doesn't - opening a disc landing on row 0 of a
             # freshly built list must never start music playing on its
             # own before anyone asked for anything).
-            autoplay_default=True, always_loopable=True,
+            autoplay_default=False, always_loopable=True,
             loop_beats_autoplay=True, select_plays=False,
             autoplay_label="Auto-advance")
         self.transport.wanted.connect(self._wanted)
@@ -212,7 +216,7 @@ class MusicPanel(QWidget):
         layout.addLayout(top)
         layout.addWidget(split, 1)
         layout.addWidget(self.transport)
-        layout.addWidget(self.status)
+        layout.addWidget(mascot.beside(self.status))
 
     # --- opening ------------------------------------------------------
 
@@ -591,6 +595,7 @@ class MusicPanel(QWidget):
         except snd_edit.SndEditError as exc:
             self.status.setText(str(exc))
             return
+        self.edits_changed.emit()
         self._seq_cache.pop(key, None)
         self._load_sequences(self.image)
         self.status.setText(
@@ -661,6 +666,7 @@ class MusicPanel(QWidget):
         except snd_edit.SndEditError as exc:
             self.status.setText(str(exc))
             return
+        self.edits_changed.emit()
 
         self._seq_cache.pop(key, None)
         self._load_sequences(self.image)

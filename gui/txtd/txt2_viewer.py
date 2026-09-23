@@ -10,6 +10,7 @@ from gui.txtd.txtd_viewer import (
 )
 from gui.txtd.txt2_packer import encode_text, TxtdPackError
 from gui import panel_title
+from gui import theme
 from gui.txtd.font_preview import FontPreview
 
 from icons.icons import icon_TXT2_entry
@@ -101,6 +102,9 @@ class TXT2Viewer(QWidget):
         font.setWeight(QFont.Weight.Bold)
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text_edit.setFont(font)
+        # A modern theme's stylesheet would otherwise override the
+        # font just set - see theme.SCRIPT_EDITOR.
+        self.text_edit.setObjectName(theme.SCRIPT_EDITOR)
 
         # Optional: Increase the minimum width for better readability
         self.text_edit.setMinimumWidth(400)

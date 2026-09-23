@@ -12,10 +12,12 @@ entries (no known table reference) are never editable.
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QFont, QBrush, QColor
 from PyQt6.QtWidgets import (QTreeView, QWidget, QVBoxLayout, QSplitter,
-                             QTextEdit, QLabel, QToolButton, QCheckBox)
+                             QTextEdit, QLabel, QToolButton, QCheckBox,
+                             QHBoxLayout)
 
 from gui.txtd.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
-from gui import panel_title
+from gui import mascot, panel_title
+from gui import theme
 from gui.txtd.font_preview import FontPreview
 from gui.mainbin.mainbin_editor import (
     _mainbin_entries, compute_pool_state, detect_build, _is_flowable, UnsupportedExeError,
@@ -90,6 +92,9 @@ class MainExeViewer(QWidget):
         font.setWeight(QFont.Weight.Bold)
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text_edit.setFont(font)
+        # A modern theme's stylesheet would otherwise override the
+        # font just set - see theme.SCRIPT_EDITOR.
+        self.text_edit.setObjectName(theme.SCRIPT_EDITOR)
         self.text_edit.setMinimumWidth(400)
         # Keep a reference so it isn't garbage-collected.
         self._highlighter = EntryTextHighlighter(self.text_edit.document())
@@ -156,10 +161,21 @@ class MainExeViewer(QWidget):
         edit_split.setSizes([10000, 10000])
         right_layout.addWidget(edit_split)
         # The budget line stays under both halves, where it reads as
-        # belonging to the entry rather than to the edit box.
-        right_layout.addWidget(self.pool_toggle)
-        right_layout.addWidget(self.pool_label)
-        right_layout.addWidget(self.status_label)
+        # belonging to the entry rather than to the edit box - with
+        # Zippo beside it, since how much room is left in the pool is
+        # the thing on this tab worth looking at.
+        pool_side = QVBoxLayout()
+        pool_side.setContentsMargins(0, 0, 0, 0)
+        pool_side.setSpacing(2)
+        pool_side.addWidget(self.pool_toggle)
+        pool_side.addWidget(self.pool_label)
+        pool_side.addWidget(self.status_label)
+        pool_row = QHBoxLayout()
+        pool_row.setContentsMargins(0, 0, 0, 0)
+        pool_row.setSpacing(8)
+        pool_row.addWidget(mascot.label())
+        pool_row.addLayout(pool_side, 1)
+        right_layout.addLayout(pool_row)
         right_panel.setLayout(right_layout)
 
         splitter.addWidget(tree_panel)

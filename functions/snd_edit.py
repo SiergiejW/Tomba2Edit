@@ -134,8 +134,9 @@ class SndEdits:
             raise SndEditError(
                 f"That sound is {-state['free']} byte(s) too big. The bank's "
                 f"waveforms share {state['capacity']} bytes before the next "
-                "one begins, and the banks cannot move. Use a shorter or "
-                "lower-rate sample.")
+                "one begins, and the banks cannot move. Use a shorter "
+                "sample - a lower-rate one is resampled back up to the "
+                "rate the slot plays at and comes out the same size.")
         return state
 
     def clear_sound(self, bank, index):
