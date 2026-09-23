@@ -18,9 +18,11 @@ real answer and the answer is often no. The bar along the bottom shows
 what the sequence costs and what is left over the whole set, recomputed
 on every edit, so it is obvious before Apply rather than after.
 """
+import os
+
 from PyQt6.QtCore import (QBuffer, QByteArray, QRect, QSize, Qt, QThread,
                           pyqtSignal)
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QHBoxLayout, QLabel, QPushButton, QScrollArea,
@@ -88,11 +90,20 @@ class Audition:
         self.output = QAudioOutput(parent)
         self.player.setAudioOutput(self.output)
         self._buffer = None
+        # False while a single note is being auditioned.
+        self.following = True
 
     def ready(self):
         return self.snd is not None and self.bank is not None
 
-    def play(self, wav, loop=False):
+    def play(self, wav, loop=False, follow=True):
+        """`follow` says whether this is the sequence playing.
+
+        A one-note audition goes through the same player, and the
+        playhead is driven from that player's position - so without
+        this, drawing a note yanked the playhead back to the top and
+        set it crawling through the half second the note lasted."""
+        self.following = follow
         self.stop()
         self.player.setLoops(QMediaPlayer.Loops.Infinite if loop else 1)
         # Kept on the instance: the player reads from it while it plays,
@@ -490,8 +501,29 @@ class SequenceEditor(QDialog):
         self.zoom.setToolTip("How wide a beat is drawn")
         self.zoom.valueChanged.connect(self._zoom)
 
+        # Zippo sits with the numbers. The byte budget is the one thing
+        # in here that says no, and a bare figure in a corner reads as a
+        # telling-off; next to him it reads as him telling you.
+        self.mascot = QLabel()
+        zippo = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "icons", "tomba", "zippo.png")
+        if os.path.isfile(zippo):
+            picture = QPixmap(zippo)
+            if not picture.isNull():
+                self.mascot.setPixmap(picture.scaledToHeight(
+                    38, Qt.TransformationMode.SmoothTransformation))
+        self.mascot.setAlignment(Qt.AlignmentFlag.AlignBottom
+                                 | Qt.AlignmentFlag.AlignLeft)
+
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignVCenter
+                                 | Qt.AlignmentFlag.AlignLeft)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addWidget(self.mascot, 0)
+        footer.addWidget(self.status, 1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
@@ -534,13 +566,20 @@ class SequenceEditor(QDialog):
         top.addWidget(QLabel("Zoom:"))
         top.addWidget(self.zoom)
         top.addStretch(1)
-        top.addWidget(QLabel("Drag to move, right edge to lengthen, "
-                             "right-click to delete"))
+        # A one-line instruction here sets the dialog's minimum width,
+        # and a helpful sentence is wide enough to force the window
+        # open half again as far as it needs to be. It lives on the
+        # roll instead, where it is asked for rather than shouted.
+        self.roll.setToolTip(
+            "Drag a note to move it, its right edge to lengthen it.\n"
+            "Drag on empty space to draw one, right-click to delete.\n"
+            "Ctrl+wheel zooms, Ctrl+Shift+wheel stretches it vertically.\n"
+            "Drag the strip along the top to move the playhead.")
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(area, 1)
-        layout.addWidget(self.status)
+        layout.addLayout(footer)
         layout.addWidget(buttons)
         self._recount()
 
@@ -567,6 +606,8 @@ class SequenceEditor(QDialog):
 
     def _followed(self, milliseconds):
         """Walk the playhead along with the audio."""
+        if not self.sound.following:
+            return
         self.roll.set_playhead(
             seq_notes.tick_at(self._timeline, milliseconds / 1000.0))
 
@@ -604,7 +645,7 @@ class SequenceEditor(QDialog):
         wav = self.sound.note_wav(
             note, self._program_for(note.channel, note.tick))
         if wav:
-            self.sound.play(wav)
+            self.sound.play(wav, follow=False)
 
     def _play(self):
         if not self.sound.ready():
@@ -670,13 +711,19 @@ class SequenceEditor(QDialog):
         size = len(blob)
         note = self._budget(blob)
         difference = size - self.original_size
-        shape = ("the same size as before" if not difference
-                 else f"{abs(difference)} bytes "
-                      f"{'bigger' if difference > 0 else 'smaller'}")
+        shape = ("same size as before" if not difference
+                 else f"{abs(difference)} "
+                      f"{'over' if difference > 0 else 'under'}")
+        channels = len(seq_notes.channels_used(self.notes))
+        over = note is not None and "too big" in note
         self.status.setText(
-            f"{len(self.notes)} notes - {size} bytes, {shape}."
-            + (f"  {note}" if note else ""))
-        self.apply_button.setEnabled(note is None or "too big" not in note)
+            f"<b>{len(self.notes)}</b> notes on <b>{channels}</b> "
+            f"channel{'' if channels == 1 else 's'} &nbsp;·&nbsp; "
+            f"<b>{size}</b> bytes <span style='color:#8a8f98'>"
+            f"({shape})</span>"
+            + (f"<br><span style='color:{'#d65f4f' if over else '#8a8f98'}'>"
+               f"{note}</span>" if note else ""))
+        self.apply_button.setEnabled(not over)
 
     def _apply(self):
         try:
