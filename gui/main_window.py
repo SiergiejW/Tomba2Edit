@@ -4,6 +4,7 @@ import struct
 import json
 import shutil
 import tempfile
+import time
 import numpy as np
 from PyQt6.QtCore import Qt, QSettings, QItemSelectionModel
 from PyQt6.QtGui import QStandardItem, QStandardItemModel, QAction, QActionGroup, QIcon, QImage, QPixmap, QColor, QBrush
@@ -54,7 +55,7 @@ from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
     content_hashes, row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
-from functions import game_build, source_disc
+from functions import game_build, project_file, source_disc
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
@@ -331,6 +332,11 @@ class MainWindow(QMainWindow):
         # playback stops re-scanning folders it has already looked in.
         self._disc_search_failed = False
         self._project_snapshot_path = None
+        # The .t2p this session was opened from or last saved to, and
+        # the directory it is unpacked into while it is open.
+        self._project_file_path = None
+        self._project_work = None
+        self._sweep_stale_work_dirs()
 
         # The names on the tree's file rows, and where they came from.
         # `labels` is whichever labels file is in force; `labels_override`
@@ -370,9 +376,9 @@ class MainWindow(QMainWindow):
             "Open the disc's data track (Track 1 of a bin/cue). This is the "
             "only source that carries the voice track intact")
 
-        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Translation Project / Game Folder...", self)
+        open_folder_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "Open Project Folder / Game Folder...", self)
         open_folder_action.setToolTip(
-            "Resume a saved Translation Project, or open an already-extracted "
+            "Resume a project saved as a folder, or open an already-extracted "
             "game-files folder directly. 'Save ISO' is unavailable for folders."
         )
         open_folder_action.triggered.connect(self.open_folder_dialog)
@@ -387,11 +393,33 @@ class MainWindow(QMainWindow):
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
-        save_project_action = QAction("Save Translation Project...", self)
+        open_project_action = QAction("Open Project...", self)
+        open_project_action.setShortcut("Ctrl+O")
+        open_project_action.setToolTip(
+            "Open a .t2p project - one file holding every edit made here: "
+            "text, font page, swapped models and textures, MAIN.EXE")
+        open_project_action.triggered.connect(lambda: self.open_project_file())
+
+        save_project_file_action = QAction("Save Project", self)
+        save_project_file_action.setShortcut("Ctrl+S")
+        save_project_file_action.setToolTip(
+            "Save every edit back to the project it came from")
+        save_project_file_action.triggered.connect(self.save_project)
+
+        save_project_as_action = QAction("Save Project As...", self)
+        save_project_as_action.setShortcut("Ctrl+Shift+S")
+        save_project_as_action.setToolTip(
+            "Save everything - text, font page, swapped models and textures, "
+            "MAIN.EXE - as a single .t2p file, small enough to send")
+        save_project_as_action.triggered.connect(
+            lambda: self.save_project_file())
+
+        save_project_action = QAction("Save as Project Folder...", self)
         save_project_action.setToolTip(
             "Create a persistent working folder containing the current "
             "text, font page, MAIN.EXE and character assignments")
-        save_project_action.triggered.connect(self.save_translation_project)
+        save_project_action.triggered.connect(
+            lambda: self.save_translation_project())
 
         attach_disc_action = QAction("Attach Disc Image...", self)
         attach_disc_action.setToolTip(
@@ -472,13 +500,16 @@ class MainWindow(QMainWindow):
         # need - and "Save ISO" in particular is easy to reach for and
         # quietly drops the soundtrack.
         file_menu = self.menuBar().addMenu("&File")
+        file_menu.addAction(open_project_action)
+        file_menu.addSeparator()
         file_menu.addAction(open_action)
         file_menu.addAction(open_iso_action)
         file_menu.addAction(open_folder_action)
         file_menu.addSeparator()
         file_menu.addAction(attach_disc_action)
         file_menu.addSeparator()
-        file_menu.addAction(save_project_action)
+        file_menu.addAction(save_project_file_action)
+        file_menu.addAction(save_project_as_action)
         file_menu.addAction(export_bin_action)
         file_menu.addSeparator()
         file_menu.addAction(import_labels_action)
@@ -486,6 +517,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(builtin_labels_action)
         file_menu.addSeparator()
         advanced_menu = file_menu.addMenu("Advanced")
+        advanced_menu.addAction(save_project_action)
+        advanced_menu.addSeparator()
         advanced_menu.addAction(export_files_action)
         advanced_menu.addAction(export_action)
         advanced_menu.addAction(export_iso_action)
@@ -1883,6 +1916,7 @@ class MainWindow(QMainWindow):
     # or who to ask for it.
 
     DISC_SETTING = "source_disc/recent"
+    PROJECT_SETTING = "project/recent"
 
     def _disc_hints(self):
         """Folders worth searching before troubling anyone for the disc."""
@@ -3359,8 +3393,13 @@ class MainWindow(QMainWindow):
         self.img_dirty = bool(state.get("img_dirty"))
         self._refresh_edit_status()
 
-    def save_translation_project(self):
+    def save_translation_project(self, project_dir=None, announce=True):
         """Snapshot translation work into a reopenable project folder.
+
+        `project_dir` is the folder to write, or None to ask for one.
+        Passing it is how saving to a .t2p works: that packs this same
+        tree up afterwards rather than duplicating any of it - see
+        save_project_file() and functions/project_file.
 
         BIN/ISO input is extracted to a temporary directory, which is a
         poor place to keep a long-running translation: the character
@@ -3385,8 +3424,9 @@ class MainWindow(QMainWindow):
                 self, "No disc open", "Open a Tomba! 2 disc first.")
             return False
 
-        project_dir = QFileDialog.getExistingDirectory(
-            self, "Choose an empty or existing translation project folder")
+        if project_dir is None:
+            project_dir = QFileDialog.getExistingDirectory(
+                self, "Choose an empty or existing project folder")
         if not project_dir:
             return False
         game_folder_name = "Tomba 2 Game Files"
@@ -3482,12 +3522,46 @@ class MainWindow(QMainWindow):
 
                 from gui.txtd import translation
                 translation.save(stage_cd, translation.active())
+
+                # Everything staged against the DAT or the IMG - a
+                # replaced model, a swapped texture, a recoloured
+                # sprite, the font page - is already in the files
+                # written above, because those are the files. These two
+                # are the exceptions: the tree's names live nowhere on
+                # the disc, and a staged voice clip is raw sectors aimed
+                # at the disc image rather than at anything in here.
+                stage_labels = None
+                if self.labels is not None:
+                    stage_labels = os.path.join(stage, "labels.json")
+                    try:
+                        labels_module.save(self.labels, stage_labels)
+                    except (OSError, ValueError):
+                        stage_labels = None
+
+                stage_voice_index = stage_voice_blob = None
+                if self.voice_edits.count():
+                    voice_dir = os.path.join(stage, "voice")
+                    os.makedirs(voice_dir, exist_ok=True)
+                    stage_voice_index = os.path.join(voice_dir, "edits.json")
+                    stage_voice_blob = os.path.join(voice_dir, "edits.bin")
+                    try:
+                        self.voice_edits.to_files(
+                            stage_voice_index, stage_voice_blob,
+                            (self.source_disc or {}).get("digest"))
+                    except OSError:
+                        stage_voice_index = stage_voice_blob = None
+
                 manifest = {
                     "format": "tomba2edit-translation-project",
-                    "version": 2,
+                    "version": 3,
                     "cd_folder": game_folder_name,
                     "main_exe": "MAIN.EXE" if exe_path else None,
                     "sop_bin": "BIN/SOP.BIN" if sop_path else None,
+                    "labels": "labels.json" if stage_labels else None,
+                    "voice_index": ("voice/edits.json"
+                                    if stage_voice_index else None),
+                    "voice_blob": ("voice/edits.bin"
+                                   if stage_voice_blob else None),
                     "source_image": self.current_iso_path,
                     # What the disc is, not only where it was. An
                     # absolute path alone died the moment the project or
@@ -3510,6 +3584,16 @@ class MainWindow(QMainWindow):
                 if stage_sop:
                     os.makedirs(os.path.dirname(output_sop), exist_ok=True)
                     os.replace(stage_sop, output_sop)
+                if stage_labels:
+                    os.replace(stage_labels,
+                               os.path.join(project_dir, "labels.json"))
+                if stage_voice_index:
+                    out_voice = os.path.join(project_dir, "voice")
+                    os.makedirs(out_voice, exist_ok=True)
+                    os.replace(stage_voice_index,
+                               os.path.join(out_voice, "edits.json"))
+                    os.replace(stage_voice_blob,
+                               os.path.join(out_voice, "edits.bin"))
                 os.replace(stage_manifest,
                            os.path.join(project_dir, "tomba2project.json"))
 
@@ -3539,11 +3623,13 @@ class MainWindow(QMainWindow):
                 cd_dir, self.preview_glyph_top())
 
         self._project_snapshot_path = project_dir
+        if not announce:
+            return True
         QMessageBox.information(
-            self, "Translation project saved",
+            self, "Project saved",
             "Your working copy is now self-contained:\n\n"
             f"    {project_dir}\n\n"
-            "To continue later, choose File > Open Translation Project / "
+            "To continue later, choose File > Open Project Folder / "
             "Game Folder and select this project folder. "
             "It contains the character "
             "table and font page with the translated text, so no separate "
@@ -3552,7 +3638,8 @@ class MainWindow(QMainWindow):
 
     def _confirm_project_before_close(self, event):
         """Return False when the user cancels a close of temporary work."""
-        if self.current_iso_path and not self._project_snapshot_path:
+        if (self.current_iso_path and not self._project_snapshot_path
+                and not self._project_file_path):
             from gui.txtd import translation
             has_work = (self.img_dirty or self.pending_txtd_edits
                         or self.pending_file_edits
@@ -3561,11 +3648,11 @@ class MainWindow(QMainWindow):
                         or translation.active().chars)
             if has_work:
                 answer = QMessageBox.question(
-                    self, "Save translation project first?",
+                    self, "Save the project first?",
                     "This disc was opened from an image, so its extracted "
                     "files are temporary. Closing now can lose the font "
                     "page, character assignments, and untranslated edits.\n\n"
-                    "Yes - save a persistent Translation Project now\n"
+                    "Yes - save a project now\n"
                     "No - close and discard the temporary working copy\n"
                     "Cancel - stay in the editor",
                     QMessageBox.StandardButton.Yes
@@ -3573,7 +3660,7 @@ class MainWindow(QMainWindow):
                     | QMessageBox.StandardButton.Cancel,
                     QMessageBox.StandardButton.Yes)
                 if answer == QMessageBox.StandardButton.Yes:
-                    if not self.save_translation_project():
+                    if not self.save_project():
                         return False
                 elif answer != QMessageBox.StandardButton.No:
                     return False
@@ -3840,12 +3927,19 @@ class MainWindow(QMainWindow):
         # waiting for a disc rather than for a click.
         self._tab_changed()
 
-    def open_folder_dialog(self):
-        """Open a Translation Project or extracted game-files folder."""
+    def open_folder_dialog(self, folder=None):
+        """Open a project folder or an extracted game-files folder.
+
+        `folder` is the one to open, or None to ask. Passing it is how a
+        .t2p opens: it is unpacked to a working directory and that is
+        handed here, so nothing below had to learn what an archive is -
+        see open_project_file() and functions/project_file."""
         # A different folder may carry a different saved translation.
         self._translation_loaded = False
-        folder = QFileDialog.getExistingDirectory(
-            self, "Select a Translation Project or Tomba! 2 game-files folder")
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                "Select a project folder or a Tomba! 2 game-files folder")
         if not folder:
             return
 
@@ -3885,7 +3979,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "Error",
                 "Couldn't find TOMBA2.DAT, TOMBA2.IDX and TOMBA2.IMG. "
-                "Select the Translation Project itself, its 'Tomba 2 Game "
+                "Select the project folder itself, its 'Tomba 2 Game "
                 "Files' folder, or an extracted game folder."
             )
             return
@@ -3996,15 +4090,179 @@ class MainWindow(QMainWindow):
         self.mainexe_viewer.reload_preview_font(
             cd_folder, self.preview_glyph_top())
         if project_root:
+            self._restore_project_extras(project_root, manifest)
             self._restore_translation_project_state(
                 manifest.get("editor_state"))
             self.folder_info_label.setText(
-                f"Loaded Translation Project: {project_root}")
+                f"Loaded project: {project_root}")
         else:
             self.folder_info_label.setText(f"Loaded game files: {cd_folder}")
         selected = self.tree_view.selectionModel().selectedIndexes()
         if selected:
             self.on_tree_selection_changed()
+
+    # ------------------------------------------------------------------
+    # A project as one file
+    # ------------------------------------------------------------------
+    #
+    # A .t2p is a zip of the project folder and nothing more, so both
+    # halves of this are thin: opening unpacks it into a working
+    # directory and opens that as a folder, saving writes the folder and
+    # packs it up. Everything between still deals in folders.
+
+    def _restore_project_extras(self, project_root, manifest):
+        """Bring back the parts of a project that are not disc files.
+
+        A replaced model or a swapped texture needs nothing here: it is
+        inside the TOMBA2.DAT this project just opened. The tree's names
+        and any staged voice are the two things with nowhere on the disc
+        to live, so they travel as files of their own."""
+        relative = manifest.get("labels")
+        if relative:
+            path = os.path.join(project_root, relative)
+            if os.path.isfile(path):
+                try:
+                    self.labels = labels_module.load(path)
+                    self.labels_override = self.labels
+                    apply_labels(self)
+                except (OSError, ValueError, labels_module.LabelError):
+                    pass
+
+        index = manifest.get("voice_index")
+        blob = manifest.get("voice_blob")
+        if not (index and blob):
+            return
+        index_path = os.path.join(project_root, index)
+        blob_path = os.path.join(project_root, blob)
+        if not (os.path.isfile(index_path) and os.path.isfile(blob_path)):
+            return
+        loaded, refused = self.voice_edits.from_files(
+            index_path, blob_path,
+            image=self.current_iso_path,
+            disc_digest=(self.source_disc or {}).get("digest"))
+        if refused:
+            QMessageBox.warning(
+                self, "Staged voice not restored",
+                "This project has re-recorded dialogue in it, but "
+                f"{refused}.\n\nEverything else opened normally. The voice "
+                "edits are still in the project file and will come back if "
+                "you open it with the disc they were made against.")
+        elif loaded:
+            self.statusBar().showMessage(
+                f"{loaded} staged voice sector(s) restored.", 8000)
+        self._refresh_edit_status()
+
+    WORK_PREFIX = "tomba2project-"
+
+    @classmethod
+    def _sweep_stale_work_dirs(cls, older_than_hours=12):
+        """Delete unpacked project copies left behind by earlier runs.
+
+        A window cannot always remove its own on the way out, because
+        the game's files are still open when it tries (see closeEvent),
+        so they accumulate at ~16 MB each. Anything of ours older than
+        half a day belongs to a session that is definitely gone; a
+        younger one might be another window open right now."""
+        root = tempfile.gettempdir()
+        cutoff = time.time() - older_than_hours * 3600
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return
+        for name in names:
+            if not name.startswith(cls.WORK_PREFIX):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                continue
+
+    def _project_work_dir(self):
+        """Where an open .t2p is unpacked to, created on first use.
+
+        One per window rather than one per open, so opening a second
+        project does not leave the first one's 32 MB behind; the
+        directory is emptied by unpack() each time."""
+        if self._project_work is None:
+            self._project_work = tempfile.mkdtemp(prefix=self.WORK_PREFIX)
+        return self._project_work
+
+    def open_project_file(self, path=None):
+        """Open a .t2p, asking for one if none was named."""
+        if path is None:
+            start = self._theme_settings.value(self.PROJECT_SETTING, "", str)
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open a project", start,
+                f"{project_file.FILTER};;All files (*)")
+        if not path:
+            return False
+        work = self._project_work_dir()
+        try:
+            manifest = project_file.unpack(path, work)
+        except project_file.ProjectFileError as exc:
+            QMessageBox.critical(self, "Couldn't open that project", str(exc))
+            return False
+        if manifest.get("format") != project_file.FORMAT:
+            QMessageBox.critical(
+                self, "Couldn't open that project",
+                f"{os.path.basename(path)} doesn't identify itself as a "
+                "Tomba 2 project.")
+            return False
+        self._project_file_path = path
+        self._theme_settings.setValue(self.PROJECT_SETTING, path)
+        self.open_folder_dialog(work)
+        # open_folder_dialog names the working directory, which is a
+        # temp path and means nothing to anybody. Say what was opened.
+        self.folder_info_label.setText(f"Loaded project: {path}")
+        return True
+
+    def save_project_file(self, path=None):
+        """Save to a .t2p, asking where if it isn't already known."""
+        if not getattr(self, "dat_file", None):
+            QMessageBox.information(
+                self, "No disc open", "Open a Tomba! 2 disc first.")
+            return False
+        if path is None:
+            start = self._project_file_path or self._theme_settings.value(
+                self.PROJECT_SETTING, "", str)
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save project", start,
+                f"{project_file.FILTER};;All files (*)")
+            if not path:
+                return False
+            if not path.lower().endswith(project_file.EXTENSION):
+                path += project_file.EXTENSION
+
+        # Written as a folder first, into the working directory, which
+        # is also what rebases the editor onto the saved files - the
+        # same in-place save a folder project gets. Packing is then just
+        # zipping what is already correct.
+        work = self._project_work_dir()
+        if not self.save_translation_project(work, announce=False):
+            return False
+        try:
+            project_file.pack(work, path)
+        except project_file.ProjectFileError as exc:
+            QMessageBox.critical(self, "Project save failed", str(exc))
+            return False
+
+        self._project_file_path = path
+        self._theme_settings.setValue(self.PROJECT_SETTING, path)
+        size = os.path.getsize(path) / (1024 * 1024)
+        self.folder_info_label.setText(f"Loaded project: {path}")
+        self.statusBar().showMessage(
+            f"Saved {os.path.basename(path)} ({size:.0f} MB)", 8000)
+        return True
+
+    def save_project(self):
+        """Save over whatever this project already is."""
+        if self._project_file_path:
+            return self.save_project_file(self._project_file_path)
+        if self._project_snapshot_path:
+            return self.save_translation_project(self._project_snapshot_path)
+        return self.save_project_file()
 
     def _pack_pending_txtd_edits(self):
         """Turn self.pending_txtd_edits into the `edits` list repack_files()
@@ -4190,6 +4448,16 @@ class MainWindow(QMainWindow):
             return
         if self.iso_handler:
             self.iso_handler.cleanup()
+        # An open .t2p is unpacked into a temp directory; it has been
+        # packed back up by any save that happened, so what is left is
+        # scratch nobody will look for again. It often cannot go yet:
+        # the DAT, IDX and IMG are still open (idx_parser holds them for
+        # the life of the window) and Windows will not delete an open
+        # file. Whatever is left behind is swept on the next start
+        # instead - see _sweep_stale_work_dirs.
+        if self._project_work:
+            shutil.rmtree(self._project_work, ignore_errors=True)
+            self._project_work = None
         # The Movies tab has a decoder thread of its own, and Qt takes
         # the process down noisily if it is still running.
         self.movie_panel.close()
