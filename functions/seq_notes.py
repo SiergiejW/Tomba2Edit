@@ -126,6 +126,85 @@ def span(notes, others=()):
     return end
 
 
+def timeline(events, resolution, tempo):
+    """[(seconds, tick)] as the sequence actually plays.
+
+    Not a straight conversion: the tempo can change part way through,
+    and a loop sends the tick backwards while the seconds keep going.
+    Both have to be followed or a playhead drawn from this drifts away
+    from the sound - which is the one thing a playhead must not do.
+
+    The loop handling mirrors seq.perform's, because that is what the
+    renderer does and the audio being followed came out of it."""
+    from functions import seq
+
+    per_tick = tempo / 1e6 / max(1, resolution)
+    out = [(0.0, 0)]
+    time, tick, i = 0.0, 0, 0
+    nrpn = None
+    loop_at = loop_tick = None
+    loop_left, passes = 0, 1
+    while i < len(events) and time < seq.MAX_SECONDS:
+        delta, status, a, b = events[i]
+        i += 1
+        time += delta * per_tick
+        tick += delta
+        if status == 0xFF:
+            per_tick = a / 1e6 / max(1, resolution)
+        elif status & 0xF0 == 0xB0:
+            if a == 99:
+                nrpn = b
+                if b == seq.LOOP_END and loop_at is not None:
+                    jumped = False
+                    if loop_left in seq.FOREVER:
+                        if passes < seq.LOOP_PASSES:
+                            passes += 1
+                            jumped = True
+                        else:
+                            break
+                    elif loop_left > 1:
+                        loop_left -= 1
+                        jumped = True
+                    if jumped:
+                        out.append((time, tick))
+                        i, tick = loop_at, loop_tick
+                        out.append((time, tick))
+                        continue
+            elif a == 6 and nrpn == seq.LOOP_START:
+                loop_at, loop_tick, loop_left, nrpn = i, tick, b, None
+        out.append((time, tick))
+    return out
+
+
+def tick_at(points, seconds):
+    """Where the playhead belongs at `seconds`, from timeline()."""
+    if not points:
+        return 0
+    low, high = 0, len(points) - 1
+    if seconds <= points[0][0]:
+        return points[0][1]
+    if seconds >= points[high][0]:
+        return points[high][1]
+    while low < high - 1:
+        middle = (low + high) // 2
+        if points[middle][0] <= seconds:
+            low = middle
+        else:
+            high = middle
+    (t0, k0), (t1, k1) = points[low], points[high]
+    if t1 <= t0 or k1 < k0:
+        return k0
+    return int(k0 + (k1 - k0) * (seconds - t0) / (t1 - t0))
+
+
+def seconds_at(points, tick):
+    """The first moment the sequence reaches `tick` - for seeking."""
+    for seconds, where in points:
+        if where >= tick:
+            return seconds
+    return points[-1][0] if points else 0.0
+
+
 def channels_used(notes):
     return sorted({note.channel for note in notes})
 

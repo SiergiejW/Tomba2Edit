@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
         # them is already truncated - so it is the only opener on the
         # toolbar. The other two stay in the File menu for when they are
         # genuinely wanted.
+
         open_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveDVDIcon), "Open BIN", self)
         open_action.setToolTip(
             "Open the disc's data track (Track 1 of a bin/cue). This is the "
@@ -477,8 +478,9 @@ class MainWindow(QMainWindow):
         # because a project is what you have open nearly all the time
         # and the disc only at the start and the end. The two on the
         # right are the two things worth producing.
-        toolbar.addAction(open_project_action)
         toolbar.addAction(open_action)
+        toolbar.addAction(open_project_action)
+
         toolbar.addSeparator()
         toolbar.addAction(export_action)
         toolbar.addAction(export_bin_action)

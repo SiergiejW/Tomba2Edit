@@ -180,6 +180,19 @@ class SndEdits:
                 "another one.")
         return state
 
+    def would_fit(self, slot, blob):
+        """What the budget would be with `blob` in `slot`, staging
+        nothing. What an editor asks on every keystroke."""
+        was, had = self.sequences.get(slot), slot in self.sequences
+        self.sequences[slot] = bytes(blob)
+        try:
+            return self.compute()
+        finally:
+            if had:
+                self.sequences[slot] = was
+            else:
+                self.sequences.pop(slot, None)
+
     def clear_sequence(self, slot):
         self.sequences.pop(slot, None)
 

@@ -162,6 +162,14 @@ class MusicPanel(QWidget):
         self.export_midi.clicked.connect(self._export_midi)
         self.export_midi.setEnabled(False)
 
+        self.edit_notes = QPushButton("Edit notes...")
+        self.edit_notes.setToolTip(
+            "Open the selected sequence in a piano roll - drag notes "
+            "about, draw new ones, and see what it costs against the "
+            "space the ten sequences share")
+        self.edit_notes.clicked.connect(self._edit_notes)
+        self.edit_notes.setEnabled(False)
+
         self.import_midi = QPushButton("Import MIDI...")
         self.import_midi.setToolTip(
             "Replace the selected sequence with an edited .mid. All ten "
@@ -178,6 +186,7 @@ class MusicPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.pick)
         top.addStretch(1)
+        top.addWidget(self.edit_notes)
         top.addWidget(self.export_midi)
         top.addWidget(self.import_midi)
         top.addWidget(self.transport.save_wav)
@@ -489,6 +498,8 @@ class MusicPanel(QWidget):
         # a button that says which sequence it wants beats one that is
         # greyed out for a reason nobody can see.
         self.export_midi.setEnabled(bool(self._seqs))
+        self.edit_notes.setEnabled(bool(self._seqs)
+                                   and self.snd_edits is not None)
         self.import_midi.setEnabled(bool(self._seqs)
                                     and self.snd_edits is not None)
 
@@ -528,6 +539,52 @@ class MusicPanel(QWidget):
             f"Wrote {os.path.basename(path)} - {resolution} ticks per beat. "
             "Keep that division when you save it back, and keep it a single "
             "track: a SEQ has no way to express either being different.")
+
+    def _edit_notes(self):
+        """Open the piano roll on the selected sequence."""
+        from functions import snd_edit
+        from gui.seq_editor import SequenceEditor
+
+        chosen = self._selected_sequence()
+        if chosen is None:
+            self.status.setText("Pick a sequence on the right first.")
+            return
+        key, data, at, _bank, slot, origin = chosen
+        if self.snd_edits is None or not self.snd_edits.loaded():
+            self.status.setText(
+                "The music file isn't loaded, so an edit would have nowhere "
+                "to go. Open the disc or a project first.")
+            return
+        if origin != "TOMBA2.SND" or slot is None:
+            self.status.setText(
+                f"{origin}'s sequences live in the area overlay rather than "
+                "TOMBA2.SND, and editing those isn't supported yet.")
+            return
+
+        def budget(blob):
+            state = self.snd_edits.would_fit(slot, blob)
+            if state["free"] < 0:
+                return (f"{-state['free']} bytes too big for the "
+                        f"{state['capacity']} the ten sequences share.")
+            return (f"{state['used']} of {state['capacity']} bytes used "
+                    f"across all ten - {state['free']} free.")
+
+        editor = SequenceEditor(data, at, slot, budget=budget,
+                                snd=self._snd, bank=_bank,
+                                parent=self)
+        if not editor.exec() or editor.result_blob is None:
+            return
+        try:
+            state = self.snd_edits.stage_sequence(slot, editor.result_blob)
+        except snd_edit.SndEditError as exc:
+            self.status.setText(str(exc))
+            return
+        self._seq_cache.pop(key, None)
+        self._load_sequences(self.image)
+        self.status.setText(
+            f"Slot {slot} edited - sequences now use {state['used']} of "
+            f"{state['capacity']} bytes, {state['free']} free. Play it to "
+            "hear it; save the project to keep it.")
 
     def _import_midi(self):
         from functions import midi, snd_edit

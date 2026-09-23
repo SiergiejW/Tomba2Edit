@@ -229,7 +229,18 @@ def to_seq(blob, resolution=None):
             f"{resolution} and save it again - retiming it here would "
             "change how the music plays.")
 
-    microseconds = 500000
+    return events_to_seq(events, division)
+
+
+def events_to_seq(events, resolution, microseconds=None):
+    """[(delta, status, a, b)] as SEQ bytes.
+
+    The event stream shape seq.events produces and seq_notes edits, so
+    the piano roll and a MIDI import end up going down the same path -
+    including the running-status packing, which is what keeps an edited
+    sequence inside its budget."""
+    if microseconds is None:
+        microseconds = 500000
     body = bytearray()
     # Running status, because the sequences are packed into a fixed
     # region with no room to spare - on the US disc all ten fill it to
@@ -266,7 +277,7 @@ def to_seq(blob, resolution=None):
 
     out = bytearray(seq.MAGIC)
     out += b"\x00\x00\x00\x01"                      # version
-    out += struct.pack(">H", division)
+    out += struct.pack(">H", resolution)
     out += int(microseconds).to_bytes(3, "big")
     out += b"\x01\x02"                              # rhythm, as the disc's
     return bytes(out + body)
