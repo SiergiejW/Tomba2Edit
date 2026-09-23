@@ -571,6 +571,7 @@ class MusicPanel(QWidget):
 
         editor = SequenceEditor(data, at, slot, budget=budget,
                                 snd=self._snd, bank=_bank,
+                                instrument_names=self._instrument_names(_bank),
                                 parent=self)
         if not editor.exec() or editor.result_blob is None:
             return
@@ -585,6 +586,29 @@ class MusicPanel(QWidget):
             f"Slot {slot} edited - sequences now use {state['used']} of "
             f"{state['capacity']} bytes, {state['free']} free. Play it to "
             "hear it; save the project to keep it.")
+
+    def _instrument_names(self, bank):
+        """{program: what its samples are called}, where they are named.
+
+        The SFX tab lets waveforms be named and those names are on the
+        disc beside it; a program is a handful of waveforms, so the
+        names it reaches are the closest thing to an instrument name
+        this game has. Unnamed programs simply show their number."""
+        try:
+            programs = seq.instruments(self._snd, bank)
+        except Exception:
+            return {}
+        known = self.sfx_names.names()
+        out = {}
+        for program, (_volume, _pan, tones) in programs.items():
+            found = []
+            for tone in tones:
+                name = known.get(f"{bank}:{tone.vag}")
+                if name and name not in found:
+                    found.append(name)
+            if found:
+                out[program] = ", ".join(found[:2])
+        return out
 
     def _import_midi(self):
         from functions import midi, snd_edit

@@ -104,11 +104,18 @@ class Audition:
         this, drawing a note yanked the playhead back to the top and
         set it crawling through the half second the note lasted."""
         self.following = follow
-        self.stop()
+        self.player.stop()
+        # Detach before the old buffer goes. Replacing it while the
+        # player still held it was a use-after-free, and clicking notes
+        # quickly - which is exactly what auditioning invites - took the
+        # whole program down with it.
+        self.player.setSourceDevice(None)
+        if self._buffer is not None:
+            self._buffer.close()
+            self._buffer.deleteLater()
         self.player.setLoops(QMediaPlayer.Loops.Infinite if loop else 1)
-        # Kept on the instance: the player reads from it while it plays,
-        # and letting it go collects it mid-note.
-        self._buffer = QBuffer()
+        # Parented to the player so Qt outlives the local either way.
+        self._buffer = QBuffer(self.player)
         self._buffer.setData(QByteArray(wav))
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
         self.player.setSourceDevice(self._buffer)
@@ -146,6 +153,8 @@ class PianoRoll(QWidget):
     zoomed = pyqtSignal(float)
     # The playhead was dragged somewhere, in ticks.
     scrubbed = pyqtSignal(int)
+    # A note was selected, so the instrument box can follow it.
+    picked = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -160,6 +169,8 @@ class PianoRoll(QWidget):
         self._drag = None
         self.playhead = 0
         self._scrubbing = False
+        self._erasing = False
+        self._panning = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -277,6 +288,26 @@ class PianoRoll(QWidget):
             return max(0, tick)
         return max(0, int(round(tick / self.snap)) * self.snap)
 
+    def _erase_at(self, position):
+        """Delete whatever note is under the cursor, if any."""
+        note, _edge = self._at(position)
+        if note is None:
+            return
+        self.notes.remove(note)
+        if self.selected is note:
+            self.selected = None
+        self.changed.emit()
+        self.update()
+
+    def _scrollbars(self):
+        """(horizontal, vertical) of the scroll area around this."""
+        holder = self.parentWidget()
+        while holder is not None:
+            if hasattr(holder, "horizontalScrollBar"):
+                return holder.horizontalScrollBar(), holder.verticalScrollBar()
+            holder = holder.parentWidget()
+        return None
+
     def set_playhead(self, tick):
         tick = max(0, int(tick))
         if tick != self.playhead:
@@ -292,13 +323,20 @@ class PianoRoll(QWidget):
             self.set_playhead(self._snapped(self.tick_of(position.x())))
             self.scrubbed.emit(self.playhead)
             return
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # Drag the paper around, the way every other canvas does.
+            bars = self._scrollbars()
+            if bars:
+                self._panning = (event.globalPosition().toPoint(),
+                                 bars[0].value(), bars[1].value())
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
         note, on_edge = self._at(position)
         if event.button() == Qt.MouseButton.RightButton:
-            if note is not None:
-                self.notes.remove(note)
-                self.selected = None
-                self.changed.emit()
-                self.update()
+            # Held down it keeps rubbing out whatever it is dragged
+            # over, which is what deleting a run of notes wants to be.
+            self._erasing = True
+            self._erase_at(position)
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -324,10 +362,25 @@ class PianoRoll(QWidget):
         self.selected = note
         self._drag = (("length" if on_edge else "move"), position,
                       note.tick, note.length, note.key)
+        # Picking a note plays it, the way picking one anywhere else
+        # does - it is how you find out what you have got hold of.
+        self.audition.emit(note)
+        self.picked.emit(note)
         self.update()
 
     def mouseMoveEvent(self, event):
         position = event.position().toPoint()
+        if self._panning is not None:
+            origin, at_x, at_y = self._panning
+            moved = event.globalPosition().toPoint() - origin
+            bars = self._scrollbars()
+            if bars:
+                bars[0].setValue(at_x - moved.x())
+                bars[1].setValue(at_y - moved.y())
+            return
+        if self._erasing:
+            self._erase_at(position)
+            return
         if self._scrubbing:
             self.set_playhead(self._snapped(self.tick_of(position.x())))
             self.scrubbed.emit(self.playhead)
@@ -358,6 +411,14 @@ class PianoRoll(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, _event):
+        if self._panning is not None:
+            self._panning = None
+            self.unsetCursor()
+            return
+        if self._erasing:
+            self._erasing = False
+            self._resize()
+            return
         if self._scrubbing:
             self._scrubbing = False
             return
@@ -402,12 +463,8 @@ class PianoRoll(QWidget):
 
     def _scrollbar(self):
         """The scroll area's horizontal bar, if this is inside one."""
-        holder = self.parentWidget()
-        while holder is not None:
-            if hasattr(holder, "horizontalScrollBar"):
-                return holder.horizontalScrollBar()
-            holder = holder.parentWidget()
-        return None
+        bars = self._scrollbars()
+        return bars[0] if bars else None
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -437,7 +494,7 @@ class SequenceEditor(QDialog):
     """The piano roll, with the budget under it and Apply at the end."""
 
     def __init__(self, data, at, slot, budget=None, snd=None, bank=None,
-                 parent=None):
+                 instrument_names=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Edit sequence - slot {slot}")
         self.resize(940, 600)
@@ -459,6 +516,7 @@ class SequenceEditor(QDialog):
         self.sound.tempo = self.tempo
         self._render = None
         self._rendered = None        # the WAV for the edit as it stands
+        self._rendered_channel = None    # ... and which channel it holds
         self._dirty = True           # ... or None/True when it is stale
 
         self.roll = PianoRoll()
@@ -467,6 +525,7 @@ class SequenceEditor(QDialog):
         self.roll.audition.connect(self._hear_note)
         self.roll.zoomed.connect(self._zoomed)
         self.roll.scrubbed.connect(self._scrubbed)
+        self.roll.picked.connect(self._picked)
 
         # Where the playhead belongs at any moment of the audio. Built
         # from the events rather than from a tempo alone, so a tempo
@@ -484,6 +543,22 @@ class SequenceEditor(QDialog):
         for channel in seq_notes.channels_used(self.notes):
             self.channel_pick.addItem(f"Channel {channel}", channel)
         self.channel_pick.currentIndexChanged.connect(self._channel)
+
+        # Which instrument a channel plays. A program is an index into
+        # the VAB this sequence runs on, so the list is whatever that
+        # bank actually holds - not a General MIDI list, which would
+        # name instruments this disc does not have.
+        self.instrument_names = instrument_names or {}
+        self.instrument_pick = QComboBox()
+        self.instrument_pick.setMinimumWidth(150)
+        self.instrument_pick.setToolTip(
+            "The instrument the shown channel plays. Changing it rewrites "
+            "that channel's program changes")
+        for program in self._bank_programs():
+            self.instrument_pick.addItem(self._instrument_label(program),
+                                         program)
+        self.instrument_pick.currentIndexChanged.connect(self._instrument)
+        self.instrument_pick.setEnabled(False)
 
         self.snap_pick = QComboBox()
         for label, ticks in (("No snap", 0), ("1/16", self.resolution // 4),
@@ -510,8 +585,11 @@ class SequenceEditor(QDialog):
         if os.path.isfile(zippo):
             picture = QPixmap(zippo)
             if not picture.isNull():
+                # Nearest neighbour: he is a 34x42 sprite off a
+                # PlayStation disc and smoothing him just makes him
+                # blurry. Doubling exactly keeps the pixels square.
                 self.mascot.setPixmap(picture.scaledToHeight(
-                    38, Qt.TransformationMode.SmoothTransformation))
+                    84, Qt.TransformationMode.FastTransformation))
         self.mascot.setAlignment(Qt.AlignmentFlag.AlignBottom
                                  | Qt.AlignmentFlag.AlignLeft)
 
@@ -520,10 +598,30 @@ class SequenceEditor(QDialog):
         self.status.setAlignment(Qt.AlignmentFlag.AlignVCenter
                                  | Qt.AlignmentFlag.AlignLeft)
 
+        # What the mouse and keyboard do, next to him rather than in a
+        # tooltip nobody hovers over. It never changes, so it costs one
+        # line of layout and saves the guessing.
+        self.help = QLabel(
+            "<span style='color:#8a8f98'>"
+            "<b>Drag</b> a note to move · its <b>right edge</b> to "
+            "lengthen · <b>empty space</b> to draw · <b>right-drag</b> "
+            "to rub out<br>"
+            "<b>Middle-drag</b> pans · <b>Ctrl+wheel</b> zooms "
+            "(<b>+Shift</b> taller) · <b>top strip</b> moves the "
+            "playhead · <b>↑↓</b> nudge · <b>Del</b> removes"
+            "</span>")
+        self.help.setWordWrap(True)
+
+        beside = QVBoxLayout()
+        beside.setContentsMargins(0, 0, 0, 0)
+        beside.setSpacing(2)
+        beside.addWidget(self.status)
+        beside.addWidget(self.help)
+
         footer = QHBoxLayout()
         footer.setSpacing(10)
         footer.addWidget(self.mascot, 0)
-        footer.addWidget(self.status, 1)
+        footer.addLayout(beside, 1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
@@ -553,14 +651,22 @@ class SequenceEditor(QDialog):
                 widget.setToolTip("The sound bank isn't loaded, so this "
                                   "sequence can't be played here.")
 
+        # Two rows rather than one: every control added to a single row
+        # sets the dialog's minimum width, and by the time the transport
+        # and the four pickers were all on it the window could not open
+        # narrower than 1292 pixels.
+        transport = QHBoxLayout()
+        transport.addWidget(self.play_button)
+        transport.addWidget(self.stop_button)
+        transport.addWidget(self.loop_box)
+        transport.addWidget(self.hear_notes)
+        transport.addStretch(1)
+
         top = QHBoxLayout()
-        top.addWidget(self.play_button)
-        top.addWidget(self.stop_button)
-        top.addWidget(self.loop_box)
-        top.addWidget(self.hear_notes)
-        top.addSpacing(12)
         top.addWidget(QLabel("Show:"))
         top.addWidget(self.channel_pick)
+        top.addWidget(QLabel("Plays:"))
+        top.addWidget(self.instrument_pick)
         top.addWidget(QLabel("Snap:"))
         top.addWidget(self.snap_pick)
         top.addWidget(QLabel("Zoom:"))
@@ -577,17 +683,107 @@ class SequenceEditor(QDialog):
             "Drag the strip along the top to move the playhead.")
 
         layout = QVBoxLayout(self)
+        layout.addLayout(transport)
         layout.addLayout(top)
         layout.addWidget(area, 1)
         layout.addLayout(footer)
         layout.addWidget(buttons)
+        self._show_instrument()
         self._recount()
 
     # -- controls ------------------------------------------------------
 
+    # -- instruments ---------------------------------------------------
+
+    def _bank_programs(self):
+        """Which programs this sequence's sound bank actually has."""
+        if self.sound.snd is None or self.sound.bank is None:
+            return []
+        try:
+            return sorted(seq.instruments(self.sound.snd, self.sound.bank))
+        except Exception:
+            return []
+
+    def _instrument_label(self, program):
+        name = self.instrument_names.get(program)
+        return f"{program}  {name}" if name else f"Program {program}"
+
+    def _focus_channel(self):
+        """The channel the instrument box is talking about.
+
+        Whichever is being shown, or the selected note's when showing
+        everything - otherwise "change the instrument" would have to
+        mean all sixteen at once, which is never what is wanted."""
+        if self.roll.channel is not None:
+            return self.roll.channel
+        if self.roll.selected is not None:
+            return self.roll.selected.channel
+        return None
+
+    def _show_instrument(self):
+        """Point the box at whatever the focused channel plays now."""
+        channel = self._focus_channel()
+        enabled = channel is not None and self.instrument_pick.count() > 0
+        self.instrument_pick.setEnabled(enabled)
+        if not enabled:
+            return
+        program = self._program_for(channel, 1 << 30)
+        index = self.instrument_pick.findData(program)
+        self.instrument_pick.blockSignals(True)
+        if index >= 0:
+            self.instrument_pick.setCurrentIndex(index)
+        self.instrument_pick.blockSignals(False)
+
+    def _instrument(self):
+        """Give the focused channel a different instrument.
+
+        Every program change that channel has is rewritten, rather than
+        only the one before the cursor: a sequence that switches
+        instrument part way would otherwise change back a bar later and
+        look as though the edit had not taken. A channel with none gets
+        one at the top."""
+        channel = self._focus_channel()
+        program = self.instrument_pick.currentData()
+        if channel is None or program is None:
+            return
+        found = False
+        rewritten = []
+        for tick, status, a, b in self.others:
+            if status & 0xF0 == 0xC0 and status & 0x0F == channel:
+                rewritten.append((tick, status, program, b))
+                found = True
+            else:
+                rewritten.append((tick, status, a, b))
+        if not found:
+            rewritten.append((0, 0xC0 | channel, program, 0))
+        self.others = sorted(rewritten, key=lambda item: item[0])
+        self._recount()
+        if self.roll.selected is not None and self.hear_notes.isChecked():
+            self._hear_note(self.roll.selected)
+
+    def _picked(self, _note):
+        self._show_instrument()
+
+    def _is_playing(self):
+        """Whether the sequence - not a note - is sounding right now."""
+        return (self.sound.player.playbackState()
+                == QMediaPlayer.PlaybackState.PlayingState
+                and self.sound.following)
+
     def _channel(self):
+        playing = self._is_playing()
         self.roll.channel = self.channel_pick.currentData()
         self.roll.update()
+        self._show_instrument()
+        # What is cached is the old selection's audio.
+        if self._rendered_channel != self.roll.channel:
+            self._dirty = True
+        self._recount()
+        # Switching parts mid-play should switch what is heard, from
+        # where it had got to - picking a channel and then having to
+        # stop and start again to hear it is the long way round.
+        if playing and self._dirty:
+            self._play()
 
     def _snap(self):
         self.roll.snap = self.snap_pick.currentData()
@@ -617,9 +813,16 @@ class SequenceEditor(QDialog):
             self.sound.player.setPosition(
                 int(seq_notes.seconds_at(self._timeline, tick) * 1000))
 
-    def encoded(self):
-        """The edited sequence as SEQ bytes."""
-        events = seq_notes.to_events(self.notes, self.others)
+    def encoded(self, channel=None):
+        """The edited sequence as SEQ bytes.
+
+        `channel` keeps only that channel's notes, for hearing one part
+        on its own. The other events stay: a tempo change or a loop is
+        what the part is played against, and dropping them would make
+        the one channel play at a different speed to the whole."""
+        notes = (self.notes if channel is None
+                 else [n for n in self.notes if n.channel == channel])
+        events = seq_notes.to_events(notes, self.others)
         return midi.events_to_seq(events, self.resolution, self.tempo)
 
     # -- hearing it ----------------------------------------------------
@@ -650,7 +853,11 @@ class SequenceEditor(QDialog):
     def _play(self):
         if not self.sound.ready():
             return
-        if self._rendered is not None and not self._dirty:
+        # Showing one channel means hearing one channel; the filter
+        # would be half a filter otherwise.
+        channel = self.roll.channel
+        if (self._rendered is not None and not self._dirty
+                and self._rendered_channel == channel):
             self.sound.play(self._rendered, self.loop_box.isChecked())
             if self.roll.playhead:
                 self.sound.player.setPosition(int(seq_notes.seconds_at(
@@ -658,10 +865,11 @@ class SequenceEditor(QDialog):
             self.stop_button.setEnabled(True)
             return
         try:
-            blob = self.encoded()
+            blob = self.encoded(channel)
         except Exception as exc:
             self.status.setText(f"Can't play that: {exc}")
             return
+        self._rendered_channel = channel
         self.play_button.setEnabled(False)
         self.status.setText("Rendering on the sound bank...")
         self._render = _Render(blob, self.sound.snd, self.sound.bank)
