@@ -54,7 +54,7 @@ from functions.idx_parser import (
     parse_idx_file, apply_labels, apply_labels_flat, build_dat_view,
     content_hashes, row_label_data, area_index_of, LabelNameDelegate)
 from functions.iso_handler import ISOHandler
-from functions import game_build
+from functions import game_build, source_disc
 from gui.mainbin.mainbin_editor import repack_pool as mainbin_repack_pool, MainBinEditError
 from gui.bins.sop_editor import repack_pool as sop_repack_pool, SopEditError
 from gui.vram_viewer import VRAMViewer, decode_vram_bytes, vram_index_image
@@ -320,6 +320,16 @@ class MainWindow(QMainWindow):
         # aren't enough, since everything besides DAT/IDX/IMG needs to be
         # carried over from the source image too).
         self.current_iso_path = None
+        # What the disc behind this session IS, not just where it was -
+        # see functions/source_disc. A project stores this so the track
+        # can be found again after it moves, and everything that needs
+        # the real image (building a disc, the spoken dialogue, an
+        # area's overlay) goes through require_source_disc() rather than
+        # reading current_iso_path and giving up when it is None.
+        self.source_disc = None
+        # Set once a silent search for the disc has come up empty, so
+        # playback stops re-scanning folders it has already looked in.
+        self._disc_search_failed = False
         self._project_snapshot_path = None
 
         # The names on the tree's file rows, and where they came from.
@@ -383,11 +393,21 @@ class MainWindow(QMainWindow):
             "text, font page, MAIN.EXE and character assignments")
         save_project_action.triggered.connect(self.save_translation_project)
 
-        export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Save BIN", self)
+        attach_disc_action = QAction("Attach Disc Image...", self)
+        attach_disc_action.setToolTip(
+            "Point the editor at the disc this project was made from. "
+            "Needed for the spoken dialogue, the CD music and Build Disc, "
+            "none of which survive being extracted to loose files. Open the "
+            ".cue if there is one - it names both tracks")
+        attach_disc_action.triggered.connect(self.attach_disc_dialog)
+        self.attach_disc_action = attach_disc_action
+
+        export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Build Disc (BIN/CUE)...", self)
         export_bin_action.setToolTip(
-            "Write the edits into a copy of the disc's data track. Only the "
-            "edited files' sectors change, so the XA music and voice survive "
-            "- this is the one that stays playable")
+            "Write the edits into a copy of the disc's data track and put a "
+            "cue sheet and the audio track beside it. Only the edited files' "
+            "sectors change, so the XA music and voice survive - this is the "
+            "one that stays playable")
         export_bin_action.triggered.connect(self.export_bin)
         self.export_bin_action = export_bin_action
 
@@ -445,20 +465,30 @@ class MainWindow(QMainWindow):
         self.builtin_labels_action = builtin_labels_action
         builtin_labels_action.setEnabled(False)
 
+        # Opening, then the disc, then the two things worth producing.
+        # The rest are ways of writing out one piece of a disc and only
+        # make sense once you know why you want just that piece, so they
+        # sit under Advanced rather than beside the two that most people
+        # need - and "Save ISO" in particular is easy to reach for and
+        # quietly drops the soundtrack.
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(open_action)
         file_menu.addAction(open_iso_action)
         file_menu.addAction(open_folder_action)
         file_menu.addSeparator()
+        file_menu.addAction(attach_disc_action)
+        file_menu.addSeparator()
+        file_menu.addAction(save_project_action)
+        file_menu.addAction(export_bin_action)
+        file_menu.addSeparator()
         file_menu.addAction(import_labels_action)
         file_menu.addAction(export_labels_action)
         file_menu.addAction(builtin_labels_action)
         file_menu.addSeparator()
-        file_menu.addAction(export_action)
-        file_menu.addAction(export_bin_action)
-        file_menu.addAction(export_files_action)
-        file_menu.addAction(save_project_action)
-        file_menu.addAction(export_iso_action)
+        advanced_menu = file_menu.addMenu("Advanced")
+        advanced_menu.addAction(export_files_action)
+        advanced_menu.addAction(export_action)
+        advanced_menu.addAction(export_iso_action)
 
         font_menu = self.menuBar().addMenu("F&ont Page")
         export_font_action = QAction("Export Font Page...", self)
@@ -1839,15 +1869,191 @@ class MainWindow(QMainWindow):
     for _i in range(22):
         OVERLAY_NAMES[10 + _i] = f"A0{'0123456789ABCDEFGHIJKL'[_i]}.BIN"
 
+    # ------------------------------------------------------------------
+    # The disc behind the project
+    # ------------------------------------------------------------------
+    #
+    # The game's files are not the disc, and three things need the real
+    # image: building a playable disc (the CD audio and the XA music
+    # only survive being patched in place - see functions/bin_writer),
+    # the spoken dialogue, and an area's overlay. Each of those used to
+    # read current_iso_path and give up when it was None, which is every
+    # project, because opening one cleared it and nothing ever set it
+    # again. They ask here instead, and here knows how to find the disc
+    # or who to ask for it.
+
+    DISC_SETTING = "source_disc/recent"
+
+    def _disc_hints(self):
+        """Folders worth searching before troubling anyone for the disc."""
+        hints = []
+
+        def add(folder):
+            if folder and os.path.isdir(folder) and folder not in hints:
+                hints.append(folder)
+
+        add(self._project_snapshot_path)
+        if self._project_snapshot_path:
+            add(os.path.dirname(self._project_snapshot_path))
+        if self.dat_file:
+            add(os.path.dirname(self.dat_file))
+            add(os.path.dirname(os.path.dirname(self.dat_file)))
+        recent = self._theme_settings.value(self.DISC_SETTING, "", str)
+        if recent:
+            add(os.path.dirname(recent))
+        return hints
+
+    def attach_source_disc(self, path, quiet=False):
+        """Make `path` the disc this session builds and plays from.
+
+        A cue sheet is accepted and resolved to the data track it names,
+        which is what everything downstream actually reads - and which
+        is the thing a user is least likely to pick unaided, since the
+        two .bin files beside it look interchangeable and are not.
+
+        Returns the track's path, or None after saying what was wrong."""
+        try:
+            record = source_disc.record(path)
+        except source_disc.SourceDiscError as exc:
+            if not quiet:
+                QMessageBox.critical(self, "That isn't a disc image", str(exc))
+            return None
+
+        track = record["path"]
+        self.current_iso_path = track
+        self.source_disc = record
+        self._disc_search_failed = False
+        self._theme_settings.setValue(self.DISC_SETTING, track)
+
+        # Everything that plays off the disc is pointed at it here, so
+        # attaching it once is enough - the Dialogues tab should never
+        # have to be told about a disc the rest of the window already
+        # has. A 2048-byte ISO has no usable voice in it whatever we do
+        # (see functions/voice), and each panel says so for itself.
+        for panel in (self.voice_panel, self.music_panel, self.sfx_panel):
+            try:
+                panel.set_image(track)
+            except Exception:
+                pass
+        self._refresh_edit_status()
+        if not quiet and not source_disc.is_raw_track(record):
+            QMessageBox.information(
+                self, "Opened, but not a raw track",
+                f"{os.path.basename(track)} is a {record['sector_size']}-byte "
+                "sector image.\n\nThe text and graphics all work, but the "
+                "spoken dialogue and the CD music are not in it: extracting "
+                "a disc to 2048-byte sectors throws away 12% of every audio "
+                "sector, and nothing can put it back. For those, open the "
+                "disc's .cue or its Track 1 .bin instead.")
+        return track
+
+    def require_source_disc(self, reason, ask=True):
+        """The disc's data track - remembered, found, or asked for.
+
+        `reason` finishes "The original disc is needed to ...", so the
+        dialog says why it appeared rather than leaving that to be
+        guessed at. Returns None if there is no disc to be had."""
+        current = getattr(self, "current_iso_path", None)
+        if current and os.path.exists(current):
+            return current
+
+        # Searching means listing folders and fingerprinting whatever
+        # images are in them. That is cheap once and wasteful on every
+        # line of dialogue, which is how often the silent caller asks,
+        # so a search that found nothing is not repeated until something
+        # could plausibly have changed - a disc attached, or a project
+        # opened, both of which clear this.
+        if not self._disc_search_failed:
+            found = source_disc.locate(self.source_disc, self._disc_hints())
+            if found:
+                return self.attach_source_disc(found, quiet=True)
+            self._disc_search_failed = True
+        if not ask:
+            return None
+
+        wanted = source_disc.describe(self.source_disc)
+        known = bool(self.source_disc)
+        answer = QMessageBox.question(
+            self, "Which disc?",
+            f"The original disc image is needed to {reason}.\n\n"
+            + (f"This project was made from {wanted}, and it isn't where it "
+               "was last seen.\n\n" if known else
+               "The game's extracted files don't contain the CD audio, the "
+               "spoken dialogue or the disc structure, so the image they "
+               "came from is needed too.\n\n")
+            + "Find it now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+
+        start = next(iter(self._disc_hints()), "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open the disc image this project was made from",
+            start, source_disc.FILTER)
+        if not path:
+            return None
+
+        if known and not source_disc.matches(path, self.source_disc):
+            proceed = QMessageBox.warning(
+                self, "That's a different disc",
+                f"{os.path.basename(path)} isn't the image this project was "
+                f"made from ({wanted}).\n\nBuilding from the wrong disc "
+                "produces something that looks right and is subtly not - a "
+                "different region or revision puts the game's files in "
+                "different places.\n\nUse it anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if proceed != QMessageBox.StandardButton.Yes:
+                return None
+        return self.attach_source_disc(path)
+
+    @staticmethod
+    def _legacy_source_disc(manifest):
+        """A pre-fingerprint project's disc, as far as it can be known.
+
+        Version 1 and 2 manifests stored `source_image`: one absolute
+        path, no way to tell whether the file at it is still the same
+        disc or even the same game. If it is still there it gets
+        fingerprinted now and the project is that much more portable
+        from the next save on; if it isn't, the name travels anyway, so
+        the disc can be recognised beside the project and named in the
+        dialog that asks for it."""
+        legacy = manifest.get("source_image")
+        if not legacy:
+            return None
+        try:
+            return source_disc.record(legacy)
+        except source_disc.SourceDiscError:
+            return {"name": os.path.basename(legacy), "path": legacy}
+
+    def attach_disc_dialog(self):
+        """File > Attach Disc Image - the one place to hand over the
+        disc when the session was started from files rather than from
+        it. Everything that needs it picks it up at once."""
+        start = next(iter(self._disc_hints()), "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach the disc image this project was made from",
+            start, source_disc.FILTER)
+        if not path:
+            return
+        track = self.attach_source_disc(path)
+        if track:
+            self.statusBar().showMessage(
+                f"Disc attached: {os.path.basename(track)} - voice, music "
+                "and Build Disc can use it now.", 8000)
+
     def voice_image_path(self):
         """The disc to read voice from, without asking for it again.
 
-        If the disc was opened as an image it is already the right file,
-        so use it. Only a folder-opened disc has nothing to offer here,
-        because the voice track does not survive being extracted."""
-        opened = getattr(self, "current_iso_path", None)
-        if opened and os.path.exists(opened):
-            return opened
+        Silent on purpose: this is reached from playback, and a modal
+        dialog in the middle of clicking through dialogue would be worse
+        than no sound. It still resolves a project's remembered disc, so
+        opening a project and pressing play works without the disc ever
+        having been opened by hand this session."""
+        found = self.require_source_disc("play the spoken dialogue", ask=False)
+        if found:
+            return found
         return getattr(self.voice_panel, "image", None)
 
     # An area's purified form is a chunk of its own, 22 further along,
@@ -2779,12 +2985,24 @@ class MainWindow(QMainWindow):
 
         from functions import bin_writer
 
-        source = getattr(self, "current_iso_path", None)
-        if not source or not os.path.exists(source):
+        # A project holds the game's files, not the disc they came from,
+        # so this asks for the image rather than refusing outright the
+        # way it used to - "no track open" was accurate and useless, and
+        # left the commonest workflow (open project, build disc) with no
+        # way forward at all.
+        source = self.require_source_disc(
+            "build a playable disc: the CD audio and the streamed music "
+            "only survive being patched into a copy of the real track")
+        if not source:
+            return
+        if not source_disc.is_raw_track(source):
             QMessageBox.critical(
-                self, "No track open",
-                "Save BIN patches the disc's data track, so the disc has to "
-                "have been opened as one (File > Open BIN).")
+                self, "Not a raw disc track",
+                f"{os.path.basename(source)} has 2048-byte sectors, so it "
+                "carries no CD audio and no XA music to patch around.\n\n"
+                "Build from the disc's .cue or its Track 1 .bin instead, or "
+                "use Advanced > Save ISO if a silent data-only image is "
+                "what you want.")
             return
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
@@ -3271,6 +3489,11 @@ class MainWindow(QMainWindow):
                     "main_exe": "MAIN.EXE" if exe_path else None,
                     "sop_bin": "BIN/SOP.BIN" if sop_path else None,
                     "source_image": self.current_iso_path,
+                    # What the disc is, not only where it was. An
+                    # absolute path alone died the moment the project or
+                    # the disc moved, and took Build Disc and the spoken
+                    # dialogue with it - see functions/source_disc.
+                    "source_disc": self.source_disc,
                     "editor_state": project_state,
                 }
                 stage_manifest = os.path.join(stage, "tomba2project.json")
@@ -3682,11 +3905,20 @@ class MainWindow(QMainWindow):
             if proceed != QMessageBox.StandardButton.Yes:
                 return
 
-        # no ISO backs this folder - clear iso_handler so export_iso() refuses
+        # No extracted-file tree can stand in for the image, so
+        # export_iso() still has to refuse until one is attached.
         if self.iso_handler:
             self.iso_handler.cleanup()
         self.iso_handler = None
         self.current_iso_path = None
+        # What the project says its disc was. Kept even when the file
+        # itself has gone missing: it is what lets require_source_disc()
+        # find it again, or name it when it has to ask. Opening a plain
+        # game folder leaves this None, which is honest - nothing there
+        # records which disc the files came out of.
+        self.source_disc = (manifest.get("source_disc")
+                            or self._legacy_source_disc(manifest))
+        self._disc_search_failed = False
         self._project_snapshot_path = project_root
         self.pending_txtd_edits.clear()
         self.pending_file_edits.clear()

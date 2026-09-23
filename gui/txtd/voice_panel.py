@@ -176,17 +176,42 @@ class VoicePanel(QWidget):
     # --- opening ------------------------------------------------------
 
     def _browse(self):
+        # A cue sheet is what a rip is actually called, and picking one
+        # of the two .bin files beside it is a coin toss - so take the
+        # cue and resolve it to the data track ourselves.
         path, _ = QFileDialog.getOpenFileName(
             self, "Open the disc's data track", "",
-            "Disc track (*.bin *.img);;Extracted voice (*.XA);;All files (*)")
+            "Disc (*.cue *.bin *.img);;Extracted voice (*.XA);;"
+            "All files (*)")
         if path:
             self.set_image(path)
 
     def set_image(self, path):
-        """Point the panel at a disc track, or a good VOICE.XA."""
+        """Point the panel at a disc track, or a good VOICE.XA.
+
+        A cue sheet is resolved to the data track it names first, so
+        handing this the file a rip is actually called works."""
+        from functions import source_disc
+
+        try:
+            path = source_disc.data_track(path)
+        except source_disc.SourceDiscError as exc:
+            self.status.setText(str(exc))
+            return
         try:
             self.lba, self.sectors = voice.find_track(path)
         except Exception as exc:
+            # The commonest reason by far is a 2048-byte image, where
+            # there is no voice to find and never will be - say that
+            # instead of repeating a lookup failure the user can't act
+            # on. See functions/voice's own note on why.
+            if not source_disc.is_raw_track(path):
+                self.status.setText(
+                    f"{os.path.basename(path)} has 2048-byte sectors, so the "
+                    "spoken dialogue isn't in it - extracting a disc that way "
+                    "drops 12% of every audio sector. Open the disc's .cue or "
+                    "its Track 1 .bin instead.")
+                return
             self.status.setText(str(exc))
             return
         self.image = path
