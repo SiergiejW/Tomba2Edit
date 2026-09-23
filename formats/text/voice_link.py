@@ -1,0 +1,429 @@
+"""Playing the voice that belongs to a line of text.
+
+Three things decide which audio a TXTD entry speaks, and all of them are
+worked out rather than configured:
+
+    which table   a master's lines run through one of the overlay's clip
+                  tables, and the table has exactly as many entries as
+                  the master has clips - which identifies it outright
+    which clip    the entry's `extra` low byte is its FIRST clip, and
+                  every {$END} segment after the first takes the next
+                  index along, so an entry of three segments speaks
+                  clips lo, lo+1 and lo+2
+    which channel the table's own block boundaries fall in the gaps
+                  between spoken lines only on the channel it describes
+
+The segment rule is what makes an entry with several boxes play all of
+them instead of just the first, and it is also why the indices in a
+master skip: the gaps are the extra segments.
+"""
+import json
+import os
+
+from formats.audio import voice
+from formats.audio import xa
+
+NO_VOICE = 0xFFFF
+GAP = 0.25          # seconds of silence inserted between an entry's boxes
+
+# Working out an overlay's channels means decoding all 32 of them across
+# the whole span its tables cover - the better part of a minute. It only
+# depends on the overlay and the disc, so it is done once and kept.
+CACHE_NAME = "voicechannels.json"
+
+
+def segments(text):
+    """How many boxes a TXTD entry shows - one clip each."""
+    return max((text or "").count("{$END}"), 1)
+
+
+def clips_needed(master):
+    """How many clips a master's lines use in total.
+
+    This is what names its table: a master using N clips runs through
+    the table with N entries."""
+    most = 0
+    for entry in master.get("entries", ()):
+        extra = entry.get("extra")
+        if extra in (None, NO_VOICE):
+            continue
+        most = max(most, (extra & 0xFF) + segments(entry.get("text")))
+    return most
+
+
+def _align(needs, sizes):
+    """Longest order-preserving match of [(master, clips)] to table
+    sizes, matching only on equality. Either side may be skipped."""
+    n, m = len(needs), len(sizes)
+    if not n or not m:
+        return {}
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            take = 1 + best[i + 1][j + 1] if needs[i][1] == sizes[j] else 0
+            best[i][j] = max(best[i + 1][j], best[i][j + 1], take)
+    out = {}
+    i = j = 0
+    while i < n and j < m:
+        if needs[i][1] == sizes[j] and best[i][j] == 1 + best[i + 1][j + 1]:
+            out[needs[i][0]] = j
+            i += 1
+            j += 1
+        elif best[i + 1][j] >= best[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+class VoiceLink:
+    """Resolves a TXTD entry to its clips, and decodes them."""
+
+    def __init__(self):
+        self.image = None
+        self.lba = 0
+        self.sectors = 0
+        self.tables = []
+        self.overlay = None
+        self.default_table = None
+        self._channels = {}
+        self._by_master = {}
+        # The fallback for a build whose code layout has drifted too far
+        # from the one read_dispatch's instruction pattern was proven
+        # against - see set_masters()/_align_fallback().
+        self._raw_tables = []
+        self._masters = []
+        self._fallback_by_master = {}
+        self._fallback_channels = {}
+        self._fallback_tried = False
+        # Set via set_edit_store() - a voice import stages its
+        # replacement sectors here rather than writing them to disk
+        # right away, and a clip played back afterward has to prefer
+        # them over the image on disk or the old audio would keep
+        # answering until the next export.
+        self._edits = None
+
+    def set_edit_store(self, store):
+        """Share the VoiceEditStore edits are staged into (see
+        formats/audio/voice_edit.py), so clip_for()/sectors_for() can play
+        a line's just-imported replacement immediately - including
+        after navigating to a different entry and back - rather than
+        the stale audio still sitting in the disc image on disk."""
+        self._edits = store
+
+    def _overrides(self):
+        """{absolute lba: raw sector} staged for this exact image, or
+        None - a store staged against a different disc entirely (or
+        nothing staged at all) has nothing relevant to offer."""
+        if self._edits and self._edits.image == self.image:
+            return self._edits.sectors
+        return None
+
+    def ready(self):
+        return bool(self.image and (self.tables or getattr(
+            self, "default_table", None) or self._fallback_by_master))
+
+    def set_image(self, path):
+        """Point at the disc's data track. Returns an error string, or
+        None when it worked."""
+        try:
+            self.lba, self.sectors = voice.find_track(path)
+        except Exception as exc:
+            self.image = None
+            return str(exc)
+        self.image = path
+        self._channels.clear()
+        return None
+
+    def set_overlay(self, path):
+        """Point at the area's Axx.BIN and read its voice dispatch.
+
+        The overlay chooses a master's clip table and channel with a jump
+        table in its own code, so both come straight out of it - no
+        probing, no cache, and it covers masters whose table size matches
+        nothing."""
+        self.overlay = path
+        self.dispatch = {}
+        try:
+            if path:
+                self.dispatch = voice.read_dispatch(path)
+        except Exception:
+            self.dispatch = {}
+        self.tables = {}
+        self.default_table = None
+        for master, (table_at, channel, block_offset) in self.dispatch.items():
+            rows = voice.read_clip_table(path, table_at)
+            if rows:
+                # Every start in the table is relative to the master's
+                # own base block; A00 happens to use 0 throughout, which
+                # is why it worked before this was read.
+                rows = [(start + block_offset, length) for start, length in rows]
+                if master == -1:
+                    # the case every master without one of its own uses
+                    self.default_table = (rows, channel)
+                else:
+                    self.tables[master] = (rows, channel)
+        # A build whose code doesn't line up with read_dispatch's
+        # instruction pattern (a different region, a proto with its own
+        # compile) can come out of the above with nothing at all, even
+        # though its clip tables are still sitting right there in the
+        # bytes - find_tables() finds them by shape alone, no code
+        # reading involved, ready for _align_fallback() to use once the
+        # masters that need them are known (see set_masters()).
+        try:
+            self._raw_tables = voice.find_tables(path) if path else []
+        except Exception:
+            self._raw_tables = []
+        self._fallback_by_master = {}
+        self._fallback_channels = {}
+        self._fallback_tried = False
+        self._align_fallback()
+        return len(self.tables)
+
+    def set_masters(self, masters):
+        """This area's masters (self.current_data["entries"] in the
+        TXTD viewer), so _align_fallback() has something to match its
+        raw tables against. Returns every master now covered, dispatch
+        and fallback together."""
+        self._masters = masters or []
+        self._align_fallback()
+        return len(self.tables) + len(self._fallback_by_master)
+
+    def _align_fallback(self):
+        """Match a master read_dispatch left unplaced to a raw table by
+        size alone.
+
+        The overlay's tables are in the same order as the masters that
+        use them, and a table has exactly as many entries as its master
+        has clips. Matching the two sequences in order - allowing either
+        side to skip, since some masters have no voice and some tables
+        go unused - pins nearly all of them: 112 of the 120 tables
+        across the disc's areas, and it reproduces the assignment proved
+        against savestates for AREA_04. Only tried for masters
+        read_dispatch didn't already place, so a build where the code
+        reading works keeps using that - this is strictly a fallback.
+
+        A master that comes out unmatched is left with no voice rather
+        than given the nearest table, which would only play some other
+        conversation."""
+        self._fallback_by_master = {}
+        if not self._masters or not self._raw_tables:
+            return
+        unresolved = [i for i in range(len(self._masters))
+                     if i not in self.tables]
+        if not unresolved:
+            return
+        sizes = [len(entries) for _off, entries in self._raw_tables]
+        needs = [(i, clips_needed(self._masters[i])) for i in unresolved]
+        needs = [(i, n) for i, n in needs if n]
+        self._fallback_by_master = _align(needs, sizes)
+
+    def mark_fallback_resolving(self):
+        """Claim the one-time fallback resolve before it actually starts,
+        so a caller running it on a worker thread (see
+        formats/text/txtd_viewer.py's _ResolveFallbackChannels) can't be
+        asked to start a second one for a line picked while the first
+        is still decoding."""
+        self._fallback_tried = True
+
+    def fallback_pending(self, master_index):
+        """True if resolving this master's clip is about to pay the
+        one-time cost of decoding every channel to find the fallback's
+        own (tens of seconds, see _resolve_fallback_channels) - so a
+        caller can warn before the freeze instead of after it."""
+        return (master_index in self._fallback_by_master
+                and not self._fallback_channels and not self._fallback_tried)
+
+    def _fallback_found(self, master_index):
+        """(rows, channel) for a master _align_fallback placed, or None.
+
+        Channel isn't something table-size matching can know - it comes
+        from resolve_channels() instead, decoding audio rather than
+        code, tried once per overlay (see _resolve_fallback_channels)
+        and kept for the rest of the session. Block offset is assumed
+        0, which is what every table read_dispatch has confirmed uses
+        throughout the one build this was checked against."""
+        table_index = self._fallback_by_master.get(master_index)
+        if table_index is None:
+            return None
+        if not self._fallback_channels and not self._fallback_tried:
+            self._fallback_tried = True
+            self._resolve_fallback_channels()
+        channel = self._fallback_channels.get(table_index)
+        if channel is None:
+            return None
+        return self._raw_tables[table_index][1], channel
+
+    def _resolve_fallback_channels(self):
+        """Channel per raw table, from the audio - see _fallback_found.
+        Costs a decode of all 32 channels across the whole span (tens of
+        seconds), so it is worth trying at most once per overlay."""
+        if not self.ready():
+            return
+        try:
+            found = voice.resolve_channels(
+                self.image, self.lba, self._raw_tables, None, self.sectors)
+        except Exception:
+            return
+        self._fallback_channels = {i: c for i, c in enumerate(found)
+                                   if c is not None}
+
+    def table_for_index(self, master_index):
+        if master_index in self.tables or self.default_table:
+            return master_index
+        return None
+
+    # --- channels -----------------------------------------------------
+
+    def _cache_key(self):
+        return f"{os.path.basename(self.overlay or '')}:{len(self.tables)}"
+
+    def _cache_path(self):
+        return os.path.join(os.path.dirname(self.image or ""), CACHE_NAME)
+
+    def load_cached_channels(self):
+        """Take a previous run's answer if there is one for this overlay."""
+        try:
+            with open(self._cache_path(), "r", encoding="utf-8") as f:
+                found = json.load(f).get(self._cache_key())
+        except Exception:
+            return False
+        if not found or len(found) != len(self.tables):
+            return False
+        self._channels = {i: c for i, c in enumerate(found)}
+        return True
+
+    def resolve_channels(self, progress=None):
+        """Work out every table's channel. Slow - run it off the GUI
+        thread - and cached afterwards, so it happens once per disc."""
+        if not self.ready():
+            return False
+        found = voice.resolve_channels(self.image, self.lba, self.tables,
+                                       progress, self.sectors)
+        self._channels = {i: c for i, c in enumerate(found)}
+        try:
+            path = self._cache_path()
+            store = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    store = json.load(f)
+            store[self._cache_key()] = found
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(store, f, indent=2)
+        except OSError:
+            pass
+        return True
+
+    def channels_known(self):
+        return bool(self.tables) or bool(self._fallback_by_master)
+
+    def resolves(self, master_index):
+        """Whether this master's clip table is known at all - by
+        dispatch, the default table, or the fallback - without decoding
+        anything. What the TXTD tree's play-ready marker checks, so it
+        only lights up for a line a Play click would actually work on
+        right now, not just one that structurally carries a clip index."""
+        return bool(self.ready() and (
+            master_index in self.tables or self.default_table
+            or master_index in self._fallback_by_master))
+
+    def not_ready_note(self):
+        """Why ready() is False, precisely.
+
+        Conflating "no image opened at all" with "an image is open but
+        this area's masters were never matched to it" into one "No disc
+        yet" message is what made a disc that opened perfectly fine
+        still say that - reading as if the file itself hadn't opened,
+        when what was actually missing was a TXTD file from this area
+        having been selected (which is what calls set_masters)."""
+        if not self.image:
+            return ("No disc yet - open the data track (Track 1), the "
+                    "only place the voice survives.")
+        if not (self.tables or self.default_table or self._fallback_by_master):
+            return ("This disc is open, but this area's overlay has no "
+                    "voice matched to it yet - select a TXTD file from "
+                    "this area first.")
+        return "Not ready."
+
+    def channel(self, table_index):
+        return self._channels.get(table_index)
+
+    def sectors_for(self, entry, master_index):
+        """The absolute VOICE.XA sector numbers this entry's own boxes
+        occupy - the same resolution clip_for does, short of decoding,
+        so an import can patch exactly the sectors a Play would read.
+
+        Returns (indices, note) - note explains an empty result the same
+        way clip_for's does, so a caller can show it without repeating
+        the reasons here."""
+        extra = entry.get("extra")
+        if extra is None or extra == 0xFFFF:
+            return [], "This line has no voice."
+        if not self.ready():
+            return [], self.not_ready_note()
+        found = (self.tables.get(master_index) or self.default_table
+                 or self._fallback_found(master_index))
+        if found is None:
+            return [], ("This overlay's dispatch has no voice for this "
+                        "master.")
+        entries, channel = found
+        first = extra & 0xFF
+        count = segments(entry.get("text"))
+        out = []
+        for n in range(count):
+            index = first + n
+            if index >= len(entries):
+                break
+            out.extend(voice.clip_sectors(entries[index], channel,
+                                          self.sectors))
+        if not out:
+            return [], (f"Clip {first} is past the end of this master's "
+                        f"table ({len(entries)} entries).")
+        return [self.lba + s for s in out], None
+
+    def clip_for(self, entry, master_index):
+        """(samples, rate, note) for one TXTD entry, all its boxes.
+
+        Every {$END} segment gets its own clip; they are joined with a
+        short gap so an entry plays the way it reads."""
+        extra = entry.get("extra")
+        if extra is None or extra == NO_VOICE:
+            return None, 0, "This line has no voice."
+        if not self.ready():
+            return None, 0, self.not_ready_note()
+        found = (self.tables.get(master_index) or self.default_table
+                 or self._fallback_found(master_index))
+        if found is None:
+            return None, 0, ("This overlay's dispatch has no voice for this "
+                             "master.")
+        entries, channel = found
+        first = extra & 0xFF
+        count = segments(entry.get("text"))
+        rate = 18900
+        samples = []
+        played = []
+        frame = xa.framing(self.image) or xa.RAW
+        overrides = self._overrides()
+        with open(self.image, "rb") as f:
+            for n in range(count):
+                index = first + n
+                if index >= len(entries):
+                    break
+                block = xa.decode_channel(
+                    f, self.lba,
+                    voice.clip_sectors(entries[index], channel, self.sectors),
+                    frame=frame, overrides=overrides)
+                if samples:
+                    samples.extend([0] * int(GAP * block[1]))
+                samples.extend(block[0])
+                rate = block[1]
+                played.append(index)
+        if not played:
+            return None, 0, (f"Clip {first} is past the end of this master's "
+                             f"table ({len(entries)} entries).")
+        which = (f"clip {played[0]}" if len(played) == 1
+                 else f"clips {played[0]}-{played[-1]}")
+        return samples, rate, (
+            f"master {master_index}, channel {channel}, {which} "
+            f"({count} box{'es' if count > 1 else ''}) - "
+            f"{len(samples) / rate:.2f}s")

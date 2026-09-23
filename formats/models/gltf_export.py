@@ -1,0 +1,982 @@
+"""glTF 2.0 export for the model formats on the disc.
+
+One writer for all of them, because they all end up as the same thing:
+MDAT and SCLD hand back the dict exportMDAT builds, and an SMST is that
+dict plus the groups that say which part of it belongs to which bone.
+Add a bone table and it exports rigged; add ANMP frames as well and it
+exports animated.
+
+WHAT THE PSX DOES THAT GLTF DOES NOT
+------------------------------------
+The disc stores no finished textures. A face names a 16-colour palette
+(a CLUT) sitting somewhere in VRAM, and its texels are 4-bit indices
+into that palette - the same bytes read through a different CLUT are a
+different picture, which is how one texture page dresses a dozen
+characters. The viewer does this the way the hardware does, in a
+fragment shader, with the index map and the palette as separate
+textures.
+
+Nothing in glTF can express that. Its materials are a fixed set of PBR
+inputs with no room for an indirection, so the palette lookup has to
+happen here, at export: each distinct CLUT a model uses becomes its own
+baked RGBA texture. That is why one model comes out as several
+materials - they are not different surfaces, they are the same texture
+page read through different palettes.
+
+Baking whole VRAM per palette would be absurd - the index map is
+4096x512, and Tomba alone uses eleven CLUTs, which is 92MB of mostly
+nothing. Each material is cropped to the region its own faces actually
+sample and its UVs rescaled into that crop, so a character exports as a
+handful of small textures instead.
+
+LIT, NOT UNLIT
+--------------
+A PSX model is painted rather than lit - the viewer draws the palette
+colour times the vertex colour and nothing else - so KHR_materials_unlit
+describes what the game does most exactly. It is deliberately not used.
+Unlit materials ignore lamps, and a model that cannot be lit is no use
+to anyone building a scene around it. These export as ordinary
+metallic-roughness materials, so a lamp works on them straight away;
+the vertex colours are still there and still multiply, which means the
+game's own baked shading is what a light adds to rather than replaces.
+
+That needs normals, and the disc has none - there was never anything to
+store. They are computed from the geometry here, which makes them the
+one thing in these files derived rather than read (see _normals).
+
+WHAT IS LOST, HONESTLY
+----------------------
+Quads. The OBJ path keeps them; glTF has no quad primitive, so
+everything is triangulated on the way out.
+
+Vertex colours above 1.0. The PSX treats 128 as neutral and lets a
+vertex brighten its texture up to 2x. glTF says COLOR_0 is in [0, 1],
+so anything above neutral is clamped - a few blown-out highlights come
+out merely white.
+
+RIGGING FALLS OUT FOR FREE
+--------------------------
+An SMST group's vertices are already relative to its own bone (the game
+draws group i with bone i's matrix and never unpacks anything), which is
+exactly what a glTF skin wants when the inverse bind matrices are
+identity - so they are left undefined, which glTF reads as identity.
+
+Animation is just as direct. skeleton.pose_transforms composes a limb as
+`parent_rotation @ local`, and a glTF node hierarchy composes children
+against parents the same way, so each bone's own rotation goes straight
+onto its node and the hierarchy does the rest.
+"""
+import base64
+import json
+import struct
+
+import numpy as np
+
+# The index map every 3D viewer samples: VRAM read as 4bpp, two texels
+# per byte. psx/vram_viewer.py builds the same picture for display,
+# spread over RGB as index * 17; here the raw 0-15 index is wanted.
+ATLAS_WIDTH = 4096
+ATLAS_HEIGHT = 512
+
+# glTF enum values, named so the tables below read as something.
+FLOAT = 5126
+UNSIGNED_INT = 5125
+UNSIGNED_SHORT = 5123
+ARRAY_BUFFER = 34962
+ELEMENT_ARRAY_BUFFER = 34963
+NEAREST = 9728
+CLAMP_TO_EDGE = 33071
+TRIANGLES = 4
+
+# How far two faces meeting at a point may turn away from each other and
+# still be smoothed together. Past this they keep their edge.
+#
+# Measured off the disc rather than picked. On a character, neighbouring
+# faces turn 47 degrees at the median and 69 at the upper quartile -
+# these models are coarse, so Blender's 30-degree auto-smooth default
+# would leave two thirds of Tomba faceted. Level geometry has a
+# different shape entirely: a quarter of its joins are dead flat and
+# another quarter sit at exactly 90 degrees, which are real corners
+# where two walls meet.
+#
+# 80 smooths 86% of a character while leaving that 90-degree spike
+# alone, so scenery keeps its corners crisp and a face does not.
+SMOOTH_ANGLE = 80.0
+
+# A texel of padding around each cropped material, so a renderer that
+# filters at the edge has something to filter against instead of
+# sampling whatever the neighbouring texture page happens to hold.
+PAD = 1
+
+# The game runs at 30fps and the ANMP transport defaults there.
+DEFAULT_FPS = 12
+
+# What the viewers divide raw game units by to get something sensibly
+# sized on screen (formats/models/smst_viewer.UNIT_SCALE). Kept as a number
+# here rather than imported, because that module is a QOpenGLWidget and
+# this one has no business dragging a GL context in to write a file.
+UNIT_SCALE = 100.0
+
+
+def index_atlas(vram_bytes):
+    """VRAM as one (512, 4096) array of 4-bit palette indices."""
+    want = 1024 * 512 * 2
+    raw = np.frombuffer(bytes(vram_bytes[:want]), dtype=np.uint8)
+    if raw.size < want:
+        raw = np.pad(raw, (0, want - raw.size))
+    rows = raw.reshape(ATLAS_HEIGHT, 0x800)
+    texels = np.empty((ATLAS_HEIGHT, ATLAS_WIDTH), dtype=np.uint8)
+    texels[:, 0::2] = rows & 0x0F
+    texels[:, 1::2] = rows >> 4
+    return texels
+
+
+def palette(vram_bytes, address, transparent=False):
+    """One CLUT as (16, 4) RGBA, read the way the viewers read it.
+
+    BGR555, five bits a channel scaled by 8.
+
+    The PSX decides transparency per TEXEL, not per polygon. A palette
+    entry is 16 bits: five each of B, G, R and, at the top, STP. What
+    that bit means depends on the primitive:
+
+      word == 0x0000            never drawn, whatever the primitive is
+      STP set, primitive blends blended against what is behind it
+      STP set, primitive opaque drawn opaque
+      STP clear                 drawn opaque, ALWAYS
+
+    The last line is the one that matters here. A primitive carrying the
+    semi-transparency bit does not make the whole polygon see-through -
+    it only enables blending for the texels whose palette entry asks for
+    it. Every boss pig is built from faces that all carry that bit, and
+    their palettes are about 95% STP-clear, so the hardware draws them
+    solid; blending the lot made them ghosts. The water pig is the
+    exception that proves it - 89% of its entries DO set STP, and it is
+    meant to look like water."""
+    out = np.zeros((16, 4), dtype=np.uint8)
+    data = bytes(vram_bytes)
+    for i in range(16):
+        at = address + i * 2
+        word = (data[at] | (data[at + 1] << 8)) if at + 1 < len(data) else 0
+        r = (word & 0x1F) * 8
+        g = ((word >> 5) & 0x1F) * 8
+        b = ((word >> 10) & 0x1F) * 8
+        if word == 0:
+            alpha = 0
+        elif transparent and (word & 0x8000):
+            alpha = 128
+        else:
+            alpha = 255
+        out[i] = (r, g, b, alpha)
+    return out
+
+
+def _png(rgba):
+    """A PNG of an (h, w, 4) uint8 array, written here to keep the
+    exporter free of an image library it would otherwise only use to
+    save a handful of small crops."""
+    import zlib
+
+    height, width = rgba.shape[:2]
+    raw = b"".join(b"\x00" + rgba[y].tobytes() for y in range(height))
+
+    def chunk(tag, payload):
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+class _Buffer:
+    """The one binary blob, and the accessors that point into it."""
+
+    def __init__(self):
+        self.data = bytearray()
+        self.views = []
+        self.accessors = []
+
+    def _view(self, payload, target=None):
+        while len(self.data) % 4:            # accessors must be aligned
+            self.data.append(0)
+        offset = len(self.data)
+        self.data.extend(payload)
+        self.views.append({"buffer": 0, "byteOffset": offset,
+                           "byteLength": len(payload),
+                           **({"target": target} if target else {})})
+        return len(self.views) - 1
+
+    def add(self, array, kind, component, target=None, minmax=False):
+        view = self._view(array.tobytes(), target)
+        accessor = {"bufferView": view, "componentType": component,
+                    "count": len(array), "type": kind}
+        if minmax:
+            flat = array.reshape(len(array), -1)
+            accessor["min"] = flat.min(axis=0).tolist()
+            accessor["max"] = flat.max(axis=0).tolist()
+        self.accessors.append(accessor)
+        return len(self.accessors) - 1
+
+
+def _quaternion(matrix):
+    """A 3x3 rotation as glTF's (x, y, z, w)."""
+    trace = matrix[0, 0] + matrix[1, 1] + matrix[2, 2]
+    if trace > 0:
+        s = 0.5 / np.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (matrix[2, 1] - matrix[1, 2]) * s
+        y = (matrix[0, 2] - matrix[2, 0]) * s
+        z = (matrix[1, 0] - matrix[0, 1]) * s
+    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])
+        w = (matrix[2, 1] - matrix[1, 2]) / s
+        x = 0.25 * s
+        y = (matrix[0, 1] + matrix[1, 0]) / s
+        z = (matrix[0, 2] + matrix[2, 0]) / s
+    elif matrix[1, 1] > matrix[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])
+        w = (matrix[0, 2] - matrix[2, 0]) / s
+        x = (matrix[0, 1] + matrix[1, 0]) / s
+        y = 0.25 * s
+        z = (matrix[1, 2] + matrix[2, 1]) / s
+    else:
+        s = 2.0 * np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])
+        w = (matrix[1, 0] - matrix[0, 1]) / s
+        x = (matrix[0, 2] + matrix[2, 0]) / s
+        y = (matrix[1, 2] + matrix[2, 1]) / s
+        z = 0.25 * s
+    return [float(x), float(y), float(z), float(w)]
+
+
+def _normals(points, triangles):
+    """Smooth vertex normals, averaged over the faces meeting at each
+    POSITION rather than at each vertex.
+
+    The disc has no normals - a PSX model is painted, not lit, so there
+    was never anything to store - but a material that responds to a lamp
+    needs them. They are computed here, which makes them the one thing
+    in these files derived rather than read.
+
+    Averaging per vertex index would do nothing. The vertex list stores
+    a separate entry per face corner so each can carry its own UV and
+    colour: Tomba has 1,334 vertices standing on 284 distinct positions,
+    and only 1.10 face corners per vertex. Every vertex would belong to
+    one face, take that face's normal, and shade flat. Averaging over
+    what meets at the POSITION instead - about five faces there - is
+    what makes the surface read as smooth, and it needs no change to the
+    topology, so the UV and colour seams the format depends on all
+    survive.
+
+    Two things are not smoothed over. A corner sharper than SMOOTH_ANGLE
+    keeps its edge, or a crate would come out as a pillow. And winding
+    is not consistent on a model that was always drawn double-sided, so
+    a neighbour pointing the opposite way is taken as the same surface
+    seen from behind and flipped to agree, rather than cancelling into a
+    black band along the seam."""
+    limit = np.cos(np.radians(SMOOTH_ANGLE))
+    faces = []
+    at_position = {}
+    for tri in triangles:
+        a, b, c = points[tri[0]], points[tri[1]], points[tri[2]]
+        face = np.cross(b - a, c - a)
+        size = np.linalg.norm(face)
+        if size < 1e-12:
+            continue
+        faces.append((tri, face / size))
+    for tri, face in faces:
+        for at in tri:
+            at_position.setdefault(tuple(np.round(points[at], 3)), []).append(face)
+
+    normals = np.zeros(points.shape, dtype=np.float64)
+    own = np.zeros(points.shape, dtype=np.float64)
+    for tri, face in faces:
+        for at in tri:
+            own[at] += face if own[at] @ face >= 0 or not own[at].any() else -face
+
+    for i, point in enumerate(points):
+        here = at_position.get(tuple(np.round(point, 3)), ())
+        reference = own[i]
+        if not reference.any():
+            reference = here[0] if len(here) else np.array([0.0, 0.0, 1.0])
+        reference = reference / max(np.linalg.norm(reference), 1e-12)
+        total = np.zeros(3)
+        for face in here:
+            agreement = reference @ face
+            if abs(agreement) >= limit:
+                total += face if agreement >= 0 else -face
+        normals[i] = total if total.any() else reference
+
+    lengths = np.linalg.norm(normals, axis=1)
+    empty = lengths < 1e-9
+    normals[empty] = (0.0, 0.0, 1.0)
+    lengths[empty] = 1.0
+    return (normals / lengths[:, None]).astype(np.float32)
+
+
+def _triangles(face):
+    """A face as triangles - glTF has no quad."""
+    if len(face) == 3:
+        return [tuple(face)]
+    if len(face) == 4:
+        return [(face[0], face[1], face[2]), (face[0], face[2], face[3])]
+    return [(face[0], face[i], face[i + 1]) for i in range(1, len(face) - 1)]
+
+
+def _bone_of(groups, vertex, joints, spares=None):
+    """Which joint a vertex is bound to.
+
+    Group i is bone i, but only as far as the skeleton goes: a model
+    carries more groups than the animation moves - Tomba has 21 groups
+    against 17 bones - and binding one of those spares to "bone 20" of
+    a 17-joint skin is out of range. Blender does not check, it just
+    indexes, and comes apart with `index 20 is out of bounds for axis 0
+    with size 17`.
+
+    A spare rides the bone belonging to the limb it stands in for when
+    the caller knows which that is, and the root otherwise, so it moves
+    with the model instead of being pinned at the origin."""
+    for group in groups or ():
+        if group.first_vertex <= vertex < group.first_vertex + group.vertex_count:
+            if group.index < joints:
+                return group.index
+            stands_in_for = (spares or {}).get(group.index, 0)
+            return stands_in_for if stands_in_for < joints else 0
+    return 0
+
+
+def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
+          fps=DEFAULT_FPS, name="model", spares=None, skip=None, unlit=False,
+          flat_bones=False):
+    """The glTF document and its binary blob, as (dict, bytearray).
+
+    `spares` maps a group past the end of the skeleton to the limb it
+    stands in for, and `skip` names groups to leave out entirely - the
+    viewer hides a model's alternates, and an export that matches what
+    is on screen beats one that ships two heads inside each other.
+    `unlit` marks every material KHR_materials_unlit."""
+    vertices = np.asarray(model_data.get("vertices") or (), dtype=np.float32)
+    if not len(vertices):
+        raise ValueError("model has no vertices")
+    vertices = vertices / UNIT_SCALE
+    colors = np.asarray(model_data.get("vertex_colors") or (), dtype=np.float32)
+    uvs = np.asarray(model_data.get("texture_coords") or (), dtype=np.float32)
+    faces = model_data.get("faces") or []
+    info = model_data.get("texture_info") or []
+
+    if not len(colors):
+        colors = np.ones((len(vertices), 3), dtype=np.float32)
+    # The PSX lets a vertex brighten as well as darken; glTF does not.
+    colors = np.clip(colors, 0.0, 1.0)
+    if not len(uvs):
+        uvs = np.zeros((len(vertices), 2), dtype=np.float32)
+
+    atlas = index_atlas(vram_bytes)
+
+    # Faces first go to the palette they are read through: one material
+    # per CLUT, since that is the only thing a baked texture can be.
+    hidden = set(skip or ())
+    dropped = set()
+    for group in groups or ():
+        if group.index in hidden:
+            dropped.update(range(group.first_vertex,
+                                 group.first_vertex + group.vertex_count))
+
+    by_clut = {}
+    for f, face in enumerate(faces):
+        if dropped and any(v in dropped for v in face):
+            continue
+        entry = info[f] if f < len(info) else (0, 0, False, 0)
+        _page, clut, transparent = entry[0], entry[1], entry[2]
+        by_clut.setdefault((clut, bool(transparent)), []).extend(_triangles(face))
+
+    # Normals come from the whole model at once, not from each material
+    # in turn. A position is usually shared by faces wearing different
+    # palettes - Tomba's eleven materials all meet somewhere - and a
+    # per-material pass would only ever see its own side of that join
+    # and leave a flat seam down it.
+    smooth = _normals(vertices, [tri for tris in by_clut.values()
+                                 for tri in tris])
+
+    buffer = _Buffer()
+    primitives, materials, textures, images = [], [], [], []
+
+    for (clut, transparent), tris in sorted(by_clut.items()):
+        used = sorted({i for tri in tris for i in tri})
+        if not used:
+            continue
+        remap = {old: new for new, old in enumerate(used)}
+        part_uv = uvs[used]
+
+        # Crop to what this material actually samples. The atlas is
+        # 4096x512 and a character uses a corner of it; baking the whole
+        # thing once per palette would be most of a hundred megabytes.
+        px = np.clip(part_uv[:, 0] * ATLAS_WIDTH, 0, ATLAS_WIDTH)
+        py = np.clip(part_uv[:, 1] * ATLAS_HEIGHT, 0, ATLAS_HEIGHT)
+        x0 = max(0, int(np.floor(px.min())) - PAD)
+        y0 = max(0, int(np.floor(py.min())) - PAD)
+        x1 = min(ATLAS_WIDTH, int(np.ceil(px.max())) + PAD)
+        y1 = min(ATLAS_HEIGHT, int(np.ceil(py.max())) + PAD)
+        x1 = max(x1, x0 + 1)
+        y1 = max(y1, y0 + 1)
+
+        baked = palette(vram_bytes, clut, transparent)[atlas[y0:y1, x0:x1]]
+        images.append({"mimeType": "image/png", "name": f"clut_{clut:X}",
+                       "uri": "data:image/png;base64,"
+                              + base64.b64encode(_png(baked)).decode("ascii")})
+        textures.append({"sampler": 0, "source": len(images) - 1})
+
+        materials.append({
+            "name": f"clut_{clut:X}" + ("_alpha" if transparent else ""),
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {"index": len(textures) - 1},
+                "metallicFactor": 0.0, "roughnessFactor": 1.0,
+            },
+            "doubleSided": True,
+            # Black is the transparent colour, not a dark shade, so it
+            # is cut out rather than blended.
+            "alphaMode": "BLEND" if transparent else "MASK",
+            **({} if transparent else {"alphaCutoff": 0.5}),
+            **({"extensions": {UNLIT: {}}} if unlit else {}),
+        })
+
+        local_uv = np.empty_like(part_uv)
+        local_uv[:, 0] = (part_uv[:, 0] * ATLAS_WIDTH - x0) / (x1 - x0)
+        local_uv[:, 1] = (part_uv[:, 1] * ATLAS_HEIGHT - y0) / (y1 - y0)
+
+        local = np.ascontiguousarray(vertices[used])
+        attributes = {
+            "POSITION": buffer.add(local, "VEC3", FLOAT,
+                                   ARRAY_BUFFER, minmax=True),
+            "NORMAL": buffer.add(np.ascontiguousarray(smooth[used]),
+                                 "VEC3", FLOAT, ARRAY_BUFFER),
+            "TEXCOORD_0": buffer.add(np.ascontiguousarray(local_uv),
+                                     "VEC2", FLOAT, ARRAY_BUFFER),
+            "COLOR_0": buffer.add(np.ascontiguousarray(colors[used]),
+                                  "VEC3", FLOAT, ARRAY_BUFFER),
+        }
+        if groups:
+            joints = np.zeros((len(used), 4), dtype=np.uint16)
+            weights = np.zeros((len(used), 4), dtype=np.float32)
+            joints[:, 0] = [_bone_of(groups, v, len(bones or ()) or len(groups),
+                                     spares) for v in used]
+            weights[:, 0] = 1.0
+            # Nothing downstream checks this. Blender indexes its joint
+            # matrices with whatever is here and comes apart with
+            # "index 18 is out of bounds for axis 0 with size 18", a
+            # long way from the mistake - so it is checked here, where
+            # the mistake would be.
+            limit = len(bones or ()) or len(groups)
+            if joints.size and int(joints.max()) >= limit:
+                raise ValueError(
+                    f"joint index {int(joints.max())} in a skin of "
+                    f"{limit} - a group past the end of the skeleton "
+                    f"was not mapped back onto one")
+            attributes["JOINTS_0"] = buffer.add(joints, "VEC4",
+                                                UNSIGNED_SHORT, ARRAY_BUFFER)
+            attributes["WEIGHTS_0"] = buffer.add(weights, "VEC4",
+                                                 FLOAT, ARRAY_BUFFER)
+
+        flat = np.array([remap[i] for tri in tris for i in tri],
+                        dtype=np.uint32)
+        primitives.append({
+            "attributes": attributes,
+            "indices": buffer.add(flat, "SCALAR", UNSIGNED_INT,
+                                  ELEMENT_ARRAY_BUFFER),
+            "material": len(materials) - 1,
+            "mode": TRIANGLES,
+        })
+
+    gltf = {
+        "asset": {"version": "2.0", "generator": "Tomba310"},
+        "scene": 0,
+        "meshes": [{"name": name, "primitives": primitives}],
+        "materials": materials,
+        "textures": textures,
+        "images": images,
+        "samplers": [{"magFilter": NEAREST, "minFilter": NEAREST,
+                      "wrapS": CLAMP_TO_EDGE, "wrapT": CLAMP_TO_EDGE}],
+    }
+    if unlit:
+        gltf["extensionsUsed"] = [UNLIT]
+
+    if bones:
+        (_rig_flat(gltf, buffer, bones, frames, fps, name)
+         if flat_bones else _rig(gltf, buffer, bones, frames, fps, name))
+    else:
+        gltf["nodes"] = [{"name": name, "mesh": 0}]
+        gltf["scenes"] = [{"nodes": [0]}]
+
+    gltf["bufferViews"] = buffer.views
+    gltf["accessors"] = buffer.accessors
+    gltf["buffers"] = [{"byteLength": len(buffer.data)}]
+    return gltf, buffer.data
+
+
+def _rig(gltf, buffer, bones, frames, fps, name):
+    """Add the skeleton, the skin, and the animation if there is one.
+
+    The bones are laid out exactly as game_rest.joints reads them - the
+    game's (x, y, z) is the viewer's (z, -y, x) - and each node holds
+    only its offset from its parent, which is what the table stores
+    anyway."""
+    from formats.animation.anmp_skeleton import _euler_matrix
+
+    nodes = [{"name": name, "mesh": 0, "skin": 0}]
+    first_bone = len(nodes)
+    children = {}
+    for i, (parent, *_offset) in enumerate(bones):
+        if parent >= 0:
+            children.setdefault(parent, []).append(first_bone + i)
+
+    for i, (parent, x, y, z) in enumerate(bones):
+        local = (z, -y, x)
+        node = {"name": f"bone_{i}",
+                "translation": [c / UNIT_SCALE for c in local]}
+        if i in children:
+            node["children"] = children[i]
+        nodes.append(node)
+
+    roots = [first_bone + i for i, b in enumerate(bones) if b[0] < 0]
+    gltf["nodes"] = nodes
+    # Inverse bind matrices are left undefined, which glTF reads as
+    # identity - correct here, because an SMST group's vertices are
+    # already in its own bone's space.
+    gltf["skins"] = [{"joints": [first_bone + i for i in range(len(bones))],
+                      "skeleton": roots[0] if roots else first_bone}]
+    gltf["scenes"] = [{"nodes": [0] + roots}]
+
+    if not frames:
+        return
+
+    times = np.arange(len(frames), dtype=np.float32) / float(fps or DEFAULT_FPS)
+    time_accessor = buffer.add(times, "SCALAR", FLOAT, minmax=True)
+
+    samplers, channels = [], []
+    for i in range(len(bones)):
+        turns = np.zeros((len(frames), 4), dtype=np.float32)
+        for f, frame in enumerate(frames):
+            rotations = frame.rotations()
+            turns[f] = (_quaternion(_euler_matrix(*rotations[i]))
+                        if i < len(rotations) else [0.0, 0.0, 0.0, 1.0])
+        samplers.append({"input": time_accessor,
+                         "output": buffer.add(turns, "VEC4", FLOAT),
+                         "interpolation": "LINEAR"})
+        channels.append({"sampler": len(samplers) - 1,
+                         "target": {"node": first_bone + i, "path": "rotation"}})
+
+    # Per-limb scale, where the frames carry it - bit 6 of the tag. Clip
+    # export has already expanded the engine's persistent scale state into
+    # every sampled frame. A glTF node carries scale into its children like
+    # the game's generic scaled transform path; the viewer separately
+    # emulates the Sea Anemone actor's special two-pass display routine.
+    if any(getattr(f, "scales", None) for f in frames):
+        for i in range(len(bones)):
+            stretch = np.ones((len(frames), 3), dtype=np.float32)
+            for f, frame in enumerate(frames):
+                sizes = frame.scaling()
+                if i < len(sizes):
+                    sx, sy, sz = sizes[i]
+                    stretch[f] = (sz, sy, sx)      # into these axes
+            samplers.append({"input": time_accessor,
+                             "output": buffer.add(stretch, "VEC3", FLOAT),
+                             # ANMP scale is written to actor state at once;
+                             # unlike rotations it has no tween accumulator.
+                             "interpolation": "STEP"})
+            channels.append({"sampler": len(samplers) - 1,
+                             "target": {"node": first_bone + i,
+                                        "path": "scale"}})
+
+    # Where the roots actually go. pose_transforms puts a root at
+    # `pivots[root] + translation`, and the node already carries the
+    # pivot as its own offset above, so the frame's translation is what
+    # is left - turned the same way the joints are, because the game
+    # applies it exactly as it applies a bone's own offset (it lands in
+    # actor+0x88 unchanged and is rotated by the actor's matrix).
+    #
+    # It goes on EVERY root, not just the first. A character with a
+    # separate pelvis root - Tomba - otherwise walks off leaving his
+    # legs behind, which is a 16-unit split by frame 37.
+    if any(getattr(f, "root", False) for f in frames):
+        moves = np.zeros((len(frames), 3), dtype=np.float32)
+        for f, frame in enumerate(frames):
+            mx, my, mz = frame.translation()
+            moves[f] = np.array((mz, -my, mx),
+                                dtype=np.float32) / UNIT_SCALE
+        samplers.append({"input": time_accessor,
+                         "output": buffer.add(moves, "VEC3", FLOAT),
+                         "interpolation": "LINEAR"})
+        move_sampler = len(samplers) - 1
+        for node in roots:
+            channels.append({"sampler": move_sampler,
+                             "target": {"node": node, "path": "translation"}})
+
+    gltf["animations"] = [{"name": "take", "samplers": samplers,
+                           "channels": channels}]
+
+
+def _rig_flat(gltf, buffer, bones, frames, fps, name):
+    """Bake world-space joints for actors whose mesh scale is not inherited.
+
+    A normal glTF hierarchy necessarily passes a parent's scale to both the
+    child's position and its mesh. Sea Anemone code deliberately passes it
+    only to joint placement. Flat animated joints are the exact portable
+    representation: each receives the world translation/rotation and its own
+    scale computed by the same two-pass transform as the viewer.
+    """
+    from formats.animation.anmp_skeleton import pose_transforms
+
+    hierarchy = tuple((f"bone {i}", None if parent < 0 else parent)
+                      for i, (parent, *_offset) in enumerate(bones))
+    pivots = []
+    for parent, x, y, z in bones:
+        local = np.array((z, -y, x), dtype=np.float64)
+        pivots.append(local if parent < 0 else pivots[parent] + local)
+    pivots = np.asarray(pivots, dtype=np.float64)
+
+    nodes = [{"name": name, "mesh": 0, "skin": 0}]
+    first_bone = 1
+    nodes.extend({"name": f"bone_{i}",
+                  "translation": (pivots[i] / UNIT_SCALE).tolist()}
+                 for i in range(len(bones)))
+    gltf["nodes"] = nodes
+    gltf["skins"] = [{"joints": [first_bone + i
+                                  for i in range(len(bones))]}]
+    gltf["scenes"] = [{"nodes": [0] + [first_bone + i
+                                         for i in range(len(bones))]}]
+    if not frames:
+        return
+
+    times = np.arange(len(frames), dtype=np.float32) / float(
+        fps or DEFAULT_FPS)
+    time_accessor = buffer.add(times, "SCALAR", FLOAT, minmax=True)
+    rotations = [np.zeros((len(frames), 4), dtype=np.float32)
+                 for _ in bones]
+    translations = [np.zeros((len(frames), 3), dtype=np.float32)
+                    for _ in bones]
+    scales = [np.ones((len(frames), 3), dtype=np.float32)
+              for _ in bones]
+
+    for f, frame in enumerate(frames):
+        posed = pose_transforms(
+            frame.rotations(), frame.translation(), hierarchy, pivots,
+            scales=frame.scaling(), inherit_scales=False)
+        for i, (matrix, offset) in enumerate(posed):
+            lengths = np.linalg.norm(matrix, axis=0)
+            lengths[lengths < 1e-12] = 1.0
+            pure_rotation = matrix / lengths[np.newaxis, :]
+            rotations[i][f] = _quaternion(pure_rotation)
+            translations[i][f] = offset / UNIT_SCALE
+            scales[i][f] = lengths
+
+    samplers, channels = [], []
+    for i in range(len(bones)):
+        for path, values, interpolation in (
+                ("rotation", rotations[i], "LINEAR"),
+                ("translation", translations[i], "LINEAR"),
+                ("scale", scales[i], "STEP")):
+            samplers.append({"input": time_accessor,
+                             "output": buffer.add(
+                                 values, "VEC4" if path == "rotation" else "VEC3",
+                                 FLOAT),
+                             "interpolation": interpolation})
+            channels.append({"sampler": len(samplers) - 1,
+                             "target": {"node": first_bone + i,
+                                        "path": path}})
+    gltf["animations"] = [{"name": "take", "samplers": samplers,
+                           "channels": channels}]
+
+
+POINTS = 0
+LINES = 1
+UNLIT = "KHR_materials_unlit"
+
+
+def write_lines_glb(path, vertices, colors, name="collision", mode=LINES,
+                    extra=None):
+    """Write point or line geometry - what a SCLD is.
+
+    Collision is not a surface. It is a grid of sample points, and the
+    verticals standing at them, so it exports as glTF's POINTS or LINES
+    rather than as triangles, carrying the same colours the viewer draws
+    them in. Blender brings that in as a mesh with no faces, which is
+    what it is.
+
+    `vertices` is a flat sequence of coordinates - one point each for
+    POINTS, two per line for LINES - exactly as formats/collision/scld_render
+    returns them. `extra` adds a second primitive as (mode, vertices,
+    colors), for drawing points and lines out of one call."""
+    points = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+    if not len(points):
+        raise ValueError("no collision to export")
+    shades = np.asarray(colors, dtype=np.float32).reshape(-1, 3)
+    if len(shades) != len(points):
+        shades = np.ones((len(points), 3), dtype=np.float32)
+
+    buffer = _Buffer()
+
+    def primitive(verts, tints, kind):
+        return {"attributes": {
+            "POSITION": buffer.add(verts, "VEC3", FLOAT, ARRAY_BUFFER,
+                                   minmax=True),
+            "COLOR_0": buffer.add(np.clip(tints, 0.0, 1.0), "VEC3", FLOAT,
+                                  ARRAY_BUFFER)},
+            "mode": kind, "material": 0}
+
+    primitives = [primitive(points, shades, mode)]
+    if extra:
+        kind, verts, tints = extra
+        verts = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
+        if len(verts):
+            tints = np.asarray(tints, dtype=np.float32).reshape(-1, 3)
+            if len(tints) != len(verts):
+                tints = np.ones((len(verts), 3), dtype=np.float32)
+            primitives.append(primitive(verts, tints, kind))
+    gltf = {
+        "asset": {"version": "2.0", "generator": "Tomba310"},
+        "extensionsUsed": ["KHR_materials_unlit"],
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": name, "mesh": 0}],
+        "meshes": [{"name": name, "primitives": primitives}],
+        # Lines have no normals and no facing, so lighting them means
+        # nothing - this is the one place unlit is the honest answer.
+        "materials": [{"name": "collision",
+                       "pbrMetallicRoughness": {"metallicFactor": 0.0,
+                                                "roughnessFactor": 1.0},
+                       "extensions": {"KHR_materials_unlit": {}}}],
+        "bufferViews": buffer.views,
+        "accessors": buffer.accessors,
+        "buffers": [{"byteLength": len(buffer.data)}],
+    }
+    _write_glb(path, gltf, buffer.data)
+    return True
+
+
+def _write_glb(path, gltf, blob):
+    """The container: a JSON chunk and a binary one, both 4-byte aligned."""
+    payload = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    payload += b" " * (-len(payload) % 4)
+    blob = bytes(blob) + b"\x00" * (-len(blob) % 4)
+    with open(path, "wb") as out:
+        out.write(struct.pack("<III", 0x46546C67, 2,
+                              12 + 8 + len(payload) + 8 + len(blob)))
+        out.write(struct.pack("<II", len(payload), 0x4E4F534A))
+        out.write(payload)
+        out.write(struct.pack("<II", len(blob), 0x004E4942))
+        out.write(blob)
+
+
+def write_glb(path, model_data, vram_bytes, groups=None, bones=None,
+              frames=None, fps=DEFAULT_FPS, name="model", spares=None,
+              skip=None, unlit=False, flat_bones=False):
+    """Write a single-file .glb - one file with the textures inside it,
+    which is what makes this drag-and-droppable into Blender."""
+    gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
+                       name, spares, skip, unlit, flat_bones)
+    gltf["buffers"] = [{"byteLength": len(blob)}]
+
+    payload = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    payload += b" " * (-len(payload) % 4)
+    blob = bytes(blob) + b"\x00" * (-len(blob) % 4)
+
+    with open(path, "wb") as out:
+        out.write(struct.pack("<III", 0x46546C67, 2,
+                              12 + 8 + len(payload) + 8 + len(blob)))
+        out.write(struct.pack("<II", len(payload), 0x4E4F534A))
+        out.write(payload)
+        out.write(struct.pack("<II", len(blob), 0x004E4942))
+        out.write(blob)
+    return True
+
+
+def write_gltf(path, model_data, vram_bytes, groups=None, bones=None,
+               frames=None, fps=DEFAULT_FPS, name="model", spares=None,
+               skip=None, unlit=False, flat_bones=False):
+    """Write a .gltf - JSON with the buffer and textures inlined, for
+    when something downstream wants to read it as text."""
+    gltf, blob = build(model_data, vram_bytes, groups, bones, frames, fps,
+                       name, spares, skip, unlit, flat_bones)
+    gltf["buffers"] = [{
+        "byteLength": len(blob),
+        "uri": "data:application/octet-stream;base64,"
+               + base64.b64encode(bytes(blob)).decode("ascii"),
+    }]
+    with open(path, "w", encoding="utf-8") as out:
+        json.dump(gltf, out, indent=2)
+    return True
+
+
+def write_scene_glb(path, objects, vram_bytes, name="level", unlit=False):
+    """One .glb holding many objects, each its own node standing on its own
+    origin, under a node per group - a chest imports as a chest, a pig as a
+    pig, a crystal as a card and a rope as edges.
+
+    `objects` is [dict] with "name", "group", "origin" (x, y, z, world units)
+    and at most one of
+
+        "model"   a model dict, its vertices where they stand, world units
+        "lines"   (vertices, colours): pairs of points, world units
+        "sprite"  (RGBA array, width, height, origin x, origin y): a card in
+                  the XY plane hung by its origin, world units
+
+    and none for an empty - a marker. A palette two objects share is baked
+    once. Returns (objects written, groups)."""
+    out = {"asset": {"version": "2.0", "generator": "Tomba310"}, "scene": 0,
+           "meshes": [], "materials": [], "textures": [], "images": [],
+           "samplers": [{"magFilter": NEAREST, "minFilter": NEAREST,
+                         "wrapS": CLAMP_TO_EDGE, "wrapT": CLAMP_TO_EDGE}],
+           "bufferViews": [], "accessors": [], "nodes": []}
+    blob = bytearray()
+    cache = {"images": {}, "textures": {}, "materials": {}}
+    extension = {"extensions": {UNLIT: {}}} if unlit else {}
+    groups = {}
+    for item in objects:
+        origin = np.asarray(item.get("origin") or (0.0, 0.0, 0.0), dtype=np.float32)
+        mesh = None
+        if item.get("model"):
+            model = dict(item["model"])
+            model["vertices"] = (np.asarray(model["vertices"], dtype=np.float32)
+                                 - origin).tolist()
+            try:
+                doc, part = build(model, vram_bytes, name=item["name"], unlit=unlit)
+            except ValueError:
+                continue
+            mesh = _merge_document(out, blob, doc, part, cache)
+        elif item.get("lines"):
+            vertices, colors = item["lines"]
+            points = (np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+                      - origin) / UNIT_SCALE
+            if not len(points):
+                continue
+            tints = np.clip(np.asarray(colors, dtype=np.float32).reshape(-1, 3), 0, 1)
+            buffer = _Buffer()
+            attributes = {
+                "POSITION": buffer.add(points, "VEC3", FLOAT, ARRAY_BUFFER, minmax=True),
+                "COLOR_0": buffer.add(tints, "VEC3", FLOAT, ARRAY_BUFFER)}
+            material = _shared_material(out, cache, {
+                "name": "lines", "extensions": {UNLIT: {}},
+                "pbrMetallicRoughness": {"metallicFactor": 0.0}})
+            mesh = _add_mesh(out, blob, buffer, item["name"], [
+                {"attributes": attributes, "mode": LINES, "material": material}])
+        elif item.get("sprite") is not None:
+            rgba, width, height, origin_x, origin_y = item["sprite"]
+            left, right = -origin_x, width - origin_x
+            top, bottom = origin_y, origin_y - height
+            corners = np.array([[left, top, 0], [left, bottom, 0],
+                                [right, bottom, 0], [right, top, 0]],
+                               dtype=np.float32) / UNIT_SCALE
+            buffer = _Buffer()
+            attributes = {
+                "POSITION": buffer.add(corners, "VEC3", FLOAT, ARRAY_BUFFER, minmax=True),
+                "NORMAL": buffer.add(np.tile(np.float32([0, 0, 1]), (4, 1)),
+                                     "VEC3", FLOAT, ARRAY_BUFFER),
+                "TEXCOORD_0": buffer.add(np.float32([[0, 0], [0, 1], [1, 1], [1, 0]]),
+                                         "VEC2", FLOAT, ARRAY_BUFFER)}
+            indices = buffer.add(np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32),
+                                 "SCALAR", UNSIGNED_INT, ELEMENT_ARRAY_BUFFER)
+            texture = _shared_texture(out, cache, {
+                "mimeType": "image/png", "name": item["name"],
+                "uri": "data:image/png;base64,"
+                       + base64.b64encode(_png(np.ascontiguousarray(rgba))).decode("ascii")})
+            material = _shared_material(out, cache, {
+                "name": "sprite",
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": texture},
+                                         "metallicFactor": 0.0, "roughnessFactor": 1.0},
+                "doubleSided": True, "alphaMode": "MASK", "alphaCutoff": 0.5,
+                **extension})
+            mesh = _add_mesh(out, blob, buffer, item["name"], [
+                {"attributes": attributes, "indices": indices, "mode": TRIANGLES,
+                 "material": material}])
+        node = {"name": item["name"],
+                "translation": [float(v) for v in origin / UNIT_SCALE]}
+        if mesh is not None:
+            node["mesh"] = mesh
+        groups.setdefault(item.get("group") or "Objects", []).append(len(out["nodes"]))
+        out["nodes"].append(node)
+    written = len(out["nodes"])
+    if not written:
+        raise ValueError("nothing to export")
+    roots = []
+    for group, children in groups.items():
+        roots.append(len(out["nodes"]))
+        out["nodes"].append({"name": group, "children": children})
+    out["scenes"] = [{"name": name, "nodes": roots}]
+    out["buffers"] = [{"byteLength": len(blob)}]
+    if any(UNLIT in m.get("extensions", {}) for m in out["materials"]):
+        out["extensionsUsed"] = [UNLIT]
+    _write_glb(path, out, blob)
+    return written, len(groups)
+
+
+def _append_buffer(out, blob, data, views, accessors):
+    """One buffer's bytes, views and accessors onto the scene's; the index
+    its first accessor lands at."""
+    blob += b"\x00" * (-len(blob) % 4)
+    offset = len(blob)
+    blob += data
+    first_view = len(out["bufferViews"])
+    for view in views:
+        view = dict(view)
+        view["buffer"] = 0
+        view["byteOffset"] = view.get("byteOffset", 0) + offset
+        out["bufferViews"].append(view)
+    first_accessor = len(out["accessors"])
+    for accessor in accessors:
+        accessor = dict(accessor)
+        accessor["bufferView"] += first_view
+        out["accessors"].append(accessor)
+    return first_accessor
+
+
+def _add_mesh(out, blob, buffer, name, primitives):
+    first = _append_buffer(out, blob, buffer.data, buffer.views, buffer.accessors)
+    for primitive in primitives:
+        primitive["attributes"] = {k: v + first for k, v in primitive["attributes"].items()}
+        if "indices" in primitive:
+            primitive["indices"] += first
+    out["meshes"].append({"name": name, "primitives": primitives})
+    return len(out["meshes"]) - 1
+
+
+def _shared_texture(out, cache, image):
+    if image["uri"] not in cache["images"]:
+        cache["images"][image["uri"]] = len(out["images"])
+        out["images"].append(image)
+    source = cache["images"][image["uri"]]
+    if source not in cache["textures"]:
+        cache["textures"][source] = len(out["textures"])
+        out["textures"].append({"sampler": 0, "source": source})
+    return cache["textures"][source]
+
+
+def _shared_material(out, cache, material):
+    key = json.dumps(material, sort_keys=True)
+    if key not in cache["materials"]:
+        cache["materials"][key] = len(out["materials"])
+        out["materials"].append(material)
+    return cache["materials"][key]
+
+
+def _merge_document(out, blob, doc, data, cache):
+    """A build() document's one mesh into the scene, sharing its images and
+    materials with whatever is already there."""
+    first = _append_buffer(out, blob, data, doc["bufferViews"], doc["accessors"])
+    texture_of = [_shared_texture(out, cache, doc["images"][t["source"]])
+                  for t in doc["textures"]]
+    material_of = []
+    for material in doc["materials"]:
+        material = json.loads(json.dumps(material))
+        colour = material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+        if colour is not None:
+            colour["index"] = texture_of[colour["index"]]
+        material_of.append(_shared_material(out, cache, material))
+    primitives = []
+    for primitive in doc["meshes"][0]["primitives"]:
+        primitive = dict(primitive)
+        primitive["attributes"] = {k: v + first for k, v in primitive["attributes"].items()}
+        primitive["indices"] += first
+        primitive["material"] = material_of[primitive["material"]]
+        primitives.append(primitive)
+    out["meshes"].append({"name": doc["meshes"][0]["name"], "primitives": primitives})
+    return len(out["meshes"]) - 1

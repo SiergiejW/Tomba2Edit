@@ -1,6 +1,6 @@
 """The level, drawn: background, room, and everything standing in it.
 
-Built on gui/smst/smst_viewer.py rather than beside it. That view
+Built on formats/models/smst_viewer.py rather than beside it. That view
 already draws a pile of textured PSX polygons grouped by palette, with
 the four blend modes done properly and the animated palettes and UVs
 wired in - and a level is the same polygons, so the only things that
@@ -14,7 +14,7 @@ things a level has that a model does not:
     picking         click an instance to select it, again for its part
 
 See gui/level/level_scene.py for how the scene is put together, and
-functions/placement.py for where the objects' positions come from.
+game/placement.py for where the objects' positions come from.
 """
 import math
 
@@ -30,13 +30,15 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
                              QMessageBox, QStyle)
 
-from functions import game_build, gltf_export
-from functions.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
-from gui.smst.smst_viewer import SMSTViewer, WEIGHTS
-from gui import collision_overlay, export_dialog, theme
+from game import game_build
+from formats.models import gltf_export
+from gui.widgets.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
+from formats.models.smst_viewer import SMSTViewer, WEIGHTS
+from gui import theme
+from gui.widgets import collision_overlay, export_dialog
 
 # World units per GL unit. A room is thousands of units across, so it
-# gets the level scale gui/scld/scld_render.py uses rather than the
+# gets the level scale formats/collision/scld_render.py uses rather than the
 # SMST viewer's character-sized one.
 UNIT_SCALE = 1000.0
 
@@ -83,7 +85,7 @@ EXPORT_GROUPS = {
 # A whole character is one file's many groups; the asset pack is props.
 CHARACTER_PARTS = 8
 ASSET_PACK = 12
-# Slot 12 on every build but the demos (functions/game_build.py).
+# Slot 12 on every build but the demos (game/game_build.py).
 _BUILD = game_build.Addresses(globals(), slots=("ASSET_PACK",))
 
 
@@ -203,7 +205,7 @@ class LevelViewer(SMSTViewer):
         self.marker_action.setToolTip(
             "Mark the objects whose model isn't known - the record says "
             "where one stands and which routine runs it, but not what it "
-            "is drawn with. See functions/placement.py.")
+            "is drawn with. See game/placement.py.")
         self.marker_action.toggled.connect(self._toggle_markers)
         self.toolbar.insertAction(self.export_action, self.marker_action)
 
@@ -264,7 +266,7 @@ class LevelViewer(SMSTViewer):
             "react to (water, snow, fireflies). Coal Mining Town and Circus Village have no "
             "SCLD: their streets and rooms are planes built into the "
             "overlay, outlined here - green floor, red wall edge, yellow "
-            "door - see functions/town_collision.py.")
+            "door - see formats/collision/town_collision.py.")
         self.collision_action.toggled.connect(self._toggle_collision)
         self.toolbar.insertAction(self.sprite_action, self.collision_action)
 
@@ -278,7 +280,7 @@ class LevelViewer(SMSTViewer):
             "Draw the lines the actors' own code draws - ropes, chains, "
             "fishing lines.\n\nNo model holds them: they are read back out "
             "of the primitives each actor's draw routine puts out when it is "
-            "run - see functions/actor_sim.py.")
+            "run - see game/actor_sim.py.")
         self.lines_action.toggled.connect(self._toggle_lines)
         self.toolbar.insertAction(self.collision_action, self.lines_action)
 
@@ -474,7 +476,7 @@ class LevelViewer(SMSTViewer):
         """A UV animation moves the room's own faces and nothing else.
 
         The frames it steps through are a run of cells on one texture page
-        (functions/uv_anim.py); a level draws other things on that page with
+        (formats/animation/uv_anim.py); a level draws other things on that page with
         the same palette - the Water Temple's captured falls, which already
         carry the frames they were recorded in - and shifting those too
         would move them twice."""
@@ -1086,7 +1088,7 @@ class LevelViewer(SMSTViewer):
     def _gif_tick(self, tick):
         """Every clock at game tick `tick`: palettes, UV strips and cells, and
         the sprites' and recorded effects' own."""
-        from gui import view_gif
+        from gui.widgets import view_gif
         view_gif.set_anim_tick(self, tick)
         self._sprite_tick = tick
         self._sprite_dirty = True
@@ -1094,7 +1096,7 @@ class LevelViewer(SMSTViewer):
     def _gif_ticks(self, keep=None):
         """One loop, in ticks, of everything animating in `keep` (instance
         indices), or in the whole view."""
-        from gui import view_gif
+        from gui.widgets import view_gif
         periods = [len(f) for f in self._flips if keep is None or f[0] in keep]
         for quad in self._sprite_quads:
             if (keep is None or quad.index in keep) and len(quad.steps) > 1:
@@ -1116,10 +1118,10 @@ class LevelViewer(SMSTViewer):
         """[(RGBA image, ms)] of the selected row as a sprite rip - its own
         pixels, transparent - or None when it is not a sprite: a billboard's
         steps out of the atlas, or a recorded effect's screen-facing quads
-        out of VRAM (functions/sprite_rip.py)."""
-        from functions import sprite_rip
+        out of VRAM (formats/sprites/sprite_rip.py)."""
+        from formats.sprites import sprite_rip
         from gui.level.level_scene import CLIP_HZ
-        from gui.clut_animation import TICK_HZ
+        from formats.animation.clut_animation import TICK_HZ
         for quad in self._sprite_quads:
             if quad.index == index and quad.cards is not None:
                 # Captured cards: laid out flat as the game's screen had them.
@@ -1149,7 +1151,7 @@ class LevelViewer(SMSTViewer):
         """Offer a sprite rip when the row is a sprite. True if that was
         chosen (and saved, or cancelled), False to record the view instead."""
         from PyQt6.QtWidgets import QFileDialog, QInputDialog
-        from functions import sprite_rip
+        from formats.sprites import sprite_rip
         frames = self._rip(index)
         if not frames:
             return False
@@ -1182,7 +1184,7 @@ class LevelViewer(SMSTViewer):
         """The selected row alone, framed, over one loop of whatever moves it
         - its recorded effect, its sprite, its palettes, UVs and cells - or
         the whole view when nothing is selected."""
-        from gui import view_gif
+        from gui.widgets import view_gif
         name = self.export_name or "level"
         index = self.selected
         if index is not None and self._save_rip(index, name):

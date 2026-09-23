@@ -38,8 +38,8 @@ def status(protocol, text):
 
 
 def load_vram(dat, idx, chunk):
-    from gui.img.img_viewer import chunk_bounds
-    from gui.vram_viewer import decode_vram_bytes
+    from formats.images.img_viewer import chunk_bounds
+    from psx.vram_viewer import decode_vram_bytes
     def read(area):
         try:
             start, end = chunk_bounds(idx, area)
@@ -63,8 +63,9 @@ def load_vram(dat, idx, chunk):
 
 
 def buffers(scene, vram):
-    from functions import texture_window, draw_order
-    from gui.smst.smst_viewer import SMSTViewer
+    from game import texture_window
+    from psx import draw_order
+    from formats.models.smst_viewer import SMSTViewer
     from gui.level.level_viewer import UNIT_SCALE
     model = scene.build()
     indices, ranges, palettes, transparency = [], [], {}, {}
@@ -91,7 +92,7 @@ def buffers(scene, vram):
 
 def sprites(scene, vram):
     from gui.level import pickup_sprites as p
-    from functions import sprite_rip
+    from formats.sprites import sprite_rip
     from gui.level.level_scene import view_point
     if not vram:
         return None, ()
@@ -148,11 +149,11 @@ def sprites(scene, vram):
 
 
 def background(scene, vram, overlay):
-    from gui.bgmp import bgmp_render
-    from gui.bgmp.bgmp_parser import load_bgmp
+    from formats.background import bgmp_render
+    from formats.background.bgmp_parser import load_bgmp
     from gui.level.level_panel import LevelEditorPanel
     from gui.level.level_scene import BACKGROUND_ID
-    from functions import sky_gradient
+    from game import sky_gradient
     sky = sky_gradient.image(overlay) if overlay else None
     entry = scene.by_id.get(BACKGROUND_ID)
     if not entry or not entry[1]:
@@ -180,7 +181,7 @@ def main(argv):
         nonlocal sequence, phases
         status(protocol, f"Preparing the view: {title}")
         prepared = buffers(scene, vram)
-        from gui.clut_animation import prepare_animation_data
+        from formats.animation.clut_animation import prepare_animation_data
         # UV animations are looked for in the rooms themselves: the level's
         # other faces with the same palette are captured drawings, which
         # already carry the frames they were recorded in.

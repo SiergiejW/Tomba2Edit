@@ -4,12 +4,12 @@ The three viewers this replaces each show one file. A level is all of
 them at once, and the pieces come from three different places:
 
     the room        the area's MDAT (id 8), already in world
-                    coordinates - gui/mdat/mdat.py
+                    coordinates - formats/geometry/mdat.py
     the background  its BGMP (id 11), which is not geometry at all but
-                    a picture drawn behind everything - gui/bgmp/
+                    a picture drawn behind everything - formats/background/
     what stands     parts of its asset-pack SMSTs, each modelled around
     in it           its own origin, put where they belong by the object
-                    table in the area's overlay - functions/placement.py
+                    table in the area's overlay - game/placement.py
 
 An INSTANCE below is one thing on screen: the room, or one part of an
 SMST standing at one place. Everything the viewer draws is an instance,
@@ -19,8 +19,8 @@ moving are the same operation whatever was picked.
 WHAT IS PLACED AND WHAT IS NOT
 
 An object record says where and which way round, but not what to draw
-with - see functions/placement.py. Running the object's own code
-supplies that (functions/actor_sim.py), with corrections made by eye in
+with - see game/placement.py. Running the object's own code
+supplies that (game/actor_sim.py), with corrections made by eye in
 labels/placements.json over it; an object with no model is still shown,
 as a marker at its position,
 because where a level's objects are is worth seeing whether or not we
@@ -46,22 +46,22 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import gui.mdat.mdat as mdat
-from functions import format_detect
-from functions import game_build
-from functions import labels
-from functions import handler_models
-from functions import actor_models
-from functions import actor_assembly
-from functions import actor_sim
-from functions import town_collision
-from functions import environment_meshes
-from functions import object_sprites
-from functions import pickup_art
-from functions import psx_vram
-from functions import scene_cache
-from functions import placement as placement_module
-from gui.smst.smst_parser import parse_smst
+import formats.geometry.mdat as mdat
+from formats.archive import format_detect
+from game import game_build
+from game import labels
+from game import handler_models
+from game import actor_models
+from game import actor_assembly
+from game import actor_sim
+from formats.collision import town_collision
+from game import environment_meshes
+from formats.sprites import object_sprites
+from formats.sprites import pickup_art
+from psx import vram as psx_vram
+from game import scene_cache
+from game import placement as placement_module
+from formats.models.smst_parser import parse_smst
 
 # SDAT ids that are always the same thing in an area, whatever build.
 ROOM_ID = 8
@@ -106,7 +106,7 @@ CHARACTER_APART = 500.0
 RESIDENT_SPRITES = 0
 AREA_SPRITES = 10
 
-# Names for handlers, recovered by functions/decomp_symbols.py, if the
+# Names for handlers, recovered by game/decomp_symbols.py, if the
 # decomp has been run through it.
 SYMBOLS = os.path.join(
     getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.dirname(
@@ -114,7 +114,7 @@ SYMBOLS = os.path.join(
 # What main.py answers as the events-done worker, in a built exe.
 DONE_WORKER_FLAG = "--level-done-worker"
 FOREST_GHOST_ROCK_CRAB = 0x8012EF54
-# US retail's; another build's while it is open (functions/game_build.py).
+# US retail's; another build's while it is open (game/game_build.py).
 _BUILD = game_build.Addresses(
     globals(), overlay={"FOREST_GHOST_ROCK_CRAB": "A06"},
     slots=("ROOM_ID", "BACKGROUND_ID", "ASSET_PACK_ID", "RESIDENT_SPRITES",
@@ -170,7 +170,7 @@ DISCARDED_NOTE = ("its code destroys it before any frame draws it - not in the "
 # Rows of the two runs this close, in world units, are the same row; an
 # assembly moved less than MOVED has not moved; a row further than
 # MERGE_REACH outside every row of the first run stands nowhere real.
-# A load slower than this is worth keeping on disc - see functions/scene_cache.py.
+# A load slower than this is worth keeping on disc - see game/scene_cache.py.
 CACHE_WORTH = 1.0
 # The two runs "Both" needs share nothing, so the events-done one is given a
 # process of its own (gui/level/done_worker.py) and the fresh one runs here
@@ -199,7 +199,7 @@ def _code_models(exe_path, overlay_path):
                                                                overlay_path)
     return model
 
-# Surfaces an environment drawer builds in code (functions/environment_meshes
+# Surfaces an environment drawer builds in code (game/environment_meshes
 # .py) are models of the scene's own, numbered from here.
 ENVIRONMENT_ID = 0x2000
 # And what an actor's draw routine put out as textured polygons, from here.
@@ -219,7 +219,7 @@ def file_label(content, slot=None):
     less a trailing 'Model(s)' - or "".
 
     `slot` is (chunk, index in it): a build laid out like US retail - every
-    one but the demos (functions/game_build.py) - keeps the same files in
+    one but the demos (game/game_build.py) - keeps the same files in
     the same places, so a file whose bytes differ is still named by where
     it is, as the tree does (labels.LabelSet.by_slot)."""
     global _FILE_LABELS, _SLOT_LABELS
@@ -274,7 +274,7 @@ GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
 
 def marker_color(kind):
     """A stand-in colour for one object class - the same golden-ratio
-    hue walk gui/scld/scld_render.py and gui/bgmp/bgmp_render.py use, so
+    hue walk formats/collision/scld_render.py and formats/background/bgmp_render.py use, so
     consecutive classes land far apart on the wheel."""
     return colorsys.hsv_to_rgb((kind * GOLDEN_RATIO_CONJUGATE) % 1.0, 0.7, 1.0)
 
@@ -320,7 +320,7 @@ class Instance:
 
     The first block is what it is; the second is where its geometry
     landed in the scene's shared arrays, laid out to match
-    gui/smst/smst_parser.SMSTGroup so the SMST viewer's buffer building
+    formats/models/smst_parser.SMSTGroup so the SMST viewer's buffer building
     and part-hiding work on these unchanged."""
 
     index: int
@@ -334,7 +334,7 @@ class Instance:
     sources: tuple = ()
     # Where each of those sits relative to the instance's own origin, in
     # VIEW axes, one per source. A chest's lid is lifted off its body
-    # this way (see functions/pickup_art.chest_offsets); everything else
+    # this way (see formats/sprites/pickup_art.chest_offsets); everything else
     # draws its parts on the spot.
     offsets: tuple = ()
     x: float = 0.0
@@ -351,7 +351,7 @@ class Instance:
     # move it a second time.
     authored: bool = False
     # Built by its own code out of several parts, and posed afresh from
-    # wherever the instance stands - see functions/actor_assembly.py.
+    # wherever the instance stands - see game/actor_assembly.py.
     assembly: object = None
     # (parent instance, which of its sprites) for a pickup riding
     # another instance's assembly.
@@ -463,7 +463,7 @@ class Instance:
         Only Y turns, which is all a record carries. The sine's sign is
         flipped against the game's own matrix because the axes are: a
         packet's three coordinates are read back to front and Y negated
-        (see gui/mdat/mdat.py and view_position below), and swapping X
+        (see formats/geometry/mdat.py and view_position below), and swapping X
         with Z reverses which way a turn about Y goes."""
         radians = math.radians(self.angle)
         cos, sin = math.cos(radians), math.sin(radians)
@@ -540,7 +540,7 @@ class Instance:
 def area_files(idx_path, chunk_index):
     """(dat_start, [(file index, id, offset, size), ...]) for one area.
 
-    The same SDAT walk functions/idx_parser.py does when it builds the
+    The same SDAT walk formats/archive/idx_parser.py does when it builds the
     tree, without building one - the Level Editor is handed an area
     rather than a row."""
     with open(idx_path, "rb") as idx:
@@ -562,7 +562,7 @@ def trail_files(idx_path, chunk_index):
 
     The trailer is the last 0x700 bytes of the area's IDX chunk, holding
     start/end pairs of absolute DAT addresses - the same walk
-    functions/idx_parser.py does to build the NN_TRAIL folder."""
+    formats/archive/idx_parser.py does to build the NN_TRAIL folder."""
     with open(idx_path, "rb") as idx:
         idx.seek(chunk_index * 0x800 + (0x800 - TRAILER_BYTES))
         raw = idx.read(TRAILER_BYTES)
@@ -585,7 +585,7 @@ def room_entries(idx_path, dat_path, chunk_index):
     the minigame. They share a SCLD between them, which is what says
     they belong in the same space.
 
-    The SDAT ones come from gui.mdat.mdat.area_mdat_entries, which finds
+    The SDAT ones come from formats.geometry.mdat.area_mdat_entries, which finds
     them by the 0xFFFF at the head of a drawmap rather than by id -
     theirs is usually 8 but not always. The trailer's have no id at all,
     so they are read the way the tree reads them, out of their own
@@ -830,7 +830,7 @@ def view_position(record):
     """A placement record's (x, y, z) in the space the viewers draw in.
 
     The two do not agree, and neither is wrong: a packet holds its
-    coordinates in an order gui/mdat/mdat.py reads back to front, with Y
+    coordinates in an order formats/geometry/mdat.py reads back to front, with Y
     negated, so a model's X is the game's Z and its Z the game's X. The
     records are in the game's order.
 
@@ -900,9 +900,9 @@ class LevelScene:
         self.dat_path = None
         self.overlay_path = None
         self.overlay_data = b""
-        # Which build the disc is - see functions/game_build.py.
+        # Which build the disc is - see game/game_build.py.
         self.build_name = game_build.REFERENCE
-        # The area's actors, run - see functions/actor_sim.py.
+        # The area's actors, run - see game/actor_sim.py.
         self.world = None
         self._symbols = None
         self._own_symbols = None
@@ -920,7 +920,7 @@ class LevelScene:
         self.placements = []
         self.pickups = []               # the crystals and apples
         # {reward: RewardArt} - what each pickup is and how it is
-        # drawn, out of MAIN.EXE. See functions/pickup_art.py.
+        # drawn, out of MAIN.EXE. See formats/sprites/pickup_art.py.
         self.reward_art = {}
         # {chest kind: ((file, group), ...)} - a chest's body and lid,
         # which unlike a crystal's sprite are models we can just draw.
@@ -930,7 +930,7 @@ class LevelScene:
         # The area's collision planes, for the chests' headings.
         self.planes = []
         # {handler: [Sequence, ...]} for the classes that are sprites
-        # rather than models - see functions/object_sprites.py.
+        # rather than models - see formats/sprites/object_sprites.py.
         self.sprite_classes = {}
         # MAIN.EXE, kept for the skeletons a character is stood up on.
         self.exe_path = None
@@ -940,7 +940,7 @@ class LevelScene:
         # {"12:7": name} - what things have been called by hand.
         self.model_names = {}
         # {handler: Build} for the classes the code builds whole - see
-        # functions/actor_models.py.
+        # game/actor_models.py.
         self.actor_builds = {}
         # {file id: (dat_start, (offset, size))} for the resident chunk,
         # which every area keeps loaded - see model().
@@ -960,7 +960,7 @@ class LevelScene:
         # actor_sim.World.run_rooms; rooms with nothing drawn still listed.
         self.room_tables = {}
         # {drawn model id: the captured polygons it was built from} - what a
-        # sprite rip cuts out of VRAM (functions/sprite_rip.py).
+        # sprite rip cuts out of VRAM (formats/sprites/sprite_rip.py).
         self.drawn_polys = {}
         # {instance index: polygon frames}. Projected sprites are converted
         # into true camera-facing billboards once the area's VRAM is present.
@@ -985,7 +985,7 @@ class LevelScene:
         self.build_name = game_build.use(exe_path).name
 
         # The same area, built from the same disc and the same code, is the
-        # same scene - functions/scene_cache.py keeps it.
+        # same scene - game/scene_cache.py keeps it.
         name = scene_cache.key(dat_path, idx_path, chunk_index, overlay_path or "",
                                exe_path or "", progress)
         kept = scene_cache.read(name)
@@ -1223,7 +1223,7 @@ class LevelScene:
         self.notes.append(f"with every event done: {len(added)} more row(s), marked ⧖")
 
     def _simulate(self, idx_path, publish=None):
-        """Run every placed actor's own code - see functions/actor_sim.py.
+        """Run every placed actor's own code - see game/actor_sim.py.
         None if it cannot be run; the scene falls back on reading models
         out of the handlers."""
         number = handler_models.overlay_number(self.overlay_path)
@@ -1567,7 +1567,7 @@ class LevelScene:
         whole, or None.
 
         Every part, every offset and the file itself come out of the one
-        call that makes it - see functions/actor_models.py - so this is
+        call that makes it - see game/actor_models.py - so this is
         preferred over standing a model up on a skeleton picked by fit."""
         build = self.actor_builds.get(handler)
         if build is None:
@@ -1611,7 +1611,7 @@ class LevelScene:
         if len(drawn) < MIN_CHARACTER_PARTS:
             return None
         try:
-            from gui.anmp import game_rest
+            from formats.animation import game_rest
             sources = game_rest.load_sources(self.exe_path, self.overlay_path)
             counts = list(range(max(3, len(groups) - SKELETON_SLACK),
                                 len(groups) + 1))
@@ -1639,7 +1639,7 @@ class LevelScene:
         """The area's SCLD entries, or [] - it is only wanted for the
         chests' headings, so a missing one costs nothing else."""
         try:
-            from gui.scld.scld_parser import find_area_scld_location, load_scld
+            from formats.collision.scld_parser import find_area_scld_location, load_scld
             where = find_area_scld_location(idx_path, chunk_index)
             if not where:
                 return []
@@ -1700,7 +1700,7 @@ class LevelScene:
 
     def _code_bindings(self, overlay_path, exe_path):
         """What the handlers' own code says - see
-        functions/handler_models.py. Never fatal: a disc opened without
+        game/handler_models.py. Never fatal: a disc opened without
         a MAIN.EXE beside it just falls back on the other sources."""
         if not exe_path or not os.path.exists(exe_path):
             self.notes.append(
@@ -2197,7 +2197,7 @@ class LevelScene:
                     note=f"carried by {label}"))
 
         # The rooms: every scene the area's spawner has a table for, run
-        # as the game runs it when Tomba walks in (functions/actor_sim.py).
+        # as the game runs it when Tomba walks in (game/actor_sim.py).
         self.room_tables = dict(getattr(world, "room_tables", {}) or {})
         for scene, actors in sorted((world.rooms if world is not None
                                      else {}).items()):
@@ -2278,7 +2278,7 @@ class LevelScene:
                 label=f"{name} (built by {drawer})",
                 sources=((ENVIRONMENT_ID + number, 0),), authored=True,
                 name=name, note=f"no file holds it: {drawer} builds it every "
-                                f"frame - see functions/environment_meshes.py"))
+                                f"frame - see game/environment_meshes.py"))
 
         # Lines whose actor got no row of its own still show, by room.
         if world is not None:
@@ -2465,7 +2465,7 @@ class LevelScene:
 
     def build(self):
         """One model dict for the whole scene, in the shape
-        gui/smst/smst_viewer.py draws - so the level viewer inherits its
+        formats/models/smst_viewer.py draws - so the level viewer inherits its
         shaders, its palette grouping and its blending unchanged, with
         `groups` holding instances instead of a model's parts."""
         kept = getattr(self, "_built_model", None)
@@ -2598,7 +2598,7 @@ class LevelScene:
                     sprites[number].position)
 
     def collision(self, view=None, rooms=None):
-        """gui.collision_overlay.Lines for what `view` shows: None the area,
+        """gui.widgets.collision_overlay.Lines for what `view` shows: None the area,
         a scene number that room, "all" everything.
 
         A SCLD is the area's - rooms have none. A town's first dataset is
@@ -2609,7 +2609,7 @@ class LevelScene:
         to the room whose box holds its middle, `rooms` being
         {scene: (low, high)} round its instances in world units; a plane no
         box holds shows only under "all"."""
-        from gui import collision_overlay as overlay
+        from gui.widgets import collision_overlay as overlay
         lines = overlay.Lines()
         # Two colours here, not one per plane: in a level what matters is
         # what you stand on and what stops you.

@@ -1,100 +1,128 @@
 # Tomba2Edit
 
-**Tomba! 2 modding, translation, extraction, editing, repacking and asset-export toolkit for PlayStation.**
+**A modding, translation and asset-extraction toolkit for _Tomba! 2: The Evil Swine Return_ (PlayStation).**
 
-Tomba2Edit is an open-source tool for exploring and modifying **Tomba! 2: The Evil Swine Return** game data. It provides a graphical interface for viewing and editing game assets and includes tools for working with the game's **DAT/IDX archives, ISO images, levels, 3D models, textures, sprites, animations, collision data, background maps, text and audio**.
+Tomba2Edit opens a disc image of the game and shows you what is inside it:
+levels, collision, 3D models, animations, sprites, textures, dialogue,
+music, sound effects and movies — each in a viewer that understands the
+format, and most of them editable. Changes are staged, repacked and
+written back out as a playable disc.
 
-The project is based on reverse-engineering research by the **Tomba Club** community.
+The project is built on reverse-engineering work by the
+**[Tomba Club](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)**
+community.
 
-> **Goal:** make Tomba! 2's internal game data accessible to modders, translators, researchers and preservationists.
+> **Goal:** make Tomba! 2's internal game data accessible to modders,
+> translators, researchers and preservationists.
 
-## What can Tomba2Edit do?
+---
 
-### Game data & archives
+## What it looks like
 
-* Read and analyze Tomba! 2 `DAT` / `IDX` game archives
-* Extract and replace files inside game data
-* Repack modified game data
-* Batch multiple file modifications into a single repacking operation
-* Work with the game's internal data structures and file offsets
+### Level editor — a whole area, as the game builds it
+
+The level editor runs the area's own code on a MIPS interpreter, so what
+you see is what the game would place: the level, its background, every
+object, every animation.
+
+![Level editor](docs/screenshots/level-editor.png)
+
+### Level geometry (MDAT), with its drawmap and textures
+
+![Level geometry](docs/screenshots/level-geometry.png)
+
+### Collision (SCLD)
+
+![Collision](docs/screenshots/collision.png)
+
+### Text and translation, with the in-game dialogue box previewed live
+
+![Text editing](docs/screenshots/text-editing.png)
+
+### The font page — every character the game can draw, editable
+
+![Translation](docs/screenshots/translation.png)
+
+### Models (SMST) and animation (ANMP), posed on a skeleton
+
+![Animation](docs/screenshots/animation.png)
+
+### Sprites (SPRT), editable pixel by pixel
+
+![Sprites](docs/screenshots/sprites.png)
+
+### Music and sequences
+
+![Music](docs/screenshots/music.png)
+
+### Movies, decoded in software
+
+![Movies](docs/screenshots/movies.png)
+
+---
+
+## What it can do
+
+### Game data and archives
+
+* Read and analyse the game's `DAT` / `IDX` archives
+* Extract, replace and repack files inside them
+* Batch many edits into a single repack
 * Handle sector alignment and pointer relocation when data changes size
+* Name every file on the disc from a label set scored against the IDX
 
-### PlayStation disc images
+### Disc images
 
-* Read PlayStation CD/ISO data
-* Work with BIN/CUE disc images
-* Extract game data for editing
-* Rebuild ISO9660 disc images with modified files
-* Replace files while preserving the rest of the disc filesystem
+* Read PlayStation CD/ISO data and BIN/CUE rips
+* Rebuild ISO9660 images with modified files
+* Patch in place where it matters — the CD audio and XA music only
+  survive that way
 
-### Level editing & visualization
+### Levels
 
-Tomba2Edit can inspect several of Tomba! 2's level-related formats, including:
+* **MDAT** level geometry, textured, with per-polygon inspection
+* **SCLD** collision planes, walls and paths
+* **DRWA / DRWB** drawmaps
+* **BGMP** background maps
+* A level editor that assembles a whole area — objects, pickups, chests,
+  rooms, effects — by running the game's own handlers
 
-* **MDAT** - level geometry
-* **SCLD** - collision data
-* **DRWA / DRWB** - level drawmaps
-* **BGMP** - background maps
-* Level assets and related data
+### 3D models and animation
 
-This makes the project useful for investigating how Tomba! 2 stores and renders its 3D environments.
+* **SMST** model viewing, part by part
+* **ANMP** animation playback on a reconstructed skeleton
+* VRAM and texture-page visualisation
+* **glTF / GLB export** with embedded textures and animation, ready for
+  Blender
+* Texture migration: move a model's art somewhere every area can reach it
 
-### 3D models & animation
+### Graphics and sprites
 
-The tool can inspect Tomba! 2's 3D assets and export geometry for use outside the game.
+* **SPRT** sprite banks, with a pixel editor and palette tools
+* Sprite-sheet and PNG export
+* PlayStation VRAM viewing and IMG chunk editing
 
-Features include:
+### Text and translation
 
-* 3D model viewing
-* Texture/VRAM visualization
-* Skeleton and animation handling
-* Model export
-* **glTF / GLB export**
-* Embedded textures in GLB output
-* Animation export
-* Collision geometry export
-
-Exported GLB files can be opened in applications such as **Blender** and other glTF-compatible software.
-
-### Graphics & sprites
-
-Tools are available for working with:
-
-* Sprites
-* Sprite sheets
-* Textures
-* PlayStation VRAM data
-* Background graphics
-* Level graphics
-* Image formats used by Tomba! 2
-
-### Text & translation
-
-Tomba2Edit includes functionality for **editing Tomba! 2 text data**, making it useful for:
-
-* Fan translations
-* Text modifications
-* Translation research
-* Localization experiments
-* Investigating the game's text format
+* **TXTD** / **TXT2** dialogue editing with a live in-game preview
+* Font page editing — add characters the original disc never had
+* Import/export whole scripts as JSON or plain text
+* Japanese text support, including the console's own BIOS kanji font
+* Voice clips linked to the lines they speak
 
 ### Audio
 
-The project includes tools for working with Tomba! 2 audio data, including:
-
-* BGM
-* SFX
-* Voice/audio data
-* Audio extraction
-* WAV output
-* Optional MP3 export
+* Sequenced music (SEQ/VAB) with a note editor and MIDI import/export
+* XA streamed music and voice
+* Sound-effect banks
+* WAV and optional MP3 export
 
 ### Movies
 
 The three STR movies in the disc's `MOVIE` folder — `LOGO.STR`, `OP.STR`
-and `END.STR` — are played and exported in the **Movies** tab:
+and `END.STR`:
 
-* Software MDEC decoding, so no external decoder is needed to watch them
+* Software MDEC decoding, so no external decoder is needed
 * A frame-accurate timeline (every STR frame is independent, so seeking
   anywhere costs one frame)
 * Export as a still PNG, a numbered PNG sequence, the soundtrack as
@@ -102,142 +130,162 @@ and `END.STR` — are played and exported in the **Movies** tab:
   finished MP4/MKV/AVI with the sound in it
 
 The soundtrack lives in CD-XA Form 2 sectors, so it only survives in a
-raw bin/cue data track; a 2048-byte ISO or an extracted `MOVIE` folder
+raw BIN/CUE data track; a 2048-byte ISO or an extracted `MOVIE` folder
 gives the picture alone.
 
-## Supported / investigated formats
+---
 
-Some of the important Tomba! 2 data formats currently handled or investigated by the project include:
+## Formats
 
-| Format              | Purpose                         |
-| ------------------- | ------------------------------- |
-| `DAT`               | Main game data archive          |
-| `IDX`               | Game data index                 |
-| `MDAT`              | Level geometry                  |
-| `SMST`              | 3D assets                       |
-| `TXTD`              | Text data                       |
-| `SPRT`              | Sprite data                     |
-| `SCLD`              | Collision data                  |
-| `DRWA` / `DRWB`     | Level drawmaps                  |
-| `BGMP`              | Background maps                 |
-| Animation formats   | Character/object animation data |
-| `STR`               | MDEC movies, with CD-XA sound   |
-| PlayStation ISO9660 | Disc filesystem                 |
+Each format has a folder under `formats/`, holding its parser, its
+renderer and its viewer together. The four-letter code stays in every
+filename, so `scld_parser.py` is still what you search for — the folder
+just says what SCLD *is*.
 
-See the `functions/`, `gui/` and `examples/` directories for implementation details and additional research tools.
+| Format          | What it is                        | Where it lives         |
+| --------------- | --------------------------------- | ---------------------- |
+| `DAT` / `IDX`   | Main archive and its index        | `formats/archive/`     |
+| `MDAT`          | Level geometry                    | `formats/geometry/`    |
+| `SCLD`          | Collision                         | `formats/collision/`   |
+| `DRWA` / `DRWB` | Drawmaps                          | `formats/drawmaps/`    |
+| `BGMP`          | Background maps                   | `formats/background/`  |
+| `SMST`          | 3D models, and glTF export        | `formats/models/`      |
+| `ANMP` / `TANP` | Animation and skeletons           | `formats/animation/`   |
+| `SPRT`          | Sprite banks                      | `formats/sprites/`     |
+| `IMG`           | Texture chunks                    | `formats/images/`      |
+| `TXTD` / `TXT2` | Dialogue, font pages, translation | `formats/text/`        |
+| `STR`           | MDEC movies with CD-XA sound      | `formats/movie/`       |
+| `SEQ` / `VAB` / `XA` / `VAG` | Music, voice, sound   | `formats/audio/`       |
+| `MAIN.EXE`, `*.BIN`, `SOP` | Executable and overlays | `formats/executable/` |
 
-## Screenshots
+---
 
-### Level viewer
+## Repository layout
 
+```
+main.py             the entry point
+formats/            one package per game format — parser, renderer, viewer
+psx/                the PlayStation itself: MIPS interpreter, GPU, VRAM
+game/               what is true of Tomba! 2 in particular — placements,
+                    handlers, labels, the eleven builds, actor simulation
+disc/               ISO9660, BIN/CUE, raw sectors, rebuilding images
+gui/                the application shell, its widgets and the level editor
+  main_window/      the window, split into one mixin per concern
+  widgets/          controls with no one format of their own
+  level/            the level editor
+icons/              artwork
+labels/             file-name sets, per build
+decomp/             symbols and per-build address maps
+docs/               notes, format references, screenshots
+examples/           standalone research tools and older experiments
+```
 
-### Translation / text editing
+The split between `psx/`, `game/` and `formats/` is the useful one: `psx/`
+knows nothing about Tomba, `formats/` knows nothing about how the game
+behaves, and `game/` is where the two meet — including `actor_sim`, which
+answers "what is actually in this level?" by running the game's own code
+rather than guessing.
 
+---
 
 ## Installation
 
 ### Windows
 
-Download the latest **Tomba2Edit executable** from the repository's Releases page.
-
-The application is currently distributed as a Windows executable.
+Download the latest **Tomba2Edit executable** from the repository's
+Releases page.
 
 ### From source
 
-Tomba2Edit is written in Python and uses technologies including:
+```bash
+pip install PyQt6 numpy pillow PyOpenGL
+python main.py
+```
 
-* Python
-* PyQt6
-* NumPy
-* Pillow
-* OpenGL
+Optional: `lameenc` for MP3 export, and `ffmpeg` on PATH for finished
+video files.
 
-Additional dependencies may be required depending on the functionality being used.
+To build a standalone executable:
+
+```bash
+pyinstaller main.spec
+```
+
+---
 
 ## Getting started
 
 1. Obtain a legally dumped copy of **Tomba! 2: The Evil Swine Return**.
-2. A **BIN/CUE** dump of the US retail PlayStation release is recommended.
+2. A **BIN/CUE** dump of the US retail release is recommended — it is the
+   only form that carries the CD audio and the voice track.
 3. Open `Track 1.BIN` in Tomba2Edit.
-4. Explore the available game data.
-5. Edit supported data.
-6. Export or repack your changes.
+4. Explore, edit, and export or repack your changes.
 
-ISO images and extracted game directories are also supported in relevant workflows.
+ISO images and extracted game directories also work, with the caveats
+above.
 
-### Important
+> Tomba2Edit does **not** provide copyrighted Tomba! 2 game data. You
+> must provide your own legally obtained dump.
 
-Tomba2Edit does **not** provide copyrighted Tomba! 2 game data.
-
-You must provide your own legally obtained game dump.
+---
 
 ## Controls
 
-### Free camera
+### Free camera (any 3D view)
 
 Click inside a 3D viewport to enter free-camera mode.
 
-| Key         | Action                 |
-| ----------- | ---------------------- |
-| `W A S D`   | Move camera            |
-| `Q / E`     | Move up / down         |
-| Mouse wheel | Camera speed           |
-| `Shift`     | Faster camera movement |
+| Input        | Action                        |
+| ------------ | ----------------------------- |
+| `W A S D`    | Move                          |
+| `Q` / `E`    | Move up / down                |
+| Middle-drag  | Orbit                         |
+| Shift+middle | Pan                           |
+| Right-drag   | Look around                   |
+| Mouse wheel  | Zoom, or camera speed         |
+| `Shift`      | Faster movement               |
+| `F`          | Frame the selection           |
+
+---
 
 ## Project status
 
-Tomba2Edit is an active reverse-engineering and modding project.
+Tomba2Edit is an active reverse-engineering and modding project. Some
+formats and editing operations are mature; others are still being
+researched.
 
-Some formats and editing operations are mature, while others are still being researched or developed.
+Working today: archive repacking, text and font editing, level geometry,
+collision and drawmap viewing, the level editor, model and animation
+export, sprite editing, audio and movie export, ISO rebuilding and file
+replacement.
 
-### Currently working on
-
-* Data repacking
-* Text editing
-* Level geometry viewing
-* Level collision viewing
-* Level drawmap viewing
-* Game asset inspection
-* 3D model and animation export
-* ISO rebuilding and file replacement
-
-See the repository history and Issues for current development.
-
-## Reverse engineering & research
-
-Tomba2Edit builds on reverse-engineering work carried out by the **Tomba Club** community.
-
-For technical information about Tomba! 2's internal formats and ongoing research, see the **Tomba Club Wiki**.
-
-The `examples/` directory also contains standalone research and format-analysis tools.
+---
 
 ## Contributing
 
-Contributions are welcome.
+Contributions are welcome — reverse engineering unknown formats,
+improving parsers, testing modifications, adding exporters, documentation
+and GUI work all help.
 
-Useful areas include:
+If you discover a bug or work out an undocumented Tomba! 2 format, please
+open an Issue or start a discussion.
 
-* Reverse engineering unknown formats
-* Improving existing format parsers
-* Testing game modifications
-* Improving translation tools
-* Adding exporters
-* Documentation
-* GUI improvements
-* Creating examples and technical documentation
+`examples/research/` holds standalone format-analysis tools, and
+`docs/reference/` the hand-written format notes and disc maps the label
+sets were built from.
 
-If you discover a bug or understand an undocumented Tomba! 2 format, please open an Issue or start a discussion.
+---
 
 ## Credits
 
-This project would not exist without the Tomba Club reverse-engineering community.
+This project would not exist without the Tomba Club reverse-engineering
+community. Thanks to everyone who contributed research, testing,
+documentation and technical discoveries.
 
-Special thanks to everyone who contributed research, testing, documentation and technical discoveries.
+* **[Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)** — technical documentation
+* **[Tomba Club Discord](https://discord.gg/7RPgnxrTt)** — discussion and collaboration
 
-## Links
-
-* **[Tomba Club](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)** - Tomba! 2 reverse-engineering research and technical documentation
-* **[Tomba Club Discord](https://discord.gg/7RPgnxrTt)** - discussion, research and collaboration
+---
 
 ## Keywords
 

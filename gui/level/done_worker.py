@@ -2,7 +2,7 @@
 
 "Both" needs the area run twice - a fresh game and one with every event done
 - and the two share nothing. This is the second run: started by
-LevelScene.load, it builds the scene and leaves it in functions/scene_cache.py,
+LevelScene.load, it builds the scene and leaves it in game/scene_cache.py,
 where the load that started it picks it up. Nothing is handed back, so there
 is nothing to go wrong between the two: if this never finishes, the load
 simply builds it itself.

@@ -1,7 +1,7 @@
 # Labels
 
 Nothing in `TOMBA2.DAT` carries a filename. The IDX gives each SDAT entry a
-type id, and `functions/format_detect.py` reads the type of a trail file out
+type id, and `formats/archive/format_detect.py` reads the type of a trail file out
 of its own bytes, so the tree can say what a file *is* — but "the MDAT at
 0x1B724" is as close as either gets to saying *which* one it is.
 
@@ -46,7 +46,7 @@ throw your work away.
   hand-written `TOMBAMAP` txt files wrote them. Only `start` is used to match a
   file; `end` is kept so nothing from the original map is lost.
 - `type` — what the person who mapped it recorded. The tool works the type out
-  for itself (`functions/format_detect.py`) and does not take this as
+  for itself (`formats/archive/format_detect.py`) and does not take this as
   authority. It uses it for two things: to say in the tooltip when the two
   disagree — there are two such disagreements in `us-retail.json`, and in both
   the tool is right — and to pick a name inside the animation family, where
@@ -82,9 +82,9 @@ SLPS-02350 and the SCES discs are not covered by these.
 ## Converting an old TOMBAMAP
 
 ```
-python -m functions.labels convert examples/TOMBAMAP_us.txt labels/us-retail.json \
+python -m game.labels convert docs/reference/TOMBAMAP_us.txt labels/us-retail.json \
     --name "Tomba! 2 (USA)" --build us-retail --dat-size 9537536
 ```
 
-Both files here were made that way, from `examples/TOMBAMAP_us.txt` and
-`examples/TOMBAMAPdemo_us.txt`.
+Both files here were made that way, from `docs/reference/TOMBAMAP_us.txt` and
+`docs/reference/TOMBAMAPdemo_us.txt`.

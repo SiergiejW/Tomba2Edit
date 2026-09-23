@@ -1,6 +1,6 @@
 """The crystals and apples as pictures, ready to hang in the level.
 
-functions/pickup_art.py says which sprite of the resident bank a reward
+formats/sprites/pickup_art.py says which sprite of the resident bank a reward
 shows, which palette to recolour it with, and how the frames run. This
 turns that into something drawable: every frame a level needs, cut out
 of VRAM and packed into one texture, with the rectangle each landed in.
@@ -33,22 +33,22 @@ WHAT ELSE IS DRAWN THIS WAY
 Not only pickups: a handful of placed OBJECTS are sprites too - the
 jumpable fish, the torch that burns until it is put out. They come in
 through the same billboards() with art that
-functions/object_sprites.py builds, and out of the same area bank.
+formats/sprites/object_sprites.py builds, and out of the same area bank.
 """
 from dataclasses import dataclass, replace
 
 import numpy as np
 
-from functions import game_build
-from gui.sprt import sprt_render
-from gui.sprt.sprt_parser import load_sprt
+from game import game_build
+from formats.sprites import sprt_render
+from formats.sprites.sprt_parser import load_sprt
 
 # The bank every area shares - the first file of the resident chunk,
 # right at the front of the DAT - and the one an area keeps to itself,
-# which is SDAT id 10 (see functions/pickup_art.py).
+# which is SDAT id 10 (see formats/sprites/pickup_art.py).
 RESIDENT_SPRT_ID = 0
 AREA_SPRT_ID = 10
-# The demos number their slots their own way (functions/game_build.py).
+# The demos number their slots their own way (game/game_build.py).
 _BUILD = game_build.Addresses(globals(), slots=("RESIDENT_SPRT_ID", "AREA_SPRT_ID"))
 
 # The scale the pickup routine gives the actor, in the PSX's 4096ths.

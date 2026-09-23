@@ -68,7 +68,7 @@ def _icon_files():
     # Art that is reached by path rather than through icons.py, so the
     # scan above cannot see it. The text preview draws its dialogue box
     # over this, in the Translation, MAIN.EXE and BINs tabs alike (see
-    # gui/txtd/font_preview.py) - without it those three came out with a
+    # formats/text/font_preview.py) - without it those three came out with a
     # blank panel behind the text in the built exe and nowhere else.
     wanted.add("icons/tomba/txtd_background.jpg")
     wanted = sorted(wanted)
@@ -140,13 +140,13 @@ a = Analysis(
     binaries=[],
     # labels/ names files inside TOMBA2.DAT; audio_names/ names the
     # streamed audio; fonts/ is the console's 16x15 font, which is what
-    # the Japanese disc draws with (see functions/biosfont.py). All three
+    # the Japanese disc draws with (see formats/text/biosfont.py). All three
     # are read beside the executable at runtime (sys._MEIPASS when
     # frozen).
     # decomp/symbols_us.json names handlers and finds each overlay's scene
     # spawner for the level editor (symbols_jp-demo.json the JP demo's own
     # handlers); decomp/builds/ says where each other
-    # build keeps those addresses (functions/game_build.py). The rest of
+    # build keeps those addresses (game/game_build.py). The rest of
     # decomp/ is not read.
     datas=_icon_files() + [('labels', 'labels'), ('audio_names', 'audio_names'),
                            ('fonts', 'fonts'),

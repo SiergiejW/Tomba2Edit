@@ -3,7 +3,7 @@ App-wide visual themes, switchable from Settings > Theme.
 
 - "modern": charcoal panels drawn as rounded cards, one accent colour, pill
   tabs, tree lines, thin scrollbars, and class-coloured dots for the level
-  editor's rows (gui/dot_delegate.py). Default.
+  editor's rows (gui/widgets/dot_delegate.py). Default.
 - "modern_bright": the same, light.
 - "dark": the platform's default palette, completely unmodified - what
   this tool looked like before any theme system existed.
@@ -51,7 +51,7 @@ _current_theme = DEFAULT_THEME
 VIEWER_TOOLBAR = "viewerToolbar"
 VIEWER_OVERLAY = "viewerOverlay"
 PANEL_TITLE = "panelTitle"
-# A widget property naming the gui/transport_icons.py glyph it shows, so a
+# A widget property naming the formats/audio/transport_icons.py glyph it shows, so a
 # theme switch can repaint it in the new colours.
 GLYPH_PROPERTY = "themeGlyph"
 # The object name the script editors carry - MAIN.EXE, SOP, TXT2,
@@ -423,7 +423,7 @@ QPushButton:disabled {{
     background-color: {c["card"]};
     border-color: {c["card"]};
 }}
-/* a player's glyph button (gui/transport_icons.py): square, round */
+/* a player's glyph button (formats/audio/transport_icons.py): square, round */
 QPushButton[themeGlyph] {{
     padding: 4px;
     border-radius: 15px;
@@ -977,7 +977,7 @@ def apply_theme(app: QApplication, name: str):
     # Glyph buttons are painted in the theme's colours; custom-painted
     # widgets (the level list's dots, the 3D views' grounds) read the theme
     # when they paint - so repaint both.
-    from gui import transport_icons
+    from formats.audio import transport_icons
     for widget in app.allWidgets():
         glyph = widget.property(GLYPH_PROPERTY)
         if glyph:

@@ -26,19 +26,19 @@ from PyQt6.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from functions import clut_anim
-from functions import placement as placement_module
-from gui.bgmp import bgmp_render
-from gui.bgmp.bgmp_parser import PALETTE_STRIDE, load_bgmp
-from gui.clut_animation import TICK_HZ
+from formats.animation import clut_anim
+from game import placement as placement_module
+from formats.background import bgmp_render
+from formats.background.bgmp_parser import PALETTE_STRIDE, load_bgmp
+from formats.animation.clut_animation import TICK_HZ
 from gui.level import level_scene
 from gui.level.level_scene import (
     BOTH, EVENTS_DONE, FRESH, LevelScene,
     area_files, instance_color, instance_key, room_entries)
-from gui.dot_delegate import DOT_COLOR, DotDelegate
+from gui.widgets.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
-from gui.panel_title import make_panel_title
+from gui.widgets.panel_title import make_panel_title
 
 COLUMNS = ["Instance", "Model", "X", "Y", "Z", "Angle"]
 # How many of an interior's rows the Rooms box names.
@@ -83,7 +83,7 @@ class LevelEditorPanel(QWidget):
         self.overlay_for_area = lambda _chunk: None
         self.vram_for_area = lambda _chunk: None
         # MAIN.EXE, where the routines that decide what each object is
-        # drawn with live - see functions/handler_models.py.
+        # drawn with live - see game/handler_models.py.
         self.exe_path = None
         self.scene = None
         self._filling = False
@@ -122,7 +122,7 @@ class LevelEditorPanel(QWidget):
 
         # Area or one of its rooms. Inside, the game never draws the
         # area's own mesh - a room is only the actors its scene table
-        # spawns (functions/actor_sim.py) - so a room is shown alone.
+        # spawns (game/actor_sim.py) - so a room is shown alone.
         self._filling_views = False
         self.view_box = QComboBox(self)
         self.view_box.setMinimumWidth(300)
@@ -484,9 +484,9 @@ class LevelEditorPanel(QWidget):
         scene.__dict__.update(state)
         self.scene = scene
         # Textured VRAM colours what this stage saw drawn.
-        from functions import vram_preview
+        from psx import vram_preview
         vram_preview.publish_level(self.chunk, vram_preview.scene_regions(scene))
-        from gui.vram_viewer import vram_index_image
+        from psx.vram_viewer import vram_index_image
         if not self._stage_seen:
             self.viewer.set_vram(vram, vram_index_image(vram) if vram else None)
             self.viewer.export_name = f"AREA_{self.chunk:02X}"
@@ -575,7 +575,7 @@ class LevelEditorPanel(QWidget):
             wanted = pickup_sprites.wanted_frames(scene.instances)
             captured, captured_steps, captured_units = [], {}, {}
             if scene.captured_billboards:
-                from functions import sprite_rip
+                from formats.sprites import sprite_rip
                 from gui.level.level_scene import CLIP_HZ
                 for index, polygons in scene.captured_billboards.items():
                     ripped = sprite_rip.rip_polygons(
@@ -638,7 +638,7 @@ class LevelEditorPanel(QWidget):
 
         What moves is read out of the area's overlay - the same table
         the room's own animated palettes come from (see
-        functions/clut_anim.py) - rather than guessed at from the
+        formats/animation/clut_anim.py) - rather than guessed at from the
         colours. Guessing was wrong in both directions: it had AREA_09's
         sky rippling when the game holds it still, and it found one of
         AREA_04's three moving palettes."""
@@ -655,7 +655,7 @@ class LevelEditorPanel(QWidget):
             return
         entry = scene.by_id.get(level_scene.BACKGROUND_ID)
         if not entry or not entry[1]:
-            from functions import sky_gradient
+            from game import sky_gradient
             sky = sky_gradient.image(overlay)
             if sky is not None:
                 scene.notes.append(
@@ -683,7 +683,7 @@ class LevelEditorPanel(QWidget):
         # An area that draws a sky gradient at the back of the ordering
         # table shows it through every transparent texel of its picture -
         # the water pig boss's picture is nothing else.
-        from functions import sky_gradient
+        from game import sky_gradient
         sky = sky_gradient.image(overlay)
         if sky is not None and self._phases:
             self._phases = [(sky_gradient.under(picture, sky), ms)
