@@ -393,7 +393,9 @@ class MainWindow(QMainWindow):
         export_files_action.triggered.connect(self.export_all_files)
         self.export_files_action = export_files_action
 
-        open_project_action = QAction("Open Project...", self)
+        open_project_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon),
+            "Open Project...", self)
         open_project_action.setShortcut("Ctrl+O")
         open_project_action.setToolTip(
             "Open a .t2p project - one file holding every edit made here: "
@@ -406,7 +408,9 @@ class MainWindow(QMainWindow):
             "Save every edit back to the project it came from")
         save_project_file_action.triggered.connect(self.save_project)
 
-        save_project_as_action = QAction("Save Project As...", self)
+        save_project_as_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
+            "Save Project As...", self)
         save_project_as_action.setShortcut("Ctrl+Shift+S")
         save_project_as_action.setToolTip(
             "Save everything - text, font page, swapped models and textures, "
@@ -461,9 +465,24 @@ class MainWindow(QMainWindow):
         # Open, then the two things you do with what is open: pull one
         # file out, or write the whole track back. Save IDX/DAT is the
         # older route and lives in the File menu.
+        # Opening comes first and the project comes before the disc,
+        # because a project is what you have open nearly all the time
+        # and the disc only at the start and the end. The two on the
+        # right are the two things worth producing.
+        toolbar.addAction(open_project_action)
         toolbar.addAction(open_action)
+        toolbar.addSeparator()
         toolbar.addAction(export_action)
         toolbar.addAction(export_bin_action)
+        toolbar.addAction(save_project_as_action)
+        # Toolbar buttons get their own shorter captions - the menu has
+        # room for "Save Project As..." and a row of icons does not.
+        for action, caption in ((open_project_action, "Open Project"),
+                                (open_action, "Open BIN"),
+                                (export_action, "Export raw binary"),
+                                (export_bin_action, "Build Disc"),
+                                (save_project_as_action, "Export Project")):
+            action.setIconText(caption)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
