@@ -46,6 +46,11 @@ class VoiceError(Exception):
 _INDIRECT_DISPATCH_CHANNELS = {"A05.BIN": (0,)}
 
 
+def indirect_dispatch_channels(name):
+    """Channels known through an overlay's indirect dispatch path."""
+    return _INDIRECT_DISPATCH_CHANNELS.get(name.upper(), ())
+
+
 def find_track(path):
     """(lba, sectors) of VOICE.XA in a raw disc image.
 
@@ -233,8 +238,7 @@ def dispatch_channels(image_path):
                             names = out.setdefault(channel, [])
                             if name not in names:
                                 names.append(name)
-                        for channel in _INDIRECT_DISPATCH_CHANNELS.get(
-                                name.upper(), ()):
+                        for channel in indirect_dispatch_channels(name):
                             names = out.setdefault(channel, [])
                             if name not in names:
                                 names.append(name)

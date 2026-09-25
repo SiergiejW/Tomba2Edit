@@ -119,8 +119,11 @@ class BinsViewer(QWidget):
 
     @staticmethod
     def _item_text(overlay, description=""):
-        label = overlay["name"] + (f" - {description}" if description else "")
-        return f"{label} ({overlay['size']} bytes)"
+        # The opaque filename is the identifier; the area/boss name is
+        # the useful part.  Keep it immediately beside the name, with the
+        # byte count deliberately secondary.
+        label = overlay["name"] + (f" ({description})" if description else "")
+        return f"{label} — {overlay['size']} bytes"
 
     @classmethod
     def _make_item(cls, overlay, description=""):

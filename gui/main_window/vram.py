@@ -19,9 +19,8 @@ class VramMixin:
     the window through self.
     """
 
-    def overlay_for_area(self, chunk_index):
-        """The Axx.BIN belonging to an area, or None if there isn't one
-        or the disc was opened somewhere without a BIN folder."""
+    def overlay_name_for_area(self, chunk_index):
+        """The BIN the game runs for an IDX area, including purified areas."""
         chunk = chunk_index or 0
         name = self.OVERLAY_NAMES.get(chunk + 6)
         if ((not name or not name.startswith("A0"))
@@ -34,6 +33,12 @@ class VramMixin:
             # cutscene overlays, and were taking those areas' animated
             # palettes with them.
             name = self.OVERLAY_NAMES.get(chunk - self.PURIFIED_OFFSET + 6)
+        return name
+
+    def overlay_for_area(self, chunk_index):
+        """The Axx.BIN belonging to an area, or None if there isn't one
+        or the disc was opened somewhere without a BIN folder."""
+        name = self.overlay_name_for_area(chunk_index)
         if not name or not self.dat_file:
             return None
         root = os.path.dirname(os.path.dirname(os.path.dirname(self.dat_file)))

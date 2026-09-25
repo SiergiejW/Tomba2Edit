@@ -288,6 +288,7 @@ class LevelViewer(SMSTViewer):
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
             "Orbit selection", self)
         self.orbit_action.setCheckable(True)
+        self.orbit_action.setChecked(True)
         self.orbit_action.setToolTip(
             "Middle-drag circles the selected object instead of whatever is "
             "in the middle of the view. Off, orbiting works as usual even "

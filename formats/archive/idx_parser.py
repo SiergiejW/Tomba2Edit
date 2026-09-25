@@ -631,3 +631,16 @@ def parse_idx_file(main_window, cd_folder):
 
     # Names last, over the finished tree - see apply_labels above.
     main_window.load_labels_for_disc(idx_path)
+
+    # The Dialogues tab needs the reverse of TXTD's Play lookup. Give it
+    # every text row in the IDX now, before a particular TXTD is opened.
+    catalog = []
+    for (area, _slot), item in main_window.txtd_item_lookup.items():
+        row = row_label_data(item)
+        source = item.data(Qt.ItemDataRole.UserRole)
+        if row and source and row[1] == "TXTD":
+            _id, dat_start, offset, _size = source
+            catalog.append((area, dat_start + offset,
+                            main_window.overlay_name_for_area(area),
+                            item.text()))
+    main_window.voice_panel.set_text_catalog(dat_path, catalog)

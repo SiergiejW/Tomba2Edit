@@ -220,6 +220,7 @@ class ViewerDispatchMixin:
                                         self.dat_file, dat_start, offset,
                                         chunk_index=txtd_chunk_index, file_index=txtd_file_index, id_val=id
                                     )
+                                    self.txtd_viewer._voice_file_label = selected_item.text()
                                     self.txtd_viewer.set_voice_source(
                                         self.voice_image_path(),
                                         self.overlay_for_area(txtd_chunk_index),

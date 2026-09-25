@@ -155,6 +155,7 @@ class AudioTransport(QWidget):
         # which overwrote the position they had just chosen with zero,
         # a line before it was going to be used.
         self._syncing = False
+        self._timeline_text_provider = None
         self._buffer = None
         self._current = -1
         self._looping = False
@@ -332,6 +333,21 @@ class AudioTransport(QWidget):
             "What is playing, drawn end to end. Click or drag to jump "
             "to a moment.")
         self.wave.scrubbed.connect(self._wave_scrubbed)
+        self.timeline_caption = QWidget()
+        self.timeline_caption.setStyleSheet("background: #000;")
+        caption_layout = QVBoxLayout(self.timeline_caption)
+        caption_layout.setContentsMargins(10, 4, 10, 5)
+        caption_layout.setSpacing(1)
+        self.timeline_area = QLabel()
+        self.timeline_area.setStyleSheet("color: #6d6d72; font-style: italic;")
+        self.timeline_area.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.timeline_text = QLabel()
+        self.timeline_text.setWordWrap(True)
+        self.timeline_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.timeline_text.setStyleSheet("color: white;")
+        caption_layout.addWidget(self.timeline_area)
+        caption_layout.addWidget(self.timeline_text)
+        self.timeline_caption.hide()
 
         # The clock is drawn in the corner of the wave rather than
         # sitting beside the slider: as a label it is a different
@@ -359,6 +375,7 @@ class AudioTransport(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.list, 1)
+        layout.addWidget(self.timeline_caption)
         layout.addWidget(self.wave)
         layout.addLayout(seek)
         layout.addLayout(row)
@@ -457,6 +474,30 @@ class AudioTransport(QWidget):
     def clear_wave(self):
         self.wave.clear()
 
+    def set_timeline_text_provider(self, provider):
+        """Show context text for the current point in the waveform.
+
+        Dialogues uses this for its TXTD line; other audio surfaces leave
+        it unset and retain the compact waveform-only layout.
+        """
+        self._timeline_text_provider = provider
+        self.timeline_caption.setVisible(provider is not None)
+        self._update_timeline_text(self.wave.position)
+
+    def _update_timeline_text(self, fraction):
+        if self._timeline_text_provider is None:
+            return
+        try:
+            value = self._timeline_text_provider(fraction)
+            area, text = value if isinstance(value, tuple) else ("", value)
+            area, text = area or "", text or ""
+        except Exception:
+            area, text = "", ""
+        if area != self.timeline_area.text():
+            self.timeline_area.setText(area)
+        if text != self.timeline_text.text():
+            self.timeline_text.setText(text)
+
     def stop_previews(self):
         """Let a running thumbnail finish before anything goes away.
 
@@ -472,6 +513,10 @@ class AudioTransport(QWidget):
     def _wave_scrubbed(self, fraction):
         """The big view was dragged; the sound follows it."""
         self._start_at = fraction
+        # QMediaPlayer reports its position asynchronously.  Update the
+        # dialogue caption here as well, so it tracks the cursor while the
+        # waveform is being dragged rather than a callback later.
+        self._update_timeline_text(fraction)
         self._start_pending = self.player.playbackState() == \
             QMediaPlayer.PlaybackState.StoppedState
         length = self.player.duration()
@@ -542,7 +587,10 @@ class AudioTransport(QWidget):
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.Resize and watched in self.lists:
-            self._fit_columns(watched)
+            # Column widths are a layout choice, not a response to every
+            # window resize.  Fit them once when entries arrive, then leave
+            # their positions and widths alone just as if the user had
+            # dragged the headers by hand.
             self._want_peaks()
             return False
         if (event.type() == QEvent.Type.KeyPress
@@ -1006,6 +1054,7 @@ class AudioTransport(QWidget):
             self._start_pending = self.player.playbackState() == \
                 QMediaPlayer.PlaybackState.StoppedState
         self.wave.set_position(fraction)
+        self._update_timeline_text(fraction)
 
     def _grab(self):
         self._scrubbing = True
@@ -1029,6 +1078,7 @@ class AudioTransport(QWidget):
         # of its own that could drift away from it.
         if not self._scrubbing:
             self.wave.set_position(ms / length if length > 0 else 0.0)
+            self._update_timeline_text(ms / length if length > 0 else 0.0)
 
     def _apply_start(self):
         if (not self._source_ready or not self._start_pending

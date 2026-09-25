@@ -19,6 +19,7 @@ master skip: the gaps are the extra segments.
 """
 import json
 import os
+import re
 
 from formats.audio import voice
 from formats.audio import xa
@@ -30,6 +31,8 @@ GAP = 0.25          # seconds of silence inserted between an entry's boxes
 # the whole span its tables cover - the better part of a minute. It only
 # depends on the overlay and the disc, so it is done once and kept.
 CACHE_NAME = "voicechannels.json"
+_TRANSCRIPTS = {}     # image -> (AREA, DAT address) -> timed rows
+_TRANSCRIPT_OVERRIDES = {}  # the TXTD viewer's current, possibly edited text
 
 
 def segments(text):
@@ -105,6 +108,175 @@ def cached_areas(folder=None):
     for names in out.values():
         names.sort()
     return out
+
+
+def _timed_rows(masters, tables, label):
+    """One TXTD's visible lines at the exact clip-table block ranges."""
+    rows_out = []
+    for master_index, master in enumerate(masters or ()):
+        found = tables.get(master_index) or tables.get(-1)
+        if found is None:
+            continue
+        rows, channel = found
+        for entry in master.get("entries", ()):
+            extra = entry.get("extra")
+            if extra in (None, NO_VOICE):
+                continue
+            first = extra & 0xFF
+            count = segments(entry.get("text"))
+            if not (0 <= first < len(rows)):
+                continue
+            boxes = (entry.get("text") or "").split("{$END}")
+            for n in range(min(count, len(rows) - first)):
+                text = re.sub(r"\{\$[^}]*\}", "", boxes[n] if n < len(boxes) else "")
+                text = " ".join(text.split())
+                if text:
+                    start, length = rows[first + n]
+                    rows_out.append((label, channel, start, start + length, text))
+    return rows_out
+
+
+def build_transcripts(dat_file, image, catalog, on_partial=None):
+    """Read IDX-listed TXTD files and their area BIN dispatches off-thread.
+
+    catalog contains (area, absolute DAT address, BIN name, IDX row label).
+    A repeated DAT address can belong to multiple areas, so the area is
+    part of the key and its overlay decides the channel and clip times.
+    """
+    from formats.text import txtd
+
+    result = {}
+    parsed = {}
+    overlays = {}
+    fallback_tables = {}
+    unresolved_sources = []
+    for area, address, bin_name, file_label in catalog:
+        if not bin_name:
+            continue
+        if bin_name not in overlays:
+            data = None
+            folder = os.path.dirname(dat_file)
+            for _ in range(4):
+                candidate = os.path.join(folder, "BIN", bin_name)
+                if os.path.isfile(candidate):
+                    with open(candidate, "rb") as source:
+                        data = source.read()
+                    break
+                folder = os.path.dirname(folder)
+            if data is None and image:
+                data = voice.extract_file(image, bin_name)
+            dispatch = voice.read_dispatch(data) if data else {}
+            tables = {}
+            for master, (table_at, channel, block_offset) in dispatch.items():
+                rows = voice.read_clip_table(data, table_at)
+                if rows:
+                    tables[master] = ([(start + block_offset, length)
+                                       for start, length in rows], channel)
+            overlays[bin_name] = (tables, voice.find_tables(data) if data else [])
+        tables, raw_tables = overlays[bin_name]
+        if not tables and not raw_tables:
+            continue
+        if address not in parsed:
+            try:
+                parsed[address] = txtd.preview(dat_file, address,
+                                               verbose=False).get("entries", ())
+            except Exception:
+                parsed[address] = ()
+        label = f"AREA_{area:02X} · {file_label} · {bin_name}"
+        result[(area, address)] = _timed_rows(parsed[address], tables, label)
+        if raw_tables:
+            missing = [(i, clips_needed(master))
+                       for i, master in enumerate(parsed[address])
+                       if i not in tables and -1 not in tables]
+            matched = _align([(i, n) for i, n in missing if n],
+                             [len(rows) for _off, rows in raw_tables])
+            indirect = voice.indirect_dispatch_channels(bin_name)
+            if len(matched) == len(indirect) == 1:
+                master, table_index = next(iter(matched.items()))
+                tables[master] = (raw_tables[table_index][1], indirect[0])
+                result[(area, address)] = _timed_rows(
+                    parsed[address], tables, label)
+                matched = {}
+            if matched:
+                unresolved_sources.append((area, address, bin_name,
+                                           label, matched))
+                for table_index in matched.values():
+                    fallback_tables[(bin_name, table_index)] = raw_tables[table_index]
+    if on_partial:
+        on_partial(result)
+    if not image or not fallback_tables:
+        return result
+
+    # Unknown channels are inferred once for ALL unmatched tables.  The
+    # decoder's expensive pass across 32 channels is shared by every BIN.
+    lba, sectors = voice.find_track(image)
+    keys = list(fallback_tables)
+    found_channels = voice.resolve_channels(
+        image, lba, [fallback_tables[key] for key in keys],
+        sectors=sectors)
+    channels = dict(zip(keys, found_channels))
+    for area, address, bin_name, label, matched in unresolved_sources:
+        tables = dict(overlays[bin_name][0])
+        raw_tables = overlays[bin_name][1]
+        for master, table_index in matched.items():
+            channel = channels.get((bin_name, table_index))
+            if channel is not None:
+                tables[master] = (raw_tables[table_index][1], channel)
+        result[(area, address)] = _timed_rows(parsed[address], tables, label)
+    return result
+
+
+def set_transcripts(image, rows_by_source):
+    _TRANSCRIPTS[os.path.abspath(image)] = rows_by_source
+
+
+def remember_transcript(link, masters, area=None, address=None,
+                        file_label="TXTD"):
+    """Show current editor text immediately, including unsaved edits."""
+    if not link or not link.image or not link.overlay or area is None or address is None:
+        return
+    tables = dict(link.tables)
+    if link.default_table:
+        tables[-1] = link.default_table
+    # A fallback mapping is available only after its channel has been
+    # resolved. Reading this cache does not start an audio decode.
+    for master, table_index in link._fallback_by_master.items():
+        channel = link._fallback_channels.get(table_index)
+        if channel is not None:
+            tables[master] = (link._raw_tables[table_index][1], channel)
+    if not tables:
+        return
+    label = f"AREA_{area:02X} · {file_label} · {os.path.basename(link.overlay)}"
+    rows = _timed_rows(masters, tables, label)
+    touched = [(channel, start, start + length)
+               for entries, channel in tables.values()
+               for start, length in entries]
+    _TRANSCRIPT_OVERRIDES.setdefault(os.path.abspath(link.image), {})[
+        (area, address)] = (rows, touched)
+
+
+def transcript_at(image, channel, block):
+    """(area, TXTD prose) known at a channel-block position."""
+    if not image:
+        return "", ""
+    matches = []
+    path = os.path.abspath(image)
+    sources = _TRANSCRIPTS.get(path, {})
+    overrides = _TRANSCRIPT_OVERRIDES.get(path, {})
+    for source in sources.keys() | overrides.keys():
+        replacement = overrides.get(source)
+        rows = sources.get(source, ())
+        if replacement and any(c == channel and first <= block < last
+                               for c, first, last in replacement[1]):
+            rows = replacement[0]
+        for area, row_channel, first, last, text in rows:
+            if row_channel == channel and first <= block < last:
+                matches.append((area, text))
+    if not matches:
+        return "", ""
+    areas = ", ".join(dict.fromkeys(area for area, _text in matches))
+    text = "\n".join(dict.fromkeys(text for _area, text in matches))
+    return areas, text
 
 
 class VoiceLink:

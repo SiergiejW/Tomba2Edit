@@ -758,6 +758,7 @@ class TXTDViewer(QWidget):
         Both halves are remembered, so whichever arrives second - a disc
         opened in the Voice tab, or a different area selected - keeps the
         other rather than clearing it."""
+        from formats.text import voice_link
         from formats.text.voice_link import VoiceLink
 
         if getattr(self, "_voice", None) is None:
@@ -785,6 +786,11 @@ class TXTDViewer(QWidget):
         if overlay_path:
             masters = (self.current_data or {}).get("entries")
             total = self._voice.set_masters(masters)
+            voice_link.remember_transcript(
+                self._voice, masters, self.chunk_index,
+                self.dat_start + self.offset if self.dat_start is not None
+                and self.offset is not None else None,
+                getattr(self, "_voice_file_label", "TXTD"))
         if problem:
             self._set_voice_note(problem, warn=True)
         elif not total:
@@ -1106,6 +1112,14 @@ class TXTDViewer(QWidget):
         m_idx, e_idx = location
         entry = self.current_data["entries"][m_idx]["entries"][e_idx]
         entry["text"] = self.text_edit.toPlainText()
+        if getattr(self, "_voice", None) is not None:
+            from formats.text import voice_link
+            voice_link.remember_transcript(
+                self._voice, self.current_data.get("entries"),
+                self.chunk_index,
+                self.dat_start + self.offset if self.dat_start is not None
+                and self.offset is not None else None,
+                getattr(self, "_voice_file_label", "TXTD"))
 
         if entry["text"] == self._original_entry_texts.get(location):
             # back to the original text - no longer dirty

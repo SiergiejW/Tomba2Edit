@@ -18,8 +18,10 @@ audio. A VOICE.XA copied as an ordinary file cannot be used: that takes
 audio for good.
 """
 import os
+from queue import Empty, Queue
+from threading import Thread
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog,
                              QHBoxLayout, QLabel, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
@@ -106,6 +108,15 @@ class VoicePanel(QWidget):
         self._cache = {}            # channel -> wav bytes
         self._pending_save = None   # (key, path) waiting on a decode
         self._area_scan = None
+        self._text_dat = None
+        self._text_catalog = ()
+        self._text_index_signature = None
+        self._text_indexing = False
+        self._text_error = ""
+        self._text_results = Queue()
+        self._text_timer = QTimer(self)
+        self._text_timer.setInterval(100)
+        self._text_timer.timeout.connect(self._poll_text_index)
         self.names = NameStore("dialogue")
         self._edits = VoiceEditStore()
 
@@ -136,6 +147,7 @@ class VoicePanel(QWidget):
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)
+        self.transport.set_timeline_text_provider(self._text_at)
 
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every channel into a folder, "
@@ -180,6 +192,61 @@ class VoicePanel(QWidget):
         layout.addWidget(self.transport, 1)
         layout.addLayout(bottom)
         layout.addWidget(self.status)
+        # This is the last part of the Dialogues tab, below the status.
+        caption = self.transport.timeline_caption
+        self.transport.layout().removeWidget(caption)
+        caption.setParent(self)
+        caption.setMinimumHeight(80)
+        layout.addWidget(caption)
+        caption.show()
+
+    def set_text_catalog(self, dat_file, catalog):
+        """IDX entries to reverse-link to voice; called after the tree loads."""
+        self._text_dat = dat_file
+        self._text_catalog = tuple(catalog)
+        self._text_index_signature = None
+        self._start_text_index()
+
+    def _start_text_index(self):
+        if not self.image or not self._text_dat or not self._text_catalog:
+            return
+        signature = (self.image, self._text_dat, self._text_catalog)
+        if signature == self._text_index_signature:
+            return
+        self._text_index_signature = signature
+        self._text_indexing = True
+        self._text_error = ""
+        results = self._text_results
+        image, dat_file, catalog = self.image, self._text_dat, self._text_catalog
+
+        def build():
+            try:
+                rows = voice_link.build_transcripts(
+                    dat_file, image, catalog,
+                    on_partial=lambda partial: results.put(
+                        (image, dat_file, dict(partial), "", False)))
+                results.put((image, dat_file, rows, "", True))
+            except Exception as exc:
+                results.put((image, dat_file, {}, str(exc), True))
+
+        Thread(target=build, name="TXTD voice index", daemon=True).start()
+        self._text_timer.start()
+
+    def _poll_text_index(self):
+        while True:
+            try:
+                image, dat_file, rows, error, finished = self._text_results.get_nowait()
+            except Empty:
+                break
+            if image != self.image or dat_file != self._text_dat:
+                continue
+            self._text_indexing = not finished
+            self._text_error = error if finished else ""
+            if not error:
+                voice_link.set_transcripts(image, rows)
+            self.transport._update_timeline_text(self.transport.wave.position)
+        if not self._text_indexing:
+            self._text_timer.stop()
 
     def set_edit_store(self, store):
         """Share one VoiceEditStore with the TXTD tab, so a per-line
@@ -274,6 +341,7 @@ class VoicePanel(QWidget):
             self.status.setText(str(exc))
             return
         self.image = path
+        self._text_index_signature = None
         self._cache.clear()
         self._edits.set_image(path)
         self.export_patched.setEnabled(self._edits.count() > 0)
@@ -297,11 +365,8 @@ class VoicePanel(QWidget):
         self.transport.set_entries(entries, self.names.names())
         self.transport.column_tip(
             "Heard in", "Which area's dialogue speaks through this "
-            "channel.\n\nWorked out by decoding an area's clip tables "
-            "against all 32 channels, which takes about a minute per "
-            "area - so it is only filled in for areas already opened on "
-            "the Dialogues/TXTD side, and kept afterwards. A dash means "
-            "not worked out yet, not unused.")
+            "channel. The area's BIN dispatch is read from the open "
+            "disc. A dash means no dispatch has named it yet.")
         self.status.setText(
             f"{os.path.basename(path)}: {len(entries)} channels, "
             f"{self.sectors:,} sectors"
@@ -312,6 +377,7 @@ class VoicePanel(QWidget):
         self.export_all.setEnabled(True)
         self.image_opened.emit(path)
         self._scan_areas()
+        self._start_text_index()
 
     def _extract(self):
         """Write a usable VOICE.XA next to a CD folder's other files."""
@@ -337,6 +403,24 @@ class VoicePanel(QWidget):
     @staticmethod
     def _channel_of(key):
         return int(key.rsplit(":", 1)[1])
+
+    def _text_at(self, fraction):
+        """TXTD prose at the waveform cursor, from the IDX reverse map."""
+        key = self.transport.current_key()
+        if key not in self._by_key:
+            return ""
+        channel = self._channel_of(key)
+        block = int(max(0.0, min(1.0, fraction)) * self._by_key[key])
+        area, text = voice_link.transcript_at(self.image, channel, block)
+        if text:
+            return area, text
+        if self._text_indexing:
+            return "", "Indexing TXTD dialogue…"
+        if self._text_error:
+            return "", f"Could not index TXTD: {self._text_error}"
+        if not self._text_catalog:
+            return "", "Open a disc with TOMBA2.DAT and TOMBA2.IDX to show dialogue text."
+        return "", "No TXTD line at this point."
 
     def _wanted(self, key):
         """The transport asked for a key; decode it if it is not cached."""

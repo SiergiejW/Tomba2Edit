@@ -29,6 +29,7 @@ import os
 from formats.text import fontpage
 from formats.text import dicts
 from formats.text import translation
+from gui.widgets import mascot
 from gui.widgets.pixel_canvas import PaintCanvas, PixelCanvas, fit_zoom, zoom_label
 
 
@@ -983,6 +984,19 @@ class FontPageView(QWidget):
         left_layout.addWidget(self.page_tabs)
         left_layout.addLayout(bar)
         left_layout.addWidget(self.scroll, 1)
+        # This belongs inside the left splitter child: it gives the page
+        # editor a small, always-visible drawing reminder without taking
+        # a pixel from the detail editor on the right.
+        self.draw_help = QLabel(
+            "<b>Zippo's drawing help</b><br>"
+            "Select a glyph or menu word, choose a colour below the zoomed "
+            "view, then left-drag to draw. Right-click a texel to pick its "
+            "colour. Copy/Paste, Undo and Reset work on the selection; "
+            "Save writes the page back to the project.")
+        self.draw_help.setWordWrap(True)
+        self.draw_help.setStyleSheet("color: #a8a8b0;")
+        self.draw_help.setContentsMargins(8, 3, 8, 3)
+        left_layout.addWidget(mascot.beside(self.draw_help, scale=1), 0)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(left)
