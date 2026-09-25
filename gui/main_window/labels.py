@@ -54,6 +54,7 @@ class LabelsMixin:
         # Relabel, never reload - the BINs tab may be holding a SOP.BIN
         # path from a disc that has since been closed and cleaned up.
         self.bins_viewer.set_descriptions(self.labels.bins if self.labels else None)
+        self.voice_panel.set_area_labels(self.labels.bins if self.labels else None)
         self.builtin_labels_action.setEnabled(self.labels_override is not None)
 
         if self.labels is None:

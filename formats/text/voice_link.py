@@ -20,6 +20,7 @@ master skip: the gaps are the extra segments.
 import json
 import os
 import re
+from html import escape
 
 from formats.audio import voice
 from formats.audio import xa
@@ -33,6 +34,32 @@ GAP = 0.25          # seconds of silence inserted between an entry's boxes
 CACHE_NAME = "voicechannels.json"
 _TRANSCRIPTS = {}     # image -> (AREA, DAT address) -> timed rows
 _TRANSCRIPT_OVERRIDES = {}  # the TXTD viewer's current, possibly edited text
+
+# Match the TXTD editor's tag colors on the dark dialogue caption.
+_TEXT_COLORS = {
+    "WHITE": "#ffffff", "ORANGE": "orange", "BLUE": "#3d8bfd",
+    "PINK": "#ff69b4", "GREEN": "#3ddc84",
+}
+_TEXT_TAG = re.compile(r"(\{\$[^{}]*\})")
+
+
+def _caption_box(raw, color):
+    """A single TXTD box as safe, colored HTML and the following color."""
+    raw = (raw or "").strip()
+    visible = re.sub(r"\{\$[^{}]*\}", "", raw)
+    if not visible.strip():
+        return "", color
+    parts = []
+    for token in _TEXT_TAG.split(raw):
+        if token.startswith("{$") and token.endswith("}"):
+            next_color = _TEXT_COLORS.get(token[2:-1])
+            if next_color:
+                color = next_color
+        elif token:
+            parts.append(
+                f'<span style="color:{color};">'
+                + escape(token).replace("\n", "<br/>") + "</span>")
+    return "".join(parts), color
 
 
 def segments(text):
@@ -127,9 +154,10 @@ def _timed_rows(masters, tables, label):
             if not (0 <= first < len(rows)):
                 continue
             boxes = (entry.get("text") or "").split("{$END}")
+            color = _TEXT_COLORS["WHITE"]
             for n in range(min(count, len(rows) - first)):
-                text = re.sub(r"\{\$[^}]*\}", "", boxes[n] if n < len(boxes) else "")
-                text = " ".join(text.split())
+                text, color = _caption_box(
+                    boxes[n] if n < len(boxes) else "", color)
                 if text:
                     start, length = rows[first + n]
                     rows_out.append((label, channel, start, start + length, text))
@@ -275,7 +303,7 @@ def transcript_at(image, channel, block):
     if not matches:
         return "", ""
     areas = ", ".join(dict.fromkeys(area for area, _text in matches))
-    text = "\n".join(dict.fromkeys(text for _area, text in matches))
+    text = "<br/>".join(dict.fromkeys(text for _area, text in matches))
     return areas, text
 
 

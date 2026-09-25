@@ -341,21 +341,28 @@ class AudioTransport(QWidget):
         self.timeline_area = QLabel()
         self.timeline_area.setStyleSheet("color: #6d6d72; font-style: italic;")
         self.timeline_area.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.timeline_area.setTextFormat(Qt.TextFormat.PlainText)
         self.timeline_text = QLabel()
         self.timeline_text.setWordWrap(True)
         self.timeline_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.timeline_text.setStyleSheet("color: white;")
-        caption_layout.addWidget(self.timeline_area)
-        caption_layout.addWidget(self.timeline_text)
+        self.timeline_text.setTextFormat(Qt.TextFormat.RichText)
+        self.timeline_text.setStyleSheet(
+            "color: white; font-size: 20px; font-weight: 500;")
+        caption_layout.addWidget(self.timeline_area, 0,
+                                 Qt.AlignmentFlag.AlignTop)
+        caption_layout.addWidget(self.timeline_text, 1)
         self.timeline_caption.hide()
 
         # The clock is drawn in the corner of the wave rather than
         # sitting beside the slider: as a label it is a different
         # width for every track, and on SFX that pushed the row it
         # was in out of line with everything else.
-        self.time.setVisible(False)
+        self.time.setVisible(source == "Dialogues")
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
+        if source == "Dialogues":
+            self.time.setMinimumWidth(105)
+            seek.addWidget(self.time)
         row = QHBoxLayout()
         for button in (previous, self.play_button, stop, following):
             row.addWidget(button)
@@ -557,7 +564,7 @@ class AudioTransport(QWidget):
         header.setStretchLastSection(False)
         table.auto_columns = True
         header.sectionResized.connect(
-            lambda *_a, t=table: self._column_dragged(t))
+            lambda col, *_a, t=table: self._column_dragged(t, col))
         table.cellClicked.connect(lambda _row, _col, t=table: self._use(t))
         table.cellDoubleClicked.connect(
             lambda row, _col, t=table: self._play_from(t, row))
@@ -622,12 +629,15 @@ class AudioTransport(QWidget):
         picked from last; keys must not repeat across lists."""
         return self._make_list(list(columns or []), source, previews)
 
-    def _column_dragged(self, table):
+    def _column_dragged(self, table, column=None):
         """A column the person set by hand stops being managed.
 
         Every column stays draggable - the widths here are a starting
         point, not a policy - so the moment one is dragged this stops
         recomputing them and undoing the drag."""
+        if (getattr(table, "fill_last_column", False)
+                and column == table.columnCount() - 1):
+            return
         if not self._sizing:
             table.auto_columns = False
 
@@ -646,6 +656,23 @@ class AudioTransport(QWidget):
             return
         self._sizing = True
         try:
+            if getattr(table, "fill_last_column", False):
+                # Dialogues keeps its numeric fields narrow and lets
+                # "Heard in" use whatever width the window has left.
+                # The header stretches that last section on later
+                # window resizes, without moving hand-sized columns.
+                for col in range(table.name_col + 1,
+                                 table.columnCount() - 1):
+                    table.resizeColumnToContents(col)
+                    table.setColumnWidth(
+                        col, max(55, min(table.columnWidth(col) + 8, 150)))
+                table.resizeColumnToContents(table.name_col)
+                table.setColumnWidth(
+                    table.name_col,
+                    max(140, min(table.columnWidth(table.name_col) + 12,
+                                 260)))
+                table.setColumnWidth(table.columnCount() - 1, 220)
+                return
             for col in range(table.name_col + 1, table.columnCount()):
                 table.resizeColumnToContents(col)
                 width = table.columnWidth(col) + 10
@@ -984,6 +1011,22 @@ class AudioTransport(QWidget):
             # cursor position belonged to the one before it.
             self._start_at = 0.0
             self._start_pending = False
+            if self.source == "Dialogues":
+                # The caption provider reads the selected channel. Keep
+                # old channel audio and its waveform from being shown
+                # under the new row's TXTD text while changing rows.
+                self.stop()
+                self.clear_wave()
+                self.position.setRange(0, 0)
+                total = "0:00"
+                if "Length" in self.list.columns:
+                    column = (self.list.name_col + 1
+                              + self.list.columns.index("Length"))
+                    cell = self.list.item(row, column)
+                    if cell is not None:
+                        total = cell.text()
+                self.time.setText(f"0:00 / {total}")
+                self._update_timeline_text(0.0)
             self._print_selection(row)
         if (row >= 0 and row != previous_row and self._select_plays
                 and self.autoplay.isChecked()):
@@ -1049,6 +1092,8 @@ class AudioTransport(QWidget):
     def _slider_moved(self, ms):
         length = self.position.maximum()
         fraction = ms / length if length > 0 else 0.0
+        if self.source == "Dialogues":
+            self.time.setText(f"{clock(ms)} / {clock(length)}")
         if not self._syncing:
             self._start_at = fraction
             self._start_pending = self.player.playbackState() == \

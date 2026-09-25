@@ -108,6 +108,10 @@ class VoicePanel(QWidget):
         self._cache = {}            # channel -> wav bytes
         self._pending_save = None   # (key, path) waiting on a decode
         self._area_scan = None
+        self._area_labels = {}
+        self._area_bin = {}
+        self._dispatch_areas = {}
+        self._caption_areas = {}
         self._text_dat = None
         self._text_catalog = ()
         self._text_index_signature = None
@@ -144,6 +148,10 @@ class VoicePanel(QWidget):
         self.transport = AudioTransport(
             source="Dialogues",
             columns=["Index", "Channel", "Sectors", "Length", "Heard in"])
+        # Index/Channel/Length are compact; the final descriptive column
+        # absorbs the spare width whenever this tab is resized.
+        self.transport.list.fill_last_column = True
+        self.transport.list.horizontalHeader().setStretchLastSection(True)
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)
@@ -178,9 +186,12 @@ class VoicePanel(QWidget):
         top.addWidget(self.known)
         top.addWidget(self.extract)
         top.addStretch(1)
-        top.addWidget(self.transport.save_wav)
-        top.addWidget(self.transport.save_mp3)
-        top.addWidget(self.export_all)
+
+        saving = QHBoxLayout()
+        saving.addWidget(self.transport.save_wav)
+        saving.addWidget(self.transport.save_mp3)
+        saving.addWidget(self.export_all)
+        saving.addStretch(1)
 
         bottom = QHBoxLayout()
         bottom.addWidget(self.import_btn)
@@ -189,6 +200,7 @@ class VoicePanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
+        layout.addLayout(saving)
         layout.addWidget(self.transport, 1)
         layout.addLayout(bottom)
         layout.addWidget(self.status)
@@ -196,7 +208,7 @@ class VoicePanel(QWidget):
         caption = self.transport.timeline_caption
         self.transport.layout().removeWidget(caption)
         caption.setParent(self)
-        caption.setMinimumHeight(80)
+        caption.setMinimumHeight(132)
         layout.addWidget(caption)
         caption.show()
 
@@ -204,6 +216,8 @@ class VoicePanel(QWidget):
         """IDX entries to reverse-link to voice; called after the tree loads."""
         self._text_dat = dat_file
         self._text_catalog = tuple(catalog)
+        self._area_bin = {area: bin_name for area, _address, bin_name,
+                          _label in self._text_catalog if bin_name}
         self._text_index_signature = None
         self._start_text_index()
 
@@ -244,6 +258,14 @@ class VoicePanel(QWidget):
             self._text_error = error if finished else ""
             if not error:
                 voice_link.set_transcripts(image, rows)
+                caption_areas = {}
+                for (area, _address), timed in rows.items():
+                    bin_name = self._area_bin.get(area)
+                    if bin_name:
+                        for _label, channel, _start, _end, _text in timed:
+                            caption_areas.setdefault(channel, set()).add(bin_name)
+                self._caption_areas = caption_areas
+                self._refresh_heard_in()
             self.transport._update_timeline_text(self.transport.wave.position)
         if not self._text_indexing:
             self._text_timer.stop()
@@ -287,6 +309,39 @@ class VoicePanel(QWidget):
         except Exception:
             return {}
 
+    def set_area_labels(self, labels):
+        self._area_labels = {name.upper(): label
+                             for name, label in (labels or {}).items()}
+        self._refresh_heard_in()
+
+    def _heard_in(self, channel):
+        names = set(self._dispatch_areas.get(channel, ()))
+        names.update(self._caption_areas.get(channel, ()))
+        if not names:
+            names.update(self._areas().get(channel, ()))
+        return ", ".join(
+            f"{name} ({self._area_labels[name]})"
+            if self._area_labels.get(name) else name
+            for name in sorted(names)) or "-"
+
+    def _refresh_heard_in(self):
+        table = self.transport.list if hasattr(self, "transport") else None
+        if table is None:
+            return
+        try:
+            column = table.name_col + 1 + table.columns.index("Heard in")
+        except ValueError:
+            return
+        for row in range(table.rowCount()):
+            item = table.item(row, table.name_col)
+            cell = table.item(row, column)
+            if item is None or cell is None:
+                continue
+            channel = self._channel_of(item.data(KEY))
+            label = self._heard_in(channel)
+            cell.setText(label)
+            cell.setToolTip(label)
+
     def _scan_areas(self):
         if self._area_scan is not None and self._area_scan.isRunning():
             self._area_scan.wait(5000)
@@ -297,20 +352,8 @@ class VoicePanel(QWidget):
     def _areas_scanned(self, image, areas):
         if image != self.image:
             return
-        table = self.transport.list
-        first = table.name_col + 1
-        try:
-            column = first + table.columns.index("Heard in")
-        except ValueError:
-            return
-        for row in range(table.rowCount()):
-            item = table.item(row, table.name_col)
-            if item is None:
-                continue
-            channel = int(str(item.data(KEY)).rsplit(":", 1)[-1])
-            cell = table.item(row, column)
-            if cell is not None:
-                cell.setText(", ".join(areas.get(channel, ())) or "-")
+        self._dispatch_areas = areas
+        self._refresh_heard_in()
 
     def set_image(self, path):
         """Point the panel at a disc track, or a good VOICE.XA.
@@ -341,6 +384,8 @@ class VoicePanel(QWidget):
             self.status.setText(str(exc))
             return
         self.image = path
+        self._dispatch_areas = {}
+        self._caption_areas = {}
         self._text_index_signature = None
         self._cache.clear()
         self._edits.set_image(path)
@@ -360,7 +405,7 @@ class VoicePanel(QWidget):
                 key, f"Channel {channel}",
                 (number, channel, f"{count:,}",
                  clock(count * per_sector * 1000 // 18900),
-                 ", ".join(areas.get(channel, ())) or "-"),
+                 self._heard_in(channel)),
             ))
         self.transport.set_entries(entries, self.names.names())
         self.transport.column_tip(
