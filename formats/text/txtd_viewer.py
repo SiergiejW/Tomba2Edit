@@ -15,6 +15,7 @@ import formats.text.txtd as txtd
 from formats.audio import audio_export
 from disc import disc_library
 from formats.audio import xa
+from formats.audio.audio_transport import precise_clock
 from formats.audio.voice_edit import VoiceEditStore
 from gui.widgets.margin_text_edit import MarginTextEdit
 from formats.audio.transport_icons import set_glyph
@@ -400,6 +401,12 @@ class TXTDViewer(QWidget):
         set_glyph(self.stop_voice_button, "stop", "Stop")
         self.stop_voice_button.clicked.connect(self._stop_voice)
         self.stop_voice_button.setEnabled(False)
+        self.voice_time = QLabel("0:00.00 / 0:00.00")
+        self.voice_time.setToolTip(
+            "Clip time, followed by this voice's position on the full "
+            "Dialogues channel timeline")
+        self._voice_timeline = None
+        self._voice_timeline_rate = 0
 
         # The line's own sound, drawn, with the cursor running across
         # it - the same view the audio tabs use, and the same seek.
@@ -466,6 +473,7 @@ class TXTDViewer(QWidget):
         # notice both run long enough to make that row wrap messily.
         voice_side.addWidget(self.voice_wave)
         voice_side.addWidget(self.voice_seek)
+        voice_side.addWidget(self.voice_time)
         voice_side.addWidget(self.voice_note)
         voice_block = QHBoxLayout()
         voice_block.setContentsMargins(0, 0, 0, 0)
@@ -671,6 +679,12 @@ class TXTDViewer(QWidget):
     def on_tree_selection_changed(self):
         self._loading = True
         try:
+            self._stop_voice()
+            self._voice_timeline = None
+            self._voice_timeline_rate = 0
+            self.voice_wave.clear()
+            self.voice_seek.setRange(0, 0)
+            self._show_voice_time(0, 0)
             selected_indexes = self.tree.selectionModel().selectedIndexes()
             if not selected_indexes:
                 self._current_entry_item = None
@@ -1030,8 +1044,13 @@ class TXTDViewer(QWidget):
             return
         self._set_voice_note(note, warn=not samples)
         if not samples:
+            self._voice_timeline = None
+            self._show_voice_time(0)
             self.voice_wave.clear()
             return
+        self._voice_timeline = voice.clip_timeline(entry, master_index, rate)
+        self._voice_timeline_rate = rate
+        self._show_voice_time(0, len(samples) * 1000 // rate)
         wav = xa.wav_bytes(samples, rate, 1)
         self.voice_wave.set_envelope(peaks(wav), f"{len(samples) / rate:.1f}s")
         self._start_voice(wav)
@@ -1071,9 +1090,33 @@ class TXTDViewer(QWidget):
             self.voice_wave.set_position(ms / length if length > 0 else 0.0)
         self.voice_wave.set_clock(
             f"{ms / 1000:.1f}s / {length / 1000:.1f}s" if length > 0 else "")
+        self._show_voice_time(ms, length)
 
     def _voice_sized(self, ms):
         self.voice_seek.setRange(0, ms)
+        self._show_voice_time(self.voice_player.position(), ms)
+
+    def _show_voice_time(self, ms, length=None):
+        if length is None:
+            length = self.voice_player.duration()
+        shown = f"{precise_clock(ms)} / {precise_clock(length)}"
+        timeline = self._voice_timeline
+        if timeline:
+            channel, spans, total = timeline
+            current = spans[0]
+            for span in spans:
+                if ms >= span[0]:
+                    current = span
+                else:
+                    break
+            local_start, local_end, channel_start = current
+            clip_elapsed = max(0, min(ms - local_start,
+                                      local_end - local_start))
+            channel_ms = (channel_start + clip_elapsed
+                          * self._voice_timeline_rate // 18900)
+            shown += (f"  ·  Dialogues ch {channel} "
+                      f"{precise_clock(channel_ms)} / {precise_clock(total)}")
+        self.voice_time.setText(shown)
 
     def _voice_state(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
@@ -1089,11 +1132,14 @@ class TXTDViewer(QWidget):
     def _voice_slid(self, ms):
         length = self.voice_seek.maximum()
         self.voice_wave.set_position(ms / length if length > 0 else 0.0)
+        self._show_voice_time(ms, length)
 
     def _voice_scrubbed(self, fraction):
         length = self.voice_player.duration()
         if length > 0:
-            self.voice_player.setPosition(int(fraction * length))
+            position = int(fraction * length)
+            self.voice_seek.setValue(position)
+            self.voice_player.setPosition(position)
 
     def closeEvent(self, event):
         self._stop_voice()
@@ -1324,6 +1370,10 @@ class TXTDViewer(QWidget):
         self._edited_locations = set()
         self._exported_locations = set()
         self._original_entry_texts = {}
+        self._stop_voice()
+        self._voice_timeline = None
+        self._voice_timeline_rate = 0
+        self._show_voice_time(0, 0)
         self._voice_image = None
         self._voice_overlay = None
         if getattr(self, "_voice", None) is not None:

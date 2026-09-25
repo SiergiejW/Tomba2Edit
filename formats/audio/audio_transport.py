@@ -83,6 +83,13 @@ def clock(ms):
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def precise_clock(ms):
+    """m:ss.xx for short clips where a whole-second clock stays at 0:00."""
+    centiseconds = max(0, int(ms or 0)) // 10
+    return (f"{centiseconds // 6000}:"
+            f"{(centiseconds // 100) % 60:02d}.{centiseconds % 100:02d}")
+
+
 class _PeakJob(QThread):
     """One row's audio, fetched and reduced to an envelope.
 
@@ -286,7 +293,8 @@ class AudioTransport(QWidget):
         # has not moved yet, so reading its position would leave the
         # wave cursor sitting still until the mouse came up.
         self.position.valueChanged.connect(self._slider_moved)
-        self.time = QLabel("0:00 / 0:00")
+        self.time = QLabel("0:00.00 / 0:00.00" if source == "SFX"
+                           else "0:00 / 0:00")
 
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(0, 100)
@@ -347,25 +355,27 @@ class AudioTransport(QWidget):
         self.timeline_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.timeline_text.setTextFormat(Qt.TextFormat.RichText)
         self.timeline_text.setStyleSheet(
-            "color: white; font-size: 20px; font-weight: 500;")
+            "color: white; font-size: 20px; font-weight: 700;")
+        caption_font = self.timeline_text.font()
+        caption_font.setBold(True)
+        self.timeline_text.setFont(caption_font)
         caption_layout.addWidget(self.timeline_area, 0,
                                  Qt.AlignmentFlag.AlignTop)
         caption_layout.addWidget(self.timeline_text, 1)
         self.timeline_caption.hide()
 
-        # The clock is drawn in the corner of the wave rather than
-        # sitting beside the slider: as a label it is a different
-        # width for every track, and on SFX that pushed the row it
-        # was in out of line with everything else.
-        self.time.setVisible(source == "Dialogues")
+        # Keep the waveform and seek slider the same width. Their
+        # cursors represent the same fraction, so neither gets a clock
+        # label consuming horizontal space on only one of those rows.
+        self.time.setVisible(source in ("Dialogues", "SFX"))
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
-        if source == "Dialogues":
-            self.time.setMinimumWidth(105)
-            seek.addWidget(self.time)
         row = QHBoxLayout()
         for button in (previous, self.play_button, stop, following):
             row.addWidget(button)
+        if source in ("Dialogues", "SFX"):
+            self.time.setMinimumWidth(112 if source == "Dialogues" else 126)
+            row.addWidget(self.time)
         row.addStretch(1)
         if self._has_pitch:
             row.addWidget(QLabel("Pitch"))
@@ -1092,8 +1102,7 @@ class AudioTransport(QWidget):
     def _slider_moved(self, ms):
         length = self.position.maximum()
         fraction = ms / length if length > 0 else 0.0
-        if self.source == "Dialogues":
-            self.time.setText(f"{clock(ms)} / {clock(length)}")
+        self._set_time(ms, length)
         if not self._syncing:
             self._start_at = fraction
             self._start_pending = self.player.playbackState() == \
@@ -1116,8 +1125,7 @@ class AudioTransport(QWidget):
             finally:
                 self._syncing = False
         length = self.player.duration()
-        self.time.setText(f"{clock(ms)} / {clock(length)}")
-        self.wave.set_clock(f"{clock(ms)} / {clock(length)}")
+        self._set_time(ms, length)
         # The big view's cursor is the same position as the slider's,
         # so it is driven from the same place rather than from a timer
         # of its own that could drift away from it.
@@ -1141,8 +1149,13 @@ class AudioTransport(QWidget):
         finally:
             self._syncing = False
         self._apply_start()
-        self.time.setText(f"{clock(self.player.position())} / {clock(ms)}")
-        self.wave.set_clock(f"{clock(self.player.position())} / {clock(ms)}")
+        self._set_time(self.player.position(), ms)
+
+    def _set_time(self, position, duration):
+        fmt = precise_clock if self.source == "SFX" else clock
+        shown = f"{fmt(position)} / {fmt(duration)}"
+        self.time.setText(shown)
+        self.wave.set_clock(shown)
 
     def _state_changed(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState

@@ -669,3 +669,46 @@ class VoiceLink:
             f"master {master_index}, channel {channel}, {which} "
             f"({count} box{'es' if count > 1 else ''}) - "
             f"{len(samples) / rate:.2f}s")
+
+    def clip_timeline(self, entry, master_index, rate):
+        """Map this entry's playback milliseconds to its full channel.
+
+        Multiple TXTD boxes are separate table clips with a short silence
+        inserted between them. That silence has no position on the full
+        Dialogues timeline, so return one span per actual clip.
+        """
+        if not rate or not self.ready():
+            return None
+        extra = entry.get("extra")
+        if extra is None or extra == NO_VOICE:
+            return None
+        found = (self.tables.get(master_index) or self.default_table
+                 or self._fallback_found(master_index))
+        if found is None:
+            return None
+        entries, channel = found
+        first = extra & 0xFF
+        local_ms = 0
+        spans = []
+        for index in range(first, min(first + segments(entry.get("text")),
+                                      len(entries))):
+            sectors = voice.clip_sectors(entries[index], channel,
+                                         self.sectors)
+            if not sectors:
+                continue
+            if spans:
+                local_ms += int(GAP * 1000)
+            start, _length = entries[index]
+            clip_ms = len(sectors) * xa.SAMPLES_PER_SECTOR * 1000 // rate
+            # VoicePanel's Dialogues timeline uses 18,900 Hz per XA
+            # sector; use the same scale for the cross-reference clock.
+            channel_ms = start * xa.SAMPLES_PER_SECTOR * 1000 // 18900
+            spans.append((local_ms, local_ms + clip_ms, channel_ms))
+            local_ms += clip_ms
+        if not spans:
+            return None
+        channel_sectors = max(0, (self.sectors + voice.BLOCK - 1 - channel)
+                              // voice.BLOCK)
+        channel_total = (channel_sectors * xa.SAMPLES_PER_SECTOR
+                         * 1000 // 18900)
+        return channel, spans, channel_total

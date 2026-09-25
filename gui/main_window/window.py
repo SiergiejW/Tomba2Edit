@@ -751,6 +751,7 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
         if not self._confirm_project_before_close(event):
             event.ignore()
             return
+        self.voice_panel.reset_disc()
         if self.iso_handler:
             self.iso_handler.cleanup()
         # An open .t2p is unpacked into a temp directory; it has been
