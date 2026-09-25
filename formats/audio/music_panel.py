@@ -561,7 +561,13 @@ class MusicPanel(QWidget):
         return None
 
     def _export_midi(self):
-        from formats.audio import midi
+        """Export, through a dialog that plays it first.
+
+        A SEQ's program numbers mean the game's sound bank, so the .mid
+        sounds like something else entirely wherever it is opened. The
+        dialog is there to find that out before saving rather than
+        after - see formats.audio.midi_export."""
+        from formats.audio.midi_export import MidiExportDialog
 
         chosen = self._selected_sequence()
         if chosen is None:
@@ -571,22 +577,22 @@ class MusicPanel(QWidget):
         name = self.seq_names.names().get(key) or (
             f"{origin} slot {slot}" if slot is not None else f"{origin} {at:X}")
         suggested = "".join(c for c in name if c.isalnum() or c in " -_") + ".mid"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export sequence as MIDI", suggested,
-            "MIDI file (*.mid);;All files (*)")
-        if not path:
-            return
         try:
-            with open(path, "wb") as f:
-                f.write(midi.from_seq(data, at))
-        except (OSError, ValueError) as exc:
-            self.status.setText(f"Could not write that: {exc}")
+            dialog = MidiExportDialog(data, at, suggested, parent=self)
+        except (ValueError, OSError) as exc:
+            self.status.setText(f"Could not read that sequence: {exc}")
+            return
+        if not dialog.exec() or not dialog.saved_path:
             return
         resolution, _tempo = seq.header(data, at)
+        extra = (f" Its sound went beside it as "
+                 f"{os.path.basename(dialog.saved_audio)}."
+                 if dialog.saved_audio else "")
         self.status.setText(
-            f"Wrote {os.path.basename(path)} - {resolution} ticks per beat. "
-            "Keep that division when you save it back, and keep it a single "
-            "track: a SEQ has no way to express either being different.")
+            f"Wrote {os.path.basename(dialog.saved_path)} - {resolution} "
+            f"ticks per beat.{extra} Keep that division when you save it "
+            "back, and keep it a single track: a SEQ has no way to express "
+            "either being different.")
 
     def _edit_notes(self):
         """Open the piano roll on the selected sequence."""

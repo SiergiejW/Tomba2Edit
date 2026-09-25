@@ -336,6 +336,11 @@ class VoicePanel(QWidget):
             self._pending_save = None
             self._write(path, wav)
         elif play:
+            # The big view was saying "nothing playing" through a whole
+            # line, because nothing ever handed it the audio.
+            channel = self._channel_of(key)
+            name = self.names.get(key) if self.names else ""
+            self.transport.show_wave(wav, name or f"Channel {channel}")
             self.transport.play_bytes(wav)
 
     # --- naming and saving --------------------------------------------

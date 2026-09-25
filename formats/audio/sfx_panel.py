@@ -19,6 +19,7 @@ from formats.audio import audio_export
 from formats.audio import sfx
 from formats.audio import voice
 from formats.audio import xa
+from gui.widgets.waveform import peaks
 from gui.widgets import mascot
 from formats.audio.audio_transport import AudioTransport
 from gui.widgets.name_store import NameStore
@@ -54,8 +55,14 @@ class SfxPanel(QWidget):
         self.pick.clicked.connect(self._browse)
 
         self.transport = AudioTransport(
-            source="SFX",
+            source="SFX", previews=True,
             columns=["Index", "Bank", "Slot", "Length", "Loop", "Rate"], pitch=True)
+        # Worth having here and not on Music: an effect's waveform is
+        # already in memory once TOMBA2.SND is open, so a thumbnail is
+        # a decode of a few kilobytes with no disc read behind it. They
+        # fill in one at a time, for the rows on screen only, on a
+        # worker thread - scrolling never waits for them.
+        self.transport.enable_previews(self._preview)
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save_one)
@@ -183,6 +190,12 @@ class SfxPanel(QWidget):
             # names it; the reference rate otherwise.
             self._cache[key] = xa.wav_bytes(samples, self._rates.get(key, sfx.RATE), 1)
         return self._cache[key]
+
+    def _preview(self, key):
+        """This waveform's envelope, for the thumbnail column."""
+        if key not in self._by_key or self._snd is None:
+            return None
+        return peaks(self._wav(key))
 
     def _wanted(self, key):
         if key not in self._by_key or self._snd is None:

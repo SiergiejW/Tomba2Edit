@@ -264,6 +264,11 @@ class AudioTransport(QWidget):
         self.position.setRange(0, 0)
         self.position.sliderPressed.connect(self._grab)
         self.position.sliderReleased.connect(self._release)
+        # Dragging the slider moves the wave cursor as it goes. Not
+        # through the player: while a drag is in progress the player
+        # has not moved yet, so reading its position would leave the
+        # wave cursor sitting still until the mouse came up.
+        self.position.valueChanged.connect(self._slider_moved)
         self.time = QLabel("0:00 / 0:00")
 
         self.volume = QSlider(Qt.Orientation.Horizontal)
@@ -312,9 +317,13 @@ class AudioTransport(QWidget):
             "to a moment.")
         self.wave.scrubbed.connect(self._wave_scrubbed)
 
+        # The clock is drawn in the corner of the wave rather than
+        # sitting beside the slider: as a label it is a different
+        # width for every track, and on SFX that pushed the row it
+        # was in out of line with everything else.
+        self.time.setVisible(False)
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
-        seek.addWidget(self.time)
         row = QHBoxLayout()
         for button in (previous, self.play_button, stop, following):
             row.addWidget(button)
@@ -359,7 +368,12 @@ class AudioTransport(QWidget):
         return held or None
 
     def _want_peaks(self, *_args):
-        if self._peak_fetch is not None and self._previews:
+        # Asked of the lists, not of the transport: previews are per
+        # list, and Music turns them off for its tracks while leaving
+        # them on for its sequences.
+        if self._peak_fetch is None:
+            return
+        if any(table.name_col for table in self.lists):
             self._peak_timer.start()
 
     def _visible_keys(self, table):
@@ -943,6 +957,10 @@ class AudioTransport(QWidget):
         only takes effect on the next play."""
         self.player.setPlaybackRate(1 + value / 100)
 
+    def _slider_moved(self, ms):
+        length = self.position.maximum()
+        self.wave.set_position(ms / length if length > 0 else 0.0)
+
     def _grab(self):
         self._scrubbing = True
 
@@ -953,16 +971,19 @@ class AudioTransport(QWidget):
     def _moved(self, ms):
         if not self._scrubbing:
             self.position.setValue(ms)
-        self.time.setText(f"{clock(ms)} / {clock(self.player.duration())}")
+        length = self.player.duration()
+        self.time.setText(f"{clock(ms)} / {clock(length)}")
+        self.wave.set_clock(f"{clock(ms)} / {clock(length)}")
         # The big view's cursor is the same position as the slider's,
         # so it is driven from the same place rather than from a timer
         # of its own that could drift away from it.
-        length = self.player.duration()
-        self.wave.set_position(ms / length if length > 0 else 0.0)
+        if not self._scrubbing:
+            self.wave.set_position(ms / length if length > 0 else 0.0)
 
     def _sized(self, ms):
         self.position.setRange(0, ms)
         self.time.setText(f"{clock(self.player.position())} / {clock(ms)}")
+        self.wave.set_clock(f"{clock(self.player.position())} / {clock(ms)}")
 
     def _state_changed(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState

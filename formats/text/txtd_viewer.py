@@ -1,6 +1,7 @@
 import re
 
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtCore import (QBuffer, QByteArray, Qt, QThread, pyqtSignal)
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtGui import (
     QStandardItem, QStandardItemModel, QFont, QIcon, QBrush, QColor,
     QSyntaxHighlighter, QTextCharFormat,
@@ -8,7 +9,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QTreeView, QWidget, QVBoxLayout, QSplitter, QMessageBox,
     QLabel, QTextEdit, QHBoxLayout, QPushButton, QCheckBox, QComboBox,
-    QFileDialog,
+    QFileDialog, QSlider,
 )
 import formats.text.txtd as txtd
 from formats.audio import audio_export
@@ -20,7 +21,8 @@ from formats.audio.transport_icons import set_glyph
 from formats.text.font_preview import FontPreview
 from formats.audio.voice_import import confirm_length
 from gui.widgets import mascot
-from gui.widgets import panel_title
+from gui.widgets import mascot, panel_title
+from gui.widgets.waveform import WaveView, peaks
 from gui import theme
 
 
@@ -386,6 +388,36 @@ class TXTDViewer(QWidget):
         set_glyph(self.play_voice_button, "play", "Play this line's voice")
         self.play_voice_button.clicked.connect(self._play_voice)
         self.play_voice_button.setEnabled(False)
+        self.stop_voice_button = QPushButton()
+        set_glyph(self.stop_voice_button, "stop", "Stop")
+        self.stop_voice_button.clicked.connect(self._stop_voice)
+        self.stop_voice_button.setEnabled(False)
+
+        # The line's own sound, drawn, with the cursor running across
+        # it - the same view the audio tabs use, and the same seek.
+        self.voice_wave = WaveView()
+        self.voice_wave.setToolTip(
+            "This line's voice. Click or drag to jump to a moment.")
+        self.voice_wave.scrubbed.connect(self._voice_scrubbed)
+        self.voice_seek = QSlider(Qt.Orientation.Horizontal)
+        self.voice_seek.setRange(0, 0)
+        self.voice_seek.setToolTip("Where the voice has got to")
+        self.voice_seek.sliderPressed.connect(self._voice_grab)
+        self.voice_seek.sliderReleased.connect(self._voice_release)
+        self.voice_seek.valueChanged.connect(self._voice_slid)
+        self._voice_scrubbing = False
+
+        # Played through a media player rather than straight into an
+        # audio sink: a sink has no position, no length and no seek, so
+        # there would be nothing for a timeline or a cursor to follow.
+        self.voice_player = QMediaPlayer(self)
+        self.voice_output = QAudioOutput(self)
+        self.voice_player.setAudioOutput(self.voice_output)
+        self.voice_output.setVolume(0.9)
+        self.voice_player.positionChanged.connect(self._voice_moved)
+        self.voice_player.durationChanged.connect(self._voice_sized)
+        self.voice_player.playbackStateChanged.connect(self._voice_state)
+        self._voice_buffer = None
         self.export_voice_button = QPushButton("Export line...")
         self.export_voice_button.setToolTip(
             "Save this line's own voice clip(s) as a WAV")
@@ -399,15 +431,20 @@ class TXTDViewer(QWidget):
         self.import_voice_button.clicked.connect(self._import_voice_line)
         self.import_voice_button.setEnabled(False)
         self.autoplay_voice = QCheckBox("Autoplay")
-        self.autoplay_voice.setChecked(False)
+        self.autoplay_voice.setChecked(True)
         self.autoplay_voice.setToolTip(
             "Play the line's voice as soon as it is selected")
         self.voice_note = QLabel("")
         self.voice_note.setWordWrap(True)
-        voice_row.addWidget(self.play_voice_button)
         voice_row.addWidget(self.export_voice_button)
         voice_row.addWidget(self.import_voice_button)
         voice_row.addWidget(self.autoplay_voice)
+        # Play leads the row: it is what this block is for, and it was
+        # sitting fourth behind three file pickers. Inserted rather
+        # than appended because the buttons are built after the row is
+        # started.
+        voice_row.insertWidget(0, self.stop_voice_button)
+        voice_row.insertWidget(0, self.play_voice_button)
         voice_row.addStretch(1)
         # Zippo stands to the left of the whole voice block - the
         # buttons, and under them whichever master and channel the
@@ -419,6 +456,8 @@ class TXTDViewer(QWidget):
         # On its own line rather than crammed beside the buttons - a
         # real status ("master 2, channel 9...") or the one-time resolve
         # notice both run long enough to make that row wrap messily.
+        voice_side.addWidget(self.voice_wave)
+        voice_side.addWidget(self.voice_seek)
         voice_side.addWidget(self.voice_note)
         voice_block = QHBoxLayout()
         voice_block.setContentsMargins(0, 0, 0, 0)
@@ -976,16 +1015,71 @@ class TXTDViewer(QWidget):
                                  warn=True)
             return
         self._set_voice_note(note, warn=not samples)
-        if samples:
-            self._voice_sink = _play_pcm(samples, rate)
+        if not samples:
+            self.voice_wave.clear()
+            return
+        wav = xa.wav_bytes(samples, rate, 1)
+        self.voice_wave.set_envelope(peaks(wav), f"{len(samples) / rate:.1f}s")
+        self._start_voice(wav)
+
+    def _start_voice(self, wav):
+        player = self.voice_player
+        player.stop()
+        # Detached before the old buffer goes: replacing one the player
+        # still holds is a use-after-free, and stepping quickly through
+        # lines is exactly what invites it.
+        player.setSourceDevice(None)
+        if self._voice_buffer is not None:
+            self._voice_buffer.close()
+            self._voice_buffer.deleteLater()
+        self._voice_buffer = QBuffer(player)
+        self._voice_buffer.setData(QByteArray(wav))
+        self._voice_buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+        player.setSourceDevice(self._voice_buffer)
+        player.play()
 
     def _stop_voice(self):
+        player = getattr(self, "voice_player", None)
+        if player is not None:
+            player.stop()
+        # The old audio-sink path, for anything still holding one.
         playing = getattr(self, "_voice_sink", None)
         if playing:
             sink, buffer = playing
             sink.stop()
             buffer.close()
         self._voice_sink = None
+
+    def _voice_moved(self, ms):
+        length = self.voice_player.duration()
+        if not self._voice_scrubbing:
+            self.voice_seek.setValue(ms)
+            self.voice_wave.set_position(ms / length if length > 0 else 0.0)
+        self.voice_wave.set_clock(
+            f"{ms / 1000:.1f}s / {length / 1000:.1f}s" if length > 0 else "")
+
+    def _voice_sized(self, ms):
+        self.voice_seek.setRange(0, ms)
+
+    def _voice_state(self, state):
+        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self.stop_voice_button.setEnabled(playing)
+
+    def _voice_grab(self):
+        self._voice_scrubbing = True
+
+    def _voice_release(self):
+        self._voice_scrubbing = False
+        self.voice_player.setPosition(self.voice_seek.value())
+
+    def _voice_slid(self, ms):
+        length = self.voice_seek.maximum()
+        self.voice_wave.set_position(ms / length if length > 0 else 0.0)
+
+    def _voice_scrubbed(self, fraction):
+        length = self.voice_player.duration()
+        if length > 0:
+            self.voice_player.setPosition(int(fraction * length))
 
     def closeEvent(self, event):
         self._stop_voice()

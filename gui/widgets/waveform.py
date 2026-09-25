@@ -27,7 +27,7 @@ the caller. Nothing here decodes anything.
 """
 import struct
 
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QSizePolicy, QStyledItemDelegate, QWidget
 
@@ -176,16 +176,18 @@ def _draw_notes(painter, rect, preview, played):
         low, high = middle - 6, middle + 6
     rows = max(1, high - low + 1)
     row_height = max(1.0, rect.height() / rows)
-    edge = rect.left() + played * rect.width()
     for tick, length, channel, key in preview.notes:
         x = rect.left() + tick / preview.span * rect.width()
         width = max(1.0, length / preview.span * rect.width())
         y = rect.bottom() - (key - low + 1) * row_height
         colour = QColor(CHANNEL_COLOURS[channel % 16])
-        if played and x + width < edge:
-            colour = colour.lighter(115)
-        elif played:
-            colour.setAlpha(150)
+        # `played` is 0 or 1 here, not a position: the view draws the
+        # whole strip twice and clips, so each picture is entirely one
+        # state or the other.
+        if played >= 1.0:
+            colour = colour.lighter(125)
+        else:
+            colour.setAlpha(140)
         painter.fillRect(QRectF(x, y, width, max(1.0, row_height - 0.5)),
                          colour)
 
@@ -241,6 +243,16 @@ class WaveView(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview = None             # an envelope, or a Notes
         self.position = 0.0             # 0..1
+        self.clock = ""
+        # The drawn envelope, kept as two pictures - one in the colour
+        # of the part still to come, one in the colour of the part
+        # already played. Moving the cursor is then two blits and a
+        # line rather than a walk over a thousand buckets, which is
+        # the difference between a cursor that glides and one that
+        # stutters along behind the sound.
+        self._ahead = None
+        self._behind = None
+        self._drawn = None              # what those two were built for
         self.caption = ""
         self._dragging = False
 
@@ -249,7 +261,14 @@ class WaveView(QWidget):
     def set_preview(self, preview, caption=""):
         """An envelope from peaks(), or a Notes. Either draws."""
         self.preview, self.caption = preview, caption
+        self._ahead = self._behind = self._drawn = None
         self.update()
+
+    def set_clock(self, text):
+        """The time readout drawn in the corner of the view."""
+        if text != self.clock:
+            self.clock = text
+            self.update(QRect(self.width() - 130, 0, 130, 18))
 
     def set_envelope(self, envelope, caption=""):
         self.set_preview(envelope, caption)
@@ -265,18 +284,23 @@ class WaveView(QWidget):
     def clear(self):
         self.preview = None
         self.caption = ""
+        self.clock = ""
         self.position = 0.0
+        self._ahead = self._behind = self._drawn = None
         self.update()
 
     def set_position(self, fraction):
         fraction = 0.0 if fraction is None else max(0.0, min(1.0, fraction))
-        # Only repaint when it would actually look different: this is
-        # driven from positionChanged, which fires many times a second.
-        if abs(fraction - self.position) * max(1, self.width()) >= 1:
-            self.position = fraction
-            self.update()
-        else:
-            self.position = fraction
+        was = int(self.position * self.width())
+        now = int(fraction * self.width())
+        self.position = fraction
+        if was == now:
+            return
+        # Only the strip the cursor moved across, not the whole view:
+        # this is driven from positionChanged, many times a second, and
+        # a full repaint of a widget this wide is what made it lag.
+        left, right = (was, now) if was < now else (now, was)
+        self.update(QRect(left - 6, 0, (right - left) + 13, self.height()))
 
     def has_content(self):
         return bool(self.preview)
@@ -302,29 +326,65 @@ class WaveView(QWidget):
     def mouseReleaseEvent(self, _event):
         self._dragging = False
 
+    def resizeEvent(self, event):
+        self._ahead = self._behind = self._drawn = None
+        super().resizeEvent(event)
+
     # -- painting ------------------------------------------------------
 
-    def paintEvent(self, _event):
+    def _build(self, colours):
+        """Draw the envelope twice, once in each colour."""
+        token = (id(self.preview), self.width(), self.height(),
+                 theme.current_theme())
+        if self._drawn == token and self._ahead is not None:
+            return
+        ratio = self.devicePixelRatioF()
+        area = QRectF(0, 2, self.width(), self.height() - 4)
+        pictures = []
+        for played in (0.0, 1.0):
+            picture = QPixmap(int(self.width() * ratio),
+                              int(self.height() * ratio))
+            picture.setDevicePixelRatio(ratio)
+            picture.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(picture)
+            draw_preview(painter, area, self.preview, played, colours)
+            painter.end()
+            pictures.append(picture)
+        self._ahead, self._behind = pictures
+        self._drawn = token
+
+    def paintEvent(self, event):
         painter = QPainter(self)
         colours = _wave_colours()
-        painter.fillRect(self.rect(), colours["ground"])
-        area = QRectF(self.rect()).adjusted(0, 2, 0, -2)
+        painter.fillRect(event.rect(), colours["ground"])
 
-        if self.preview:
-            draw_preview(painter, area, self.preview, self.position, colours)
-        else:
+        if not self.preview:
             painter.setPen(QPen(colours["text"]))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                              "Nothing playing")
             return
 
+        self._build(colours)
+        x = int(self.position * self.width())
+        painter.drawPixmap(0, 0, self._ahead)
+        # The played part is the same picture in the other colour, cut
+        # off at the cursor.
+        painter.save()
+        painter.setClipRect(QRect(0, 0, x, self.height()))
+        painter.drawPixmap(0, 0, self._behind)
+        painter.restore()
+
         if self.caption:
+            painter.setPen(QPen(colours["text"]))
+            painter.drawText(self.rect().adjusted(6, 2, -136, -2),
+                             Qt.AlignmentFlag.AlignTop
+                             | Qt.AlignmentFlag.AlignLeft, self.caption)
+        if self.clock:
             painter.setPen(QPen(colours["text"]))
             painter.drawText(self.rect().adjusted(6, 2, -6, -2),
                              Qt.AlignmentFlag.AlignTop
-                             | Qt.AlignmentFlag.AlignLeft, self.caption)
+                             | Qt.AlignmentFlag.AlignRight, self.clock)
 
-        x = int(self.position * self.width())
         painter.setPen(QPen(colours["cursor"], 1))
         painter.drawLine(x, 0, x, self.height())
         painter.fillRect(x - 3, 0, 7, 5, colours["cursor"])

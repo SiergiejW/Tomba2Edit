@@ -23,6 +23,14 @@ that pretends to be exact would be worse than one that is honestly
 rough - what this answers is "which instrument is that, and is it the
 one I want", not "is this master quality".
 
+Two file formats, one renderer. .sf2 is what people download; .dls is
+what Windows already has - gm.dls, the sound set behind the Microsoft
+GS Wavetable synth, sitting in System32\\drivers on every machine. They
+are different formats but the same idea, so the DLS reader converts
+into the SF2 reader's units and everything downstream is shared. That
+is what lets the export dialog open with a General MIDI voice already
+chosen instead of asking for a file nobody has yet.
+
 Nothing here needs a library. numpy makes it quick; without it the
 renderer refuses rather than taking minutes, because a preview nobody
 waits for is not a preview.
@@ -142,8 +150,46 @@ class Sample:
         self.correction = correction
 
 
+def load(path):
+    """Whichever kind of sound set `path` is."""
+    with open(path, "rb") as f:
+        head = f.read(12)
+    if head[:4] != b"RIFF":
+        raise SoundFontError("That isn't a sound set this can read.")
+    if head[8:12] == b"DLS ":
+        return DlsFont(path)
+    if head[8:12] == b"sfbk":
+        return SoundFont(path)
+    raise SoundFontError(
+        "That is a RIFF file, but not a SoundFont (.sf2) or a "
+        "downloadable sound set (.dls).")
+
+
+def system_fonts():
+    """[(label, path)] of sound sets already on this machine.
+
+    Windows ships gm.dls, which is the General MIDI voice every other
+    program on the machine plays a .mid through - so it is the right
+    thing to preview against, and the right default."""
+    out = []
+    for path, label in (
+            (os.path.join(os.environ.get("SystemRoot", r"C:\\Windows"),
+                          "System32", "drivers", "gm.dls"),
+             "Windows General MIDI (gm.dls)"),
+            ("/usr/share/sounds/sf2/FluidR3_GM.sf2", "FluidR3 General MIDI"),
+            ("/usr/share/soundfonts/default.sf2", "System default"),
+            ("/Library/Audio/Sounds/Banks/gs_instruments.dls",
+             "macOS General MIDI"),
+    ):
+        if os.path.isfile(path):
+            out.append((label, path))
+    return out
+
+
 class SoundFont:
     """An .sf2, read far enough to play it."""
+
+    kind = "sf2"
 
     def __init__(self, path):
         self.path = path
@@ -364,6 +410,301 @@ class SoundFont:
             if zone.matches(key, velocity):
                 return zone
         return zones[0]
+
+
+# ----------------------------------------------------------------------
+# DLS
+# ----------------------------------------------------------------------
+#
+# The same idea in a different shape. An instrument holds regions; a
+# region names a key range, a velocity range, a wave and how to tune
+# it. The wave pool is a list of ordinary RIFF WAVEs, found through a
+# cue table of offsets.
+#
+# Everything is converted into the generator units the SF2 side
+# already speaks, so Zone, Sample and the renderer are shared. The
+# conversions worth naming:
+#
+#     attenuation   DLS gain is 1/655360 dB and positive means louder;
+#                   SF2 wants centibels of attenuation, positive
+#                   quieter. So cB = -gain / 65536.
+#     envelope      DLS articulation carries timecents as 16.16 fixed,
+#                   and a sustain LEVEL in 0.1% units where SF2 wants
+#                   an attenuation in centibels.
+#     drums         the high bit of the bank number, not a bank of its
+#                   own - mapped onto SF2's bank 128 so one lookup
+#                   serves both formats.
+
+CONN_DST_ATTENUATION = 0x0001
+CONN_DST_PAN = 0x0004
+CONN_DST_EG1_ATTACK = 0x0206
+CONN_DST_EG1_DECAY = 0x0207
+CONN_DST_EG1_RELEASE = 0x0209
+CONN_DST_EG1_SUSTAIN = 0x020A
+CONN_SRC_NONE = 0x0000
+
+DLS_DRUM_FLAG = 0x80000000
+
+
+class DlsFont(SoundFont):
+    """A .dls - Windows' gm.dls and anything shaped like it."""
+
+    kind = "dls"
+
+    def _parse(self, blob):
+        if blob[:4] != b"RIFF" or blob[8:12] != b"DLS ":
+            raise SoundFontError("That isn't a DLS sound set.")
+        if np is None:
+            raise SoundFontError(
+                "Reading a sound set needs numpy, which isn't installed.")
+        end = min(len(blob), 8 + struct.unpack_from("<I", blob, 4)[0])
+        top = _chunks(blob, 12, end)
+
+        lins = wvpl = ptbl = info = None
+        for tag, start, size in top:
+            if tag == b"ptbl":
+                ptbl = (start, size)
+            elif tag == b"LIST":
+                kind = blob[start:start + 4]
+                if kind == b"lins":
+                    lins = (start + 4, start + size)
+                elif kind == b"wvpl":
+                    wvpl = (start + 4, start + size)
+                elif kind == b"INFO":
+                    info = (start + 4, start + size)
+        if lins is None or wvpl is None or ptbl is None:
+            raise SoundFontError(
+                "That DLS has no instruments or no wave pool in it.")
+
+        self.title = self._title(blob, info)
+        self._read_waves(blob, wvpl, ptbl)
+        self._read_instruments(blob, lins)
+
+    def _read_waves(self, blob, wvpl, ptbl):
+        """Every wave in the pool, concatenated into one float array.
+
+        One array rather than one per wave so Sample keeps meaning the
+        same thing it does for an .sf2 - a start and an end into a
+        pool - and the renderer needs no idea which format it came
+        from."""
+        start, size = ptbl
+        _cb, cues = struct.unpack_from("<II", blob, start)
+        offsets = [struct.unpack_from("<I", blob, start + 8 + i * 4)[0]
+                   for i in range(cues)]
+        base = wvpl[0]
+
+        pool = []
+        self.samples = []
+        self._wave_loops = []
+        at = 0
+        for offset in offsets:
+            here = base + offset
+            if here + 12 > len(blob) or blob[here:here + 4] != b"LIST":
+                self.samples.append(None)
+                self._wave_loops.append(None)
+                continue
+            size = struct.unpack_from("<I", blob, here + 4)[0]
+            body = _chunks(blob, here + 12, here + 8 + size)
+            fmt = data = wsmp = None
+            for tag, s0, n in body:
+                if tag == b"fmt ":
+                    fmt = (s0, n)
+                elif tag == b"data":
+                    data = (s0, n)
+                elif tag == b"wsmp":
+                    wsmp = (s0, n)
+            if fmt is None or data is None:
+                self.samples.append(None)
+                self._wave_loops.append(None)
+                continue
+            _tag, channels, rate, _br, _align, bits = struct.unpack_from(
+                "<HHIIHH", blob, fmt[0])
+            frames = self._pcm(blob, data, channels, bits)
+            pool.append(frames)
+            self.samples.append(Sample("wave", at, at + len(frames), 0, 0,
+                                       rate, 60, 0))
+            self._wave_loops.append(
+                self._wsmp(blob, wsmp) if wsmp else None)
+            at += len(frames)
+        self.pcm = (np.concatenate(pool) if pool
+                    else np.zeros(1, dtype=np.float32))
+
+    @staticmethod
+    def _pcm(blob, data, channels, bits):
+        start, size = data
+        if bits == 8:
+            raw = np.frombuffer(blob, dtype=np.uint8, count=size,
+                                offset=start).astype(np.float32)
+            frames = (raw - 128.0) / 128.0
+        else:
+            count = size // 2
+            frames = np.frombuffer(blob, dtype="<i2", count=count,
+                                   offset=start).astype(np.float32) / 32768.0
+        if channels > 1:
+            usable = (len(frames) // channels) * channels
+            frames = frames[:usable].reshape(-1, channels).mean(axis=1)
+        return np.ascontiguousarray(frames, dtype=np.float32)
+
+    @staticmethod
+    def _wsmp(blob, wsmp):
+        """(unity, fine, attenuation cB, loop start, loop end) or None."""
+        start, size = wsmp
+        cb, unity, fine, gain, _opts, loops = struct.unpack_from(
+            "<IHhiII", blob, start)
+        loop_start = loop_end = 0
+        if loops:
+            at = start + cb
+            if at + 16 <= start + size:
+                _lcb, _kind, begin, length = struct.unpack_from(
+                    "<IIII", blob, at)
+                loop_start, loop_end = begin, begin + length
+        return (unity, fine, max(0, -gain // 65536), loop_start, loop_end,
+                bool(loops))
+
+    def _read_instruments(self, blob, lins):
+        self.presets = {}
+        self.preset_names = {}
+        for tag, start, size in _chunks(blob, *lins):
+            if tag != b"LIST" or blob[start:start + 4] != b"ins ":
+                continue
+            self._read_instrument(blob, start + 4, start + size)
+
+    def _read_instrument(self, blob, at, end):
+        insh = lrgn = info = None
+        art = {}
+        for tag, start, size in _chunks(blob, at, end):
+            if tag == b"insh":
+                insh = start
+            elif tag == b"LIST":
+                kind = blob[start:start + 4]
+                if kind == b"lrgn":
+                    lrgn = (start + 4, start + size)
+                elif kind in (b"lart", b"lar2"):
+                    art = self._articulation(blob, start + 4, start + size)
+                elif kind == b"INFO":
+                    info = (start + 4, start + size)
+        if insh is None or lrgn is None:
+            return
+        _regions, bank, program = struct.unpack_from("<III", blob, insh)
+        key = (DRUM_BANK if bank & DLS_DRUM_FLAG else (bank >> 8) & 0x7F,
+               program & 0x7F)
+
+        zones = []
+        for tag, start, size in _chunks(blob, *lrgn):
+            if tag != b"LIST" or blob[start:start + 4] not in (b"rgn ",
+                                                               b"rgn2"):
+                continue
+            zone = self._read_region(blob, start + 4, start + size, art)
+            if zone is not None:
+                zones.append(zone)
+        if zones:
+            self.presets[key] = zones
+            self.preset_names[key] = self._name(blob, info) or f"{key}"
+
+    def _read_region(self, blob, at, end, inherited):
+        rgnh = wsmp = wlnk = None
+        art = dict(inherited)
+        for tag, start, size in _chunks(blob, at, end):
+            if tag == b"rgnh":
+                rgnh = start
+            elif tag == b"wsmp":
+                wsmp = (start, size)
+            elif tag == b"wlnk":
+                wlnk = start
+            elif tag == b"LIST" and blob[start:start + 4] in (b"lart",
+                                                              b"lar2"):
+                art.update(self._articulation(blob, start + 4, start + size))
+        if rgnh is None or wlnk is None:
+            return None
+        key_low, key_high, vel_low, vel_high = struct.unpack_from(
+            "<HHHH", blob, rgnh)
+        index = struct.unpack_from("<HHII", blob, wlnk)[3]
+        if not 0 <= index < len(self.samples) or self.samples[index] is None:
+            return None
+        sample = self.samples[index]
+
+        gens = dict(DEFAULTS)
+        gens.update(art)
+        gens[GEN_KEY_RANGE] = (key_low, key_high)
+        gens[GEN_VEL_RANGE] = (vel_low, vel_high)
+
+        # A region's own wsmp wins over the wave's; either may be
+        # absent, in which case the wave plays at its own pitch.
+        tuning = (self._wsmp(blob, wsmp) if wsmp
+                  else self._wave_loops[index])
+        if tuning:
+            unity, fine, attenuation, loop_start, loop_end, loops = tuning
+            gens[GEN_ROOT_KEY] = unity
+            gens[GEN_FINE_TUNE] = fine
+            gens[GEN_ATTENUATION] = gens.get(GEN_ATTENUATION, 0) + attenuation
+            if loops and loop_end > loop_start:
+                gens[GEN_SAMPLE_MODES] = 1
+                # Sample carries pool-absolute positions, as the SF2
+                # side does; the region's are relative to the wave.
+                gens[GEN_STARTLOOP_OFFSET] = (
+                    sample.start + loop_start - sample.loop_start)
+                gens[GEN_ENDLOOP_OFFSET] = (
+                    sample.start + loop_end - sample.loop_end)
+        return Zone(gens, sample)
+
+    @staticmethod
+    def _articulation(blob, at, end):
+        """The connection blocks that set the volume envelope and pan.
+
+        Only the unconditional ones - source and control both none.
+        Anything driven by a controller or an LFO is past what a
+        preview shows."""
+        out = {}
+        for tag, start, size in _chunks(blob, at, end):
+            if tag not in (b"art1", b"art2"):
+                continue
+            cb, count = struct.unpack_from("<II", blob, start)
+            for i in range(count):
+                block = start + cb + i * 12
+                if block + 12 > start + size:
+                    break
+                source, control, destination, _transform, scale = \
+                    struct.unpack_from("<HHHHi", blob, block)
+                if source != CONN_SRC_NONE or control != CONN_SRC_NONE:
+                    continue
+                if destination == CONN_DST_EG1_ATTACK:
+                    out[GEN_ATTACK] = scale // 65536
+                elif destination == CONN_DST_EG1_DECAY:
+                    out[GEN_DECAY] = scale // 65536
+                elif destination == CONN_DST_EG1_RELEASE:
+                    out[GEN_RELEASE] = scale // 65536
+                elif destination == CONN_DST_EG1_SUSTAIN:
+                    # 0.1% units of LEVEL; SF2 wants centibels of
+                    # attenuation, so a full-level sustain is zero.
+                    level = max(0.0, min(1.0, scale / 65536.0 / 1000.0))
+                    out[GEN_SUSTAIN] = (0 if level >= 1.0 else
+                                        (1440 if level <= 0.0 else
+                                         int(-200.0 * _log10(level))))
+                elif destination == CONN_DST_ATTENUATION:
+                    out[GEN_ATTENUATION] = max(0, -scale // 65536)
+                elif destination == CONN_DST_PAN:
+                    # 0.1% of full right; SF2 pans in tenths of a
+                    # percent either side of centre, same scale.
+                    out[GEN_PAN] = max(-500, min(500, scale // 65536))
+        return out
+
+    @staticmethod
+    def _name(blob, info):
+        if info is None:
+            return ""
+        for tag, start, size in _chunks(blob, *info):
+            if tag == b"INAM":
+                return blob[start:start + size].split(b"\0")[0].decode(
+                    "latin-1", "replace")
+        return ""
+
+    def _title(self, blob, info):
+        return self._name(blob, info) or self.name
+
+
+def _log10(value):
+    import math
+    return math.log10(value)
 
 
 # ----------------------------------------------------------------------

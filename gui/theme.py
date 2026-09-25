@@ -158,25 +158,25 @@ _GREYS = {
     # leans a few points warm, which is what stops the pink reading as
     # a tint laid over a grey theme.
     "modern_pink": {
-        "ground": "#fdf2f6",
-        "panel": "#fffdfd",
-        "card": "#fff7e4",          # the custard
-        "raised": "#ffffff",
-        "hover": "#fce7ef",
-        "line": "#f6dbe5",
-        "line_strong": "#e9b3c8",
-        "text": "#4a2b38",
-        "dim": "#8d6473",
-        "faint": "#c7a4b1",
+        "ground": "#fcdce9",        # a pink you can see, not an off-white
+        "panel": "#fff4f8",
+        "card": "#ffeec2",          # the custard
+        "raised": "#fffafc",
+        "hover": "#fbcede",
+        "line": "#f3b9d1",
+        "line_strong": "#e07ba7",
+        "text": "#3f1d2b",
+        "dim": "#8a4a63",
+        "faint": "#c986a2",
     },
 }
 
 # A theme may have an accent of its own; the rest take ACCENT above.
-_ACCENTS = {"modern_pink": "#e8709f"}
+_ACCENTS = {"modern_pink": "#e2447d"}
 # The second colour, where a theme has one worth using - see
 # colours()["accent2"]. Falls back to the accent itself, so anything
 # painting with it works under every theme without asking which.
-_ACCENTS_2 = {"modern_pink": "#f2c14e"}
+_ACCENTS_2 = {"modern_pink": "#f5b31a"}
 
 # A modern 3D view's ground, per theme.
 _VIEW_GROUND = {"modern": (0.0, 0.0, 0.0), "modern_bright": (0.9, 0.9, 0.92),
