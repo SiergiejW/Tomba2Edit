@@ -9,6 +9,7 @@ modules agree on how to read a disc.
 """
 
 import os
+import mmap
 import shutil
 import tempfile
 
@@ -70,9 +71,14 @@ class ISOHandler:
         self.cleanup()
         self.temp_dir = tempfile.mkdtemp(prefix="tomba2edit_")
 
+        raw = None
         try:
             with open(iso_path, "rb") as f:
-                raw = f.read()
+                # Multiple disc switches used to retain a full 350-450 MB
+                # Python copy per open while other audio workers ran. Map
+                # the track instead; read_file still copies only extracted
+                # game files, and the mapping is closed before returning.
+                raw = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
             reader = ISO9660Reader(raw)
             wanted = set(REQUIRED_FILES) | set(OPTIONAL_FILES)
@@ -137,6 +143,9 @@ class ISOHandler:
         except Exception:
             self.cleanup()
             raise
+        finally:
+            if raw is not None:
+                raw.close()
 
     def get_temp_dir(self):
         """Get the temporary directory path."""

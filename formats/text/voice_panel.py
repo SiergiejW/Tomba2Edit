@@ -19,7 +19,7 @@ audio for good.
 """
 import os
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog,
@@ -75,22 +75,6 @@ class _Decode(QThread):
             self.done.emit(channel, None, 0)
 
 
-class _AreaScan(QThread):
-    """Read every BIN's own voice dispatch without blocking the panel."""
-
-    done = pyqtSignal(str, object)
-
-    def __init__(self, image):
-        super().__init__()
-        self.image = image
-
-    def run(self):
-        try:
-            self.done.emit(self.image, voice.dispatch_channels(self.image))
-        except Exception:
-            self.done.emit(self.image, {})
-
-
 class VoicePanel(QWidget):
     """Browse and play VOICE.XA's channels."""
 
@@ -107,7 +91,14 @@ class VoicePanel(QWidget):
         self._decode = None
         self._cache = {}            # channel -> wav bytes
         self._pending_save = None   # (key, path) waiting on a decode
-        self._area_scan = None
+        self._area_results = Queue()
+        self._area_timer = QTimer(self)
+        self._area_timer.setInterval(100)
+        self._area_timer.timeout.connect(self._poll_areas)
+        self._generation = 0
+        self._decodes = []
+        self._text_cancel = None
+        self._text_thread = None
         self._area_labels = {}
         self._area_bin = {}
         self._dispatch_areas = {}
@@ -227,6 +218,11 @@ class VoicePanel(QWidget):
         signature = (self.image, self._text_dat, self._text_catalog)
         if signature == self._text_index_signature:
             return
+        if self._text_cancel is not None:
+            self._text_cancel.set()
+        cancel = Event()
+        self._text_cancel = cancel
+        generation = self._generation
         self._text_index_signature = signature
         self._text_indexing = True
         self._text_error = ""
@@ -236,23 +232,27 @@ class VoicePanel(QWidget):
         def build():
             try:
                 rows = voice_link.build_transcripts(
-                    dat_file, image, catalog,
+                    dat_file, image, catalog, cancelled=cancel.is_set,
                     on_partial=lambda partial: results.put(
-                        (image, dat_file, dict(partial), "", False)))
-                results.put((image, dat_file, rows, "", True))
+                        (generation, image, dat_file, dict(partial), "", False)))
+                results.put((generation, image, dat_file, rows, "", True))
             except Exception as exc:
-                results.put((image, dat_file, {}, str(exc), True))
+                if not cancel.is_set():
+                    results.put((generation, image, dat_file, {}, str(exc), True))
 
-        Thread(target=build, name="TXTD voice index", daemon=True).start()
+        worker = Thread(target=build, name="TXTD voice index", daemon=True)
+        self._text_thread = worker
+        worker.start()
         self._text_timer.start()
 
     def _poll_text_index(self):
         while True:
             try:
-                image, dat_file, rows, error, finished = self._text_results.get_nowait()
+                generation, image, dat_file, rows, error, finished = self._text_results.get_nowait()
             except Empty:
                 break
-            if image != self.image or dat_file != self._text_dat:
+            if (generation != self._generation or image != self.image
+                    or dat_file != self._text_dat):
                 continue
             self._text_indexing = not finished
             self._text_error = error if finished else ""
@@ -343,17 +343,63 @@ class VoicePanel(QWidget):
             cell.setToolTip(label)
 
     def _scan_areas(self):
-        if self._area_scan is not None and self._area_scan.isRunning():
-            self._area_scan.wait(5000)
-        self._area_scan = _AreaScan(self.image)
-        self._area_scan.done.connect(self._areas_scanned)
-        self._area_scan.start()
+        image, generation = self.image, self._generation
+        def scan():
+            try:
+                areas = voice.dispatch_channels(image)
+            except Exception:
+                areas = {}
+            self._area_results.put((generation, image, areas))
+        Thread(target=scan, name="Voice area scan", daemon=True).start()
+        self._area_timer.start()
 
-    def _areas_scanned(self, image, areas):
-        if image != self.image:
-            return
-        self._dispatch_areas = areas
-        self._refresh_heard_in()
+    def _poll_areas(self):
+        while True:
+            try:
+                generation, image, areas = self._area_results.get_nowait()
+            except Empty:
+                self._area_timer.stop()
+                return
+            if generation == self._generation and image == self.image:
+                self._dispatch_areas = areas
+                self._refresh_heard_in()
+
+    def reset_disc(self):
+        """Forget the previous disc before its temporary files are removed."""
+        self._generation += 1
+        if self._text_cancel is not None:
+            self._text_cancel.set()
+        if self._text_thread is not None and self._text_thread.is_alive():
+            # The index may have an extracted BIN open; let cancellation
+            # release it before ISOHandler removes the old temp folder.
+            self._text_thread.join(timeout=2)
+        self._text_cancel = None
+        self._text_thread = None
+        self._text_timer.stop()
+        self._area_timer.stop()
+        self.transport.stop()
+        self.transport.set_entries([])
+        self.transport.clear_wave()
+        self._decode = None  # old worker results are ignored by _decoded
+        self._pending_save = None
+        self.image = None
+        self.lba = self.sectors = 0
+        self._by_key.clear()
+        self._cache.clear()
+        self._area_labels.clear()
+        self._area_bin.clear()
+        self._dispatch_areas.clear()
+        self._caption_areas.clear()
+        self._text_dat = None
+        self._text_catalog = ()
+        self._text_index_signature = None
+        self._text_indexing = False
+        self._text_error = ""
+        self.extract.setEnabled(False)
+        self.export_all.setEnabled(False)
+        self.import_btn.setEnabled(False)
+        self.export_patched.setEnabled(False)
+        self.status.setText("No voice track loaded for this disc.")
 
     def set_image(self, path):
         """Point the panel at a disc track, or a good VOICE.XA.
@@ -361,6 +407,9 @@ class VoicePanel(QWidget):
         A cue sheet is resolved to the data track it names first, so
         handing this the file a rip is actually called works."""
         from disc import source_disc
+
+        if self.image is not None:
+            self.reset_disc()
 
         try:
             path = source_disc.data_track(path)
@@ -422,7 +471,10 @@ class VoicePanel(QWidget):
         self.export_all.setEnabled(True)
         self.image_opened.emit(path)
         self._scan_areas()
-        self._start_text_index()
+        # Disc opening still has other synchronous audio/browser work to do.
+        # Start the costly fallback matcher only after that work yields to
+        # the event loop, or it competes with opening the same disc.
+        QTimer.singleShot(0, self._start_text_index)
 
     def _extract(self):
         """Write a usable VOICE.XA next to a CD folder's other files."""
@@ -493,9 +545,15 @@ class VoicePanel(QWidget):
         self._decode = _Decode(self.image, self.lba, self.sectors, channel,
                                overrides=overrides)
         self._decode.done.connect(self._decoded)
+        worker = self._decode
+        self._decodes.append(worker)
+        worker.finished.connect(lambda w=worker: self._decodes.remove(w)
+                                if w in self._decodes else None)
         self._decode.start()
 
     def _decoded(self, channel, wav, rate):
+        if self.sender() is not self._decode or not self.image:
+            return
         key = f"VOICE.XA:{channel}"
         if wav is None:
             self.status.setText(f"Could not decode channel {channel}.")
@@ -689,12 +747,14 @@ class VoicePanel(QWidget):
     def _stop_decode(self):
         if self._decode is not None and self._decode.isRunning():
             self._decode.requestInterruption()
-            self._decode.wait(5000)
         self._decode = None
 
     def closeEvent(self, event):
         self.transport.stop()
         self._stop_decode()
-        if self._area_scan is not None and self._area_scan.isRunning():
-            self._area_scan.wait(5000)
+        if self._text_cancel is not None:
+            self._text_cancel.set()
+        for worker in tuple(self._decodes):
+            if worker.isRunning():
+                worker.wait()
         super().closeEvent(event)

@@ -164,7 +164,13 @@ def _timed_rows(masters, tables, label):
     return rows_out
 
 
-def build_transcripts(dat_file, image, catalog, on_partial=None):
+def _check_cancel(cancelled):
+    if cancelled and cancelled():
+        raise InterruptedError("Dialogue index cancelled for another disc")
+
+
+def build_transcripts(dat_file, image, catalog, on_partial=None,
+                      cancelled=None, resolve_fallback=True):
     """Read IDX-listed TXTD files and their area BIN dispatches off-thread.
 
     catalog contains (area, absolute DAT address, BIN name, IDX row label).
@@ -179,6 +185,8 @@ def build_transcripts(dat_file, image, catalog, on_partial=None):
     fallback_tables = {}
     unresolved_sources = []
     for area, address, bin_name, file_label in catalog:
+        if cancelled and cancelled():
+            return {}
         if not bin_name:
             continue
         if bin_name not in overlays:
@@ -230,9 +238,11 @@ def build_transcripts(dat_file, image, catalog, on_partial=None):
                                            label, matched))
                 for table_index in matched.values():
                     fallback_tables[(bin_name, table_index)] = raw_tables[table_index]
+    if cancelled and cancelled():
+        return {}
     if on_partial:
         on_partial(result)
-    if not image or not fallback_tables:
+    if not image or not fallback_tables or not resolve_fallback:
         return result
 
     # Unknown channels are inferred once for ALL unmatched tables.  The
@@ -241,6 +251,7 @@ def build_transcripts(dat_file, image, catalog, on_partial=None):
     keys = list(fallback_tables)
     found_channels = voice.resolve_channels(
         image, lba, [fallback_tables[key] for key in keys],
+        progress=(lambda _channel, _total: _check_cancel(cancelled)),
         sectors=sectors)
     channels = dict(zip(keys, found_channels))
     for area, address, bin_name, label, matched in unresolved_sources:

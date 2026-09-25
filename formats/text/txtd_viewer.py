@@ -1324,6 +1324,11 @@ class TXTDViewer(QWidget):
         self._edited_locations = set()
         self._exported_locations = set()
         self._original_entry_texts = {}
+        self._voice_image = None
+        self._voice_overlay = None
+        if getattr(self, "_voice", None) is not None:
+            self._voice.image = None
+            self._voice.overlay = None
 
         self.tree_model.clear()
         self.text_edit.clear()

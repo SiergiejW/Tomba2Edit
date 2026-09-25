@@ -697,18 +697,36 @@ def resolve_channels(image, lba, tables, progress=None, sectors=None):
         span = min(span, sectors // BLOCK)
     frame = xa.framing(image) or xa.RAW
     peaks = {}
+    stride, payload_at, has_sub = frame
     with open(image, "rb") as f:
         for channel in range(BLOCK):
             if progress:
                 progress(channel, BLOCK)
-            samples, _rate, _ch = xa.decode_channel(
-                f, lba, [b * BLOCK + channel for b in range(span)],
-                frame=frame)
-            per = xa.SAMPLES_PER_SECTOR
-            peaks[channel] = [
-                max((abs(v) for v in samples[b * per:(b + 1) * per]),
-                    default=0)
-                for b in range(span)]
+            # Decode one sector at a time and discard its samples after
+            # measuring the peak. decode_channel() retains an entire
+            # channel's millions of Python ints; on regional discs the
+            # 32-channel sweep exhausted memory and froze disc opening.
+            state = None
+            measured = []
+            for block in range(span):
+                if progress and block % 32 == 0:
+                    progress(channel, BLOCK)
+                f.seek((lba + block * BLOCK + channel) * stride)
+                raw = f.read(stride)
+                if len(raw) < stride:
+                    break
+                if has_sub:
+                    speakers, _rate, bits = xa.coding(raw[xa.SUBHEADER + 3])
+                    if bits != 4:
+                        measured.append(0)
+                        continue
+                else:
+                    speakers = 1
+                samples, state = xa.decode_sector(
+                    raw[payload_at:payload_at + xa.FORM2_LEN], state,
+                    speakers == 2)
+                measured.append(max((abs(v) for v in samples), default=0))
+            peaks[channel] = measured
 
     out = []
     for _off, entries in tables:

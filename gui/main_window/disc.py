@@ -561,6 +561,7 @@ class DiscMixin:
 
         # Starting a fresh ISO always throws away whatever was extracted
         # for the previous one.
+        self.voice_panel.reset_disc()
         if self.iso_handler:
             self.iso_handler.cleanup()
         self.iso_handler = ISOHandler()
@@ -690,6 +691,7 @@ class DiscMixin:
 
         # No extracted-file tree can stand in for the image, so
         # export_iso() still has to refuse until one is attached.
+        self.voice_panel.reset_disc()
         if self.iso_handler:
             self.iso_handler.cleanup()
         self.iso_handler = None
