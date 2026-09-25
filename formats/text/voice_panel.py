@@ -313,6 +313,23 @@ class VoicePanel(QWidget):
             "coming back to it is instant.")
         self._ready(key, wav, play=self.transport.current_key() == key)
 
+    def _decode_channel(self, channel):
+        """A channel's WAV, with its own file handle so this is safe to
+        call from a worker thread."""
+        if not self.image:
+            return None
+        overrides = (dict(self._edits.sectors)
+                     if self._edits.image == self.image else None)
+        with open(self.image, "rb") as f:
+            frame = xa.framing(self.image) or xa.RAW
+            chans = xa.channel_map(f, self.lba, self.sectors, frame)
+            found = next((k for k in chans if k[1] == channel), None)
+            if found is None:
+                return None
+            samples, rate, speakers = xa.decode_channel(
+                f, self.lba, chans[found], frame=frame, overrides=overrides)
+        return xa.wav_bytes(samples, rate, speakers)
+
     def _ready(self, key, wav, play):
         if self._pending_save and self._pending_save[0] == key:
             _key, path = self._pending_save

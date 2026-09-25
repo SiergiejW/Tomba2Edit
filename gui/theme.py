@@ -39,10 +39,11 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QApplication
 
-THEMES = ("modern", "modern_bright", "dark", "bright")
+THEMES = ("modern", "modern_bright", "modern_pink", "dark", "bright")
 DEFAULT_THEME = "dark"
 LABELS = {"dark": "Classic Dark (default)", "bright": "Classic Bright",
-          "modern": "Modern Dark", "modern_bright": "Modern Bright"}
+          "modern": "Modern Dark", "modern_bright": "Modern Bright",
+          "modern_pink": "Strawberry Custard"}
 
 _native_palette = None
 _current_theme = DEFAULT_THEME
@@ -151,10 +152,41 @@ _GREYS = {
         "dim": "#6c6c72",
         "faint": "#a8a8ae",
     },
+    # Pink, with the custard yellow turning up wherever a second
+    # colour is wanted: alternating rows, the played part of a seek
+    # bar, a waveform. The neutrals are not grey - every one of them
+    # leans a few points warm, which is what stops the pink reading as
+    # a tint laid over a grey theme.
+    "modern_pink": {
+        "ground": "#fdf2f6",
+        "panel": "#fffdfd",
+        "card": "#fff7e4",          # the custard
+        "raised": "#ffffff",
+        "hover": "#fce7ef",
+        "line": "#f6dbe5",
+        "line_strong": "#e9b3c8",
+        "text": "#4a2b38",
+        "dim": "#8d6473",
+        "faint": "#c7a4b1",
+    },
 }
 
+# A theme may have an accent of its own; the rest take ACCENT above.
+_ACCENTS = {"modern_pink": "#e8709f"}
+# The second colour, where a theme has one worth using - see
+# colours()["accent2"]. Falls back to the accent itself, so anything
+# painting with it works under every theme without asking which.
+_ACCENTS_2 = {"modern_pink": "#f2c14e"}
+
 # A modern 3D view's ground, per theme.
-_VIEW_GROUND = {"modern": (0.0, 0.0, 0.0), "modern_bright": (0.9, 0.9, 0.92)}
+_VIEW_GROUND = {"modern": (0.0, 0.0, 0.0), "modern_bright": (0.9, 0.9, 0.92),
+                "modern_pink": (0.94, 0.9, 0.92)}
+
+# Which modern themes put dark text on a light ground. Asked by name
+# rather than by measuring, because it also decides which way round the
+# shading goes in things this module does not paint.
+_BRIGHT_MODERN = {"modern": False, "modern_bright": True,
+                  "modern_pink": True}
 
 
 def _mix(a, b, t):
@@ -173,8 +205,9 @@ def colours(name=None):
     if name not in _GREYS:
         name = "modern"
     c = dict(_GREYS[name])
-    accent = QColor(ACCENT) if QColor(ACCENT).isValid() else QColor("#f28c28")
-    bright = name == "modern_bright"
+    wanted = _ACCENTS.get(name, ACCENT)
+    accent = QColor(wanted) if QColor(wanted).isValid() else QColor("#f28c28")
+    bright = _BRIGHT_MODERN.get(name, False)
     c["accent"] = accent.name()
     c["accent_hover"] = _mix(c["accent"], "#000000" if bright else "#ffffff", 0.15)
     # A selected row: the accent, faint, over the pane.
@@ -183,6 +216,9 @@ def colours(name=None):
     # at the same strength the two are indistinguishable at a glance
     # and a list looks like it has two rows selected.
     c["row_hover"] = _mix(c["panel"], c["text"], 0.06)
+    second = _ACCENTS_2.get(name)
+    c["accent2"] = QColor(second).name() if second and QColor(second).isValid() \
+        else c["accent"]
     luminance = (0.299 * accent.red() + 0.587 * accent.green() + 0.114 * accent.blue()) / 255
     c["accent_text"] = "#141414" if luminance > 0.55 else "#ffffff"
     return c
@@ -905,7 +941,8 @@ def is_modern():
 
 def is_bright():
     """Whether the theme in use puts dark text on a light ground."""
-    return _current_theme in ("modern_bright", "bright")
+    return _current_theme == "bright" or _BRIGHT_MODERN.get(
+        _current_theme, False)
 
 
 def roll_colours():
@@ -922,7 +959,10 @@ def roll_colours():
     colours() answers with modern greys under the classic themes, so
     the base is chosen here by brightness rather than by name."""
     bright = is_bright()
-    c = colours("modern_bright" if bright else "modern")
+    # A modern theme paints the roll in its own colours; a classic one
+    # borrows the modern theme of the same brightness.
+    c = colours(_current_theme if _current_theme in _GREYS
+                else ("modern_bright" if bright else "modern"))
     ground = _mix(c["panel"], c["text"], 0.03)
     return {
         "ground": ground,

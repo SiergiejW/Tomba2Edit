@@ -26,11 +26,13 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
 from formats.audio import audio_export
 from formats.audio import bgm
 from formats.audio import seq
+from formats.audio import seq_notes
 from formats.audio import voice
 from formats.audio import xa
 from gui.widgets import mascot
 from formats.audio.audio_transport import AudioTransport, clock
 from gui.widgets.name_store import NameStore
+from gui.widgets.waveform import Notes
 
 # The streamed music files, in the order they are listed.
 STREAMS = ("BGM.XA", "DEMO.XA")
@@ -148,7 +150,14 @@ class MusicPanel(QWidget):
         # A second list on the same player; keys tell the two apart.
         self.sequence_list = self.transport.add_list(
             columns=["Index", "Length", "Slot", "From", "Use", "Instruments"],
-            source="Sequences")
+            source="Sequences", previews=True)
+        # Only the sequences get a thumbnail. Theirs is free - the
+        # notes are already in the file, and drawing them costs a
+        # parse. A track's would mean decoding XA off the disc for
+        # every row, which is slow enough to be felt while scrolling,
+        # so those rows have no strip and the big view above the seek
+        # bar shows the one that is playing instead.
+        self.transport.enable_previews(self._preview)
 
         self.export_all = QPushButton("Save all as WAV...")
         self.export_all.setToolTip("Write every piece of music into a "
@@ -358,7 +367,34 @@ class MusicPanel(QWidget):
             self._pending_save = None
             self._write(path, wav)
         elif play:
+            self.transport.show_wave(wav, self._caption(key))
             self.transport.play_bytes(wav)
+
+    def _caption(self, key):
+        name = self.names.get(key) or self.seq_names.get(key) or ""
+        return name or key
+
+    # --- the previews -------------------------------------------------
+
+    def _preview(self, key):
+        """What the thumbnail column draws for `key` - sequences only.
+
+        Cheap by construction: reading a SEQ's events is a parse, with
+        nothing decoded and no disc touched."""
+        return self._sequence_notes(key) if key in self._seqs else None
+
+    def _sequence_notes(self, key):
+        """A sequence as notes, without rendering a note of audio."""
+        held = self._seqs.get(key)
+        if held is None:
+            return None
+        data, at, _bank, _slot, _origin = held
+        try:
+            notes, others = seq_notes.to_notes(seq.events(data, at))
+        except Exception:
+            return None
+        return Notes([(n.tick, n.length, n.channel, n.key) for n in notes],
+                     seq_notes.span(notes, others))
 
     # --- naming and saving --------------------------------------------
 
@@ -702,7 +738,20 @@ class MusicPanel(QWidget):
         self._seq_cache[key] = wav
         self.status.setText(f"{note} - rendered once and kept.")
         if self.transport.current_key() == key:
+            self._show_sequence(key)
             self.transport.play_bytes(wav)
+
+    def _show_sequence(self, key):
+        """Put the sequence's notes in the big view rather than the
+        waveform of what it renders to - the notes are what a sequence
+        has to show, and the cursor runs across them just the same."""
+        preview = self._sequence_notes(key)
+        if preview is None:
+            self.transport.clear_wave()
+            return
+        self.transport.show_sequence(
+            preview.notes, preview.span,
+            f"{self._caption(key)}  -  {len(preview.notes)} notes")
 
     def _seq_save(self, key, path):
         if key not in self._seqs or self._snd is None:

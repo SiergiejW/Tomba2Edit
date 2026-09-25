@@ -187,7 +187,13 @@ class SfxPanel(QWidget):
     def _wanted(self, key):
         if key not in self._by_key or self._snd is None:
             return
-        self.transport.play_bytes(self._wav(key))
+        wav = self._wav(key)
+        self.transport.show_wave(wav, self._caption(key))
+        self.transport.play_bytes(wav)
+
+    def _caption(self, key):
+        name = self.names.get(key) if self.names else ""
+        return name or f"Sound {key}"
 
     # --- naming and saving --------------------------------------------
 

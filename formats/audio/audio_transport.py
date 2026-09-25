@@ -43,8 +43,8 @@ own key -> data mapping rather than a plain list indexed by row.
 """
 import os
 
-from PyQt6.QtCore import (QBuffer, QByteArray, QEvent, Qt, QUrl,
-                          pyqtSignal)
+from PyQt6.QtCore import (QBuffer, QByteArray, QEvent, QThread, QTimer,
+                          Qt, QUrl, pyqtSignal)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
                              QHBoxLayout, QHeaderView, QLabel, QPushButton,
@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
 
 from formats.audio import audio_export
 from formats.audio.transport_icons import set_glyph
+from gui.widgets.waveform import WaveDelegate, WaveView, peaks
 
 KEY =Qt.ItemDataRole.UserRole
 DESCRIPTION = Qt.ItemDataRole.UserRole + 1
@@ -63,6 +64,15 @@ LOOPS = Qt.ItemDataRole.UserRole + 2
 # not need to eat every pixel that isn't currently used, and the user
 # can still drag it wider - see the Interactive resize mode below.
 NAME_COLUMN_WIDTH = 220
+# The thumbnail column, when a panel asks for one.
+WAVE_COLUMN_WIDTH = 110
+# What a data column may shrink or grow to when it is sized to its
+# contents. The ceiling is the one that matters: Music's "Instruments"
+# column lists every instrument a sequence touches, and left to its
+# own devices it is wider than the window.
+MIN_DATA_COLUMN = 44
+MAX_DATA_COLUMN = 200
+MIN_NAME_COLUMN = 120
 
 
 def clock(ms):
@@ -71,6 +81,33 @@ def clock(ms):
         ms = 0
     seconds = int(ms) // 1000
     return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+class _PeakJob(QThread):
+    """One row's audio, fetched and reduced to an envelope.
+
+    One at a time, and only for rows on screen: the fetch is a disc
+    read and a decode, which is far too expensive to do for a whole
+    list up front and completely affordable for the dozen rows a
+    person can actually see."""
+
+    done = pyqtSignal(str, object)
+
+    def __init__(self, key, fetch):
+        super().__init__()
+        self.key, self.fetch = key, fetch
+
+    def run(self):
+        try:
+            # The panel hands back the finished preview - an envelope
+            # or a Notes - because only it knows whether the row is a
+            # piece of audio to be decoded or a sequence to be read.
+            self.done.emit(self.key, self.fetch(self.key))
+        except Exception:
+            # A row that will not decode gets no thumbnail; it is a
+            # preview, and the panel says what went wrong when the
+            # same row is played.
+            self.done.emit(self.key, None)
 
 
 class AudioTransport(QWidget):
@@ -95,7 +132,8 @@ class AudioTransport(QWidget):
     def __init__(self, parent=None, columns=None, pitch=False,
                  source="Audio", autoplay_default=False,
                  always_loopable=False, loop_beats_autoplay=False,
-                 select_plays=True, autoplay_label="Autoplay"):
+                 select_plays=True, autoplay_label="Autoplay",
+                 previews=False):
         super().__init__(parent)
         # Which list this is - Music, Dialogues or SFX - so a
         # printed selection says where it came from.
@@ -129,6 +167,19 @@ class AudioTransport(QWidget):
         # moment the list is built, before anyone asked for anything.
         self._select_plays = select_plays
         self._autoplay_label = autoplay_label
+        # A thumbnail column in front of the name, filled in as rows
+        # come into view - see enable_previews().
+        self._previews = previews
+        self._peak_fetch = None
+        self._peak_cache = {}
+        self._peak_job = None
+        # True while this is setting column widths itself, so its own
+        # sectionResized does not read as the person dragging one.
+        self._sizing = False
+        self._peak_timer = QTimer(self)
+        self._peak_timer.setSingleShot(True)
+        self._peak_timer.setInterval(30)
+        self._peak_timer.timeout.connect(self._next_peak)
 
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
@@ -251,6 +302,16 @@ class AudioTransport(QWidget):
             self.pitch_box.valueChanged.connect(self.pitch.setValue)
             self.pitch_box.valueChanged.connect(self._pitch_changed)
 
+        # The big preview sits directly over the seek bar, and the
+        # two are one position: dragging either moves the other, so
+        # there is never a cursor on screen that disagrees with the
+        # sound.
+        self.wave = WaveView()
+        self.wave.setToolTip(
+            "What is playing, drawn end to end. Click or drag to jump "
+            "to a moment.")
+        self.wave.scrubbed.connect(self._wave_scrubbed)
+
         seek = QHBoxLayout()
         seek.addWidget(self.position, 1)
         seek.addWidget(self.time)
@@ -273,29 +334,152 @@ class AudioTransport(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.list, 1)
+        layout.addWidget(self.wave)
         layout.addLayout(seek)
         layout.addLayout(row)
         layout.addLayout(tools)
 
+    # --- the previews -------------------------------------------------
+
+    def enable_previews(self, fetch):
+        """Fill the thumbnail column from `fetch`.
+
+        `fetch(key)` returns what should be drawn: an envelope from
+        waveform.peaks(), or a waveform.Notes for a sequence. It is
+        called on a worker thread, one key at a time, so it has to be
+        safe to call off the GUI thread - opening its own file handle
+        rather than sharing one."""
+        self._peak_fetch = fetch
+        self._want_peaks()
+
+    def _peaks_for(self, key):
+        """What the delegate paints, or None while it is being worked
+        out. Never computes: a delegate runs inside paint."""
+        held = self._peak_cache.get(key)
+        return held or None
+
+    def _want_peaks(self, *_args):
+        if self._peak_fetch is not None and self._previews:
+            self._peak_timer.start()
+
+    def _visible_keys(self, table):
+        """The keys of the rows on screen, top to bottom."""
+        if table.rowCount() == 0:
+            return []
+        height = table.viewport().height()
+        first = max(0, table.rowAt(0))
+        last = table.rowAt(max(0, height - 1))
+        if last < 0:
+            last = table.rowCount() - 1
+        out = []
+        for row in range(first, min(last + 2, table.rowCount())):
+            item = table.item(row, table.name_col)
+            if item is not None:
+                out.append(item.data(KEY))
+        return out
+
+    def _next_peak(self):
+        """Start the next thumbnail that a visible row is missing.
+
+        One at a time, and the next one is started from the last one's
+        finished() rather than from its result: a QThread destroyed
+        between emitting its result and actually returning from run()
+        takes the process down with it, and holding the reference
+        until Qt says it has finished is what stops that."""
+        if self._peak_fetch is None or self._peak_job is not None:
+            return
+        for table in self.lists:
+            if not table.name_col:
+                continue
+            for key in self._visible_keys(table):
+                if key and key not in self._peak_cache:
+                    job = _PeakJob(key, self._peak_fetch)
+                    job.done.connect(self._got_peak)
+                    job.finished.connect(self._peak_finished)
+                    self._peak_job = job
+                    job.start()
+                    return
+
+    def _peak_finished(self):
+        job, self._peak_job = self._peak_job, None
+        if job is not None:
+            job.deleteLater()
+        self._peak_timer.start()
+
+    def _got_peak(self, key, preview):
+        # False rather than None for "tried and there is nothing", so
+        # the row is not asked about again on every scroll.
+        self._peak_cache[key] = preview or False
+        for table in self.lists:
+            if table.name_col:
+                table.viewport().update()
+
+    # --- the big preview ----------------------------------------------
+
+    def show_wave(self, wav, caption=""):
+        """Draw `wav`'s envelope in the big view."""
+        self.wave.set_envelope(peaks(wav) if wav else None, caption)
+
+    def show_sequence(self, notes, span, caption=""):
+        """Draw a sequence's notes there instead - see WaveView."""
+        self.wave.set_sequence(notes, span, caption)
+
+    def clear_wave(self):
+        self.wave.clear()
+
+    def stop_previews(self):
+        """Let a running thumbnail finish before anything goes away.
+
+        Called when the widget is closed: the worker holds a callable
+        belonging to the panel, and the panel must not be torn down
+        underneath it."""
+        self._peak_timer.stop()
+        self._peak_fetch = None
+        job, self._peak_job = self._peak_job, None
+        if job is not None and job.isRunning():
+            job.wait(5000)
+
+    def _wave_scrubbed(self, fraction):
+        """The big view was dragged; the sound follows it."""
+        length = self.player.duration()
+        if length > 0:
+            self.player.setPosition(int(fraction * length))
+
     # --- the list -----------------------------------------------------
 
-    def _make_list(self, columns, source):
-        table = QTableWidget(0, 1 + len(columns))
+    def _make_list(self, columns, source, previews=None):
+        # The thumbnail goes in front of the name, so everything that
+        # reaches for "the row's item" asks table.name_col rather than
+        # assuming zero. Per list rather than per transport: Music has
+        # two, and what makes a good thumbnail differs between them.
+        lead = 1 if (self._previews if previews is None else previews) else 0
+        table = QTableWidget(0, 1 + lead + len(columns))
         table.columns, table.source = list(columns), source
+        table.name_col = lead
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.verticalHeader().setVisible(False)
         table.setSortingEnabled(True)
-        table.setHorizontalHeaderLabels(["Name"] + table.columns)
+        table.setHorizontalHeaderLabels(
+            (["Wave"] if table.name_col else []) + ["Name"] + table.columns)
         # Interactive on every column - a person can drag any of them -
         # but the name starts at a fixed, narrower width rather than
         # Stretch's whole-remaining-space default.
         header = table.horizontalHeader()
         for i in range(table.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
-        table.setColumnWidth(0, NAME_COLUMN_WIDTH)
-        # The last column takes what is left, so the list fills its pane.
-        header.setStretchLastSection(True)
+        if table.name_col:
+            table.setColumnWidth(0, WAVE_COLUMN_WIDTH)
+        table.setColumnWidth(table.name_col, NAME_COLUMN_WIDTH)
+        # NOT stretchLastSection: with seven columns that pushed the
+        # early ones off the left of the pane while the last one grew
+        # to fill whatever was left. The slack goes to Name instead,
+        # and the data columns are sized to what is in them - see
+        # _fit_columns.
+        header.setStretchLastSection(False)
+        table.auto_columns = True
+        header.sectionResized.connect(
+            lambda *_a, t=table: self._column_dragged(t))
         table.cellClicked.connect(lambda _row, _col, t=table: self._use(t))
         table.cellDoubleClicked.connect(
             lambda row, _col, t=table: self._play_from(t, row))
@@ -313,10 +497,21 @@ class AudioTransport(QWidget):
         # same handful of lines would otherwise have to be repeated for
         # every table this transport is given.
         table.installEventFilter(self)
+        if table.name_col:
+            table.setItemDelegateForColumn(
+                0, WaveDelegate(self._peaks_for, KEY, table))
+            # Thumbnails are worked out for the rows actually on
+            # screen, so scrolling is what asks for more of them.
+            table.verticalScrollBar().valueChanged.connect(
+                self._want_peaks)
         self.lists.append(table)
         return table
 
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and watched in self.lists:
+            self._fit_columns(watched)
+            self._want_peaks()
+            return False
         if (event.type() == QEvent.Type.KeyPress
                 and watched in self.lists
                 # Not while a name is being typed in: Return there
@@ -330,11 +525,74 @@ class AudioTransport(QWidget):
                 return True
         return super().eventFilter(watched, event)
 
-    def add_list(self, columns=None, source="Audio"):
+    def add_list(self, columns=None, source="Audio", previews=None):
         """Another list playing through this same player, for the owner to
         lay out beside the first. The controls serve whichever list was
         picked from last; keys must not repeat across lists."""
-        return self._make_list(list(columns or []), source)
+        return self._make_list(list(columns or []), source, previews)
+
+    def _column_dragged(self, table):
+        """A column the person set by hand stops being managed.
+
+        Every column stays draggable - the widths here are a starting
+        point, not a policy - so the moment one is dragged this stops
+        recomputing them and undoing the drag."""
+        if not self._sizing:
+            table.auto_columns = False
+
+    def _fit_columns(self, table):
+        """Size the data columns to their contents, Name takes the rest.
+
+        Called when a list is filled and whenever it is resized, so a
+        narrow pane shows narrow columns rather than a scroll bar."""
+        # Re-entrancy is not a nicety here: setting a column width can
+        # resize the viewport, the viewport's resize comes back through
+        # the event filter, and that called this again - straight down
+        # into a stack overflow with no Python traceback to show for it.
+        if self._sizing:
+            return
+        if not getattr(table, "auto_columns", True) or table.columnCount() < 2:
+            return
+        self._sizing = True
+        try:
+            for col in range(table.name_col + 1, table.columnCount()):
+                table.resizeColumnToContents(col)
+                width = table.columnWidth(col) + 10
+                table.setColumnWidth(col, max(MIN_DATA_COLUMN,
+                                              min(width, MAX_DATA_COLUMN)))
+            if table.name_col:
+                table.setColumnWidth(0, WAVE_COLUMN_WIDTH)
+            pane = table.viewport().width() - 2
+            data = list(range(table.name_col + 1, table.columnCount()))
+            used = sum(table.columnWidth(c) for c in range(table.columnCount())
+                       if c != table.name_col)
+            table.setColumnWidth(table.name_col,
+                                 max(MIN_NAME_COLUMN, pane - used))
+
+            # Name has already given up everything it can and the data
+            # columns still run off the edge - seven of them do, in a
+            # narrow pane. Take the excess off them in proportion,
+            # widest first, rather than letting the pane scroll: a
+            # column nobody can see is worse than a narrow one.
+            over = (used + table.columnWidth(table.name_col)) - pane
+            while over > 0 and data:
+                room = sum(table.columnWidth(c) - MIN_DATA_COLUMN
+                           for c in data)
+                if room <= 0:
+                    break
+                taken = 0
+                for c in data:
+                    spare = table.columnWidth(c) - MIN_DATA_COLUMN
+                    if spare <= 0:
+                        continue
+                    share = min(spare, max(1, round(over * spare / room)))
+                    table.setColumnWidth(c, table.columnWidth(c) - share)
+                    taken += share
+                if not taken:
+                    break
+                over -= taken
+        finally:
+            self._sizing = False
 
     def _use(self, table):
         if table is self.list:
@@ -358,7 +616,7 @@ class AudioTransport(QWidget):
         "what is selected over there" - an owner with two lists needs to
         ask about one of them by name."""
         row = table.currentRow()
-        item = table.item(row, 0) if row >= 0 else None
+        item = table.item(row, table.name_col) if row >= 0 else None
         return item.data(KEY) if item is not None else None
 
     def _play_from(self, table, row):
@@ -396,28 +654,40 @@ class AudioTransport(QWidget):
             item.setData(LOOPS, bool(loops))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._show(item, names.get(key, ""))
-            table.setItem(row, 0, item)
-            for col, value in enumerate(values, start=1):
+            table.setItem(row, table.name_col, item)
+            if table.name_col:
+                # The thumbnail cell needs an item of its own, carrying
+                # the same key: a delegate is handed its own index and
+                # has no way to reach along the row to the name.
+                thumb = QTableWidgetItem()
+                thumb.setData(KEY, key)
+                thumb.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                table.setItem(row, 0, thumb)
+            for col, value in enumerate(values, start=table.name_col + 1):
                 cell = QTableWidgetItem()
                 cell.setData(Qt.ItemDataRole.DisplayRole, value)
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 table.setItem(row, col, cell)
         table.blockSignals(False)
         table.setSortingEnabled(True)
+        self._peak_cache.clear()
+        self._want_peaks()
+        self._fit_columns(table)
         if table.columns:
-            # Column 1 is "Index" on every caller - the disc's own
-            # order, and the one a freshly opened list should read in
-            # regardless of however the table was last left sorted.
-            table.sortItems(1, Qt.SortOrder.AscendingOrder)
+            # The first of the caller's own columns is "Index" - the
+            # disc's own order, and the one a freshly opened list
+            # should read in regardless of however the table was last
+            # left sorted.
+            table.sortItems(table.name_col + 1, Qt.SortOrder.AscendingOrder)
         if entries:
-            table.setCurrentCell(0, 0)
+            table.setCurrentCell(0, table.name_col)
 
     def apply_names(self, names, table=None):
         """Redraw every row against a fresh set of names."""
         table = table or self.lists[0]
         table.blockSignals(True)
         for row in range(table.rowCount()):
-            item = table.item(row, 0)
+            item = table.item(row, table.name_col)
             self._show(item, names.get(item.data(KEY), ""))
         table.blockSignals(False)
 
@@ -432,18 +702,18 @@ class AudioTransport(QWidget):
         """The row a key is currently sitting at - not assumed stable,
         since sorting moves rows around underneath it."""
         for row in range(self.list.rowCount()):
-            item = self.list.item(row, 0)
+            item = self.list.item(row, self.list.name_col)
             if item is not None and item.data(KEY) == key:
                 return row
         return -1
 
     def key_at(self, row):
-        item = self.list.item(row, 0)
+        item = self.list.item(row, self.list.name_col)
         return item.data(KEY) if item is not None else None
 
     def name_at(self, row):
         """The row's own name, or "" when it is showing its description."""
-        item = self.list.item(row, 0)
+        item = self.list.item(row, self.list.name_col)
         if item is None:
             return ""
         text = item.text()
@@ -457,7 +727,7 @@ class AudioTransport(QWidget):
 
     def set_label(self, row, description):
         """Replace a row's description, keeping any name it has."""
-        item = self.list.item(row, 0)
+        item = self.list.item(row, self.list.name_col)
         if item is None:
             return
         name = self.name_at(row)
@@ -471,7 +741,7 @@ class AudioTransport(QWidget):
     def rename_current(self):
         row = self.list.currentRow()
         if row >= 0:
-            self.list.editItem(self.list.item(row, 0))
+            self.list.editItem(self.list.item(row, self.list.name_col))
 
     def _item_changed(self, item):
         """An edit finished: tell the owner, and fall back to the
@@ -497,7 +767,7 @@ class AudioTransport(QWidget):
         row = self.list.currentRow()
         if row < 0:
             return
-        item = self.list.item(row, 0)
+        item = self.list.item(row, self.list.name_col)
         key = item.data(KEY)
         stem = audio_export.safe_name(
             self.name_at(row) or item.data(DESCRIPTION) or "audio")
@@ -518,7 +788,7 @@ class AudioTransport(QWidget):
         if 0 <= row < self.list.rowCount():
             key = self.key_at(row)
             self._current = row
-            self.list.setCurrentCell(row, 0)
+            self.list.setCurrentCell(row, self.list.name_col)
             if key:
                 self.wanted.emit(key)
 
@@ -556,7 +826,7 @@ class AudioTransport(QWidget):
         because play_bytes is always answering the most recent
         play_row/play_key, and that row already knows."""
         self.stop()
-        current = self.list.item(self._current, 0) if self._current >= 0 else None
+        current = self.list.item(self._current, self.list.name_col) if self._current >= 0 else None
         self._looping = self._row_loops(current) and self.loop.isChecked()
         if not self._loop_beats_autoplay:
             self._looping = self._looping and not self.autoplay.isChecked()
@@ -623,14 +893,19 @@ class AudioTransport(QWidget):
         the disc calls it, and is what a name is stored against - so it
         is the half worth printing. Music, Dialogues and SFX all come
         through here, so `source` says which."""
-        item = self.list.item(row, 0)
+        item = self.list.item(row, self.list.name_col)
         if item is None:
             return
         extras = []
-        for column in range(1, self.list.columnCount()):
+        # The caller's own columns start after the name - which is not
+        # column 0 when there is a thumbnail in front of it, so the
+        # heading for a cell is looked up from the name column rather
+        # than from the cell's absolute position.
+        first = self.list.name_col + 1
+        for column in range(first, self.list.columnCount()):
             cell = self.list.item(row, column)
-            if cell is not None:
-                extras.append(f"{self.list.columns[column - 1]} "
+            if cell is not None and column - first < len(self.list.columns):
+                extras.append(f"{self.list.columns[column - first]} "
                               f"{cell.data(Qt.ItemDataRole.DisplayRole)}")
         shown = item.text()
         description = item.data(DESCRIPTION)
@@ -653,7 +928,7 @@ class AudioTransport(QWidget):
         loop-eligible, and - unless loop_beats_autoplay - only when
         Autoplay isn't also on; otherwise nothing here was looping
         regardless of this checkbox."""
-        current = self.list.item(self._current, 0) if self._current >= 0 else None
+        current = self.list.item(self._current, self.list.name_col) if self._current >= 0 else None
         if not self._row_loops(current):
             return
         if not self._loop_beats_autoplay and self.autoplay.isChecked():
@@ -679,6 +954,11 @@ class AudioTransport(QWidget):
         if not self._scrubbing:
             self.position.setValue(ms)
         self.time.setText(f"{clock(ms)} / {clock(self.player.duration())}")
+        # The big view's cursor is the same position as the slider's,
+        # so it is driven from the same place rather than from a timer
+        # of its own that could drift away from it.
+        length = self.player.duration()
+        self.wave.set_position(ms / length if length > 0 else 0.0)
 
     def _sized(self, ms):
         self.position.setRange(0, ms)
@@ -701,4 +981,5 @@ class AudioTransport(QWidget):
 
     def closeEvent(self, event):
         self.stop()
+        self.stop_previews()
         super().closeEvent(event)

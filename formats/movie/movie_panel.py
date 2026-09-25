@@ -40,6 +40,7 @@ from gui.widgets import mascot
 from gui.widgets import panel_title
 from formats.movie import movie_export
 from formats.audio.transport_icons import set_glyph
+from gui.widgets.waveform import WaveView, peaks
 from formats.movie.movie_screen import MovieScreen, clock
 
 # How far ahead of the playhead the worker decodes, and how many frames
@@ -150,6 +151,14 @@ class MoviePanel(QWidget):
         self.screen = MovieScreen()
         self.screen.double_clicked.connect(self._toggle)
         self.list.cellDoubleClicked.connect(lambda *_a: self.play())
+
+        # The movie's soundtrack, end to end, directly over the
+        # timeline - the two are one position, so dragging either
+        # moves the other.
+        self.wave = WaveView()
+        self.wave.setToolTip(
+            "The movie's soundtrack. Click or drag to jump to a moment.")
+        self.wave.scrubbed.connect(self._wave_scrubbed)
 
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.setRange(0, 0)
@@ -265,6 +274,7 @@ class MoviePanel(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self.screen, 1)
+        right_layout.addWidget(self.wave)
         right_layout.addWidget(self.timeline)
         right_layout.addLayout(transport)
         right_layout.addLayout(exports)
@@ -377,6 +387,7 @@ class MoviePanel(QWidget):
         self._decoder.start()
         self._enable(True)
         self.save_audio.setEnabled(self.movie.has_audio)
+        self._show_wave()
         self.show_frame(0)
         panel_title.set_info(self.status, (
             f"{self.movie.name}: {len(self.movie.frames)} frames, "
@@ -457,6 +468,32 @@ class MoviePanel(QWidget):
             if index != self._current:
                 del self._cache[index]
 
+    def _wave_scrubbed(self, fraction):
+        """The soundtrack was dragged; the film follows it."""
+        if not self.movie or not self.movie.frames:
+            return
+        self.show_frame(int(fraction * (len(self.movie.frames) - 1)))
+        if self._playing and self.movie.has_audio:
+            self._start_audio(self._current / (self.movie.fps or 1.0))
+
+    def _show_wave(self):
+        """Draw the soundtrack, or say there isn't one.
+
+        Decoded here rather than on play: the point of the view is to
+        show the shape of the sound before anything is played, and a
+        movie's audio is already being read off the disc to list it."""
+        if not self.movie or not self.movie.has_audio:
+            self.wave.set_preview(None, "")
+            return
+        try:
+            if self._wav is None:
+                self._wav = self.movie.wav()
+            self.wave.set_envelope(peaks(self._wav), self.movie.name)
+        except Exception:
+            # A copy whose audio will not decode still shows its film;
+            # the strip just stays empty.
+            self.wave.set_preview(None, "")
+
     def _update_position(self):
         if not self.movie:
             self.position.setText("-")
@@ -466,6 +503,8 @@ class MoviePanel(QWidget):
         self.position.setText(
             f"frame {self._current + 1} / {total}    "
             f"{clock(self._current / fps)} / {clock(self.movie.duration)}")
+        self.wave.set_position(
+            self._current / max(1, total - 1) if total > 1 else 0.0)
 
     # --- playing --------------------------------------------------------
 
