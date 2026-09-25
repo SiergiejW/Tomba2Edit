@@ -108,6 +108,8 @@ class MidiExportDialog(QDialog):
         self.font = None
         self._render = None
         self._closing = False
+        self._render_generation = 0
+        self._rerender = False
         self._wav = None
         self.blob = midi.from_seq(data, at)
         self.resolution, self.tempo = seq.header(data, at)
@@ -131,9 +133,13 @@ class MidiExportDialog(QDialog):
         browse.clicked.connect(self._browse)
 
         self.play_button = QPushButton()
-        set_glyph(self.play_button, "play", "Hear the export")
+        set_glyph(self.play_button, "play", "Hear the export, or resume it")
         self.play_button.clicked.connect(self._play)
         self.play_button.setEnabled(False)
+        self.pause_button = QPushButton()
+        set_glyph(self.pause_button, "pause", "Pause the preview")
+        self.pause_button.clicked.connect(self._pause)
+        self.pause_button.setEnabled(False)
         self.stop_button = QPushButton()
         set_glyph(self.stop_button, "stop")
         self.stop_button.clicked.connect(self._stop)
@@ -188,6 +194,7 @@ class MidiExportDialog(QDialog):
         top.addWidget(self.font_pick, 1)
         top.addWidget(browse)
         top.addWidget(self.play_button)
+        top.addWidget(self.pause_button)
         top.addWidget(self.stop_button)
 
         footer = QHBoxLayout()
@@ -262,8 +269,26 @@ class MidiExportDialog(QDialog):
         return out
 
     def _remapped(self):
+        # A rendered WAV has the old SoundFont programs baked into it.
+        # If it is being heard now, rebuild it immediately and replay the
+        # new mapping rather than making the controls look live while the
+        # old instrument continues underneath them.
+        restart_preview = (self.player.playbackState()
+                           == QMediaPlayer.PlaybackState.PlayingState
+                           or self._render is not None)
+        self._stop()
         self._wav = None
         self.also_wav.setEnabled(False)
+        self._render_generation += 1
+        if restart_preview:
+            if self._render is None:
+                self._play()
+            else:
+                # SoundFont rendering has no safe cancellation point.
+                # Discard this now-stale result and immediately render the
+                # newest mapping when its worker returns.
+                self._rerender = True
+                self.status.setText("Updating the live preview...")
         self._describe()
 
     def _mapped_events(self):
@@ -387,19 +412,29 @@ class MidiExportDialog(QDialog):
     def _play(self):
         if self.font is None:
             return
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+            self.player.play()
+            return
+        if self._render is not None:
+            return
         if self._wav is not None:
             self._start(self._wav)
             return
         self.play_button.setEnabled(False)
         self.status.setText("Rendering through the SoundFont...")
-        self._render = _Render(self._mapped_events(), self.resolution,
-                               self.tempo, self.font)
-        self._render.done.connect(self._rendered)
-        self._render.finished.connect(self._render_finished)
-        self._render.start()
+        generation = self._render_generation
+        render = _Render(self._mapped_events(), self.resolution,
+                         self.tempo, self.font)
+        self._render = render
+        render.done.connect(
+            lambda left, right, note, g=generation: self._rendered(
+                g, left, right, note))
+        render.finished.connect(
+            lambda g=generation: self._render_finished(g))
+        render.start()
 
-    def _rendered(self, left, right, note):
-        if self._closing:
+    def _rendered(self, generation, left, right, note):
+        if self._closing or generation != self._render_generation:
             return
         self.play_button.setEnabled(True)
         if left is None:
@@ -411,7 +446,7 @@ class MidiExportDialog(QDialog):
         self._describe()
         self._start(self._wav)
 
-    def _render_finished(self):
+    def _render_finished(self, _generation):
         render, self._render = self._render, None
         if render is not None:
             render.deleteLater()
@@ -420,6 +455,9 @@ class MidiExportDialog(QDialog):
             # has no safe interruption point inside the SoundFont engine,
             # so finish its current pass, then close the dialog.
             self.reject()
+        elif self._rerender:
+            self._rerender = False
+            self._play()
 
     def _start(self, wav):
         self.player.stop()
@@ -436,8 +474,12 @@ class MidiExportDialog(QDialog):
     def _stop(self):
         self.player.stop()
 
+    def _pause(self):
+        self.player.pause()
+
     def _state(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self.pause_button.setEnabled(playing)
         self.stop_button.setEnabled(playing)
 
     def _moved(self, ms):
