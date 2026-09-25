@@ -29,8 +29,9 @@ from formats.archive import bin_writer
 from disc import disc_library
 from formats.audio import voice
 from formats.audio import xa
+from formats.text import voice_link
 from formats.audio.voice_edit import VoiceEditStore
-from formats.audio.audio_transport import AudioTransport, clock
+from formats.audio.audio_transport import AudioTransport, KEY, clock
 from gui.widgets.name_store import NameStore
 from formats.audio.voice_import import confirm_length
 
@@ -72,6 +73,22 @@ class _Decode(QThread):
             self.done.emit(channel, None, 0)
 
 
+class _AreaScan(QThread):
+    """Read every BIN's own voice dispatch without blocking the panel."""
+
+    done = pyqtSignal(str, object)
+
+    def __init__(self, image):
+        super().__init__()
+        self.image = image
+
+    def run(self):
+        try:
+            self.done.emit(self.image, voice.dispatch_channels(self.image))
+        except Exception:
+            self.done.emit(self.image, {})
+
+
 class VoicePanel(QWidget):
     """Browse and play VOICE.XA's channels."""
 
@@ -88,6 +105,7 @@ class VoicePanel(QWidget):
         self._decode = None
         self._cache = {}            # channel -> wav bytes
         self._pending_save = None   # (key, path) waiting on a decode
+        self._area_scan = None
         self.names = NameStore("dialogue")
         self._edits = VoiceEditStore()
 
@@ -114,7 +132,7 @@ class VoicePanel(QWidget):
 
         self.transport = AudioTransport(
             source="Dialogues",
-            columns=["Index", "Channel", "Sectors", "Length"])
+            columns=["Index", "Channel", "Sectors", "Length", "Heard in"])
         self.transport.wanted.connect(self._wanted)
         self.transport.renamed.connect(self._renamed)
         self.transport.save_requested.connect(self._save)
@@ -190,6 +208,43 @@ class VoicePanel(QWidget):
         if path:
             self.set_image(path)
 
+    def _areas(self):
+        """{channel: [area, ...]}, from whatever has been resolved.
+
+        Reads the store fresh each time the list is built: opening an
+        area's TXTD and playing a line is what works its channels out,
+        so this fills in as the disc is explored rather than being
+        fixed when the tab first loads."""
+        try:
+            return voice_link.cached_areas()
+        except Exception:
+            return {}
+
+    def _scan_areas(self):
+        if self._area_scan is not None and self._area_scan.isRunning():
+            self._area_scan.wait(5000)
+        self._area_scan = _AreaScan(self.image)
+        self._area_scan.done.connect(self._areas_scanned)
+        self._area_scan.start()
+
+    def _areas_scanned(self, image, areas):
+        if image != self.image:
+            return
+        table = self.transport.list
+        first = table.name_col + 1
+        try:
+            column = first + table.columns.index("Heard in")
+        except ValueError:
+            return
+        for row in range(table.rowCount()):
+            item = table.item(row, table.name_col)
+            if item is None:
+                continue
+            channel = int(str(item.data(KEY)).rsplit(":", 1)[-1])
+            cell = table.item(row, column)
+            if cell is not None:
+                cell.setText(", ".join(areas.get(channel, ())) or "-")
+
     def set_image(self, path):
         """Point the panel at a disc track, or a good VOICE.XA.
 
@@ -226,6 +281,7 @@ class VoicePanel(QWidget):
         channels = voice.channels(path, self.lba, self.sectors)
         per_sector = xa.SAMPLES_PER_SECTOR
         disc = self.names.load(path)
+        areas = self._areas()
 
         self._by_key = {}
         entries = []
@@ -235,9 +291,17 @@ class VoicePanel(QWidget):
             entries.append((
                 key, f"Channel {channel}",
                 (number, channel, f"{count:,}",
-                 clock(count * per_sector * 1000 // 18900)),
+                 clock(count * per_sector * 1000 // 18900),
+                 ", ".join(areas.get(channel, ())) or "-"),
             ))
         self.transport.set_entries(entries, self.names.names())
+        self.transport.column_tip(
+            "Heard in", "Which area's dialogue speaks through this "
+            "channel.\n\nWorked out by decoding an area's clip tables "
+            "against all 32 channels, which takes about a minute per "
+            "area - so it is only filled in for areas already opened on "
+            "the Dialogues/TXTD side, and kept afterwards. A dash means "
+            "not worked out yet, not unused.")
         self.status.setText(
             f"{os.path.basename(path)}: {len(entries)} channels, "
             f"{self.sectors:,} sectors"
@@ -247,6 +311,7 @@ class VoicePanel(QWidget):
         self.extract.setEnabled(True)
         self.export_all.setEnabled(True)
         self.image_opened.emit(path)
+        self._scan_areas()
 
     def _extract(self):
         """Write a usable VOICE.XA next to a CD folder's other files."""
@@ -501,4 +566,6 @@ class VoicePanel(QWidget):
     def closeEvent(self, event):
         self.transport.stop()
         self._stop_decode()
+        if self._area_scan is not None and self._area_scan.isRunning():
+            self._area_scan.wait(5000)
         super().closeEvent(event)

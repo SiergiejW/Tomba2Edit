@@ -76,6 +76,37 @@ def _align(needs, sizes):
     return out
 
 
+def cached_areas(folder=None):
+    """{channel: [overlay, ...]} of every link already worked out.
+
+    Which area a voice channel speaks for is not written down
+    anywhere: it is found by decoding the overlay's tables against all
+    32 channels and seeing which one has its gaps in the right places
+    (see resolve_channels). That takes the better part of a minute per
+    overlay, so the answers are kept - and this is the same store read
+    the other way round, so the Dialogues list can say where a channel
+    is heard without working anything out itself.
+
+    Only areas somebody has actually opened are in there. An empty
+    answer means "not worked out yet", never "used nowhere"."""
+    path = os.path.join(folder or os.getcwd(), CACHE_NAME)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            held = json.load(f)
+    except Exception:
+        return {}
+    out = {}
+    for key, channels in (held or {}).items():
+        overlay = str(key).split(":")[0]
+        for channel in channels or ():
+            names = out.setdefault(int(channel), [])
+            if overlay not in names:
+                names.append(overlay)
+    for names in out.values():
+        names.sort()
+    return out
+
+
 class VoiceLink:
     """Resolves a TXTD entry to its clips, and decodes them."""
 

@@ -107,6 +107,7 @@ class MidiExportDialog(QDialog):
         self.suggested = suggested
         self.font = None
         self._render = None
+        self._closing = False
         self._wav = None
         self.blob = midi.from_seq(data, at)
         self.resolution, self.tempo = seq.header(data, at)
@@ -394,9 +395,12 @@ class MidiExportDialog(QDialog):
         self._render = _Render(self._mapped_events(), self.resolution,
                                self.tempo, self.font)
         self._render.done.connect(self._rendered)
+        self._render.finished.connect(self._render_finished)
         self._render.start()
 
     def _rendered(self, left, right, note):
+        if self._closing:
+            return
         self.play_button.setEnabled(True)
         if left is None:
             self.status.setText(f"Could not render that: {note}")
@@ -406,6 +410,16 @@ class MidiExportDialog(QDialog):
         self.wave.set_envelope(peaks(self._wav), self.font.title)
         self._describe()
         self._start(self._wav)
+
+    def _render_finished(self):
+        render, self._render = self._render, None
+        if render is not None:
+            render.deleteLater()
+        if self._closing:
+            # Do not let Qt destroy a live QThread.  The rendering code
+            # has no safe interruption point inside the SoundFont engine,
+            # so finish its current pass, then close the dialog.
+            self.reject()
 
     def _start(self, wav):
         self.player.stop()
@@ -472,7 +486,11 @@ class MidiExportDialog(QDialog):
     def closeEvent(self, event):
         self.player.stop()
         if self._render is not None and self._render.isRunning():
-            self._render.wait(10000)
+            self._closing = True
+            self.status.setText("Finishing the active SoundFont render before closing...")
+            self.setEnabled(False)
+            event.ignore()
+            return
         super().closeEvent(event)
 
 

@@ -103,6 +103,25 @@ class _Decoder(QThread):
                 self.failed.emit(self.movie, index, str(exc))
 
 
+class _WaveDecode(QThread):
+    """One movie's soundtrack, decoded and reduced to an envelope."""
+
+    done = pyqtSignal(str, object, object)
+
+    def __init__(self, movie, parent=None):
+        super().__init__(parent)
+        self.movie = movie
+
+    def run(self):
+        try:
+            wav = self.movie.wav()
+            self.done.emit(self.movie.name, wav, peaks(wav))
+        except Exception:
+            # A copy whose audio will not decode still shows its film;
+            # the strip just stays empty.
+            self.done.emit(self.movie.name, None, None)
+
+
 class MoviePanel(QWidget):
     """Pick a movie, watch it, write it out."""
 
@@ -118,6 +137,7 @@ class MoviePanel(QWidget):
         self._scrubbing = False
         self._wav = None
         self._buffer = None
+        self._pending_audio_position = None
         self._clock = QElapsedTimer()
         self._clock_frame = 0
 
@@ -367,6 +387,7 @@ class MoviePanel(QWidget):
             return
         self.stop()
         self._drop_decoder()
+        self._drop_wave_worker()
         self._cache.clear()
         self.movie = self.movies[row]
         self._current = 0
@@ -473,26 +494,52 @@ class MoviePanel(QWidget):
         if not self.movie or not self.movie.frames:
             return
         self.show_frame(int(fraction * (len(self.movie.frames) - 1)))
-        if self._playing and self.movie.has_audio:
-            self._start_audio(self._current / (self.movie.fps or 1.0))
+        self._resume_here()
+
+    def _resume_here(self):
+        """Carry on from the frame now showing, without restarting.
+
+        Seeking what is already playing, never handing the player a
+        fresh source: a new source reads position zero until the seek
+        lands, and _tick drives the picture from that position - so
+        restarting threw the film back to its first frame, which is
+        what clicking the soundtrack looked like it was doing."""
+        if not self._playing or not self.movie:
+            return
+        fps = self.movie.fps or 1.0
+        if self.movie.has_audio:
+            self.player.setPosition(int(self._current / fps * 1000))
+        else:
+            self._clock_frame = self._current
+            self._clock.restart()
 
     def _show_wave(self):
         """Draw the soundtrack, or say there isn't one.
 
-        Decoded here rather than on play: the point of the view is to
-        show the shape of the sound before anything is played, and a
-        movie's audio is already being read off the disc to list it."""
+        The decode happens on a worker: a movie's whole soundtrack is
+        several megabytes of ADPCM, and doing it here would make
+        picking a movie wait for sound nobody has asked to hear yet."""
+        self.wave.set_preview(None, "")
+        self._drop_wave_worker()
         if not self.movie or not self.movie.has_audio:
-            self.wave.set_preview(None, "")
             return
-        try:
-            if self._wav is None:
-                self._wav = self.movie.wav()
-            self.wave.set_envelope(peaks(self._wav), self.movie.name)
-        except Exception:
-            # A copy whose audio will not decode still shows its film;
-            # the strip just stays empty.
-            self.wave.set_preview(None, "")
+        self._wave_worker = _WaveDecode(self.movie, self)
+        self._wave_worker.done.connect(self._wave_ready)
+        self._wave_worker.start()
+
+    def _wave_ready(self, name, wav, envelope):
+        # The picked movie may have changed while this was running.
+        if not self.movie or name != self.movie.name:
+            return
+        if wav is not None:
+            self._wav = wav
+        self.wave.set_preview(envelope, name)
+
+    def _drop_wave_worker(self):
+        worker = getattr(self, "_wave_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.wait(8000)
+        self._wave_worker = None
 
     def _update_position(self):
         if not self.movie:
@@ -517,8 +564,6 @@ class MoviePanel(QWidget):
     def play(self):
         if not self.movie or not self.movie.frames:
             return
-        if self._current >= len(self.movie.frames) - 1:
-            self._current = 0
         if self.movie.has_audio:
             if self._wav is None:
                 self._wav = self.movie.wav()
@@ -554,9 +599,13 @@ class MoviePanel(QWidget):
         self._buffer = QBuffer(self)
         self._buffer.setData(QByteArray(self._wav))
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+        # A QMediaPlayer source is loaded asynchronously.  Seeking in
+        # the same turn as setSourceDevice() is sometimes applied to the
+        # old source (or ignored), which is why stopped playback could
+        # jump back to frame zero.
+        self._pending_audio_position = int(seconds * 1000)
         self.player.setSourceDevice(self._buffer)
         self.player.play()
-        self.player.setPosition(int(seconds * 1000))
 
     def _tick(self):
         """Show whichever frame the clock has reached.
@@ -580,6 +629,11 @@ class MoviePanel(QWidget):
             self.show_frame(index)
 
     def _audio_status(self, status):
+        if (self._pending_audio_position is not None
+                and status in (QMediaPlayer.MediaStatus.LoadedMedia,
+                               QMediaPlayer.MediaStatus.BufferedMedia)):
+            self.player.setPosition(self._pending_audio_position)
+            self._pending_audio_position = None
         if (status == QMediaPlayer.MediaStatus.EndOfMedia and self._playing
                 and self.movie):
             self.stop()
@@ -591,13 +645,7 @@ class MoviePanel(QWidget):
     def _release(self):
         self._scrubbing = False
         self.show_frame(self.timeline.value())
-        if self._playing and self.movie:
-            fps = self.movie.fps or 1.0
-            if self.movie.has_audio:
-                self.player.setPosition(int(self._current / fps * 1000))
-            else:
-                self._clock_frame = self._current
-                self._clock.restart()
+        self._resume_here()
 
     def _slid(self, value):
         """Dragging the timeline shows frames as it goes rather than

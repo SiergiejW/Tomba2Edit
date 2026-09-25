@@ -66,8 +66,26 @@ def folder():
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # audio_names belongs beside the application, not beside this
+        # module.  The latter is formats/audio/, so two parents only gets
+        # as far as formats/ and makes an existing project catalogue look
+        # as though it disappeared after this module was introduced.
+        base = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
     return os.path.join(base, FOLDER)
+
+
+def legacy_folder():
+    """The accidentally-used source-tree location from early builds.
+
+    Keep it as a read-only fallback so a name entered during that period
+    is recovered when the corrected location is used.  New saves always
+    go to folder().
+    """
+    if getattr(sys, "frozen", False):
+        return None
+    return os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), FOLDER)
 
 
 def bundled_folder():
@@ -89,24 +107,29 @@ def load(disc):
     empty = {name: {} for name in SECTIONS}
     if not disc:
         return empty
-    tries = [path_for(disc)]
+    # Merge every known location instead of stopping at the first one:
+    # names that predate the path regression live at the application root,
+    # while a user may have added more during the regression under formats/.
+    # The normal, durable location wins if both name the same key.
+    tries = []
+    legacy = legacy_folder()
+    if legacy:
+        tries.append(os.path.join(legacy, f"{disc}.json"))
     inside = bundled_folder()
     if inside:
         tries.append(os.path.join(inside, f"{disc}.json"))
-    stored = None
+    tries.append(path_for(disc))
     for path in tries:
         try:
             with open(path, encoding="utf-8") as f:
                 stored = json.load(f)
-            break
         except (OSError, ValueError):
             continue
-    if stored is None:
-        return empty
-    for name in SECTIONS:
-        value = stored.get(name)
-        if isinstance(value, dict):
-            empty[name] = {str(k): str(v) for k, v in value.items()}
+        for name in SECTIONS:
+            value = stored.get(name)
+            if isinstance(value, dict):
+                empty[name].update({str(k): str(v)
+                                    for k, v in value.items()})
     return empty
 
 

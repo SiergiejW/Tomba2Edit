@@ -369,7 +369,7 @@ class TXTDViewer(QWidget):
         # master uses is not established, so it is a choice here rather
         # than a guess - if a line plays the wrong clip, step the table.
         voice_row = QHBoxLayout()
-        self.open_voice_button = QPushButton("Open BIN/IMG...")
+        self.open_voice_button = QPushButton("Open BIN/IMG")
         self.open_voice_button.setToolTip(
             "The disc's data track (Track 1) - the voice track only "
             "survives there, not in a CD folder or an ISO")
@@ -382,6 +382,14 @@ class TXTDViewer(QWidget):
         self.known_voice_disc.setEnabled(self.known_voice_disc.count() > 1)
         self.known_voice_disc.setToolTip(
             "Data tracks already found under the project's iso/ folder")
+        # Left to itself a combo is as wide as its longest entry, and
+        # these are full disc paths - 700-odd pixels of minimum width,
+        # which set the whole window's. Elide instead: the full text is
+        # still in the drop-down and in the tooltip.
+        self.known_voice_disc.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.known_voice_disc.setMinimumContentsLength(14)
+        self.known_voice_disc.setMaximumWidth(240)
         self.known_voice_disc.activated.connect(self._open_known_voice)
         voice_row.addWidget(self.known_voice_disc)
         self.play_voice_button = QPushButton()
@@ -395,7 +403,7 @@ class TXTDViewer(QWidget):
 
         # The line's own sound, drawn, with the cursor running across
         # it - the same view the audio tabs use, and the same seek.
-        self.voice_wave = WaveView()
+        self.voice_wave = WaveView(height=44)
         self.voice_wave.setToolTip(
             "This line's voice. Click or drag to jump to a moment.")
         self.voice_wave.scrubbed.connect(self._voice_scrubbed)
@@ -418,12 +426,12 @@ class TXTDViewer(QWidget):
         self.voice_player.durationChanged.connect(self._voice_sized)
         self.voice_player.playbackStateChanged.connect(self._voice_state)
         self._voice_buffer = None
-        self.export_voice_button = QPushButton("Export line...")
+        self.export_voice_button = QPushButton("Export...")
         self.export_voice_button.setToolTip(
             "Save this line's own voice clip(s) as a WAV")
         self.export_voice_button.clicked.connect(self._export_voice_line)
         self.export_voice_button.setEnabled(False)
-        self.import_voice_button = QPushButton("Import line...")
+        self.import_voice_button = QPushButton("Import...")
         self.import_voice_button.setToolTip(
             "Replace this line's own sectors with a WAV - staged in "
             "memory until the Dialogues tab's Export patched BIN writes "

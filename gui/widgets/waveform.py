@@ -233,13 +233,17 @@ class WaveView(QWidget):
 
     scrubbed = pyqtSignal(float)        # 0..1, where the cursor was put
     HEIGHT = 64
+    MIN_HEIGHT = 30
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, height=None):
         super().__init__(parent)
-        self.setMinimumHeight(self.HEIGHT)
-        self.setMaximumHeight(self.HEIGHT)
+        # A ceiling and a floor rather than a fixed height: a panel in
+        # a small window has to be able to squeeze this, and one that
+        # cannot is one that stops the whole window being resized.
+        self.setMaximumHeight(height or self.HEIGHT)
+        self.setMinimumHeight(self.MIN_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Fixed)
+                           QSizePolicy.Policy.Preferred)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview = None             # an envelope, or a Notes
         self.position = 0.0             # 0..1

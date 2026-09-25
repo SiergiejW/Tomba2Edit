@@ -139,6 +139,22 @@ class AudioTransport(QWidget):
         # printed selection says where it came from.
         self.source = source
         self._scrubbing = False
+        # Where the cursor was put while nothing was playing. Pressing
+        # play then starts there rather than at the beginning, which
+        # is what dragging a cursor on a stopped sound is asking for.
+        self._start_at = 0.0
+        # A freshly installed source can reject a seek until it has
+        # announced its duration.  Remember that the chosen point still
+        # needs applying, rather than relying on one early setPosition().
+        self._start_pending = False
+        self._source_ready = False
+        # True while this is moving the slider itself. The slider's
+        # valueChanged cannot tell a drag from a programmatic move, and
+        # without this the transport's own updates counted as the
+        # person dragging - setRange() on a new track reset the value,
+        # which overwrote the position they had just chosen with zero,
+        # a line before it was going to be used.
+        self._syncing = False
         self._buffer = None
         self._current = -1
         self._looping = False
@@ -455,6 +471,9 @@ class AudioTransport(QWidget):
 
     def _wave_scrubbed(self, fraction):
         """The big view was dragged; the sound follows it."""
+        self._start_at = fraction
+        self._start_pending = self.player.playbackState() == \
+            QMediaPlayer.PlaybackState.StoppedState
         length = self.player.duration()
         if length > 0:
             self.player.setPosition(int(fraction * length))
@@ -538,6 +557,16 @@ class AudioTransport(QWidget):
                 self._play_from(watched, row)
                 return True
         return super().eventFilter(watched, event)
+
+    def column_tip(self, name, text, table=None):
+        """Explain one of the owner's own columns in its header."""
+        table = table or self.lists[0]
+        if name not in table.columns:
+            return
+        item = table.horizontalHeaderItem(
+            table.name_col + 1 + table.columns.index(name))
+        if item is not None:
+            item.setToolTip(text)
 
     def add_list(self, columns=None, source="Audio", previews=None):
         """Another list playing through this same player, for the owner to
@@ -762,16 +791,22 @@ class AudioTransport(QWidget):
         description when the name has been cleared.
 
         Extra columns are flagged non-editable, but guard the column
-        anyway - nothing but the name cell should ever reach here."""
-        if item.column() != 0:
+        anyway - nothing but the name cell should ever reach here.
+
+        The name is not always column zero: a list with a thumbnail has
+        it at one, and comparing against zero there threw every rename
+        away silently - the typed name never reached the store, so it
+        was gone again the next time the list was built."""
+        table = item.tableWidget()
+        if item.column() != getattr(table, "name_col", 0):
             return
         key = item.data(KEY)
         name = item.text().strip()
         if name == item.data(DESCRIPTION):
             name = ""
-        self.list.blockSignals(True)
+        table.blockSignals(True)
         self._show(item, name)
-        self.list.blockSignals(False)
+        table.blockSignals(False)
         if key:
             self.renamed.emit(key, name)
 
@@ -848,7 +883,9 @@ class AudioTransport(QWidget):
         self._buffer = QBuffer(self)
         self._buffer.setData(QByteArray(data))
         self._buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+        self._source_ready = False
         self.player.setSourceDevice(self._buffer)
+        self._start_pending = self._start_at > 0
         self.player.play()
         if self._has_pitch:
             self.player.setPlaybackRate(1 + self.pitch.value() / 100)
@@ -895,6 +932,10 @@ class AudioTransport(QWidget):
                 return
             self._use(table)
         if row >= 0 and row != previous_row:
+            # A different entry starts at its own beginning; the
+            # cursor position belonged to the one before it.
+            self._start_at = 0.0
+            self._start_pending = False
             self._print_selection(row)
         if (row >= 0 and row != previous_row and self._select_plays
                 and self.autoplay.isChecked()):
@@ -959,7 +1000,12 @@ class AudioTransport(QWidget):
 
     def _slider_moved(self, ms):
         length = self.position.maximum()
-        self.wave.set_position(ms / length if length > 0 else 0.0)
+        fraction = ms / length if length > 0 else 0.0
+        if not self._syncing:
+            self._start_at = fraction
+            self._start_pending = self.player.playbackState() == \
+                QMediaPlayer.PlaybackState.StoppedState
+        self.wave.set_position(fraction)
 
     def _grab(self):
         self._scrubbing = True
@@ -970,7 +1016,11 @@ class AudioTransport(QWidget):
 
     def _moved(self, ms):
         if not self._scrubbing:
-            self.position.setValue(ms)
+            self._syncing = True
+            try:
+                self.position.setValue(ms)
+            finally:
+                self._syncing = False
         length = self.player.duration()
         self.time.setText(f"{clock(ms)} / {clock(length)}")
         self.wave.set_clock(f"{clock(ms)} / {clock(length)}")
@@ -980,8 +1030,22 @@ class AudioTransport(QWidget):
         if not self._scrubbing:
             self.wave.set_position(ms / length if length > 0 else 0.0)
 
+    def _apply_start(self):
+        if (not self._source_ready or not self._start_pending
+                or self._start_at <= 0):
+            return
+        length = self.player.duration()
+        if length > 0:
+            self.player.setPosition(int(self._start_at * length))
+            self._start_pending = False
+
     def _sized(self, ms):
-        self.position.setRange(0, ms)
+        self._syncing = True
+        try:
+            self.position.setRange(0, ms)
+        finally:
+            self._syncing = False
+        self._apply_start()
         self.time.setText(f"{clock(self.player.position())} / {clock(ms)}")
         self.wave.set_clock(f"{clock(self.player.position())} / {clock(ms)}")
 
@@ -990,6 +1054,13 @@ class AudioTransport(QWidget):
         set_glyph(self.play_button, "pause" if playing else "play")
 
     def _status_changed(self, status):
+        if status in (QMediaPlayer.MediaStatus.LoadedMedia,
+                      QMediaPlayer.MediaStatus.BufferedMedia):
+            # setSourceDevice() discards its old source asynchronously.
+            # Until this point duration() can still describe the sound
+            # just stopped, so a seek here is the first safe one.
+            self._source_ready = True
+            self._apply_start()
         # Advancing to the next row when one finishes is Autoplay's job
         # too, not just playing a row the moment it's selected - with it
         # off, a track (or a short SFX clip that ends almost right away)

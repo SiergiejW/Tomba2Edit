@@ -39,6 +39,13 @@ class VoiceError(Exception):
     """Raised when a disc image can't give us the voice track."""
 
 
+# A05's operations-room script reaches its voice table through an indirect
+# dispatcher rather than the two case forms read_dispatch() recognizes.
+# It is the sole channel absent from that reader's otherwise complete US
+# retail result; retaining it here makes the list reflect the game's use.
+_INDIRECT_DISPATCH_CHANNELS = {"A05.BIN": (0,)}
+
+
 def find_track(path):
     """(lba, sectors) of VOICE.XA in a raw disc image.
 
@@ -188,6 +195,59 @@ def extract_file(image_path, wanted):
         finally:
             if isinstance(data, mmap.mmap):
                 data.close()
+
+
+def dispatch_channels(image_path):
+    """{channel: [BIN name, ...]} used by every overlay on a disc.
+
+    The overlay dispatch is the game's own channel selection, so this is
+    both quicker and more complete than waiting for a TXTD panel to be
+    opened and then inferring channels from audio boundaries.
+    """
+    out = {}
+    with open(image_path, "rb") as f:
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            data = f.read()
+        try:
+            reader = ISO9660Reader(data)
+            if reader.sector_size != xa.SECTOR:
+                return out
+
+            def walk(lba, size, depth=0):
+                for entry in reader.list_directory(lba, size):
+                    name = reader.clean_name(entry.name)
+                    if not name:
+                        continue
+                    if entry.is_dir:
+                        if depth < 2:
+                            walk(entry.lba, entry.size, depth + 1)
+                    elif name.upper().endswith(".BIN"):
+                        try:
+                            dispatch = read_dispatch(
+                                reader.read_file(entry.lba, entry.size))
+                        except Exception:
+                            continue
+                        for _master, (_table, channel, _block) in dispatch.items():
+                            names = out.setdefault(channel, [])
+                            if name not in names:
+                                names.append(name)
+                        for channel in _INDIRECT_DISPATCH_CHANNELS.get(
+                                name.upper(), ()):
+                            names = out.setdefault(channel, [])
+                            if name not in names:
+                                names.append(name)
+
+            walk(reader.root_lba, reader.root_size)
+        except Exception:
+            return {}
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
+    for names in out.values():
+        names.sort()
+    return out
 
 
 def extract_voice(image_path, out_path):
@@ -370,6 +430,11 @@ def _case_near(word, top, at, base, overlay_path):
     return None
 
 
+def _overlay_data(overlay):
+    return overlay if isinstance(overlay, (bytes, bytearray, memoryview)) else \
+        open(overlay, "rb").read()
+
+
 def find_overlay_base(overlay_path):
     """Where this overlay is actually loaded in RAM, worked out from
     its own bytes rather than assumed.
@@ -398,7 +463,7 @@ def find_overlay_base(overlay_path):
     one whose compiler didn't build addresses this way."""
     from collections import Counter
 
-    data = open(overlay_path, "rb").read()
+    data = _overlay_data(overlay_path)
     top = len(data) - 4
 
     def word(at):
@@ -446,7 +511,7 @@ def read_dispatch(overlay_path, base=None):
     retail disc does."""
     if base is None:
         base = find_overlay_base(overlay_path) or OVERLAY_BASE
-    data = open(overlay_path, "rb").read()
+    data = _overlay_data(overlay_path)
     top = len(data) - 4
 
     def word(at):
@@ -544,7 +609,7 @@ def read_dispatch(overlay_path, base=None):
 
 def read_clip_table(overlay_path, offset, limit=400):
     """The (start, length) rows of one clip table, until the chain ends."""
-    data = open(overlay_path, "rb").read()
+    data = _overlay_data(overlay_path)
     out = []
     at = offset
     expect = 0
@@ -562,7 +627,7 @@ def find_tables(overlay_path, min_entries=MIN_TABLE):
     """[(offset, [(start, length), ...])] for every clip table found."""
     import struct
 
-    data = open(overlay_path, "rb").read()
+    data = _overlay_data(overlay_path)
     out = []
     i = 0
     while i < len(data) - 8:
