@@ -140,11 +140,6 @@ gives the picture alone.
 
 ## Formats
 
-Each format has a folder under `formats/`, holding its parser, its
-renderer and its viewer together. The four-letter code stays in every
-filename, so `scld_parser.py` is still what you search for - the folder
-just says what SCLD *is*.
-
 | Format          | What it is                        | Where it lives         |
 | --------------- | --------------------------------- | ---------------------- |
 | `DAT` / `IDX`   | Main archive and its index        | `formats/archive/`     |
@@ -182,13 +177,6 @@ decomp/             symbols and per-build address maps
 docs/               notes, format references, screenshots
 examples/           standalone research tools and older experiments
 ```
-
-The split between `psx/`, `game/` and `formats/` is the useful one: `psx/`
-knows nothing about Tomba, `formats/` knows nothing about how the game
-behaves, and `game/` is where the two meet - including `actor_sim`, which
-answers "what is actually in this level?" by running the game's own code
-rather than guessing.
-
 ---
 
 ## Installation
