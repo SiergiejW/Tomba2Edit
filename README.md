@@ -4,7 +4,7 @@
 
 Tomba2Edit opens a disc image of the game and shows you what is inside it:
 levels, collision, 3D models, animations, sprites, textures, dialogue,
-music, sound effects and movies — each in a viewer that understands the
+music, sound effects and movies - each in a viewer that understands the
 format, and most of them editable. Changes are staged, repacked and
 written back out as a playable disc.
 
@@ -15,11 +15,14 @@ community.
 > **Goal:** make Tomba! 2's internal game data accessible to modders,
 > translators, researchers and preservationists.
 
+## Trailer:
+
+[![Tomba2Edit video](https://img.youtube.com/vi/URcoukT6tPk/maxresdefault.jpg)](https://www.youtube.com/watch?v=URcoukT6tPk)
 ---
 
 ## What it looks like
 
-### Level editor — a whole area, as the game builds it
+### Level editor - a whole area, as the game builds it
 
 The level editor runs the area's own code on a MIPS interpreter, so what
 you see is what the game would place: the level, its background, every
@@ -39,7 +42,7 @@ object, every animation.
 
 ![Text editing](docs/screenshots/text-editing.png)
 
-### The font page — every character the game can draw, editable
+### The font page - every character the game can draw, editable
 
 ![Translation](docs/screenshots/translation.png)
 
@@ -75,7 +78,7 @@ object, every animation.
 
 * Read PlayStation CD/ISO data and BIN/CUE rips
 * Rebuild ISO9660 images with modified files
-* Patch in place where it matters — the CD audio and XA music only
+* Patch in place where it matters - the CD audio and XA music only
   survive that way
 
 ### Levels
@@ -84,8 +87,8 @@ object, every animation.
 * **SCLD** collision planes, walls and paths
 * **DRWA / DRWB** drawmaps
 * **BGMP** background maps
-* A level editor that assembles a whole area — objects, pickups, chests,
-  rooms, effects — by running the game's own handlers
+* A level editor that assembles a whole area - objects, pickups, chests,
+  rooms, effects - by running the game's own handlers
 
 ### 3D models and animation
 
@@ -105,7 +108,7 @@ object, every animation.
 ### Text and translation
 
 * **TXTD** / **TXT2** dialogue editing with a live in-game preview
-* Font page editing — add characters the original disc never had
+* Font page editing - add characters the original disc never had
 * Import/export whole scripts as JSON or plain text
 * Japanese text support, including the console's own BIOS kanji font
 * Voice clips linked to the lines they speak
@@ -119,14 +122,14 @@ object, every animation.
 
 ### Movies
 
-The three STR movies in the disc's `MOVIE` folder — `LOGO.STR`, `OP.STR`
+The three STR movies in the disc's `MOVIE` folder - `LOGO.STR`, `OP.STR`
 and `END.STR`:
 
 * Software MDEC decoding, so no external decoder is needed
 * A frame-accurate timeline (every STR frame is independent, so seeking
   anywhere costs one frame)
 * Export as a still PNG, a numbered PNG sequence, the soundtrack as
-  WAV/MP3, the raw `.STR` sectors, or — where ffmpeg is on PATH — a
+  WAV/MP3, the raw `.STR` sectors, or - where ffmpeg is on PATH - a
   finished MP4/MKV/AVI with the sound in it
 
 The soundtrack lives in CD-XA Form 2 sectors, so it only survives in a
@@ -136,11 +139,6 @@ gives the picture alone.
 ---
 
 ## Formats
-
-Each format has a folder under `formats/`, holding its parser, its
-renderer and its viewer together. The four-letter code stays in every
-filename, so `scld_parser.py` is still what you search for — the folder
-just says what SCLD *is*.
 
 | Format          | What it is                        | Where it lives         |
 | --------------- | --------------------------------- | ---------------------- |
@@ -164,9 +162,9 @@ just says what SCLD *is*.
 
 ```
 main.py             the entry point
-formats/            one package per game format — parser, renderer, viewer
+formats/            one package per game format - parser, renderer, viewer
 psx/                the PlayStation itself: MIPS interpreter, GPU, VRAM
-game/               what is true of Tomba! 2 in particular — placements,
+game/               what is true of Tomba! 2 in particular - placements,
                     handlers, labels, the eleven builds, actor simulation
 disc/               ISO9660, BIN/CUE, raw sectors, rebuilding images
 gui/                the application shell, its widgets and the level editor
@@ -179,13 +177,6 @@ decomp/             symbols and per-build address maps
 docs/               notes, format references, screenshots
 examples/           standalone research tools and older experiments
 ```
-
-The split between `psx/`, `game/` and `formats/` is the useful one: `psx/`
-knows nothing about Tomba, `formats/` knows nothing about how the game
-behaves, and `game/` is where the two meet — including `actor_sim`, which
-answers "what is actually in this level?" by running the game's own code
-rather than guessing.
-
 ---
 
 ## Installation
@@ -216,7 +207,7 @@ pyinstaller main.spec
 ## Getting started
 
 1. Obtain a legally dumped copy of **Tomba! 2: The Evil Swine Return**.
-2. A **BIN/CUE** dump of the US retail release is recommended — it is the
+2. A **BIN/CUE** dump of the US retail release is recommended - it is the
    only form that carries the CD audio and the voice track.
 3. Open `Track 1.BIN` in Tomba2Edit.
 4. Explore, edit, and export or repack your changes.
@@ -263,7 +254,7 @@ replacement.
 
 ## Contributing
 
-Contributions are welcome — reverse engineering unknown formats,
+Contributions are welcome - reverse engineering unknown formats,
 improving parsers, testing modifications, adding exporters, documentation
 and GUI work all help.
 
@@ -282,8 +273,8 @@ This project would not exist without the Tomba Club reverse-engineering
 community. Thanks to everyone who contributed research, testing,
 documentation and technical discoveries.
 
-* **[Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)** — technical documentation
-* **[Tomba Club Discord](https://discord.gg/7RPgnxrTt)** — discussion and collaboration
+* **[Tomba Club Wiki](https://tomba.club/wiki/Tomba!_2:_The_Evil_Swine_Return/Technical_information)** - technical documentation
+* **[Tomba Club Discord](https://discord.gg/7RPgnxrTt)** - discussion and collaboration
 
 ---
 
