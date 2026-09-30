@@ -19,6 +19,7 @@ from formats.animation.clut_animation import ClutAnimationMixin
 from gui.widgets.origin_axes import OriginAxes
 from gui import theme
 from gui.widgets import collision_overlay, export_dialog, polygon_pick
+from gui.widgets.collision_options import CollisionOptions, add_menu_button
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
@@ -123,8 +124,16 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.collision_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning), "Show Collision", self)
         self.collision_action.setCheckable(True)
         self.collision_action.setChecked(False)
+        self.collision_action.setToolTip(
+            "Draw the SCLD collision that falls inside this room. The Collision options "
+            "button beside this one chooses what it shows and how it is coloured - the "
+            "same menu as the level editor and the SCLD viewer.")
         self.collision_action.toggled.connect(self.toggle_collision)
         self.toolbar.addAction(self.collision_action)
+        self.collision_options = CollisionOptions.shared()
+        self.collision_options.changed.connect(self._collision_style_changed)
+        add_menu_button(self.toolbar, self.collision_options.menu(self),
+                        self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
 
         self.toolbar.addAction(self.make_animate_action())
 
@@ -223,6 +232,11 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.show_collision = checked
         self.update()
 
+    def _collision_style_changed(self):
+        if self.collision_data is not None:
+            self._prepare_collision_buffers()
+            self.update()
+
     def load_collision_data(self, dat_file_path, dat_start, offset, size):
         """Load and buffer the SCLD collision data for the area currently
         on screen, so toggling "Show Collision" is instant. Safe to call
@@ -252,7 +266,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                              if self.model_data else None)
         lines = collision_overlay.add_scld(
             collision_overlay.Lines(), entries_in_bounds(entries, bounds),
-            bounds=bounds, **collision_overlay.LEVEL)
+            bounds=bounds, style=self.collision_options.style, all_entries=entries)
         self.collision.set(lines, UNIT_SCALE)
 
     # --- picking out of the drawmap -----------------------------------

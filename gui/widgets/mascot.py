@@ -15,11 +15,13 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+from icons.icons import resource_path
+
 SPRITE = (34, 42)
 SCALE = 2               # what the sequence editor settled on
 
-_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "icons", "tomba", "zippo.png")
+# Through resource_path, so the built exe finds him in its bundle (main.spec adds the file).
+_PATH = resource_path("icons/tomba/zippo.png")
 # Loaded once and shared: the same few kilobytes in six panels.
 _cache = {}
 

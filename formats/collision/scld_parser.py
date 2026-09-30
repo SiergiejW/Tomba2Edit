@@ -65,7 +65,13 @@ Each of the N pointers locates one entry - one plane:
                                             cell, in cell-local units.
                                             See cell_line()
     table2 [ptr2 .. ptr3)       : 8-byte records, walked by the bit-14|15
-                                  cells. Not decoded here.
+                                  cells. Decoded in scld_geometry.py: a
+                                  junction cell's run starts with the
+                                  cell's own geometry (a leaf whose records
+                                  no grid cell claims), and its other
+                                  records name the plane Up / Down leads to
+                                  (flags & 0xFF) and the body heights
+                                  allowed (count, profile).
     table3 [ptr3 .. ptr4)       : 8-byte records - the surfaces stacked in
                                   one cell: (u16 kind, s16 pos, s16 rise,
                                   u16 normal).

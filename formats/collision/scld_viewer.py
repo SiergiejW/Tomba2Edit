@@ -2,7 +2,7 @@
 import colorsys
 import math
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (
     QOpenGLShaderProgram,
@@ -13,9 +13,11 @@ from PyQt6.QtOpenGL import (
 from PyQt6.QtGui import QMatrix4x4, QAction, QVector3D, QPainter, QColor, QFont
 from OpenGL import GL
 from formats.collision.scld_parser import load_scld
-from formats.collision.scld_render import UNIT_SCALE, build_points, build_lines, unkn_color
+from formats.collision.scld_render import UNIT_SCALE, build_points, build_lines
+from formats.collision.scld_geometry import geometry
 from gui import theme
 from gui.widgets import collision_overlay
+from gui.widgets.collision_options import CollisionOptions, add_menu_button
 from formats.geometry.mdat import exportMDAT, find_area_mdat_location
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
@@ -24,13 +26,16 @@ from gui.widgets.camera_controls import (
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QTextBrowser,
 )
 from formats.models import gltf_export
 from gui.widgets.origin_axes import OriginAxes
 
 
 class SCLDViewer(CameraEventMixin, QOpenGLWidget):
+    # A click on a record or lane switch: the entry's index and what the record is.
+    record_picked = pyqtSignal(int, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scld_data = None
@@ -41,13 +46,12 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.show_origin = False
         self.origin_axes = OriginAxes()
         self._scene_points = ()
-        self.show_markers = True
-        # Colour entries by their header's `unkn` value instead of by
-        # index, to see whether entries sharing one have anything in
-        # common on screen.
-        self.color_by_unkn = False
-        # Draw the wall records - see SCLDEntry.walls().
-        self.show_walls = True
+        # What is drawn and how it is coloured: the menu on the Collision button,
+        # shared with the level editor and the MDAT view.
+        self.options = CollisionOptions.shared()
+        self.options.changed.connect(self._style_changed)
+        self.show_collision = True
+        self.only_selected = False
         # entry.index -> [(x, y, z), ...] in record order, for those
         # labels, and the table3 record number behind each.
         self.entry_record_pos = {}
@@ -98,50 +102,48 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.toolbar.setObjectName("viewerToolbar")
 
-        self.markers_action = QAction(
+        self.collision_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton),
-            "Markers", self)
-        self.markers_action.setCheckable(True)
-        self.markers_action.setChecked(True)
-        self.markers_action.toggled.connect(self.toggle_markers)
-        self.toolbar.addAction(self.markers_action)
+            "Collision", self)
+        self.collision_action.setCheckable(True)
+        self.collision_action.setChecked(True)
+        self.collision_action.setToolTip(
+            "Show or hide the collision. The Collision options button beside this "
+            "one chooses what it shows (floors, ceilings, sloped faces, walls, lane "
+            "switches, plane links, plane lines, the cell grid, record crosses, curtains, "
+            "plane numbers) and how it is coloured, and holds the legend. Click a line "
+            "for what the record is.")
+        self.collision_action.toggled.connect(self.toggle_collision)
+        self.toolbar.addAction(self.collision_action)
+        add_menu_button(self.toolbar, self.options.menu(self, numbers=True),
+                        self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+
+        self.only_action = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),
+            "Only plane", self)
+        self.only_action.setCheckable(True)
+        self.only_action.setToolTip(
+            "Draw only the plane selected in the table. Its lane switches still "
+            "point at the planes they lead to, which stay hidden.")
+        self.only_action.toggled.connect(self.toggle_only_selected)
+        self.toolbar.addAction(self.only_action)
 
         self.view_level_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),
-            "View Level", self)
+            "Level", self)
         self.view_level_action.setCheckable(True)
         self.view_level_action.setChecked(False)
+        self.view_level_action.setToolTip(
+            "Show this area's MDAT room under the collision, flat grey with its "
+            "edges, to check the collision against the real geometry. One SCLD "
+            "can cover more ground than the one room shown.")
         self.view_level_action.toggled.connect(self.toggle_level)
         self.toolbar.addAction(self.view_level_action)
-
-        self.walls_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp),
-            "Walls", self)
-        self.walls_action.setCheckable(True)
-        self.walls_action.setChecked(True)
-        self.walls_action.setToolTip(
-            "The walls the game stops an actor at: each record whose kind "
-            "blocks one way along its plane (bits 0x04/0x08), standing where "
-            "the plane enters or leaves its cell, from its height to its top "
-            "(f_ResolveTerrainProbeHorizontalSurfaceBySideMask)")
-        self.walls_action.toggled.connect(self.toggle_walls)
-        self.toolbar.addAction(self.walls_action)
-
-        self.unkn_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton),
-            "Colour by unkn", self)
-        self.unkn_action.setCheckable(True)
-        self.unkn_action.setChecked(False)
-        self.unkn_action.setToolTip(
-            "Colour entries by the header's unkn field - entries sharing a "
-            "value are drawn alike, and unkn == 0 is grey")
-        self.unkn_action.toggled.connect(self.toggle_color_by_unkn)
-        self.toolbar.addAction(self.unkn_action)
 
         frame_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
             "Frame", self)
-        frame_action.setToolTip("Put the whole of this file's collision back in shot")
+        frame_action.setToolTip("Put all of this file's collision back in shot, whatever is hidden")
         frame_action.triggered.connect(lambda: self.frame_collision())
         self.toolbar.addAction(frame_action)
 
@@ -161,9 +163,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
             "Export glTF", self)
         self.export_action.setToolTip(
-            "Write this file's collision out as glTF lines - the runs "
-            "the game walks along and the verticals it stops at, in the "
-            "colours they are drawn in here.")
+            "Write this file's collision out as a glTF: a point per record, "
+            "and every line shown here (floors, ceilings, walls, lane switches "
+            "and the rest) in the colours they are drawn in.")
         self.export_action.triggered.connect(self.export_to_gltf)
         self.toolbar.addAction(self.export_action)
 
@@ -185,8 +187,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.show_origin = checked
         self.update()
 
-    def toggle_markers(self, checked):
-        self.show_markers = checked
+    def toggle_collision(self, checked):
+        self.show_collision = checked
         self.update()
 
     def toggle_level(self, checked):
@@ -195,12 +197,15 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             self.load_level_mesh()
         self.update()
 
-    def toggle_walls(self, checked):
-        self.show_walls = checked
-        self.update()
+    def toggle_only_selected(self, checked):
+        self.only_selected = checked
+        self._apply_plane_filter()
 
-    def toggle_color_by_unkn(self, checked):
-        self.color_by_unkn = checked
+    def _apply_plane_filter(self):
+        self.options.set_only_plane(
+            self.highlighted_entry if self.only_selected else None)
+
+    def _style_changed(self):
         if self.scld_data is not None:
             self.prepare_buffers()
         self.update()
@@ -227,8 +232,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             print(f"Error loading level mesh: {e}")
 
     def export_to_gltf(self):
-        """Write the collision out, exactly as it is being shown - the
-        records as points, and the walls when that toggle is on."""
+        """Write the collision out, exactly as it is being shown: a point per
+        record, and every line drawn."""
         if not self.scld_data:
             QMessageBox.warning(self, "Nothing to export",
                                 "No SCLD is loaded.")
@@ -238,11 +243,11 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             "glTF binary (*.glb)")
         if not path:
             return
-        tint = unkn_color if self.color_by_unkn else None
-        pts, pt_colors, _r, _p, _ids = build_points(self.scld_data.entries,
-                                                    color_by=tint)
-        verts, colors = build_lines(self.scld_data.entries,
-                                    walls=self.show_walls)
+        lines = collision_overlay.add_scld(
+            collision_overlay.Lines(), self.scld_data.entries, style=self.options.style)
+        pts, pt_colors, _r, _p, _ids = build_points(self.scld_data.entries)
+        verts = lines.surface + lines.vertical
+        colors = lines.surface_colors + lines.vertical_colors
         try:
             # Scaled by the exporter's unit, not this view's. The 3D
             # views do not share one: collision and level geometry are
@@ -265,8 +270,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             return
         QMessageBox.information(
             self, "Exported",
-            f"Wrote {len(pts)} collision points"
-            + (f" and {len(verts) // 2} walls." if verts else "."))
+            f"Wrote {len(pts)} record points and {len(verts) // 2} lines.")
 
     def _upload_mesh(self, model_data):
         vertices = model_data.get("vertices") or []
@@ -306,8 +310,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.mesh_index_count = len(indices)
 
     def set_highlighted_entry(self, entry_index):
-        """Pulse one entry's points (alpha oscillating 10%-100%) so it's
-        easy to pick out among dozens of same-sized dots.
+        """Pulse one entry's lines (alpha oscillating 10%-100%) so it's
+        easy to pick out among dozens of planes.
 
         Every other entry sharing its non-zero `unkn` pulses with it, so
         whatever a value has in common is visible at once. Pass None to
@@ -326,6 +330,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         else:
             self._highlight_phase = 0.0
             self._highlight_timer.start()
+        if self.only_selected:
+            self._apply_plane_filter()
         self.update()
 
     def _tick_highlight(self):
@@ -333,16 +339,18 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.update()
 
     def mousePressEvent(self, event):
-        """A click prints the collision record under it, the way the other
-        views print what they select - gui/widgets/collision_overlay.sample_text."""
+        """A click picks the record or lane switch under it: what it is is printed,
+        shown in the inspector, and its plane selected in the table."""
         if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_lines", None):
             point = event.position().toPoint()
             hit = collision_overlay.pick_sample(
                 self._lines, self._model_view_projection(), UNIT_SCALE,
                 point.x(), point.y(), self.width(), self.height())
             if hit is not None:
-                print(f"selected: SCLD @ 0x{getattr(self, '_scld_address', 0):X}  "
-                      + collision_overlay.sample_text(*hit))
+                entry, record = hit
+                text = collision_overlay.sample_text(entry, record)
+                print(f"selected: SCLD @ 0x{getattr(self, '_scld_address', 0):X}  " + text)
+                self.record_picked.emit(entry.index, text)
         super().mousePressEvent(event)
 
     def load_scld_data(self, dat_file_path, dat_start, offset, size, chunk_index=None):
@@ -360,6 +368,9 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
                 self._level_loaded_for_chunk = None
                 if self.show_level:
                     self.load_level_mesh()
+            # Framing is the whole file's, whatever is shown or hidden.
+            points = np.array(build_points(self.scld_data.entries)[0], dtype=np.float32)
+            self._scene_points = (points / UNIT_SCALE).flatten() if len(points) else ()
             self.prepare_buffers()
             self.frame_collision()
             self._update_stats_label()
@@ -375,28 +386,21 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         self.entry_label_pos = {}
         entries = self.scld_data.entries
-        # The level editor's colours, or - the Slope toggle - each entry by
-        # its gradient.
-        style = (dict(color_by=unkn_color) if self.color_by_unkn
-                 else collision_overlay.LEVEL)
-        lines = collision_overlay.add_scld(collision_overlay.Lines(), entries, **style)
+        lines = collision_overlay.add_scld(
+            collision_overlay.Lines(), entries, style=self.options.style)
         self._lines = lines
-        tint = unkn_color if self.color_by_unkn else None
         self.collision.set(lines, UNIT_SCALE)
-        # entry -> its crosses in the surface layer, for the highlight pulse.
+        # entry -> its lines in the surface and vertical layers, for the highlight pulse.
         self.entry_point_ranges = lines.ranges
+        self.entry_wall_ranges = lines.vranges
         (_points, _colors, _ranges, self.entry_record_pos,
-         self.entry_record_ids) = build_points(entries, color_by=tint)
-        for index, pts in self.entry_record_pos.items():
-            if pts:
-                self.entry_label_pos[index] = pts[len(pts) // 2]
+         self.entry_record_ids) = build_points(entries)
+        for entry in entries:
+            g = geometry(entry)
+            self.entry_label_pos[entry.index] = tuple(
+                c / UNIT_SCALE for c in (((g.z1 + g.z2) / 2, -g.baseline_y, (g.x1 + g.x2) / 2)))
         self.point_vertex_count = len(lines.surface)
         self.line_vertex_count = len(lines.vertical)
-
-        # What frame_collision() measures: every sample, whether or not the
-        # walls are being drawn.
-        (surface, _sc), (vertical, _vc), _fills = lines.arrays(UNIT_SCALE)
-        self._scene_points = (surface if len(surface) else vertical).flatten()
 
     def _upload(self, vao, vbo, cbo, vertices, colors):
         if not vbo.isCreated():
@@ -526,11 +530,18 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.update()
 
     def _update_stats_label(self):
-        n_entries = len(self.scld_data.entries) if self.scld_data else 0
-        n_points = sum(len(e.path) for e in self.scld_data.entries) if self.scld_data else 0
+        entries = self.scld_data.entries if self.scld_data else []
+        totals = {"floor": 0, "ceiling": 0, "slope": 0, "wall": 0, "junction": 0}
+        for e in entries:
+            for k, v in geometry(e).counts().items():
+                if k in totals:
+                    totals[k] += v
         cam = self.camera_controls
         self.stats_label.setText(
-            f"Entries: {n_entries}  Path samples: {n_points}\n" + cam.status_text()
+            f"Planes: {len(entries)}  Records: {sum(len(e.path) for e in entries)}\n"
+            f"Floors {totals['floor']}  Ceilings {totals['ceiling']}  "
+            f"Sloped faces {totals['slope']}  Walls {totals['wall']}  "
+            f"Lane switches {totals['junction']}\n" + cam.status_text()
         )
         self.stats_label.adjustSize()
         self.stats_label.move(6, self.height() - self.stats_label.height() - 6)
@@ -607,20 +618,21 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             GL.glDrawArrays(GL.GL_LINES, 0, self.grid_vertex_count)
             self.grid_vao.release()
 
-        if self.show_markers or self.show_walls:
+        if self.show_collision:
             self.shader_program.setUniformValue("useOverrideColor", False)
-            self.collision.draw(self.shader_program, surface=self.show_markers,
-                                vertical=self.show_walls)
-            if self.show_markers and self.highlighted_entry is not None:
-                # The selected entry, and any sharing its unkn, again over
+            self.collision.draw(self.shader_program)
+            if self.highlighted_entry is not None:
+                # The selected plane, and any sharing its unkn, again over
                 # everything and pulsing, so it can be found among the rest.
                 pulse = 0.1 + 0.9 * (0.5 + 0.5 * math.sin(self._highlight_phase))
                 GL.glDisable(GL.GL_DEPTH_TEST)
-                GL.glLineWidth(3.0)
+                GL.glLineWidth(4.0)
                 self.shader_program.setUniformValue("alpha", pulse)
                 for index in [self.highlighted_entry] + sorted(self.related_entries):
                     first, count = self.entry_point_ranges.get(index, (0, 0))
                     self.collision.draw_surface(first, count)
+                    first, count = self.entry_wall_ranges.get(index, (0, 0))
+                    self.collision.draw_surface(first, count, layer=1)
                 GL.glLineWidth(1.0)
                 GL.glEnable(GL.GL_DEPTH_TEST)
                 self.shader_program.setUniformValue("alpha", 1.0)
@@ -632,9 +644,36 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         self.shader_program.release()
 
+        if self.show_collision and self.options.style.numbers:
+            self._draw_plane_numbers(mvp)
         if self.highlighted_entry is not None:
             self._draw_entry_label(mvp)
             self._draw_point_ids(mvp)
+
+    def _draw_plane_numbers(self, mvp):
+        """Every plane's number at its middle, in its own colour - a label is
+        dropped when it falls off screen or behind the camera."""
+        labels = getattr(getattr(self, "_lines", None), "labels", None)
+        if not labels:
+            return
+        painter = QPainter(self)
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setBold(True)
+        font.setPointSize(11)
+        painter.setFont(font)
+        for position, text, rgb in labels[:400]:
+            ndc = mvp.map(QVector3D(*(c / UNIT_SCALE for c in position)))
+            if not (-1.0 < ndc.x() < 1.0 and -1.0 < ndc.y() < 1.0 and -1.0 < ndc.z() < 1.0):
+                continue
+            sx = int((ndc.x() * 0.5 + 0.5) * self.width())
+            sy = int((1.0 - (ndc.y() * 0.5 + 0.5)) * self.height())
+            painter.setPen(QColor(0, 0, 0))
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                painter.drawText(sx + dx, sy + dy, text)
+            painter.setPen(QColor(*(int(c * 255) for c in rgb)))
+            painter.drawText(sx, sy, text)
+        painter.end()
 
     def _draw_entry_label(self, mvp):
         """Number of the selected entry, placed in 3D at that entry's own
@@ -696,20 +735,35 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
 
 class SCLDDebugPanel(QWidget):
-    """Entry table beside the 3D view.
+    """Plane table and inspector beside the 3D view.
 
-    Selecting a row pulses that entry's points and numbers its records,
-    along with any other entry sharing its `unkn`. Rows carry the
-    `ls_into_le` name and the byte offset into the blob, for
-    cross-referencing against a hex editor, and every column sorts."""
+    Selecting a row pulses that plane's lines and numbers its records, along
+    with any other plane sharing its `unkn`; the inspector below describes the
+    plane (its line, where its ends lead, its cells, its lane switches) and then
+    whatever record or switch was clicked in the view. Every column sorts. The
+    byte offset into the blob is in the Base column, for cross-referencing
+    against a hex editor."""
+
+    HEADERS = ["Plane", "Start \u2192 end leads to", "Base", "Records", "Floors", "Ceil.",
+               "Walls", "Switches", "Slope (unkn)"]
+    TIPS = ["The plane's number, as ls / le and lane switches name it (the entry index is one less)",
+            "What is reached off the plane's first and last end: another plane, or a wall "
+            "(0). The header bytes ls_into_le are in the cell's tooltip",
+            "Byte offset of this plane in the blob",
+            "table3 records: every surface and wall the plane holds",
+            "Floor records (kind bit 0)", "Ceiling records (kind bit 1)",
+            "Wall records (kind bits 0x04 / 0x08)",
+            "Lane switches: Up / Down cells that lead to another plane",
+            "The plane's gradient across its shorter axis (unkn, 2.14 fixed point)"]
 
     def __init__(self, viewer: SCLDViewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
 
-        self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(
-            ["#", "Name (ls_into_le)", "Base", "Points", "Slope (unkn)"])
+        self.table = QTableWidget(0, len(self.HEADERS), self)
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        for column, tip in enumerate(self.TIPS):
+            self.table.horizontalHeaderItem(column).setToolTip(tip)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -719,17 +773,25 @@ class SCLDDebugPanel(QWidget):
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
 
-        left = QWidget(self)
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self.table)
+        self.info = QTextBrowser(self)
+        self.info.setOpenLinks(False)
+        self.info.setMinimumHeight(120)
+        viewer.record_picked.connect(self._record_picked)
+        viewer.options.changed.connect(self._show)
+        self._record_text = ""
+
+        left = QSplitter(Qt.Orientation.Vertical, self)
+        left.addWidget(self.table)
+        left.addWidget(self.info)
+        left.setStretchFactor(0, 3)
+        left.setStretchFactor(1, 2)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(left)
         splitter.addWidget(self.viewer)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([260, 800])
+        splitter.setSizes([420, 800])
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -740,41 +802,89 @@ class SCLDDebugPanel(QWidget):
         self.table.setSortingEnabled(False)
         entries = self.viewer.scld_data.entries if self.viewer.scld_data else []
         self.table.setRowCount(len(entries))
+
+        def ends(n):
+            return f"plane {n}" if n else "wall"
+
+        def number(row, column, value):
+            item = QTableWidgetItem()
+            item.setData(Qt.ItemDataRole.DisplayRole, value)
+            self.table.setItem(row, column, item)
+            return item
+
         for row, e in enumerate(entries):
-            name = f"{e.ls:02X}_into_{e.le:02X}"
-            index_item = QTableWidgetItem()
-            index_item.setData(Qt.ItemDataRole.DisplayRole, e.index)
+            c = geometry(e).counts()
+            index_item = number(row, 0, e.index + 1)
             index_item.setData(Qt.ItemDataRole.UserRole, e.index)
             index_item.setData(Qt.ItemDataRole.UserRole + 1, e.base)
-            self.table.setItem(row, 0, index_item)
-            self.table.setItem(row, 1, QTableWidgetItem(name))
+            index_item.setToolTip(f"entry {e.index}")
+            leads = QTableWidgetItem(f"{ends(e.ls)} \u2192 {ends(e.le)}")
+            leads.setToolTip(f"{e.ls:02X}_into_{e.le:02X}")
+            self.table.setItem(row, 1, leads)
             self.table.setItem(row, 2, QTableWidgetItem(f"0x{e.base:X}"))
-            points_item = QTableWidgetItem()
-            points_item.setData(Qt.ItemDataRole.DisplayRole, len(e.path))
-            self.table.setItem(row, 3, points_item)
+            number(row, 3, len(e.path))
+            number(row, 4, c["floor"])
+            number(row, 5, c["ceiling"])
+            number(row, 6, c["wall"])
+            number(row, 7, c["junction"])
             # The plane's gradient across its shorter axis - `unkn` is it
             # in 2.14 fixed point. Sorts on the raw number.
             unkn_item = QTableWidgetItem(f"{e.slope:+.4f}  (0x{e.unkn:04X})")
             unkn_item.setData(Qt.ItemDataRole.UserRole, e.unkn)
-            self.table.setItem(row, 4, unkn_item)
+            self.table.setItem(row, 8, unkn_item)
         self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         self.viewer.set_highlighted_entry(None)
+        self._record_text = ""
+        self._show()
 
-    def _on_selection_changed(self):
+    def _selected_entry(self):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
-            self.viewer.set_highlighted_entry(None)
-            return
-        item = self.table.item(rows[0].row(), 0)
-        entry_index = item.data(Qt.ItemDataRole.UserRole)
-        self.viewer.set_highlighted_entry(entry_index)
-        entry = next((e for e in (self.viewer.scld_data.entries if self.viewer.scld_data else ())
-                      if e.index == entry_index), None)
+            return None
+        index = self.table.item(rows[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        return next((e for e in (self.viewer.scld_data.entries if self.viewer.scld_data else ())
+                     if e.index == index), None)
+
+    def _show(self):
+        """The inspector: the selected plane, the last record clicked, the legend."""
+        import html
+        parts = []
+        entry = self._selected_entry()
         if entry is not None:
-            kinds = sorted({entry.path[r].kind for r, _c in entry.placed()})
-            print(f"selected: SCLD @ 0x{getattr(self.viewer, '_scld_address', 0):X}  entry {entry.index}  "
-                  f"{entry.ls:02X}_into_{entry.le:02X}  base 0x{entry.base:X}  "
-                  f"{len(entry.path)} records  slope {entry.slope:+.4f}  "
-                  f"kinds {', '.join(f'0x{k:X}' for k in kinds[:12])}"
-                  + (" ..." if len(kinds) > 12 else ""))
+            lines = geometry(entry).describe()
+            parts.append("<b>" + html.escape(lines[0]) + "</b><br>"
+                         + "<br>".join(html.escape(line) for line in lines[1:]))
+        if self._record_text:
+            parts.append("<b>Clicked</b><br>" + html.escape(self._record_text))
+        if not parts:
+            parts.append("Select a plane in the table, or click a line in the view.")
+        parts.append("<b>Colours</b><br>" + collision_overlay.legend_html(self.viewer.options.style))
+        self.info.setHtml("<hr>".join(parts))
+
+    def _record_picked(self, entry_index, text):
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == entry_index:
+                self.table.selectRow(row)
+                self.table.scrollToItem(self.table.item(row, 0))
+                break
+        # After the selection, which clears what was clicked before.
+        self._record_text = text
+        self._show()
+
+    def _on_selection_changed(self):
+        entry = self._selected_entry()
+        if entry is None:
+            self.viewer.set_highlighted_entry(None)
+            self._show()
+            return
+        self._record_text = ""
+        self.viewer.set_highlighted_entry(entry.index)
+        self._show()
+        g = geometry(entry)
+        kinds = sorted({entry.path[r].kind for r in g.owner})
+        print(f"selected: SCLD @ 0x{getattr(self.viewer, '_scld_address', 0):X}  plane {g.number}  "
+              f"{entry.ls:02X}_into_{entry.le:02X}  base 0x{entry.base:X}  "
+              f"{len(entry.path)} records  slope {entry.slope:+.4f}  "
+              f"kinds {', '.join(f'0x{k:X}' for k in kinds[:12])}"
+              + (" ..." if len(kinds) > 12 else ""))

@@ -71,6 +71,9 @@ def _icon_files():
     # formats/text/font_preview.py) - without it those three came out with a
     # blank panel behind the text in the built exe and nowhere else.
     wanted.add("icons/tomba/txtd_background.jpg")
+    # Zippo (gui/widgets/mascot.py loads him by path, like the background):
+    # without him the built exe shows blank labels where he stands.
+    wanted.add("icons/tomba/zippo.png")
     wanted = sorted(wanted)
     files = []
     for relative in wanted:

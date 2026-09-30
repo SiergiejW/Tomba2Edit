@@ -36,6 +36,7 @@ from gui.widgets.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITC
 from formats.models.smst_viewer import SMSTViewer, WEIGHTS
 from gui import theme
 from gui.widgets import collision_overlay, export_dialog
+from gui.widgets.collision_options import CollisionOptions, add_menu_button
 
 # World units per GL unit. A room is thousands of units across, so it
 # gets the level scale formats/collision/scld_render.py uses rather than the
@@ -259,16 +260,22 @@ class LevelViewer(SMSTViewer):
         self.collision_action.setCheckable(True)
         self.collision_action.setChecked(True)
         self.collision_action.setToolTip(
-            "Draw the area's collision as lines.\n\n"
-            "A SCLD area shows each plane's surface samples and the stacks "
-            "standing on them, a floor sample coloured by its material - "
-            "green plain ground, any other hue a surface Tomba's footsteps "
-            "react to (water, snow, fireflies). Coal Mining Town and Circus Village have no "
-            "SCLD: their streets and rooms are planes built into the "
-            "overlay, outlined here - green floor, red wall edge, yellow "
-            "door - see formats/collision/town_collision.py.")
+            "Draw the area's collision as lines. The Collision options button beside "
+            "this one chooses what it shows and how it is coloured.\n\n"
+            "A SCLD area is drawn as the game reads it: floors (ramps at their true "
+            "heights), ceilings, walls, and the lane switches between planes - "
+            "plus, on request, plane lines, links, the cell grid and more. Click a "
+            "line for what the record is. Coal Mining Town and Circus Village have "
+            "no SCLD: their streets and rooms are planes built into the overlay, "
+            "outlined here - green floor, red wall edge, yellow door - see "
+            "formats/collision/town_collision.py.")
         self.collision_action.toggled.connect(self._toggle_collision)
         self.toolbar.insertAction(self.sprite_action, self.collision_action)
+        self.collision_options = CollisionOptions.shared()
+        self.collision_options.changed.connect(self._collision_style_changed)
+        add_menu_button(self.toolbar, self.collision_options.menu(self),
+                        self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
+                        before=self.sprite_action)
 
         self.show_lines = True
         self.lines_action = QAction(
@@ -516,11 +523,18 @@ class LevelViewer(SMSTViewer):
         if not self.show_collision or self.scene is None:
             self.collision.clear()
             return
-        lines = getattr(self.scene, "_prepared_collision", {}).get(self.view)
+        style = self.collision_options.style
+        # The load worker built the default style's lines; any other is built here.
+        lines = (getattr(self.scene, "_prepared_collision", {}).get(self.view)
+                 if style == collision_overlay.CollisionStyle() else None)
         if lines is None:
-            lines = self.scene.collision(self.view, self._room_bounds())
+            lines = self.scene.collision(self.view, self._room_bounds(), style)
         self.collision.set(lines, UNIT_SCALE)
         self._collision_lines = lines
+
+    def _collision_style_changed(self):
+        self._rebuild_collision()
+        self.update()
 
     def set_view(self, view):
         """Follow the panel's Show box - see self.view."""
@@ -1299,7 +1313,8 @@ class LevelViewer(SMSTViewer):
         out.extend(self._export_sprites())
         out.extend(self._export_lines())
         if self.show_collision and self.scene is not None:
-            lines = self.scene.collision(self.view, self._room_bounds())
+            lines = self.scene.collision(self.view, self._room_bounds(),
+                                         self.collision_options.style)
             for layer, points, colors in (
                     ("surface", lines.surface, lines.surface_colors),
                     ("vertical", lines.vertical, lines.vertical_colors)):

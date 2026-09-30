@@ -21,8 +21,7 @@ from gui.widgets.margin_text_edit import MarginTextEdit
 from formats.audio.transport_icons import set_glyph
 from formats.text.font_preview import FontPreview
 from formats.audio.voice_import import confirm_length
-from gui.widgets import mascot
-from gui.widgets import mascot, panel_title
+from gui.widgets import panel_title
 from gui.widgets.waveform import WaveView, peaks
 from gui import theme
 
@@ -478,7 +477,6 @@ class TXTDViewer(QWidget):
         voice_block = QHBoxLayout()
         voice_block.setContentsMargins(0, 0, 0, 0)
         voice_block.setSpacing(8)
-        voice_block.addWidget(mascot.label())
         voice_block.addLayout(voice_side, 1)
         right_layout.addLayout(voice_block)
         self._edits = VoiceEditStore()

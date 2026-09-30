@@ -2597,9 +2597,10 @@ class LevelScene:
                 instance.x, instance.y, instance.z = view_point(
                     sprites[number].position)
 
-    def collision(self, view=None, rooms=None):
+    def collision(self, view=None, rooms=None, style=None):
         """gui.widgets.collision_overlay.Lines for what `view` shows: None the area,
-        a scene number that room, "all" everything.
+        a scene number that room, "all" everything - drawn as `style` says
+        (collision_overlay.CollisionStyle; the default when None).
 
         A SCLD is the area's - rooms have none. A town's first dataset is
         its streets, the one the game takes while
@@ -2611,11 +2612,8 @@ class LevelScene:
         box holds shows only under "all"."""
         from gui.widgets import collision_overlay as overlay
         lines = overlay.Lines()
-        # Two colours here, not one per plane: in a level what matters is
-        # what you stand on and what stops you.
-        plain = overlay.LEVEL
         if view in (None, "all"):
-            overlay.add_scld(lines, self.planes, **plain)
+            overlay.add_scld(lines, self.planes, style=style)
         elif rooms and view in rooms:
             # A room loads no collision of its own (its enter routine only
             # fills slot 15), so what it stands on is the area's SCLD where
@@ -2623,7 +2621,7 @@ class LevelScene:
             low, high = rooms[view]
             overlay.add_scld(lines, self.planes, bounds=(
                 low[0] - ROOM_REACH, high[0] + ROOM_REACH,
-                low[2] - ROOM_REACH, high[2] + ROOM_REACH), **plain)
+                low[2] - ROOM_REACH, high[2] + ROOM_REACH), style=style)
         datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
         for number, dataset in enumerate(datasets):
             for plane in dataset.planes:

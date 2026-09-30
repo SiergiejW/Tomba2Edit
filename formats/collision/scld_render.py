@@ -90,8 +90,9 @@ def contains(bounds, point):
 
 
 def build_points(entries, bounds=None, color_by=None):
-    """One point per placed table3 record - see SCLDEntry.trace(). The
-    points are the whole of what the file says; nothing here is inferred.
+    """One point per table3 record, at the middle of what it draws - see
+    scld_geometry.PlaneGeometry.points. The points are the whole of what the file
+    says; nothing here is inferred.
 
     `color_by(entry)` overrides the per-entry colour.
 
@@ -101,10 +102,13 @@ def build_points(entries, bounds=None, color_by=None):
         positions[entry.index] = that entry's points, scaled for display
         records[entry.index]   = the table3 record behind each of them
     """
+    from formats.collision.scld_geometry import geometry, view
     verts, colors, ranges, positions, records = [], [], {}, {}, {}
     for entry in entries:
         rgb = color_by(entry) if color_by else entry_color(entry.index)
-        pts = entry.trace()
+        g = geometry(entry)
+        order = sorted(g.points)
+        pts = [view(*g.points[r]) for r in order]
         start = len(verts)
         for pt in pts:
             if not contains(bounds, pt):
@@ -114,23 +118,24 @@ def build_points(entries, bounds=None, color_by=None):
         ranges[entry.index] = (start, len(verts) - start)
         positions[entry.index] = [(p[0] / UNIT_SCALE, p[1] / UNIT_SCALE,
                                    p[2] / UNIT_SCALE) for p in pts]
-        records[entry.index] = entry.records()
+        records[entry.index] = order
     return verts, colors, ranges, positions, records
 
 
 def build_lines(entries, bounds=None, walls=False):
-    """Line geometry as consecutive vertex pairs, ready for GL_LINES.
-
-    Only the walls are left here - SCLDEntry.walls(), each a vertical
-    from its record's height to its top. The runs this used to join
-    records into were guesses at an ordering the file does not store.
+    """Line geometry as consecutive vertex pairs, ready for GL_LINES: the
+    walls (scld_geometry.Wall), each a vertical from its record's height to
+    its top.
 
     Returns (verts, colors)."""
+    from formats.collision.scld_geometry import geometry, view
     verts, colors = [], []
     if not walls:
         return verts, colors
     for entry in entries:
-        for a, b in entry.walls():
+        for wall in geometry(entry).walls:
+            a = view(wall.x, wall.y_bottom, wall.z)
+            b = view(wall.x, wall.y_top, wall.z)
             if contains(bounds, a):
                 verts.extend((a, b))
                 colors.extend((WALL_COLOR, WALL_COLOR))

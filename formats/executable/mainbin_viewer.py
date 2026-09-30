@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (QTreeView, QWidget, QVBoxLayout, QSplitter,
                              QHBoxLayout)
 
 from formats.text.txtd_viewer import EntryTextHighlighter, EDITED_ENTRY_COLOR, EXPORTED_ENTRY_COLOR, ENTRY_LOCATION_ROLE
-from gui.widgets import mascot
 from gui.widgets import panel_title
 from gui import theme
 from formats.text.font_preview import FontPreview
@@ -174,7 +173,6 @@ class MainExeViewer(QWidget):
         pool_row = QHBoxLayout()
         pool_row.setContentsMargins(0, 0, 0, 0)
         pool_row.setSpacing(8)
-        pool_row.addWidget(mascot.label())
         pool_row.addLayout(pool_side, 1)
         right_layout.addLayout(pool_row)
         right_panel.setLayout(right_layout)
