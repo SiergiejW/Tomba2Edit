@@ -53,12 +53,15 @@ through or behind new scenery when it does not match those paths.
 * Growth is disabled for unknown allocations. US retail Town of Fishermen uses
   the known `0x8018A000..0x801FD000` area allocation. The budget includes all
   staged edits and the repacker's sector padding, including reusable slack.
-* A density check rejects a new SMST part or 7×7-cell MDAT patch whose potential
-  GPU packet size exceeds the 81,920-byte frame buffer or the original's higher
-  density. This catches severely concentrated scenes. It is **not** a complete
-  simulation of the camera culler, actor instances, effects or UI. Test changed
-  scenes in-game; passing an import does not guarantee every possible edit is
-  crash-free.
+* A density check reserves drawing space for actors, effects and UI: a 9×9-cell
+  MDAT patch is limited to 49,152 potential GPU-packet bytes, or the original
+  resource's higher density. An SMST part is limited to 4,096 bytes, or its
+  original higher cost, because the game may draw multiple instances. The
+  complete frame arena is only 81,920 bytes. Widescreen can expose extra faces.
+  This is **a screening heuristic**, not a complete simulation of the camera
+  culler, actor instances, effects or UI. Test changed scenes in-game with the
+  intended emulator settings; passing an import cannot guarantee every edit
+  is crash-free. An unchanged original bypasses this check and stays identical.
 
 The workflow uses textures already installed in the target game. Changing an
 exported PNG or assigning an arbitrary Blender material does not install new
@@ -76,7 +79,7 @@ Working files and detailed diagnostics remain in `work/blender_geometry`:
 
 | File | Contents |
 | --- | --- |
-| `Village_of_All_Beginnings_for_Tomba2.blend` | All 574 triangles and 3,147 quads of the Tomba 1 level, scaled and rotated along the Town grid's long axis |
+| `mods/Tomba1-Village-Part61/Blender/Village_of_All_Beginnings_for_Tomba2.blend` | Playable Village replacement, simplified in Blender to 2,228 triangles and fitted along the Town grid's long axis |
 | `WMD_52FF_Model001_for_Tomba2.blend` | The requested 11-quad model from A006.GAM +0x160C0, WMD 0x52FF, Model 001 |
 | `MDAT.blend`, `SMST.blend` | Original Town MDAT and original SMST part 61 for the identity smoke test |
 | `Tomba2-Blender-Demo.cue` and `.bin` | Rebuilt disc containing both replacements |
@@ -94,11 +97,17 @@ there. They will be rejected if imported directly into an untouched original
 disc that does not contain their textures. Repacking relocates resource
 addresses, so use the part number and resource type on the rebuilt disc.
 
-Both models passed through Blender **5.2.1 LTS** using native OBJ. All source
-polygons were retained. Textures were reduced to one quarter of their width
-and height to fit unused VRAM, retaining their original palettes. Existing
-texture uploads remain unchanged. The CUE references the original audio track
-under `../../bincue`; keep that relative path intact.
+Both models passed through Blender **5.2.1 LTS** using native OBJ. The Village
+uses a simplified mesh to fit the game's drawing budget; the small SMST model
+retains all 11 original quads. Textures were reduced to one quarter of their
+width and height to fit unused VRAM, retaining their original palettes.
+Existing texture uploads remain unchanged. The portable CUE references both
+tracks within its own folder; keep those three files together.
+
+The portable Blender files are exported from the final installed packets, have
+packed textures, and reimport unchanged byte-for-byte into the corrected ROM.
+Use these files for further editing. Earlier full-resolution working files
+are diagnostic/source material and can exceed the drawing budget.
 
 ## Verification performed
 
@@ -107,21 +116,36 @@ under `../../bincue`; keep that relative path intact.
   reimporting part 61 through Blender.
 * Modified disc: all **86 other SMST parts**, collision bytes and **568 other
   SDAT entries** retain their original contents.
-* **15 regression tests passed**, including identity, changed topology,
+* **18 regression tests passed**, including identity, changed topology,
   protected parts, shrink/regrow, invalid input, area budgets, dense geometry
-  and texture upload alignment. Real Qt panels passed export, identity import,
+  texture upload alignment, wider camera coverage, actor/UI headroom and SMST
+  instance budgets. Real Qt panels passed export, identity import,
   changed import, selection and staging checks. PyInstaller rebuilt the EXE.
-* The final part-61 disc cold-booted in the Beetle PSX software core for **18,000
-  frames**, then ran **8,100 more frames** with movement, jumps and menu input.
-  Both replacement blobs matched the live game RAM. Sampled frame-packet usage
-  peaked at **71,768 / 81,920 bytes**; player movement and rendering continued.
-  This validates that Town smoke route, not a complete playthrough or hardware
-  compatibility guarantee.
+* The corrected disc cold-booted in Beetle PSX with **16:9 widescreen enabled**,
+  completed the opening dialogue and ran **10,200 gameplay frames** with
+  movement, jumps and menu input. Per-frame checks peaked at **67,500 / 81,920
+  bytes** on that gameplay route. A further 4:3 route also passed.
+* **DuckStation 0.1-12074**, using the user's widescreen and 9× resolution
+  overrides, passed **1,800 completed game frames** of walking and jumping.
+  A debugger breakpoint after drawing checked the arena on every game frame:
+  peak **68,048 / 81,920 bytes**. Controller input was supplied through a
+  temporary emulated button-reader hook; the hook was restored after testing
+  and is not included in the disc. Both model blobs and the original collision
+  matched live RAM in DuckStation and Beetle.
+* This validates the opening Town routes tested, not a complete playthrough or
+  hardware compatibility guarantee. See the portable `runtime_validation.json`
+  for counts, bounds, hashes and the exact scope.
 
-Runtime testing found and fixed an odd-halfword texture-upload allocation that
-caused a PS1 alignment exception. A smaller, densely packed village layout also
-overran the primitive buffer; the delivered layout spreads the full model over
-more cells and passes the density check and gameplay test.
+Runtime testing first fixed an odd-halfword texture-upload allocation that
+caused a PS1 alignment exception. The subsequent full-resolution Village port
+passed an insufficient 4:3 smoke test but froze after walking in widescreen.
+The wider view overflowed the native primitive arena and overwrote Tomba's
+state; this was reproduced in both emulators. That revision is superseded.
+The corrected mesh reduces potential scenery packet output from 186,604 to
+89,120 bytes before culling. The importer now rejects the known crashing OBJ.
+It leaves collision, the other 86 SMST parts and the game's executable intact.
+Start the corrected CUE from a fresh boot: an old save state contains the old
+geometry and can restore the crash even when the disc has been replaced.
 
 ## Rechecking locally
 

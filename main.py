@@ -9,7 +9,6 @@ for _stream in (sys.stdout, sys.stderr):
 
 version = "0.4.3"
 
-
 def _install_crash_report():
     """Make an unhandled exception say something before it kills us.
 
@@ -48,7 +47,6 @@ def _install_crash_report():
             pass
 
     sys.excepthook = hook
-
 
 def main():
     print(f"Tomba2Edit ver{version}")

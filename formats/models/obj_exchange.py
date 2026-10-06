@@ -22,6 +22,11 @@ MAX_FACES = 20000
 # US retail alternates two 0x14000-byte primitive buffers at 0x800BFE68.
 # GT3/GT4 output packets consume 40/52 bytes before other actors/UI/effects.
 FRAME_PACKET_BYTES = 0x14000
+# Scenery shares the arena with actors, effects and UI. The old 7-cell/full-
+# arena check admitted a Village port that overwrote the player in widescreen.
+SCENERY_PACKET_BYTES = 0xC000
+SMST_PART_PACKET_BYTES = 0x1000
+DENSITY_CELL_SPAN = 9
 MATERIAL = re.compile(r"^T2_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})_([0-9A-Fa-f]{4})(?:\.\d+)?$")
 
 
@@ -283,10 +288,10 @@ def _trailer(data):
 
 
 def _packet_pressure(blob, kind, part):
-    """Potential output bytes per part or dense 7x7-cell patch.
+    """Potential output bytes per part or dense 9x9-cell patch.
 
-    This catches concentrated replacement scenes, including the failed small
-    Village prototype. It is a density screen, not an emulation of every
+    This catches concentrated replacement scenes, including the full-resolution
+    Village port that froze in widescreen. It is a density screen, not an emulation of every
     overlay's camera culler: runtime testing still matters.
     """
     if kind == 'SMST':
@@ -300,7 +305,7 @@ def _packet_pressure(blob, kind, part):
         for x in range(1, grid.width + 1):
             prefix[y][x] = (costs.get((y-1) * grid.width + x-1, 0)
                             + prefix[y-1][x] + prefix[y][x-1] - prefix[y-1][x-1])
-            top, left = max(0, y-7), max(0, x-7)
+            top, left = max(0, y-DENSITY_CELL_SPAN), max(0, x-DENSITY_CELL_SPAN)
             peak = max(peak, prefix[y][x] - prefix[top][x] - prefix[y][left] + prefix[top][left])
     return peak
 
@@ -407,12 +412,14 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         result = bytes(result)
         parse_drwa(result)
     pressure = _packet_pressure(result, kind, part)
-    limit = max(FRAME_PACKET_BYTES, _packet_pressure(blob, kind, part))
+    budget = SMST_PART_PACKET_BYTES if kind == 'SMST' else SCENERY_PACKET_BYTES
+    limit = max(budget, _packet_pressure(blob, kind, part))
     if pressure > limit:
         raise ExchangeError(
-            f'Too much geometry is concentrated in one {"part" if kind == "SMST" else "7 x 7 cell area"}: '
+            f'Too much geometry is concentrated in one {"part" if kind == "SMST" else "9 x 9 cell area"}: '
             f'{pressure:,} potential render-packet bytes exceeds the {limit:,}-byte density limit. '
-            'Reduce polygon count or spread MDAT geometry across more cells. The original resource has not been changed.')
+            'Actors, effects and UI share the drawing buffer; widescreen can expose more faces. '
+            'Simplify the mesh in Blender. The original resource has not been changed.')
     growth = len(result) - len(blob)
     if growth > max_growth:
         raise ExchangeError(f'Replacement needs {growth} extra bytes; the verified budget allows {max_growth}. Simplify the mesh. The original resource has not been changed.')
