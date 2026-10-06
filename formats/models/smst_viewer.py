@@ -15,7 +15,7 @@ import math
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import (QAction, QImage, QMatrix4x4, QSurfaceFormat,
+from PyQt6.QtGui import (QAction, QImage, QMatrix4x4,
                           QVector2D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
+from gui import gl_profile
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
     CameraEventMixin, scene_of,
@@ -125,9 +126,14 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        capture_format = QSurfaceFormat()
-        capture_format.setAlphaBufferSize(8)
-        self.setFormat(capture_format)
+        # The alpha buffer is what the transparent background of the GIF
+        # export is drawn into. It comes as one more thing on top of the
+        # application's own format rather than as a format of its own: a
+        # bare QSurfaceFormat() here answers for the version and the
+        # profile as well, and so used to drop this widget - and every
+        # LevelViewer built on it, which is an SMSTViewer - back to a
+        # context its shaders cannot compile in. See gui/gl_profile.py.
+        self.setFormat(gl_profile.surface_format(alpha_buffer_size=8))
         self.model_data = None
         self.source = None
         self.blob = None

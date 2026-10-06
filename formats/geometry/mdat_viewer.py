@@ -17,6 +17,7 @@ from formats.models import gltf_export
 from game import texture_window
 from formats.animation.clut_animation import ClutAnimationMixin
 from gui.widgets.origin_axes import OriginAxes
+from gui import gl_profile
 from gui import theme
 from gui.widgets import collision_overlay, export_dialog, polygon_pick
 from gui.widgets.collision_options import CollisionOptions, add_menu_button
@@ -1033,11 +1034,11 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("useTextures", False)
             self.shader_program.setUniformValue("alpha", 1.0)
             GL.glDisable(GL.GL_DEPTH_TEST)
-            GL.glLineWidth(OUTLINE_WIDTH)
+            gl_profile.set_line_width(OUTLINE_WIDTH)
             self.outline_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.outline_vertex_count)
             self.outline_vao.release()
-            GL.glLineWidth(1.0)
+            gl_profile.set_line_width(1.0)
             GL.glEnable(GL.GL_DEPTH_TEST)
 
         if self.show_origin:

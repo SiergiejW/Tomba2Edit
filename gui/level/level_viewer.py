@@ -34,6 +34,7 @@ from game import game_build
 from formats.models import gltf_export
 from gui.widgets.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
 from formats.models.smst_viewer import SMSTViewer, WEIGHTS
+from gui import gl_profile
 from gui import theme
 from gui.widgets import collision_overlay, export_dialog
 from gui.widgets.collision_options import CollisionOptions, add_menu_button
@@ -2000,7 +2001,7 @@ class LevelViewer(SMSTViewer):
         if collision:
             self.collision.draw(self.shader_program)
         if lines:
-            GL.glLineWidth(MARKER_WIDTH)
+            gl_profile.set_line_width(MARKER_WIDTH)
             if self.code_line_count:
                 self.code_line_vao.bind()
                 GL.glDrawArrays(GL.GL_LINES, 0, self.code_line_count)
@@ -2019,7 +2020,7 @@ class LevelViewer(SMSTViewer):
                 if not blend:
                     GL.glDisable(GL.GL_BLEND)
         if self.show_markers and self.marker_count:
-            GL.glLineWidth(MARKER_WIDTH)
+            gl_profile.set_line_width(MARKER_WIDTH)
             self.marker_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.marker_count)
             self.marker_vao.release()
@@ -2027,12 +2028,12 @@ class LevelViewer(SMSTViewer):
             # Over everything, depth test off: what you have just picked
             # is often the thing behind the wall you are looking at.
             GL.glDisable(GL.GL_DEPTH_TEST)
-            GL.glLineWidth(SELECTION_WIDTH)
+            gl_profile.set_line_width(SELECTION_WIDTH)
             self.selection_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.selection_count)
             self.selection_vao.release()
             GL.glEnable(GL.GL_DEPTH_TEST)
-        GL.glLineWidth(1.0)
+        gl_profile.set_line_width(1.0)
         self.shader_program.release()
 
     def show_status(self, text, done=False):

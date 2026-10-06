@@ -24,6 +24,8 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtOpenGL import QOpenGLBuffer, QOpenGLVertexArrayObject
 
+from gui import gl_profile
+
 # How long the arms are, as a fraction of the scene's radius - big
 # enough to find, small enough not to sit over the thing being looked
 # at. A model about 1.5 across gets arms of about 0.3.
@@ -93,7 +95,7 @@ class OriginAxes:
             self._build(radius)
         self.vao.bind()
         previous = GL.glGetFloatv(GL.GL_LINE_WIDTH)
-        GL.glLineWidth(width)
+        gl_profile.set_line_width(width)
         GL.glDrawArrays(GL.GL_LINES, 0, 12)
-        GL.glLineWidth(previous)
+        gl_profile.set_line_width(previous)
         self.vao.release()

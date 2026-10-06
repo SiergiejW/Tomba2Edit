@@ -26,6 +26,7 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtOpenGL import QOpenGLBuffer, QOpenGLVertexArrayObject
 
+from gui import gl_profile
 from formats.collision import scld_render
 from formats.collision.scld_geometry import geometry, view as game_to_view
 
@@ -432,7 +433,7 @@ class Overlay:
         if not any(layer[3] and on for layer, _a, on, _m in wanted):
             return
         GL.glDepthMask(GL.GL_FALSE)
-        GL.glLineWidth(LINE_WIDTH)
+        gl_profile.set_line_width(LINE_WIDTH)
         blend, cull = GL.glIsEnabled(GL.GL_BLEND), GL.glIsEnabled(GL.GL_CULL_FACE)
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)

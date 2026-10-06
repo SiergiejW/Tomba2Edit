@@ -53,6 +53,11 @@ def _install_crash_report():
 def main():
     print(f"Tomba2Edit ver{version}")
     _install_crash_report()
+    from gui import gl_profile
+    # Before the QApplication, or every widget it builds keeps Qt's own
+    # legacy default context and no shader here compiles - see
+    # gui/gl_profile.py.
+    gl_profile.install_default_format()
     from gui.main_window import MainWindow  # Move the import here to avoid circular import
     app = QApplication(sys.argv)
     window = MainWindow()

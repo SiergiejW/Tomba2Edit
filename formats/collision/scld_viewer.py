@@ -15,6 +15,7 @@ from OpenGL import GL
 from formats.collision.scld_parser import load_scld
 from formats.collision.scld_render import UNIT_SCALE, build_points, build_lines
 from formats.collision.scld_geometry import geometry
+from gui import gl_profile
 from gui import theme
 from gui.widgets import collision_overlay
 from gui.widgets.collision_options import CollisionOptions, add_menu_button
@@ -601,7 +602,7 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             GL.glEnable(GL.GL_POLYGON_OFFSET_LINE)
             GL.glPolygonOffset(-1.0, -1.0)
             GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_LINE)
-            GL.glLineWidth(1.0)
+            gl_profile.set_line_width(1.0)
             self.shader_program.setUniformValue("useOverrideColor", True)
             self.shader_program.setUniformValue("overrideColor", QVector3D(0.0, 0.0, 0.0))
             self.shader_program.setUniformValue("alpha", 0.7)
@@ -626,14 +627,14 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
                 # everything and pulsing, so it can be found among the rest.
                 pulse = 0.1 + 0.9 * (0.5 + 0.5 * math.sin(self._highlight_phase))
                 GL.glDisable(GL.GL_DEPTH_TEST)
-                GL.glLineWidth(4.0)
+                gl_profile.set_line_width(4.0)
                 self.shader_program.setUniformValue("alpha", pulse)
                 for index in [self.highlighted_entry] + sorted(self.related_entries):
                     first, count = self.entry_point_ranges.get(index, (0, 0))
                     self.collision.draw_surface(first, count)
                     first, count = self.entry_wall_ranges.get(index, (0, 0))
                     self.collision.draw_surface(first, count, layer=1)
-                GL.glLineWidth(1.0)
+                gl_profile.set_line_width(1.0)
                 GL.glEnable(GL.GL_DEPTH_TEST)
                 self.shader_program.setUniformValue("alpha", 1.0)
 
