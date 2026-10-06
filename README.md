@@ -97,6 +97,9 @@ object, every animation.
 * VRAM and texture-page visualisation
 * **glTF / GLB export** with embedded textures and animation, ready for
   Blender
+* **Blender OBJ import/export** for complete MDAT geometry and individual SMST
+  parts, including new topology and lossless unedited round trips.
+  See the [Blender editing guide](docs/blender-geometry.md).
 * Texture migration: move a model's art somewhere every area can reach it
 
 ### Graphics and sprites

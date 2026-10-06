@@ -48,6 +48,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_data = None
+        self.source = None
+        self.blob = None
         # How big the room on screen is, in GL units - the clip planes
         # are set from it, and so is every step the camera takes.
         self.scene_radius = 0.0
@@ -565,7 +567,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self._update_stats_label()
         self.update()
 
-    def load_mdat_data(self, dat_file_path, dat_start, offset):
+    def load_mdat_data(self, dat_file_path, dat_start, offset, size=None):
         clut_quad = np.random.randint(0, 256, (16, 4), dtype=np.uint8)  # RGBA
         clut_tri = np.random.randint(0, 256, (16, 4), dtype=np.uint8)
         self.makeCurrent()
@@ -576,7 +578,14 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         print("at", address, f"({dat_start})")
 
         try:
-            self.model_data = mdat.exportMDAT(address, dat_file_path)
+            from formats.drawmaps.drwa_parser import blob_extent
+            from formats.models.smst_parser import read_smst_bytes
+            if size is None:
+                with open(dat_file_path, 'rb') as stream:
+                    size = blob_extent(stream, address)
+            self.blob = read_smst_bytes(dat_file_path, address, size)
+            self.source = (dat_file_path, address, size)
+            self.model_data = mdat.parse_mdat(self.blob, address)
             self.prepare_buffers()  # <- use self.
             self.frame_level()
             self._update_stats_label()
@@ -584,7 +593,17 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             return True
         except Exception as e:
             print(f"Error loading MDAT data: {e}")
+            self.source = self.blob = self.model_data = None
             return False
+
+    def show_blob(self, blob):
+        model = mdat.parse_mdat(blob, self.source[1] if self.source else 0)
+        self.blob, self.model_data = bytes(blob), model
+        self.select()
+        self.prepare_buffers()
+        self._update_stats_label()
+        self.update()
+        return True
 
     def prepare_buffers(self):
         if not self.model_data or not self.model_data.get("vertices"):

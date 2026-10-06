@@ -364,6 +364,10 @@ def load_drwa(dat_file_path, dat_start, offset, size=None):
     cross-check: how much to read is worked out from the drawmap itself
     (see blob_extent)."""
     address = dat_start + offset
+    from formats.models.smst_parser import pending_blob
+    edited = pending_blob(address)
+    if edited is not None:
+        return parse_drwa(edited, address=address, declared_size=len(edited))
     with open(dat_file_path, "rb") as f:
         extent = blob_extent(f, address)
         f.seek(address)

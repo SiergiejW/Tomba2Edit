@@ -36,6 +36,7 @@ class MDATPanel(QWidget):
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
+        self.stage_edit = None
         self._syncing = False
 
         self.tree = QTreeWidget(self)
@@ -80,6 +81,21 @@ class MDATPanel(QWidget):
         layout.addWidget(splitter)
 
         viewer.selection_changed.connect(self._on_viewer_selection)
+        from gui.widgets.geometry_exchange import install_exchange
+        install_exchange(self, "MDAT")
+
+    def refresh_if_showing(self, address, blob):
+        if not self.viewer.source or self.viewer.source[1] != address or self.viewer.blob == blob:
+            return False
+        self.viewer.show_blob(blob)
+        self.populate()
+        return True
+
+    def apply_geometry(self, result):
+        self.viewer.show_blob(result.data)
+        self.populate()
+        self.stage_edit(result.data, "Blender MDAT geometry")
+        self.details.setText(result.note + " Staged; export the disc/files to save.")
 
     # --- filling ------------------------------------------------------
 

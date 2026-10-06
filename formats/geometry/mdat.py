@@ -92,6 +92,12 @@ def _polygon(entry, kind, first_vertex, first_face, address, type_byte,
 
 
 def exportMDAT(drwa_addr, datpath):
+    # All views use the same staged bytes as the importer/repacker.
+    if not isinstance(datpath, (bytes, bytearray)):
+        from formats.models.smst_parser import pending_blob
+        edited = pending_blob(drwa_addr)
+        if edited is not None:
+            return parse_mdat(edited, drwa_addr)
     base_idx = 0
     model_data = {
         'vertices': [],
@@ -154,7 +160,7 @@ def exportMDAT(drwa_addr, datpath):
         return psx_vram.atlas_uv(raw_u, raw_v, page)
 
 
-    with open(datpath, "rb") as rom:
+    with (io.BytesIO(datpath) if isinstance(datpath, (bytes, bytearray)) else open(datpath, "rb")) as rom:
         rom.seek(drwa_addr)
         amount_x, amount_y = struct.unpack("<hh", rom.read(4))
         drwa_size = amount_x * amount_y * 2
@@ -314,3 +320,17 @@ def exportMDAT(drwa_addr, datpath):
         #print(f"Exported from 0x{drwa_addr:X}: {face} faces, {base_idx} base index")
         model_data['face_levels'] = draw_order.face_levels(model_data, 'entry')
         return model_data
+
+
+def parse_mdat(data, address=0):
+    """Decode a bounded, validated in-memory MDAT with display addresses."""
+    from formats.drawmaps.drwa_parser import parse_drwa
+    parse_drwa(data)
+    model = exportMDAT(0, bytes(data))
+    model['address'] = address
+    model['size'] = len(data)
+    for entry in model['entries']:
+        entry['address'] += address
+    for polygon in model['polygons']:
+        polygon['address'] += address
+    return model

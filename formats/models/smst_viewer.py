@@ -1512,6 +1512,8 @@ class SMSTPanel(QWidget):
         # when nobody has said, and paste then says so rather than
         # pretending it wrote something.
         self.stage_edit = None
+        from gui.widgets.geometry_exchange import install_exchange
+        install_exchange(self, "SMST")
         # The disc's CD folder, set by MainWindow - the IMG and
         # IDX are needed to work out where a texture can go.
         self.cd_folder = None

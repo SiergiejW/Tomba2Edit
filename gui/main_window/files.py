@@ -5,6 +5,7 @@ against its entry, checked against what else points at those
 bytes, and held until a repack writes them.
 """
 import os
+import struct
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
@@ -19,6 +20,41 @@ class FileEditsMixin:
     """
 
     # --- replacing a whole file's bytes ---------------------------------
+
+    def _geometry_cell_size(self, item):
+        """US retail's culler uses 0x400 for AREA_07, 0x280 elsewhere.
+
+        This comes from the renderer, independent of a replacement mesh's
+        shape. Inferring spacing from a nearly flat new model is unreliable.
+        Other builds retain the exchange module's measured-layout check.
+        """
+        from game import game_build
+        entry = self._entry_of(item)
+        if entry and entry['kind'] == 'sdat' and game_build.current().name == 'us-retail':
+            return 1024 if entry['area'] == 7 else 640
+        return None
+
+    def _geometry_growth_budget(self, item):
+        """Bound US Town of Fishermen's pool below the 0x801FD000 scratch area.
+
+        The retail loader reads SDAT at 0x8018A000. The existing repacker adds
+        sector padding after EACH edit, so sum rounded deltas, not raw bytes.
+        Unknown layouts and trail allocations default to no growth.
+        """
+        from game import game_build
+        entry = self._entry_of(item)
+        if not entry or entry['kind'] != 'sdat' or entry['area'] != 4 or game_build.current().name != 'us-retail':
+            return 0
+        idx = os.path.join(os.path.dirname(self.dat_file), 'TOMBA2.IDX')
+        with open(idx, 'rb') as stream:
+            stream.seek(4 * 0x800 + 8)
+            start, end = struct.unpack('<II', stream.read(8))
+        available = 0x73000 - (end - start)
+        for edit in self.pending_file_edits.values():
+            if edit.get('area') == 4:
+                delta = len(edit['data']) - edit['size']
+                available -= (delta + 0x7ff) // 0x800 * 0x800
+        return max(0, available // 0x800 * 0x800)
 
     def _entry_of(self, item):
         """What a tree row's file is, as a dict the replace/swap code
@@ -89,6 +125,11 @@ class FileEditsMixin:
         model that is no longer what is actually staged."""
         if self.smst_panel.refresh_if_showing(address, data):
             print(f"SMST: refreshed the model at 0x{address:X} with the edit")
+        if self.mdat_panel.refresh_if_showing(address, data):
+            print(f"MDAT: refreshed the model at 0x{address:X} with the edit")
+        if self.drwa_viewer.drwa and self.drwa_viewer.drwa.address == address:
+            path, start, offset, chunk = self.drwa_viewer._source
+            self.drwa_viewer.load_drwa_data(path, start, offset, len(data), chunk_index=chunk)
         if self.anmp_viewer.reload_model(address):
             print(f"ANMP: reloaded the model at 0x{address:X} with the edit")
 

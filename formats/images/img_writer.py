@@ -60,6 +60,11 @@ def add_shards(chunk, new_shards):
 
     records = list(shards)
     for x, y, w, h, pixels in new_shards:
+        if w <= 0 or h <= 0 or (w * h) % 2:
+            raise IMGWriteError(
+                "An image upload must contain an even number of halfwords: "
+                "the game's LoadImage source must be 32-bit aligned. "
+                "Expand the allocated texture rectangle before writing it.")
         if len(pixels) != w * h * 2:
             raise IMGWriteError(
                 f"a {w}x{h} shard is {w * h * 2} bytes and this one is "

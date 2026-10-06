@@ -320,7 +320,14 @@ class ViewerDispatchMixin:
                             if self.dat_file:
                                 print("Loading MDAT data...")
                                 self.mdat_viewer.export_name = _export_name(selected_item)
-                                success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset)
+                                success = self.mdat_viewer.load_mdat_data(self.dat_file, dat_start, offset, entry_size)
+                                self.mdat_panel.stage_edit = (
+                                    lambda blob, label, item=selected_item:
+                                    self._stage_file_edit(item, blob, label))
+                                self.mdat_panel.geometry_growth_budget = (
+                                    lambda item=selected_item: self._geometry_growth_budget(item))
+                                self.mdat_panel.geometry_cell_size = (
+                                    lambda item=selected_item: self._geometry_cell_size(item))
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
                                 self.mdat_panel.populate()
@@ -390,6 +397,8 @@ class ViewerDispatchMixin:
                                 self.smst_panel.stage_edit = (
                                     lambda blob, label, item=selected_item:
                                     self._stage_file_edit(item, blob, label))
+                                self.smst_panel.geometry_growth_budget = (
+                                    lambda item=selected_item: self._geometry_growth_budget(item))
                                 # So the VRAM view's CLUT list offers the
                                 # palettes this model actually samples,
                                 # rather than making the user find them.

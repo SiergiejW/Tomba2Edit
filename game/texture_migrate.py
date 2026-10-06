@@ -140,6 +140,15 @@ def source_rect(page, box):
     row = (page // psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_ROWS
     hx0 = u0 // TEXELS_PER_HALFWORD
     hx1 = u1 // TEXELS_PER_HALFWORD + 1
+    # The game decompresses into (0x1FD000 - width*height*2), then passes
+    # that address to LoadImage's word reader. An odd halfword count makes
+    # it misaligned and raises an R3000 Address Error. Reserve an even width
+    # including source padding; keep the expanded rectangle within its page.
+    if (hx1 - hx0) % 2:
+        if hx1 < psx_vram.PAGE_HALFWORDS:
+            hx1 += 1
+        else:
+            hx0 -= 1
     return (column + hx0, row + v0, hx1 - hx0, v1 - v0 + 1)
 
 

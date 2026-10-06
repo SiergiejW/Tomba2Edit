@@ -413,14 +413,23 @@ def build(model_data, vram_bytes, groups=None, bones=None, frames=None,
         # thing once per palette would be most of a hundred megabytes.
         px = np.clip(part_uv[:, 0] * ATLAS_WIDTH, 0, ATLAS_WIDTH)
         py = np.clip(part_uv[:, 1] * ATLAS_HEIGHT, 0, ATLAS_HEIGHT)
-        x0 = max(0, int(np.floor(px.min())) - PAD)
-        y0 = max(0, int(np.floor(py.min())) - PAD)
-        x1 = min(ATLAS_WIDTH, int(np.ceil(px.max())) + PAD)
-        y1 = min(ATLAS_HEIGHT, int(np.ceil(py.max())) + PAD)
-        x1 = max(x1, x0 + 1)
-        y1 = max(y1, y0 + 1)
+        ix0 = min(int(np.floor(px.min())), ATLAS_WIDTH - 1)
+        iy0 = min(int(np.floor(py.min())), ATLAS_HEIGHT - 1)
+        ix1 = max(int(np.ceil(px.max())), ix0 + 1)
+        iy1 = max(int(np.ceil(py.max())), iy0 + 1)
+        x0 = max(0, ix0 - PAD)
+        y0 = max(0, iy0 - PAD)
+        x1 = min(ATLAS_WIDTH, ix1 + PAD)
+        y1 = min(ATLAS_HEIGHT, iy1 + PAD)
 
-        baked = palette(vram_bytes, clut, transparent)[atlas[y0:y1, x0:x1]]
+        # The padding repeats the edge texels rather than copying the
+        # neighbouring VRAM: another texture's colours in that border
+        # show up as a line in anything that filters the image (mip maps,
+        # bilinear, a bump map baked from it).
+        inner = np.pad(atlas[iy0:iy1, ix0:ix1],
+                       ((iy0 - y0, y1 - iy1), (ix0 - x0, x1 - ix1)),
+                       mode="edge")
+        baked = palette(vram_bytes, clut, transparent)[inner]
         images.append({"mimeType": "image/png", "name": f"clut_{clut:X}",
                        "uri": "data:image/png;base64,"
                               + base64.b64encode(_png(baked)).decode("ascii")})
