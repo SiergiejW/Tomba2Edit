@@ -172,11 +172,20 @@ a.binaries = [entry for entry in a.binaries if _keep(entry)]
 
 pyz = PYZ(a.pure)
 
+# PyInstaller's onefile mode unpacks the whole program into a temporary
+# folder on every launch. Measured on an Apple M5 Pro, from the click to
+# a window on screen: 3.9-4.1 seconds that way, 0.7 with the directory
+# build below - and PyInstaller 6.22 warns that onefile has no business
+# inside a macOS .app at all, which its 7.0 turns into an error. Windows
+# keeps the single executable its releases have always been, so this is
+# the Mac build only.
+ONEDIR = sys.platform == "darwin"
+
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [] if ONEDIR else a.binaries,
+    [] if ONEDIR else a.datas,
     [],
     name='Tomba2Edit',
     debug=False,
@@ -192,13 +201,29 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=APP_ICON,
+    exclude_binaries=ONEDIR,
 )
+
+if ONEDIR:
+    # What the .app below wraps: the executable and everything it loads,
+    # side by side instead of packed into it.
+    contents = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='Tomba2Edit',
+    )
+else:
+    contents = exe
 
 if sys.platform == "darwin":
     # macOS wants a bundle rather than a bare executable, or it has
     # nowhere to put the icon and Gatekeeper has nothing to check.
     app = BUNDLE(
-        exe,
+        contents,
         name='Tomba2Edit.app',
         icon=APP_ICON,
         bundle_identifier='club.tomba.tomba2edit',
