@@ -56,7 +56,8 @@ def install_exchange(panel, kind):
                     stream.seek(address)
                     library = records(stream.read(size), kind, part)
             result = import_obj(path, viewer.blob, kind, part, max_growth=growth,
-                                material_library=library, cell_size=cell_size)
+                                material_library=library, cell_size=cell_size,
+                                growth_alignment=2048)
             if kind == 'SMST':
                 panel._apply_edit(result.data, result.note, f'Imported part {part}', f'Blender SMST part {part}')
                 panel.table.selectRow(part)

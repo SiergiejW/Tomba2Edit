@@ -305,7 +305,8 @@ def _packet_pressure(blob, kind, part):
     return peak
 
 
-def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=(), cell_size=None):
+def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=(), cell_size=None,
+               growth_alignment=1):
     """Replace all MDAT geometry, or exactly one SMST body.
 
     Default memory budget is the selected resource's current byte size. An
@@ -313,6 +314,8 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
     allocation. Parsing success alone is not evidence that growth is safe.
     """
     originals = records(blob, kind, part)
+    if growth_alignment not in (1, 2048):
+        raise ExchangeError('Unsupported resource growth alignment.')
     faces = read_obj(path)
     if kind == 'MDAT' and not faces:
         raise ExchangeError("An MDAT replacement must contain some geometry.")
@@ -361,6 +364,11 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         # The opaque trailer is preserved, followed by zero padding.
         if len(body) < len(old):
             body += bytes(len(old) - len(body))
+        elif len(body) > len(old):
+            # The SDAT repacker aligns every growth delta to a sector. Put its
+            # fill INSIDE the edited part, so the last unedited body's trailer
+            # is byte-identical even when read from the final rebuilt disc.
+            body += bytes((len(old) - len(body)) % growth_alignment)
         bodies[part] = body
         result = rebuild(blob, bodies)
         smst_groups(result)

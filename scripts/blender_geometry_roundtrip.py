@@ -47,7 +47,8 @@ def main():
             raise ValueError('The input does not contain the expected original US-retail targets.')
         export_obj(out / f'{kind}.obj', blob, kind, part, vram)
     subprocess.run([str(args.blender), '--background', '--factory-startup', '-t', '2',
-                    '--python', str(Path(__file__).resolve()), '--', '--native', str(out)], check=True)
+                    '--python-exit-code', '1', '--python', str(Path(__file__).resolve()),
+                    '--', '--native', str(out)], check=True)
     report = {}
     for kind, at, size, part, _ in targets:
         original = data[at:at + size]
