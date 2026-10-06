@@ -22,11 +22,12 @@ MAX_FACES = 20000
 # US retail alternates two 0x14000-byte primitive buffers at 0x800BFE68.
 # GT3/GT4 output packets consume 40/52 bytes before other actors/UI/effects.
 FRAME_PACKET_BYTES = 0x14000
-# Scenery shares the arena with actors, effects and UI. The old 7-cell/full-
-# arena check admitted a Village port that overwrote the player in widescreen.
-SCENERY_PACKET_BYTES = 0xC000
 SMST_PART_PACKET_BYTES = 0x1000
+# A rough measure only. What a frame really costs depends on the camera; see
+# formats/drawmaps/visibility.py for the game's own rule.
 DENSITY_CELL_SPAN = 9
+# Town's batch reads a cell's two counts as bytes. The disc's largest is 88.
+CELL_PACKETS = 255
 MATERIAL = re.compile(r"^T2_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})_([0-9A-Fa-f]{4})(?:\.\d+)?$")
 
 
@@ -58,6 +59,10 @@ class ImportResult:
     unchanged: bool
     reused: int
     note: str
+    warning: str = ""
+    # MDAT cells (col, row) holding no original packet: the level's DRWB
+    # knows nothing about them. See drwb_parser.reveal().
+    new_cells: tuple = ()
 
 
 def _material(raw):
@@ -386,7 +391,10 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         elif cell_size not in (640, 1024):
             raise ExchangeError('Unsupported game drawmap cell size.')
         cells = defaultdict(list)
+        kept = set()
         for raw, owner, face in converted:
+            if owner is not None:
+                kept.add(owner)
             if owner is None:
                 x = sum(v[0] for v in face.vertices) / len(face.vertices)
                 z = sum(v[2] for v in face.vertices) / len(face.vertices)
@@ -401,6 +409,12 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         result = bytearray(blob[:grid.data_start])
         struct.pack_into(f'<{grid.cell_count}H', result, 4, *([0xffff] * grid.cell_count))
         for cell, packets in sorted(cells.items()):
+            three = sum(len(r) == 36 for r in packets)
+            if max(three, len(packets) - three) > CELL_PACKETS:
+                raise ExchangeError(
+                    f'Drawmap cell ({cell % grid.width}, {cell // grid.width}) holds {three} triangles and '
+                    f'{len(packets) - three} quads; the game draws at most {CELL_PACKETS} of each from one cell. '
+                    'Thin that spot. The original resource has not been changed.')
             pointer = len(result) // 4
             if pointer >= 0xffff:
                 raise ExchangeError('MDAT exceeds its 16-bit drawmap pointer range.')
@@ -412,16 +426,29 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         result = bytes(result)
         parse_drwa(result)
     pressure = _packet_pressure(result, kind, part)
-    budget = SMST_PART_PACKET_BYTES if kind == 'SMST' else SCENERY_PACKET_BYTES
-    limit = max(budget, _packet_pressure(blob, kind, part))
-    if pressure > limit:
-        raise ExchangeError(
-            f'Too much geometry is concentrated in one {"part" if kind == "SMST" else "9 x 9 cell area"}: '
-            f'{pressure:,} potential render-packet bytes exceeds the {limit:,}-byte density limit. '
-            'Actors, effects and UI share the drawing buffer; widescreen can expose more faces. '
-            'Simplify the mesh in Blender. The original resource has not been changed.')
+    before = _packet_pressure(blob, kind, part)
+    warning, new_cells = '', ()
+    if kind == 'SMST':
+        limit = max(SMST_PART_PACKET_BYTES, before)
+        if pressure > limit:
+            raise ExchangeError(
+                f'Too much geometry is concentrated in one part: {pressure:,} potential render-packet bytes '
+                f'exceeds the {limit:,}-byte density limit. Actors, effects and UI share the drawing buffer; '
+                'widescreen can expose more faces. Simplify the mesh in Blender. '
+                'The original resource has not been changed.')
+    else:
+        new_cells = tuple((c % grid.width, c // grid.width) for c in sorted(cells) if c not in kept)
+        # Not refused: the mesh is the author's. The 81,920-byte frame buffer
+        # is shared, and the stock Town opening already reaches 80,432 in
+        # widescreen, so denser scenery needs game/primitive_buffer.py.
+        if pressure > before:
+            warning = (f'Denser than the original: up to {pressure:,} packet bytes in a 9 x 9 cell patch '
+                       f'against {before:,}. The frame buffer is shared with actors and UI and the stock '
+                       'game nearly fills it in busy scenes; build with the single-buffer MAIN.EXE patch '
+                       '(game/primitive_buffer.py) or check the scene in an emulator.')
     growth = len(result) - len(blob)
     if growth > max_growth:
         raise ExchangeError(f'Replacement needs {growth} extra bytes; the verified budget allows {max_growth}. Simplify the mesh. The original resource has not been changed.')
-    return ImportResult(result, tris, quads, False, len(used),
-                        f'{tris} triangles, {quads} quads; {len(used)} original packets reused; {growth:+d} bytes. Collision unchanged.')
+    note = f'{tris} triangles, {quads} quads; {len(used)} original packets reused; {growth:+d} bytes. Collision unchanged.'
+    return ImportResult(result, tris, quads, False, len(used), note + (' ' + warning if warning else ''),
+                        warning, new_cells)

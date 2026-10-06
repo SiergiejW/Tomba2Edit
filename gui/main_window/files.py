@@ -105,6 +105,46 @@ class FileEditsMixin:
         entry = self._entry_of(item)
         if entry is None:
             return
+        self._stage_entry_edit(entry, data, label)
+
+    def _stage_drawmap_mask(self, item, new_cells):
+        """Open Town's DRWB for the cells an imported MDAT added.
+
+        The DRWB says which regions each drawmap cell is drawn from (see
+        formats/drawmaps/drwb_parser.py). Geometry the level never had
+        lands in cells it masks out, and vanishes depending on where
+        Tomba stands. Rebuilt from the disc's own DRWB every time, so
+        importing the original back clears it. US Town only - the one
+        mask whose bits are decoded."""
+        from formats.archive.format_detect import best
+        from formats.archive.repacker import parse_idx
+        from formats.drawmaps.drwb_parser import DISC_SIZE, reveal
+        from game import game_build
+        entry = self._entry_of(item)
+        if (not entry or entry["kind"] != "sdat" or entry["area"] != 4
+                or game_build.current().name != "us-retail"):
+            return
+        idx = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+        chunk = parse_idx(idx)[entry["area"]]
+        pointers = chunk["sdat_pointers"]
+        with open(self.dat_file, "rb") as f:
+            for slot, (_id, offset) in enumerate(pointers):
+                end = pointers[slot + 1][1] if slot + 1 < len(pointers) else chunk["dat_end"] - chunk["dat_start"]
+                if end - offset != DISC_SIZE:
+                    continue
+                f.seek(chunk["dat_start"] + offset)
+                original = f.read(DISC_SIZE)
+                match = best(original)
+                if match is None or match.kind != "DRWB":
+                    continue
+                mask = {"kind": "sdat", "area": entry["area"], "file_idx": slot,
+                        "address": chunk["dat_start"] + offset, "size": DISC_SIZE,
+                        "key": (entry["area"], slot)}
+                self._stage_entry_edit(mask, reveal(original, new_cells),
+                                       "DRWB opened for the imported MDAT")
+                return
+
+    def _stage_entry_edit(self, entry, data, label):
         with open(self.dat_file, "rb") as f:
             f.seek(entry["address"])
             original = f.read(entry["size"])

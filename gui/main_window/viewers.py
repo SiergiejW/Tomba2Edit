@@ -324,6 +324,9 @@ class ViewerDispatchMixin:
                                 self.mdat_panel.stage_edit = (
                                     lambda blob, label, item=selected_item:
                                     self._stage_file_edit(item, blob, label))
+                                self.mdat_panel.stage_mask = (
+                                    lambda cells, item=selected_item:
+                                    self._stage_drawmap_mask(item, cells))
                                 self.mdat_panel.geometry_growth_budget = (
                                     lambda item=selected_item: self._geometry_growth_budget(item))
                                 self.mdat_panel.geometry_cell_size = (

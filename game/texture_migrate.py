@@ -168,8 +168,11 @@ class Move:
         self.dest_y = dest_y
         column = (dest_page % psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_HALFWORDS
         row = (dest_page // psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_ROWS
-        self.du = ((dest_x - column) - box[0] // TEXELS_PER_HALFWORD) \
-            * TEXELS_PER_HALFWORD
+        # From where the copied rectangle really starts: source_rect() can
+        # begin a halfword left of the box to keep the width even.
+        source_column = (page % psx_vram.ATLAS_COLUMNS) * psx_vram.PAGE_HALFWORDS
+        first = source_rect(page, box)[0] - source_column
+        self.du = ((dest_x - column) - first) * TEXELS_PER_HALFWORD
         self.dv = (dest_y - row) - box[1]
 
     @property

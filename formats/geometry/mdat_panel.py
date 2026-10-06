@@ -95,6 +95,8 @@ class MDATPanel(QWidget):
         self.viewer.show_blob(result.data)
         self.populate()
         self.stage_edit(result.data, "Blender MDAT geometry")
+        if getattr(self, "stage_mask", None):
+            self.stage_mask(result.new_cells)
         self.details.setText(result.note + " Staged; export the disc/files to save.")
 
     # --- filling ------------------------------------------------------

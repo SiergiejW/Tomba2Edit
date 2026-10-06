@@ -53,15 +53,66 @@ through or behind new scenery when it does not match those paths.
 * Growth is disabled for unknown allocations. US retail Town of Fishermen uses
   the known `0x8018A000..0x801FD000` area allocation. The budget includes all
   staged edits and the repacker's sector padding, including reusable slack.
-* A density check reserves drawing space for actors, effects and UI: a 9×9-cell
-  MDAT patch is limited to 49,152 potential GPU-packet bytes, or the original
-  resource's higher density. An SMST part is limited to 4,096 bytes, or its
-  original higher cost, because the game may draw multiple instances. The
-  complete frame arena is only 81,920 bytes. Widescreen can expose extra faces.
-  This is **a screening heuristic**, not a complete simulation of the camera
-  culler, actor instances, effects or UI. Test changed scenes in-game with the
-  intended emulator settings; passing an import cannot guarantee every edit
-  is crash-free. An unchanged original bypasses this check and stays identical.
+* A drawmap cell holds at most 255 triangles and 255 quads: Town's draw
+  routine reads each count as one byte. The disc's largest cell has 88.
+* An SMST part is limited to 4,096 potential GPU-packet bytes, or its original
+  higher cost, because the game may draw multiple instances.
+* An MDAT denser than the original is **imported, with a warning**. The mesh
+  is not simplified for you. See the next section for what the limit really is.
+
+## The frame buffer, the drawmap and the DRWB
+
+Every packet of a frame (actors, Tomba, scenery, effects, backdrop, UI) goes
+into one 81,920-byte buffer. Nothing checks it, and Tomba's own state sits
+right after it. The MDAT is one tenant among several: at Town's start the
+stock game uses 29,912 bytes, of which 9,880 are MDAT scenery.
+
+The stock game runs close to the limit. In DuckStation with the widescreen
+hack, the untouched disc peaks at **80,432 bytes** in the Town opening. That,
+not the mesh, is why the first full-detail Village port froze, and why the
+shipped one was decimated to fit under Town's own load.
+
+How Town decides what to draw (`formats/drawmaps/visibility.py`, ported from
+the decomp and checked against a savestate):
+
+1. A view triangle from the camera, 80° wide and 14,080 units deep at Town's
+   start, is laid over the drawmap. Cells inside it are listed if the **DRWB**
+   allows it: the DRWB's low nibble is the region of the cell Tomba stands in,
+   its high nibble the regions a cell is drawn from.
+2. Each listed polygon is transformed and dropped if it faces away or is off
+   screen. Only what survives uses buffer.
+
+So the drawmap and DRWB save CPU time, and hide regions; they cannot shrink
+what is genuinely on screen. Importing an MDAT into US Town also stages the
+DRWB, opened for every cell that holds no original packet, so new geometry
+does not vanish when Tomba walks into another region.
+
+For frames over the limit there is `game/primitive_buffer.py`, a MAIN.EXE
+patch (US retail). A frame that follows one over 65,536 bytes waits for the
+GPU and may then use all 163,840 bytes; lighter frames are untouched.
+
+```powershell
+python -m game.primitive_buffer MAIN.EXE MAIN.patched.EXE
+```
+
+Measured in DuckStation 0.1-12074, widescreen hack, same input, 5,760 game
+frames (Town opening, then the walking route x 3200..7926):
+
+| | Peak bytes | Frames over 81,920 | Route speed |
+| --- | --- | --- | --- |
+| Stock disc | 80,432 | 0 | 30.0 fps |
+| Stock disc + patch | 80,432 | 0 | 29.8 fps |
+| Full-detail Village + patch | 90,208 | 178 | about 23 fps |
+
+The last row is the built disc itself. Its slow frames are the 629 over
+65,536 bytes, around x 5700..6400
+where Town's own actors already fill most of the buffer; the rest run on
+time. A frame that jumps from under 65,536 to over 81,920 in one step is not
+covered. None did in these runs.
+
+The full-detail build is in **`mods/Tomba1-Village-FullDetail`**: the
+undecimated Village (574 triangles, 3,147 quads), the patch, and an open DRWB.
+Its textures are still the quarter-size ones.
 
 The workflow uses textures already installed in the target game. Changing an
 exported PNG or assigning an arbitrary Blender material does not install new
@@ -141,9 +192,13 @@ caused a PS1 alignment exception. The subsequent full-resolution Village port
 passed an insufficient 4:3 smoke test but froze after walking in widescreen.
 The wider view overflowed the native primitive arena and overwrote Tomba's
 state; this was reproduced in both emulators. That revision is superseded.
-The corrected mesh reduces potential scenery packet output from 186,604 to
-89,120 bytes before culling. The importer now rejects the known crashing OBJ.
-It leaves collision, the other 86 SMST parts and the game's executable intact.
+The decimated mesh in `mods/Tomba1-Village-Part61` reduces potential scenery
+packet output from 186,604 to 89,120 bytes before culling. That was the wrong
+fix: the buffer was already 98% full without the Village (see "The frame
+buffer, the drawmap and the DRWB"). The importer no longer rejects the
+full-detail OBJ; it warns, and the full-detail build uses the MAIN.EXE patch.
+The decimated build leaves collision, the other 86 SMST parts and the game's
+executable intact.
 Start the corrected CUE from a fresh boot: an old save state contains the old
 geometry and can restore the crash even when the disc has been replaced.
 

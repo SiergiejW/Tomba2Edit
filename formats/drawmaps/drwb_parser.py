@@ -36,12 +36,13 @@ nibble is a strict subset of the high one (AREA_0A: bit 0 and bit 4 are
 the same 371 cells; bit 1's 516 cells are all inside bit 5's 526). In
 AREA_1B the two nibbles never overlap at all.
 
-WHAT THE BITS MEAN IS NOT DECODED. vervalkon's recollection is that of
-DRWA and DRWB "one of them determined the visibility of polygon
-groups", and a per-cell flag set that covers the level plus a margin
-would fit that, but nothing here confirms it. The viewer shows the
-planes and lets them be compared against the level; it doesn't claim to
-know what they switch.
+WHAT THE BITS MEAN, for Town (AREA_04, overlay A00; US decomp
+f_CollectVisibleA00GridCellsForCamera / f_TestA00GridCellMask): the low
+nibble is the region of the cell Tomba stands in (1, 2, 4, 8), the high
+nibble the regions a cell is drawn from. A DRWA cell inside the camera's
+view triangle is listed only if high_nibble & tombas_region. Run against
+a Town savestate the rule gives the game's own 119-cell list exactly.
+The other three files are not checked.
 """
 import math
 from collections import Counter
@@ -153,6 +154,21 @@ def parse_drwb(data, address=0):
             f"{len(data)} bytes isn't a square grid - every DRWB on the disc "
             f"is {DISC_SIZE} bytes ({DISC_SIDE}x{DISC_SIDE})")
     return DRWBFile(side=side, cells=bytes(data), address=address)
+
+
+def reveal(data, cells):
+    """`data` with the given level cells (x, z) drawn from every region.
+
+    For geometry the level never had: a cell whose high nibble is clear
+    is not drawn wherever Tomba stands, and a replaced cell keeps mask
+    bits that described what used to be there. The low nibble - the
+    region a cell is, for Tomba standing in it - is left alone."""
+    side = math.isqrt(len(data))
+    out = bytearray(data)
+    for x, z in cells:
+        if 0 <= x < side and 0 <= z < side:
+            out[x * side + z] |= 0xF0
+    return bytes(out)
 
 
 def load_drwb(dat_file_path, dat_start, offset, size):
