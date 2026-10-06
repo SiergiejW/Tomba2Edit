@@ -30,6 +30,15 @@ SECTOR = 0x800
 # How many shards a chunk's header has room for.
 MAX_SHARDS = (HEADER_ROOM - 4) // RECORD
 
+# The most a chunk may be. The game reads a chunk into a buffer this big
+# and no further: it is the size of the largest chunk on the retail disc
+# (AREA_22), and a Town chunk grown to 0x5F800 lost every shard that
+# started at or past 0x53000 - seen in a savestate's VRAM, shards 0-50
+# landed and 51-74 did not. A shard costs a whole sector however small it
+# is, so many small ones reach this long before the art does: paint()
+# rather than add_shards() for anything the chunk already covers.
+MAX_CHUNK = 0x53000
+
 
 class IMGWriteError(ValueError):
     """Raised when a chunk or the IDX cannot be rewritten."""
@@ -39,6 +48,58 @@ def _round_up(value, to=SECTOR):
     return (value + to - 1) // to * to
 
 
+def _pack(w, h, pixels):
+    """One shard's pixels, compressed and padded to whole sectors."""
+    if w <= 0 or h <= 0 or (w * h) % 2:
+        raise IMGWriteError(
+            "An image upload must contain an even number of halfwords: "
+            "the game's LoadImage source must be 32-bit aligned. "
+            "Expand the allocated texture rectangle before writing it.")
+    if len(pixels) != w * h * 2:
+        raise IMGWriteError(
+            f"a {w}x{h} shard is {w * h * 2} bytes and this one is "
+            f"{len(pixels)}")
+    packed = img_codec.compress(pixels, w)
+    # Belt and braces: a stream that copies from before its own
+    # start decodes to whatever VRAM already held, which looks
+    # perfect in the tool and wrong in game. compress() will not
+    # emit one; this makes sure nothing ever ships if it does.
+    if img_codec.reads_before_start(packed, w):
+        raise IMGWriteError(
+            f"the {w}x{h} shard compressed to a stream that reads "
+            f"before its own start - refusing to write it")
+    return packed + bytes(_round_up(len(packed)) - len(packed))
+
+
+def _assemble(records, bodies):
+    if len(records) > MAX_SHARDS:
+        raise IMGWriteError(
+            f"{len(records)} shards will not fit in the 0x800-byte header, "
+            f"which holds {MAX_SHARDS}")
+    out = bytearray(struct.pack("<I", len(records)))
+    for (x, y, w, h, _packed), body in zip(records, bodies):
+        out += struct.pack("<HHHHI", x, y, w, h, len(body))
+    out += bytes(HEADER_ROOM - len(out))
+    for body in bodies:
+        out += body
+    if len(out) > MAX_CHUNK:
+        raise IMGWriteError(
+            f"the chunk would be {len(out):,} bytes and the game reads only "
+            f"the first {MAX_CHUNK:,}: every shard past that would be "
+            "missing in game. Write into the chunk's existing shards "
+            "(paint) or add fewer, larger ones.")
+    return bytes(out)
+
+
+def _bodies(chunk):
+    shards, at = img_codec.read_chunk_header(chunk)
+    bodies = []
+    for _x, _y, _w, _h, packed in shards:
+        bodies.append(chunk[at:at + packed])
+        at += packed
+    return list(shards), bodies
+
+
 def add_shards(chunk, new_shards):
     """`chunk` with `new_shards` appended.
 
@@ -46,49 +107,60 @@ def add_shards(chunk, new_shards):
     compressed here. Existing shards keep their original bytes - they
     are not recompressed, so nothing that already worked can be changed
     by a compressor that packs one byte differently."""
-    shards, first = img_codec.read_chunk_header(chunk)
-    if len(shards) + len(new_shards) > MAX_SHARDS:
-        raise IMGWriteError(
-            f"{len(shards)} + {len(new_shards)} shards will not fit in the "
-            f"0x800-byte header, which holds {MAX_SHARDS}")
-
-    bodies = []
-    at = first
-    for _x, _y, _w, _h, packed in shards:
-        bodies.append(chunk[at:at + packed])
-        at += packed
-
-    records = list(shards)
+    records, bodies = _bodies(chunk)
     for x, y, w, h, pixels in new_shards:
-        if w <= 0 or h <= 0 or (w * h) % 2:
-            raise IMGWriteError(
-                "An image upload must contain an even number of halfwords: "
-                "the game's LoadImage source must be 32-bit aligned. "
-                "Expand the allocated texture rectangle before writing it.")
-        if len(pixels) != w * h * 2:
-            raise IMGWriteError(
-                f"a {w}x{h} shard is {w * h * 2} bytes and this one is "
-                f"{len(pixels)}")
-        packed = img_codec.compress(pixels, w)
-        # Belt and braces: a stream that copies from before its own
-        # start decodes to whatever VRAM already held, which looks
-        # perfect in the tool and wrong in game. compress() will not
-        # emit one; this makes sure nothing ever ships if it does.
-        if img_codec.reads_before_start(packed, w):
-            raise IMGWriteError(
-                f"the {w}x{h} shard compressed to a stream that reads "
-                f"before its own start - refusing to write it")
-        room = _round_up(len(packed))
-        bodies.append(packed + bytes(room - len(packed)))
-        records.append((x, y, w, h, room))
+        bodies.append(_pack(w, h, pixels))
+        records.append((x, y, w, h, 0))
+    return _assemble(records, bodies)
 
-    out = bytearray(struct.pack("<I", len(records)))
-    for x, y, w, h, packed in records:
-        out += struct.pack("<HHHHI", x, y, w, h, packed)
-    out += bytes(HEADER_ROOM - len(out))
-    for body in bodies:
-        out += body
-    return bytes(out)
+
+def paint(chunk, new_shards):
+    """`chunk` with `new_shards` written into the shards it already has.
+
+    Where a new rectangle lies inside what the chunk already uploads -
+    art being replaced - its pixels go into those shards, which are
+    recompressed, and nothing is added. A rectangle some of which no
+    existing shard covers is appended whole, as add_shards() would.
+
+    A chunk's shards may overlap, and the later one wins on the console,
+    so the pixels go into every shard that covers them."""
+    records, bodies = _bodies(chunk)
+    shards, start = img_codec.read_chunk_header(chunk)
+    offsets = []
+    for _x, _y, _w, _h, packed in shards:
+        offsets.append(start)
+        start += packed
+    opened = {}
+    extra = []
+    for nx, ny, nw, nh, pixels in new_shards:
+        if len(pixels) != nw * nh * 2:
+            raise IMGWriteError(
+                f"a {nw}x{nh} shard is {nw * nh * 2} bytes and this one is "
+                f"{len(pixels)}")
+        covered = bytearray(nw * nh)
+        for n, (x, y, w, h, packed) in enumerate(shards):
+            x0, x1 = max(x, nx), min(x + w, nx + nw)
+            y0, y1 = max(y, ny), min(y + h, ny + nh)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            if n not in opened:
+                opened[n] = bytearray(img_codec.decompress(
+                    chunk, offsets[n], packed, w)[:w * h * 2])
+            for row in range(y0, y1):
+                to = ((row - y) * w + x0 - x) * 2
+                at = ((row - ny) * nw + x0 - nx) * 2
+                opened[n][to:to + (x1 - x0) * 2] = pixels[at:at + (x1 - x0) * 2]
+                mark = (row - ny) * nw + x0 - nx
+                covered[mark:mark + x1 - x0] = b"\1" * (x1 - x0)
+        if not all(covered):
+            extra.append((nx, ny, nw, nh, pixels))
+    for n, pixels in opened.items():
+        _x, _y, w, h, _packed = shards[n]
+        bodies[n] = _pack(w, h, bytes(pixels))
+    for x, y, w, h, pixels in extra:
+        bodies.append(_pack(w, h, pixels))
+        records.append((x, y, w, h, 0))
+    return _assemble(records, bodies)
 
 
 def check(idx_bytes, img_bytes):
