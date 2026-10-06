@@ -7,7 +7,8 @@ two worth trying in this order:
     lameenc     a LAME build that pip installs as a wheel. It has no
                 outside dependencies, which is the point: it still works
                 in a frozen build on a machine with nothing installed.
-    ffmpeg      on PATH. Covers the case where the wheel is missing but
+    ffmpeg      on PATH, or where a Mac keeps what a package manager
+                installed. Covers the case where the wheel is missing but
                 the user has ffmpeg anyway.
 
 If neither is there, saying so beats writing a WAV with an .mp3 on the
@@ -16,10 +17,21 @@ end and letting the user find out later.
 import os
 import struct
 import subprocess
+import sys
 import wave
 
 BITRATE = 192
 FFMPEG = "ffmpeg"
+
+# Where a Mac puts an ffmpeg someone installed, in the order a Mac is
+# likely to have them: Homebrew on Apple silicon, Homebrew on Intel,
+# then MacPorts. A .app opened from Finder is handed
+# /usr/bin:/bin:/usr/sbin:/sbin and nothing else - no login shell, no
+# ~/.zprofile - so `which` alone reports no ffmpeg on a machine that
+# plainly has one, and every video export says so.
+MACOS_FFMPEG_PATHS = ("/opt/homebrew/bin/ffmpeg",
+                      "/usr/local/bin/ffmpeg",
+                      "/opt/local/bin/ffmpeg")
 
 
 def parse_wav(data):
@@ -82,13 +94,25 @@ def have_mp3():
         return True
     except ImportError:
         pass
-    return _ffmpeg_path() is not None
+    return ffmpeg_path() is not None
 
 
-def _ffmpeg_path():
+def ffmpeg_path():
+    """The ffmpeg to run, or None if there is none to run.
+
+    PATH first: someone who put their own build somewhere means that one.
+    The usual Mac locations after it, because a bundled app is not
+    started with a login shell's PATH - see MACOS_FFMPEG_PATHS."""
     from shutil import which
 
-    return which(FFMPEG)
+    found = which(FFMPEG)
+    if found:
+        return found
+    if sys.platform == "darwin":
+        for candidate in MACOS_FFMPEG_PATHS:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
 
 
 def to_mp3(wav_data, bitrate=BITRATE):
@@ -106,9 +130,10 @@ def to_mp3(wav_data, bitrate=BITRATE):
         encoder.set_quality(2)
         return bytes(encoder.encode(pcm)) + bytes(encoder.flush())
 
-    if _ffmpeg_path():
+    ffmpeg = ffmpeg_path()
+    if ffmpeg:
         done = subprocess.run(
-            [FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "wav",
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "wav",
              "-i", "pipe:0", "-b:a", f"{bitrate}k", "-f", "mp3", "pipe:1"],
             input=wav_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -119,7 +144,7 @@ def to_mp3(wav_data, bitrate=BITRATE):
 
     raise RuntimeError(
         "No MP3 encoder available. Install one with \"pip install lameenc\", "
-        "or put ffmpeg on PATH. Saving as WAV needs neither.")
+        "or install ffmpeg. Saving as WAV needs neither.")
 
 
 def save(path, wav_data, bitrate=BITRATE):
