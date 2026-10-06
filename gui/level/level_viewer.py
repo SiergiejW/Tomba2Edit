@@ -32,7 +32,9 @@ from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
 
 from game import game_build
 from formats.models import gltf_export
-from gui.widgets.camera_controls import CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, scene_of
+from gui.widgets.camera_controls import (
+    CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, navigating, scene_of,
+)
 from formats.models.smst_viewer import SMSTViewer, WEIGHTS
 from gui import gl_profile
 from gui import theme
@@ -1069,8 +1071,12 @@ class LevelViewer(SMSTViewer):
     def mousePressEvent(self, event):
         """Pick, never move: a click selects the instance under the
         cursor, and a second click on it goes one deeper - the part under
-        the cursor - then back to the whole."""
-        if event.button() != Qt.MouseButton.LeftButton:
+        the cursor - then back to the whole.
+
+        With the navigation key held the press is the camera's instead -
+        that is how a trackpad orbits - and nothing is picked."""
+        if (event.button() != Qt.MouseButton.LeftButton
+                or navigating(event)):
             super().mousePressEvent(event)
             return
         self.setFocus(Qt.FocusReason.MouseFocusReason)

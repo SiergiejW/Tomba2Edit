@@ -22,7 +22,7 @@ from gui.widgets.collision_options import CollisionOptions, add_menu_button
 from formats.geometry.mdat import exportMDAT, find_area_mdat_location
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
-    CameraEventMixin, scene_of,
+    CameraEventMixin, navigating, scene_of,
 )
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QStyle, QWidget, QSplitter,
@@ -339,10 +339,22 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self._highlight_phase += 0.12
         self.update()
 
+    def keyPressEvent(self, event):
+        """F frames what is picked, the way every viewport does."""
+        if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
+            self.frame_selection()
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         """A click picks the record or lane switch under it: what it is is printed,
-        shown in the inspector, and its plane selected in the table."""
-        if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_lines", None):
+        shown in the inspector, and its plane selected in the table.
+
+        With the navigation key held the press is the camera's instead -
+        that is how a trackpad orbits - and nothing is picked."""
+        if (event.button() == Qt.MouseButton.LeftButton
+                and not navigating(event)
+                and getattr(self, "_lines", None)):
             point = event.position().toPoint()
             hit = collision_overlay.pick_sample(
                 self._lines, self._model_view_projection(), UNIT_SCALE,
@@ -529,6 +541,32 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         self.scene_radius = radius
         self.camera_controls.glide_frame(centre, radius, heading, pitch)
         self.update()
+
+    def frame_selection(self):
+        """Ease the camera onto the highlighted plane, keeping the angle
+        it is looked at from - or onto the whole file when nothing is
+        highlighted. What F does in every view."""
+        self.camera_controls.glide_to_points(self._selection_points())
+        self.update()
+
+    def _selection_points(self):
+        """The highlighted entry's collision, in view units, or every
+        point of the file when no entry is highlighted.
+
+        The line layers hold the points as they were built, in game
+        units, and it is UNIT_SCALE that puts them where the view draws
+        them - the same division _scene_points gets."""
+        lines = getattr(self, "_lines", None)
+        if self.highlighted_entry is None or lines is None:
+            return self._scene_points
+        points = []
+        for ranges, layer in ((self.entry_point_ranges, lines.surface),
+                              (self.entry_wall_ranges, lines.vertical)):
+            first, count = ranges.get(self.highlighted_entry, (0, 0))
+            points.extend(layer[first:first + count])
+        if not points:
+            return self._scene_points
+        return np.array(points, dtype=np.float32) / UNIT_SCALE
 
     def _update_stats_label(self):
         entries = self.scld_data.entries if self.scld_data else []

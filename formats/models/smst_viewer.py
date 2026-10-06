@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from gui import gl_profile
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, MODEL_HEADING, MODEL_LIFT, MODEL_PITCH, CameraControls,
-    CameraEventMixin, scene_of,
+    CameraEventMixin, navigating, scene_of,
 )
 from psx import draw_order
 from psx import vram as psx_vram
@@ -973,10 +973,20 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             ray[0], ray[1], self._pick_vertices, self._pick_faces,
             self._face_polygon, drawable)
 
+    def keyPressEvent(self, event):
+        """F frames what is picked, the way every viewport does."""
+        if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
+            self.frame_selection()
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         # Left-click picks. The camera is on the right button (see
-        # gui/widgets/camera_controls.py), so the left one is free for it.
-        if event.button() == Qt.MouseButton.LeftButton:
+        # gui/widgets/camera_controls.py), so the left one is free for it
+        # - unless the navigation key is held, which is how a trackpad
+        # orbits, and then the drag belongs to the camera.
+        if (event.button() == Qt.MouseButton.LeftButton
+                and not navigating(event)):
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             point = event.position().toPoint()
             self.select(self.pick(point.x(), point.y()))
@@ -1122,6 +1132,28 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.camera_controls.glide_frame(centre, radius, heading, pitch,
                                          lift=MODEL_LIFT)
         self.update()
+
+    def frame_selection(self):
+        """Ease the camera onto the highlighted part, keeping the angle it
+        is looked at from - or onto the whole model when no part is
+        picked. What F does in every view."""
+        self.camera_controls.glide_to_points(self._selection_points())
+        self.update()
+
+    def _selection_points(self):
+        """The highlighted part's vertices, in GL units, or every vertex
+        of the model when no part is highlighted."""
+        positions = self._positions()
+        group = next((g for g in self.groups
+                      if g.index == self.highlighted_group), None)
+        if group is None and self.highlighted_group is not None:
+            groups = list(self.groups)
+            if 0 <= self.highlighted_group < len(groups):
+                group = groups[self.highlighted_group]
+        if group is not None and group.vertex_count:
+            return positions[group.first_vertex:
+                             group.first_vertex + group.vertex_count]
+        return positions
 
     # --- GL ----------------------------------------------------------
 
