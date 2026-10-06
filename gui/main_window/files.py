@@ -50,11 +50,15 @@ class FileEditsMixin:
             stream.seek(4 * 0x800 + 8)
             start, end = struct.unpack('<II', stream.read(8))
         available = 0x73000 - (end - start)
+        current_size = entry['size']
         for edit in self.pending_file_edits.values():
             if edit.get('area') == 4:
+                if edit['key'] == entry['key']:
+                    current_size = len(edit['data'])
+                    continue
                 delta = len(edit['data']) - edit['size']
                 available -= (delta + 0x7ff) // 0x800 * 0x800
-        return max(0, available // 0x800 * 0x800)
+        return max(0, entry['size'] + available // 0x800 * 0x800 - current_size)
 
     def _entry_of(self, item):
         """What a tree row's file is, as a dict the replace/swap code

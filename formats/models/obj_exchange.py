@@ -19,6 +19,9 @@ from psx import gpu_packet as packet
 
 SCALE = 100.0
 MAX_FACES = 20000
+# US retail alternates two 0x14000-byte primitive buffers at 0x800BFE68.
+# GT3/GT4 output packets consume 40/52 bytes before other actors/UI/effects.
+FRAME_PACKET_BYTES = 0x14000
 MATERIAL = re.compile(r"^T2_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})_([0-9A-Fa-f]{4})(?:\.\d+)?$")
 
 
@@ -279,6 +282,29 @@ def _trailer(data):
     return data[:(end + 3) // 4 * 4]
 
 
+def _packet_pressure(blob, kind, part):
+    """Potential output bytes per part or dense 7x7-cell patch.
+
+    This catches concentrated replacement scenes, including the failed small
+    Village prototype. It is a density screen, not an emulation of every
+    overlay's camera culler: runtime testing still matters.
+    """
+    if kind == 'SMST':
+        _, _, t, q, _ = smst_groups(blob)[part]
+        return t * 40 + q * 52
+    grid = parse_drwa(blob)
+    costs = {g.cell: g.tris * 40 + g.quads * 52 for g in grid.groups}
+    prefix = [[0] * (grid.width + 1) for _ in range(grid.height + 1)]
+    peak = 0
+    for y in range(1, grid.height + 1):
+        for x in range(1, grid.width + 1):
+            prefix[y][x] = (costs.get((y-1) * grid.width + x-1, 0)
+                            + prefix[y-1][x] + prefix[y][x-1] - prefix[y-1][x-1])
+            top, left = max(0, y-7), max(0, x-7)
+            peak = max(peak, prefix[y][x] - prefix[top][x] - prefix[y][left] + prefix[top][left])
+    return peak
+
+
 def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=(), cell_size=None):
     """Replace all MDAT geometry, or exactly one SMST body.
 
@@ -372,6 +398,13 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
             result += bytes(len(blob) - len(result))
         result = bytes(result)
         parse_drwa(result)
+    pressure = _packet_pressure(result, kind, part)
+    limit = max(FRAME_PACKET_BYTES, _packet_pressure(blob, kind, part))
+    if pressure > limit:
+        raise ExchangeError(
+            f'Too much geometry is concentrated in one {"part" if kind == "SMST" else "7 x 7 cell area"}: '
+            f'{pressure:,} potential render-packet bytes exceeds the {limit:,}-byte density limit. '
+            'Reduce polygon count or spread MDAT geometry across more cells. The original resource has not been changed.')
     growth = len(result) - len(blob)
     if growth > max_growth:
         raise ExchangeError(f'Replacement needs {growth} extra bytes; the verified budget allows {max_growth}. Simplify the mesh. The original resource has not been changed.')

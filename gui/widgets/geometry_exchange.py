@@ -59,6 +59,8 @@ def install_exchange(panel, kind):
                                 material_library=library, cell_size=cell_size)
             if kind == 'SMST':
                 panel._apply_edit(result.data, result.note, f'Imported part {part}', f'Blender SMST part {part}')
+                panel.table.selectRow(part)
+                panel.details.setText(f'Imported part {part}. {result.note} Staged; export the disc/files to save.')
             else:
                 panel.apply_geometry(result)
         except (ValueError, OSError) as exc:
