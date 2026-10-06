@@ -82,37 +82,70 @@ the decomp and checked against a savestate):
 2. Each listed polygon is transformed and dropped if it faces away or is off
    screen. Only what survives uses buffer.
 
-So the drawmap and DRWB save CPU time, and hide regions; they cannot shrink
-what is genuinely on screen. Importing an MDAT into US Town also stages the
-DRWB, opened for every cell that holds no original packet, so new geometry
-does not vanish when Tomba walks into another region.
+So the drawmap and DRWB cannot shrink what is genuinely on screen. What they
+decide is how many polygons the CPU transforms, and that is what makes frames
+late. Importing an MDAT into US Town also stages the DRWB, opened for every
+cell that holds no original packet, so new geometry does not vanish when
+Tomba walks into another region.
 
-For frames over the limit there is `game/primitive_buffer.py`, a MAIN.EXE
-patch (US retail). A frame that follows one over 65,536 bytes waits for the
-GPU and may then use all 163,840 bytes; lighter frames are untouched.
+Two patches (US retail) go with a level denser than Town:
+
+* `game/primitive_buffer.py` (MAIN.EXE). A frame that follows one over 65,536
+  bytes waits for the GPU and may then use all 163,840 bytes; lighter frames
+  are untouched. Needed even in 4:3: the Village's opening reaches 95,700.
+* `game/view_wedge.py` (A00.BIN). The view triangle is 40° either side of the
+  heading, the screen shows 24.6° (4:3) or 31.4° (16:9 hack). Along the
+  opening route Town transforms 860 to 1,170 polygons a frame, the Village
+  1,400 to 2,000. At 32° the Village is 760 to 1,480 and no cell with
+  something on screen is dropped in either aspect ratio.
 
 ```powershell
 python -m game.primitive_buffer MAIN.EXE MAIN.patched.EXE
+python -m game.view_wedge A00.BIN A00.narrow.BIN
 ```
 
-Measured in DuckStation 0.1-12074, widescreen hack, same input, 5,760 game
-frames (Town opening, then the walking route x 3200..7926):
+Frames on time along the walking route (x 3200..7926, 2,400 game frames,
+DuckStation 0.1-12074, same input):
 
-| | Peak bytes | Frames over 81,920 | Route speed |
-| --- | --- | --- | --- |
-| Stock disc | 80,432 | 0 | 30.0 fps |
-| Stock disc + patch | 80,432 | 0 | 29.8 fps |
-| Full-detail Village + patch | 90,208 | 178 | about 23 fps |
+| | 4:3 | 16:9 hack |
+| --- | --- | --- |
+| Stock disc | 100% | 100% |
+| Full-detail Village, buffer patch only | 70% | 65% |
+| Full-detail Village, both patches (the built disc) | 91% | 72% |
 
-The last row is the built disc itself. Its slow frames are the 629 over
-65,536 bytes, around x 5700..6400
-where Town's own actors already fill most of the buffer; the rest run on
-time. A frame that jumps from under 65,536 to over 81,920 in one step is not
-covered. None did in these runs.
+What is still late are the frames over 65,536 bytes, which wait for the GPU:
+160 of them in 4:3, 639 in 16:9, between x 5200 and 7600 where Town's own
+actors already use most of the buffer. Frames under that run as stock does.
+A frame that jumps from under 65,536 to over 81,920 in one step is not
+covered. None did in any run.
 
-The full-detail build is in **`mods/Tomba1-Village-FullDetail`**: the
-undecimated Village (574 triangles, 3,147 quads), the patch, and an open DRWB.
-Its textures are still the quarter-size ones.
+## Textures for a replaced level
+
+`mods/Tomba1-Village-FullDetail` carries the Village's art at full size.
+How it got there, and what the tool should do by itself:
+
+* **Where art may go.** What only the replaced MDAT read, plus spare VRAM,
+  plus the gutters between the replaced tiles. For Town that is 50,900
+  halfwords freed, 10,623 spare, 1,134 of gutters. Readers are every MDAT,
+  SMST (trail files too), SPRT and BGMP of the area; the overlay's animated
+  palettes and what a savestate shows the game uploading are kept clear.
+  576 recorded frames of the stock game sampled none of the freed cells from
+  anything but the MDAT, and 576 of the new build sampled none of the changed
+  ones from anything but the Village.
+* **Where it may not.** 41,552 more halfwords of the level's chunk are read by
+  nothing the disc names, but 5,018 of those were sampled in those frames, by
+  things drawn from code. That space is unverified, not free.
+* **A chunk may not pass 0x53000 bytes** (`img_writer.MAX_CHUNK`). The game
+  reads no further; a chunk grown to 0x5F800 lost its last 24 uploads in
+  game, palettes among them, while the tool's own view looked right.
+  `img_writer.paint()` writes into the uploads a chunk already has instead of
+  adding new ones, which is what keeps a level's worth of art under it.
+* **Result.** 56 of 61 texture rectangles at full size and all 72 palettes;
+  five rectangles (11 faces) found no room and were shrunk to between 8/16
+  and 12/16. Every other face reads exactly the texels it read in Tomba 1.
+
+The scripts that did this are in `work/blender_geometry/claude_session`; it
+is not yet part of the importer.
 
 The workflow uses textures already installed in the target game. Changing an
 exported PNG or assigning an arbitrary Blender material does not install new
