@@ -6,7 +6,8 @@ import struct
 from formats.models.obj_exchange import ExchangeError, records
 
 
-def prepare(cd, entry, edits, source, source_vram, *, part=None, overlay=None, kept=None, state=None):
+def prepare(cd, entry, edits, source, source_vram, *, part=None, overlay=None, kept=None, state=None,
+            progress=None, cancelled=None):
     """`kept` is an SMST-shaped run of the faces that stay on the target's
     own materials: what they read is not free, replaced file or not.
     `state` is a savestate taken in the area; with it, VRAM that no chunk
@@ -24,6 +25,12 @@ def prepare(cd, entry, edits, source, source_vram, *, part=None, overlay=None, k
     cd = Path(cd)
     idx, dat, img = (cd / ('TOMBA2.' + ext) for ext in ('IDX', 'DAT', 'IMG'))
     area = entry['area']
+    def status(message):
+        if cancelled and cancelled():
+            raise ExchangeError('Import cancelled. The project was not changed.')
+        if progress:
+            progress(message)
+    status('Checking texture space and existing model references…')
     with TemporaryDirectory(prefix='tomba-model-') as folder:
         folder = Path(folder)
         survey_idx, survey_dat = idx, dat
@@ -57,9 +64,14 @@ def prepare(cd, entry, edits, source, source_vram, *, part=None, overlay=None, k
             texture, palette = level_textures.cells(regions_from_polygons(parse_smst(kept)['polygons']))
             usage.others |= texture | palette
         loaded = vram_map.loaded_vram(vram_map.chunk_shards(idx, img), chunk_vram, area)
-        target, shards, vram, report = level_textures.install(source, source_vram, usage.free, loaded, tries=12)
+        target, shards, vram, report = level_textures.install(
+            source, source_vram, usage.free, loaded, tries=12, cancelled=cancelled,
+            progress=lambda attempt,placed,left: status(
+                f'Packing textures: attempt {attempt+1}/12 — {placed} regions placed, {left} unresolved'))
+        status('Compressing the new texture uploads…')
         start, end = struct.unpack_from('<II', original_idx, area*2048)
         updated = img_writer.paint(original_img[start:end], img_writer.merged(shards))
+        status('Verifying the texture pixels and rebuilding the image archive…')
         import numpy as np
         expected = np.frombuffer(bytes(vram), '<u2').reshape(512,1024)
         decoded = np.frombuffer(decode_vram_bytes(updated), '<u2').reshape(512,1024)
@@ -72,6 +84,7 @@ def prepare(cd, entry, edits, source, source_vram, *, part=None, overlay=None, k
         problems = img_writer.check(idx_bytes, img_bytes)
         if problems:
             raise ExchangeError('\n'.join(problems))
+        status('Texture verification complete.')
         return dict(library=records(target, 'SMST', 0), vram=bytes(vram),
                     idx=idx_bytes, img=img_bytes, original_idx=original_idx,
                     original_img=original_img, cd=cd, report=report)

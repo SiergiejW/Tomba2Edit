@@ -29,8 +29,9 @@ class TextureMigrationMixin:
         cd = os.path.dirname(self.dat_file)
         edits = self._pack_pending_file_edits()
         overlay = self.overlay_for_area(entry['area']) if entry.get('area') is not None else None
-        return run_import(lambda: prepare(cd, entry, edits, source, vram,
-                                         part=part, overlay=overlay, kept=kept, state=state), self)
+        return run_import(lambda progress,cancelled: prepare(cd, entry, edits, source, vram,
+                                         part=part, overlay=overlay, kept=kept, state=state,
+                                         progress=progress,cancelled=cancelled), self, reporting=True)
 
     def _commit_geometry_textures(self, prepared):
         from game.geometry_textures import commit

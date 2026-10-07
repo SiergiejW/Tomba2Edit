@@ -226,6 +226,7 @@ class Space:
         self.free = free.copy()
         self.pages = [p for p in range(32) if self._block(p).any()]
         self._tables = {}
+        self._counts = {p: {} for p in self.pages}
 
     def _block(self, page):
         px, py = (page % 16) * PAGE_W, (page // 16) * PAGE_H
@@ -254,9 +255,12 @@ class Space:
     def count(self, w, h):
         total = 0
         for page in self.pages:
-            ok, _ring = self._fits(page, w, h)
-            if ok is not None:
-                total += int(ok.sum())
+            cache = self._counts[page]
+            key = (w, h)
+            if key not in cache:
+                ok, _ring = self._fits(page, w, h)
+                cache[key] = int(ok.sum()) if ok is not None else 0
+            total += cache[key]
         return total
 
     def place(self, w, h, rng=None, loose=1):
@@ -268,7 +272,10 @@ class Space:
             if ok is None or not ok.any():
                 continue
             score = np.where(ok, ring, 1 << 30)
-            for at in np.argsort(score, axis=None)[:loose]:
+            flat = score.ravel()
+            best = ([int(flat.argmin())] if loose == 1 else
+                    np.argpartition(flat, min(loose, flat.size)-1)[:loose])
+            for at in best:
                 y, x = divmod(int(at), score.shape[1])
                 if ok[y, x]:
                     options.append((int(score[y, x]), y, x, page))
@@ -281,14 +288,19 @@ class Space:
     def take(self, x, y, w, h):
         self.free[y:y + h, x:x + w] = False
         self._tables.pop((y // PAGE_H) * 16 + x // PAGE_W, None)
+        self._counts[(y // PAGE_H) * 16 + x // PAGE_W].clear()
 
 
-def _attempt(blob, items, free, rng, loose, first=()):
+def _attempt(blob, items, free, rng, loose, first=(), progress=None, cancelled=None):
     """One packing. `first` are the tiles (numbers into `items`) to place
     before the rest, largest first - the ones an earlier attempt left over."""
     space = Space(free)
     queue, moves, failed = list(enumerate(items)), [], []
     while queue:
+        if cancelled and cancelled():
+            raise migration.MigrationError('Import cancelled. The project was not changed.')
+        if progress and (len(moves)+len(failed)) % 32 == 0:
+            progress(len(moves),len(queue)+len(failed))
         scored = []
         for n, (origin, item) in enumerate(queue):
             _x, _y, w, h = migration.source_rect(item[0], item[1])
@@ -318,7 +330,7 @@ def _attempt(blob, items, free, rng, loose, first=()):
     return lost, moves, [f[1:] for f in failed], space, {f[0] for f in failed}
 
 
-def pack(blob, free, tries=60, seed=1, progress=None):
+def pack(blob, free, tries=60, seed=1, progress=None, cancelled=None):
     """(moves, palette destinations, tiles left over, Space) - the best of
     `tries` attempts. Raises if even the palettes find no room.
 
@@ -344,13 +356,14 @@ def pack(blob, free, tries=60, seed=1, progress=None):
     best, cost, first = None, None, frozenset()
     for n in range(tries):
         # In order: by the rule, by the rule with its leftovers first, by chance.
-        result = _attempt(blob, items, taken, rng, 1 if n < 2 else 4, first if n == 1 else ())
+        result = _attempt(blob, items, taken, rng, 1 if n < 2 else 4, first if n == 1 else (),
+                          (lambda placed,left: progress(n,placed,left)) if progress else None, cancelled)
         price = _price(result[2], result[3])
         if best is None or price < cost:
             best, cost = result, price
             if progress:
                 progress(n, len(result[1]), len(result[2]))
-        if not cost:
+        if cost == (0, 0):
             break
         if n == 0:
             first = frozenset(result[4])
@@ -381,11 +394,15 @@ def _price(failed, space):
     """Texels a packing loses once its leftovers are shrunk into what
     room it left - what the result looks like, where the area that did
     not fit is only what went wrong."""
-    trial, lost = Space(space.free), 0
+    trial, lost, missing = Space(space.free), 0, 0
     for tile in sorted(failed, key=_area, reverse=True):
         found = _fit_smaller(tile, trial)
-        lost += _area(tile) * 4 if found is None else _area(tile) - found[4] * found[5]
-    return lost
+        if found is None:
+            missing += 1
+        else:
+            lost += _area(tile) - found[4] * found[5]
+    # A plan that fits every tile always beats a prettier but impossible one.
+    return missing, lost
 
 
 def _shrink(target, kinds, tile, space, atlas):
@@ -414,7 +431,7 @@ def _shrink(target, kinds, tile, space, atlas):
     return (x, y, w, new_h, words.tobytes()), num, (wide, tall, new_w, new_h)
 
 
-def install(blob, source_vram, free, dest_vram, tries=60, seed=1, progress=None):
+def install(blob, source_vram, free, dest_vram, tries=60, seed=1, progress=None, cancelled=None):
     """Move every texture and palette `blob` samples into `free`.
 
     `blob` is an SMST-shaped run of packets pointing into `source_vram`;
@@ -424,7 +441,7 @@ def install(blob, source_vram, free, dest_vram, tries=60, seed=1, progress=None)
     from formats.animation import uv_anim
     from formats.models.gltf_export import index_atlas
 
-    moves, clut_dest, failed, space = pack(blob, free, tries, seed, progress)
+    moves, clut_dest, failed, space = pack(blob, free, tries, seed, progress, cancelled)
     plan = migration.place(blob, moves, clut_dest)
     target = bytearray(migration.retarget(blob, plan))
     shards = migration.shards_for(plan, source_vram)

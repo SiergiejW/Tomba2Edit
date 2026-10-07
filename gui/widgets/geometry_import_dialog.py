@@ -127,10 +127,6 @@ class GeometryImportDialog(QDialog):
         layout.addWidget(splitter,1);layout.addWidget(self.buttons)
         self.objects.itemChanged.connect(self.refresh);self.objects.currentRowChanged.connect(self.refresh)
         for spin in [self.scale,self.yaw,*self.offset]:spin.valueChanged.connect(self.refresh)
-        if self.foreign:
-            lo,hi=bounds(self.faces);tl,th=bounds(target)
-            self.yaw.setValue(90 if (hi[0]-lo[0]>hi[2]-lo[2]) != (th[0]-tl[0]>th[2]-tl[2]) else 0)
-            self.fit_target()
         self.objects.setCurrentRow(0);self.refresh()
 
     @staticmethod
