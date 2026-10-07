@@ -770,6 +770,11 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
         # The Movies tab has a decoder thread of its own, and Qt takes
         # the process down noisily if it is still running.
         self.movie_panel.close()
+        # So does the Level Editor, for the twenty seconds an area takes
+        # to load: closing the window before that used to abort the
+        # process. aboutToQuit would normally get there first, but not
+        # when the window is the thing being taken down.
+        self.level_panel.shutdown_loaders()
         super().closeEvent(event)
 
     def _apply_and_save_theme(self, theme_name):

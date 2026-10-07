@@ -173,8 +173,18 @@ class TextMixin:
 
     def _current_text_viewer(self):
         """(viewer, its file entry) for whichever text file is on
-        screen, or (None, None)."""
-        for viewer in (self.txtd_viewer, self.txt2_viewer):
+        screen, or (None, None).
+
+        The viewer in front decides. Both of them keep the last file they
+        were given - opening a TXT2 does not empty the TXTD viewer - so
+        asking them in a fixed order exported whichever of the two was
+        opened first, silently, whatever was on screen."""
+        viewers = [self.txtd_viewer, self.txt2_viewer]
+        on_screen = self.widgets_area.currentWidget()
+        if on_screen in viewers:
+            viewers.remove(on_screen)
+            viewers.insert(0, on_screen)
+        for viewer in viewers:
             address = viewer.file_address()
             if address is None:
                 continue

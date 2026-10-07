@@ -418,7 +418,7 @@ class LevelEditorPanel(QWidget):
         loader.failed.connect(lambda error, g=generation: self._load_failed(g, error))
         loader.finished.connect(lambda job=loader: self._release_loader(job))
         if not getattr(self, "_shutdown_hook", False):
-            QApplication.instance().aboutToQuit.connect(self._shutdown_loaders)
+            QApplication.instance().aboutToQuit.connect(self.shutdown_loaders)
             self._shutdown_hook = True
         loader.start()
 
@@ -427,7 +427,14 @@ class LevelEditorPanel(QWidget):
             self._loaders.remove(loader)
         loader.deleteLater()
 
-    def _shutdown_loaders(self):
+    def shutdown_loaders(self):
+        """Stop the level-load workers and wait for their threads.
+
+        A level load runs in a thread of its own for around twenty
+        seconds, and Qt takes the whole process down - abort(), a crash
+        report, no clean exit - if a running QThread is destroyed with
+        the window. Called from the window's closeEvent and from
+        aboutToQuit, whichever comes first."""
         self._cancel_load()
         for loader in list(getattr(self, "_loaders", ())):
             loader.wait()

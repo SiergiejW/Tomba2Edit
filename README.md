@@ -227,18 +227,29 @@ above.
 
 ### Free camera (any 3D view)
 
-Click inside a 3D viewport to enter free-camera mode.
+Hold the right button inside a 3D viewport to enter free-camera mode.
 
-| Input        | Action                        |
-| ------------ | ----------------------------- |
-| `W A S D`    | Move                          |
-| `Q` / `E`    | Move up / down                |
-| Middle-drag  | Orbit                         |
-| Shift+middle | Pan                           |
-| Right-drag   | Look around                   |
-| Mouse wheel  | Zoom, or camera speed         |
-| `Shift`      | Faster movement               |
-| `F`          | Frame the selection           |
+A trackpad has no middle button, so the orbit it would do is on the
+navigation key - `Option` on a Mac - and the two-finger gestures are the
+ones a trackpad has: scroll and pinch zoom, `Shift`+scroll pans.
+
+| Input                     | Action                        |
+| ------------------------- | ----------------------------- |
+| `W A S D`                 | Move                          |
+| `Q` / `E`                 | Move up / down                |
+| Option-drag               | Orbit                         |
+| Option+Shift-drag         | Pan                           |
+| Option+right-drag         | Zoom                          |
+| Two-finger scroll / pinch | Zoom                          |
+| Shift+scroll              | Pan                           |
+| Middle-drag               | Orbit (mouse)                 |
+| Shift+middle              | Pan (mouse)                   |
+| Right-drag                | Look around                   |
+| Mouse wheel               | Zoom, or camera speed         |
+| `Shift`                   | Faster movement               |
+| `F`                       | Frame the selection           |
+
+On Windows and Linux the same keys work with `Alt` in place of `Option`.
 
 ---
 

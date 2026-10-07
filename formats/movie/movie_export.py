@@ -12,8 +12,6 @@ import subprocess
 
 from formats.audio import audio_export
 
-FFMPEG = "ffmpeg"
-
 # What a video export can be written as. MP4 is the one to hand someone;
 # AVI with a lossless stream is the one to take into an editor.
 #
@@ -35,9 +33,7 @@ class ExportError(Exception):
 
 
 def have_ffmpeg():
-    from shutil import which
-
-    return which(FFMPEG) is not None
+    return audio_export.ffmpeg_path() is not None
 
 
 def save_png(path, rgb):
@@ -64,11 +60,12 @@ def write_video(path, movie, frames, wav=None, progress=None):
     The audio cannot go down the same pipe, so it is written to a
     temporary WAV beside the output and given to ffmpeg as a second
     input."""
-    if not have_ffmpeg():
+    ffmpeg = audio_export.ffmpeg_path()
+    if not ffmpeg:
         raise ExportError(
-            "Saving a video needs ffmpeg, and there isn't one on PATH. "
-            "Saving the frames as PNGs and the sound as a WAV needs "
-            "nothing, and loses none of the movie.")
+            "Saving a video needs ffmpeg, and there isn't one on this "
+            "machine. Saving the frames as PNGs and the sound as a WAV "
+            "needs nothing, and loses none of the movie.")
     suffix = os.path.splitext(path)[1].lower()
     if suffix not in FORMATS:
         raise ExportError(f"{suffix or 'that'} is not a format this writes - "
@@ -78,7 +75,7 @@ def write_video(path, movie, frames, wav=None, progress=None):
 
     audio_path = None
     try:
-        command = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                    "-f", "rawvideo", "-pix_fmt", "rgb24",
                    "-s", f"{movie.width}x{movie.height}",
                    "-r", f"{movie.fps:.6f}", "-i", "pipe:0"]

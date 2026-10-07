@@ -17,12 +17,13 @@ from formats.models import gltf_export
 from game import texture_window
 from formats.animation.clut_animation import ClutAnimationMixin
 from gui.widgets.origin_axes import OriginAxes
+from gui import gl_profile
 from gui import theme
 from gui.widgets import collision_overlay, export_dialog, polygon_pick
 from gui.widgets.collision_options import CollisionOptions, add_menu_button
 from gui.widgets.camera_controls import (
     CONTROLS_HINT, LEVEL_HEADING, LEVEL_PITCH, CameraControls,
-    CameraEventMixin, scene_of,
+    CameraEventMixin, navigating, scene_of,
 )
 from formats.collision.scld_parser import load_scld, find_area_scld_location
 from formats.collision.scld_render import UNIT_SCALE, room_bounds, entries_in_bounds
@@ -406,10 +407,20 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             owner += f" (@ 0x{entry['address']:X})"
         return polygon_pick.describe_polygon(polygon, owner=owner)
 
+    def keyPressEvent(self, event):
+        """F frames what is picked, the way every viewport does."""
+        if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
+            self.frame_selection()
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         # Left-click picks. The camera is on the right button (see
-        # gui/widgets/camera_controls.py), so the left one is free for it.
-        if event.button() == Qt.MouseButton.LeftButton:
+        # gui/widgets/camera_controls.py), so the left one is free for it
+        # - unless the navigation key is held, which is how a trackpad
+        # orbits, and then the drag belongs to the camera.
+        if (event.button() == Qt.MouseButton.LeftButton
+                and not navigating(event)):
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             point = event.position().toPoint()
             self.select(polygon=self.pick(point.x(), point.y()))
@@ -879,6 +890,41 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         self.camera_controls.glide_frame(centre, radius, heading, pitch)
         self.update()
 
+    def frame_selection(self):
+        """Ease the camera onto what is picked, keeping the angle it is
+        looked at from: the polygon, else the entry it belongs to, else
+        the whole level. What F does in every view."""
+        self.camera_controls.glide_to_points(self._selection_points())
+        self.update()
+
+    def _selection_points(self):
+        """The vertices of what is picked, in view units - the polygon,
+        else its entry's polygons, else every vertex of the level."""
+        model = self.model_data or {}
+        vertices = model.get("vertices")
+        if vertices is None:
+            return None
+        array = np.array(vertices, dtype=np.float32)
+        polygons = model.get("polygons") or ()
+        chosen = []
+        if (self.selected_polygon is not None
+                and self.selected_polygon < len(polygons)):
+            chosen = [polygons[self.selected_polygon]]
+        elif self.selected_entry is not None:
+            entries = model.get("entries") or ()
+            if self.selected_entry < len(entries):
+                entry = entries[self.selected_entry]
+                chosen = list(polygons[entry["first_polygon"]:
+                                       entry["first_polygon"]
+                                       + entry["polygon_count"]])
+        index = np.concatenate([np.arange(p["first_vertex"],
+                                          p["first_vertex"] + p["vertex_count"])
+                                for p in chosen if p.get("vertex_count")]) \
+            if chosen else np.array([], dtype=int)
+        if not index.size:
+            return array / UNIT_SCALE
+        return array[index] / UNIT_SCALE
+
     def _update_stats_label(self):
         """Tri/quad count (static per loaded model) plus the live camera
         position - refreshed every frame from paintGL() since the camera
@@ -1033,11 +1079,11 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self.shader_program.setUniformValue("useTextures", False)
             self.shader_program.setUniformValue("alpha", 1.0)
             GL.glDisable(GL.GL_DEPTH_TEST)
-            GL.glLineWidth(OUTLINE_WIDTH)
+            gl_profile.set_line_width(OUTLINE_WIDTH)
             self.outline_vao.bind()
             GL.glDrawArrays(GL.GL_LINES, 0, self.outline_vertex_count)
             self.outline_vao.release()
-            GL.glLineWidth(1.0)
+            gl_profile.set_line_width(1.0)
             GL.glEnable(GL.GL_DEPTH_TEST)
 
         if self.show_origin:

@@ -19,9 +19,10 @@ view is looking at, and a view says how big that is by calling
 set_scene_radius() - or frame(), which does it for you.
 """
 
-from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtCore import Qt, QTimer, QPoint, QEvent
 from PyQt6.QtGui import QCursor
 import math
+import sys
 
 import numpy as np
 
@@ -89,12 +90,84 @@ GLIDE_INTERVAL_MS = 16
 SPEED_STEP = 1.15
 SPEED_RANGE = 50.0
 
+# The key that hands a left-drag to the camera. A MacBook trackpad has no
+# middle button and the middle button is what orbits, so on the machine
+# this is most often run on the orbit was out of reach; Option (Alt) is
+# what the rest of a Mac's 3D programs put their one-finger navigation
+# on, and it costs a mouse nothing - every binding below still works.
+NAV_MODIFIER = Qt.KeyboardModifier.AltModifier
+
+# A trackpad's two-finger scroll arrives as pixels, in dozens of small
+# events per gesture, with no notches to count. This much of that travel
+# is one wheel notch: the same distance a click of a wheel covers, so
+# ZOOM_FRACTION keeps its meaning and the two feel alike.
+TRACKPAD_PIXELS_PER_NOTCH = 40.0
+
+# However hard a gesture is flicked, it is worth no more than this many
+# notches. A trackpad reports a whole gesture's travel in one or two
+# events, and the camera should not jump the scene because a finger
+# moved quickly.
+MAX_SCROLL_NOTCHES = 3.0
+
+# What one wheel notch is worth as pointer travel, for the pan a
+# shift+scroll does.
+WHEEL_PIXELS_PER_NOTCH = 40.0
+
+# A right-drag with the navigation key slides the camera along its own
+# line of sight - the wheel's zoom, at whatever rate suits the drag.
+# This many pixels of drag is one wheel notch.
+DOLLY_PIXELS_PER_NOTCH = 60.0
+
+# A pinch arrives as a fraction of the gesture - 0.1 is a tenth of its
+# travel - and this is how many wheel notches that tenth is worth.
+PINCH_NOTCHES_PER_VALUE = 10.0
+
+# Degrees of turn per pixel of pointer travel, and there are two of them
+# because the two drags are not the same thing.
+#
+# An orbit drags the scene about a point you are looking at, in view,
+# with the pointer where you left it - it wants to keep up with the hand.
+# The freecam's look is measured from the middle of the view with the
+# pointer hidden and warped back on every move, so it can turn forever:
+# the same number there spins the view, and on a trackpad - whose pixels
+# are small and arrive fast - the view span faster than it could be
+# aimed. This is the one to turn up or down to taste.
+ORBIT_SENSITIVITY = 0.1
+LOOK_SENSITIVITY = 0.035
+
+# Framing one polygon, or one limb, should not fly the camera inside it.
+# This is the smallest a frame may come in, as a fraction of the scene
+# the view was last sized to.
+MIN_FRAME_RADIUS = 0.05
+
 # Shown in the corner of every 3D view. Here so the two views can't
 # describe the same controls differently.
-CONTROLS_HINT = ("Middle-drag: orbit | Shift + middle: pan\n"
-                 "Right-drag: look around\n"
-                 "Hold right + WASD: move | Q/E: up/down\n"
-                 "Shift: fast | Scroll: zoom, speed while looking")
+#
+# What comes first depends on what the machine has. A MacBook trackpad
+# has no middle button and no wheel, so there the drag with the
+# navigation key leads and the hint says so; every binding listed works
+# on every platform, the middle button included for a mouse plugged into
+# the same Mac.
+if sys.platform == "darwin":
+    CONTROLS_HINT = ("Option-drag: orbit | Option+Shift-drag: pan\n"
+                     "Option + right-drag: zoom | Pinch: zoom\n"
+                     "Right-drag: look around | Scroll: zoom\n"
+                     "Hold right + WASD: move | Q/E: up/down\n"
+                     "Shift: fast | F: frame what is picked")
+else:
+    CONTROLS_HINT = ("Middle-drag: orbit | Shift + middle: pan\n"
+                     "Right-drag: look around | Scroll: zoom, speed while looking\n"
+                     "Hold right + WASD: move | Q/E: up/down\n"
+                     "Shift: fast | F: frame what is picked")
+
+
+def navigating(event):
+    """Whether a press belongs to the camera rather than to what is drawn.
+
+    The views with something to pick ask this first: with the navigation
+    key held, the same left-drag orbits and nothing is selected - see
+    MDATViewer.mousePressEvent."""
+    return bool(event.modifiers() & NAV_MODIFIER)
 
 
 def scene_of(points):
@@ -154,7 +227,8 @@ class CameraControls:
         self.camera_y = 0.0
         self.camera_x = 0.0
         self.camera_z = -5.0
-        self.mouse_sensitivity = 0.1
+        self.mouse_sensitivity = ORBIT_SENSITIVITY
+        self.look_sensitivity = LOOK_SENSITIVITY
         self.camera_angle_h = 0.0
         self.camera_angle_v = 0.0
 
@@ -207,12 +281,21 @@ class CameraControls:
 
     # --- scale ---
 
-    def set_scene_radius(self, radius):
+    def set_scene_radius(self, radius, extent=None):
         """How big the thing on screen is, in the units the view draws
         it at. Every step the camera takes is measured off this, so a
         view that loads something of a different size should say so -
-        otherwise the wheel and WASD keep the last model's stride."""
+        otherwise the wheel and WASD keep the last model's stride.
+
+        `extent` is the size of the whole file, for a caller that is
+        framing one part of it: the stride follows the part, and the
+        smallest a frame may come in is measured against the whole -
+        otherwise pressing F on something smaller each time would walk
+        the stride down to nothing. Left out, the radius is the whole
+        thing."""
         self.scene_radius = max(float(radius), 1e-6)
+        self.scene_extent = (self.scene_radius if extent is None
+                             else max(float(extent), 1e-6))
         self.camera_speed = self.scene_radius * SPEED_FRACTION
         self.camera_speed_min = self.camera_speed / SPEED_RANGE
         self.camera_speed_max = self.camera_speed * SPEED_RANGE
@@ -300,6 +383,28 @@ class CameraControls:
             self._glide_timer = QTimer()
             self._glide_timer.timeout.connect(self._glide_step)
         self._glide_timer.start(GLIDE_INTERVAL_MS)
+
+    def glide_to_points(self, points, margin=2.5):
+        """Ease onto a cloud of points - what F does in every view.
+
+        The selection, or the whole scene when nothing is picked, framed
+        from the angle the camera already has. The stride the wheel and
+        WASD take follows what is now on screen, the way it does when a
+        view opens on a whole file; without that, zooming in on one
+        polygon would still step by the size of the room around it.
+
+        Points are in the units the view draws in, and a frame smaller
+        than MIN_FRAME_RADIUS of the scene is framed at that instead, so
+        one polygon does not put the camera inside it. Returns whether
+        there was anything to frame."""
+        scene = scene_of(points) if points is not None else None
+        if scene is None:
+            return False
+        centre, radius = scene
+        radius = max(radius, self.scene_extent * MIN_FRAME_RADIUS)
+        self.set_scene_radius(radius, extent=self.scene_extent)
+        self.glide_to(centre, radius, margin=margin)
+        return True
 
     def glide_frame(self, centre, radius, heading=MODEL_HEADING,
                     pitch=MODEL_PITCH, margin=2.5, lift=0.0, frames=GLIDE_FRAMES):
@@ -406,6 +511,29 @@ class CameraControls:
         self._orbit_pivot = None
         self.widget.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
+    def begin_dolly(self):
+        """Take the right button for zooming, on a trackpad.
+
+        A drag is easier to hold at a rate than a flick of the scroll is
+        to aim: this is the wheel's slide along the line of sight, in
+        pixels of drag."""
+        if self.camera_mode:
+            return                    # the freecam has the mouse
+        self.orbit_mode = "dolly"
+        self._orbit_pivot = self.orbit_pivot()
+        self.widget.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+
+    def end_dolly(self):
+        if self.orbit_mode == "dolly":
+            self.orbit_mode = None
+            self._orbit_pivot = None
+            self.widget.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+
+    def dolly(self, dy):
+        """Slide the camera along its line of sight by a drag: up towards
+        what it is looking at, as a wheel scrolled up does."""
+        self.zoom_notches(-dy / DOLLY_PIXELS_PER_NOTCH)
+
     def orbit(self, dx, dy):
         """Swing around the held pivot by a mouse delta."""
         self.camera_angle_h += dx * self.mouse_sensitivity
@@ -465,30 +593,84 @@ class CameraControls:
 
         self.widget.update()
 
-    def wheelEvent(self, event):
-        """In freecam the wheel sets how fast WASD moves; otherwise it
-        moves the camera along its own line of sight. Both are measured
-        against the scene, not in absolute units - see the module
-        docstring."""
-        scroll_amount = event.angleDelta().y() / 120
+    def zoom_notches(self, notches):
+        """Move the camera along its line of sight, in wheel notches.
+
+        Positive moves it towards what it is looking at, which is what
+        one notch of a wheel scrolling up does. The wheel, a trackpad's
+        scroll, a pinch and the right-drag dolly all come through here,
+        so all four zoom at the same rate."""
+        if not notches:
+            return
         if self.camera_mode:
             self.camera_speed = max(
                 self.camera_speed_min,
                 min(self.camera_speed_max,
-                    self.camera_speed * SPEED_STEP ** scroll_amount))
-        else:
-            forward_x, forward_y, forward_z = self._forward()
-            step = scroll_amount * self.zoom_step
-            # Zooming walks the camera towards what it is orbiting, so the
-            # pivot comes back by the same step - otherwise it runs ahead of
-            # the camera and orbiting circles thin air. The camera is not
-            # stopped at the pivot: it carries on through whatever is there.
-            self.orbit_distance = max(self.scene_radius * MIN_ORBIT,
-                                      self.orbit_distance - step)
-            self.camera_x -= forward_x * step
-            self.camera_y -= forward_y * step
-            self.camera_z -= forward_z * step
+                    self.camera_speed * SPEED_STEP ** notches))
+            self.widget.update()
+            return
+        forward_x, forward_y, forward_z = self._forward()
+        step = notches * self.zoom_step
+        # Zooming walks the camera towards what it is orbiting, so the
+        # pivot comes back by the same step - otherwise it runs ahead of
+        # the camera and orbiting circles thin air. The camera is not
+        # stopped at the pivot: it carries on through whatever is there.
+        self.orbit_distance = max(self.scene_radius * MIN_ORBIT,
+                                  self.orbit_distance - step)
+        self.camera_x -= forward_x * step
+        self.camera_y -= forward_y * step
+        self.camera_z -= forward_z * step
         self.widget.update()
+
+    def wheelEvent(self, event):
+        """The wheel zooms, and so does a trackpad's two-finger scroll -
+        with shift it pans instead, which is the one axis a trackpad has
+        and a wheel mostly does not. In freecam the wheel sets how fast
+        WASD moves rather than moving the camera. Both are measured
+        against the scene, not in absolute units - see the module
+        docstring."""
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            dx, dy = self._scroll_pixels(event)
+            if dx or dy:
+                self.pan(dx, dy)
+                self.widget.update()
+            return
+        self.zoom_notches(self._scroll_notches(event))
+
+    def _scroll_notches(self, event):
+        """How far a scroll moved, in wheel notches.
+
+        A trackpad reports pixels, dozens of small events per gesture,
+        and has no notches to count: taking angleDelta there gives a
+        fraction of a step per event and the view crawls. Pixels are used
+        where they are offered, so a gesture moves the view by what the
+        fingers did."""
+        pixels = event.pixelDelta()
+        if not pixels.isNull():
+            return max(-MAX_SCROLL_NOTCHES,
+                       min(MAX_SCROLL_NOTCHES,
+                           pixels.y() / TRACKPAD_PIXELS_PER_NOTCH))
+        return event.angleDelta().y() / 120.0
+
+    def _scroll_pixels(self, event):
+        """How far a scroll moved, in pixels - what pan() measures in."""
+        pixels = event.pixelDelta()
+        if not pixels.isNull():
+            return pixels.x(), pixels.y()
+        return (event.angleDelta().x() / 120.0 * WHEEL_PIXELS_PER_NOTCH,
+                event.angleDelta().y() / 120.0 * WHEEL_PIXELS_PER_NOTCH)
+
+    def native_gesture(self, event):
+        """A trackpad's pinch: the zoom a wheel cannot give a Mac.
+
+        Returns whether the gesture was one of ours, so the view can pass
+        the rest of them on."""
+        if event.type() != QEvent.Type.NativeGesture:
+            return False
+        if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            self.zoom_notches(event.value() * PINCH_NOTCHES_PER_VALUE)
+            return True
+        return False
 
     def begin_look(self):
         """Take the mouse for looking around: hide the pointer and warp
@@ -519,20 +701,34 @@ class CameraControls:
         """The right button looks around, for as long as it is held; the
         middle button orbits, and pans with shift held.
 
-        The left button is not touched here. A view with something to
-        select uses it for that - see MDATViewer.mousePressEvent - and a
-        view with nothing to select ignores it."""
+        A trackpad has no middle button, so the same orbit is also there
+        for the left button with the navigation key held (Option, on a
+        Mac) - shift with it pans, and on the right button it slides the
+        camera along its line of sight instead of looking around.
+
+        The left button on its own is not touched here. A view with
+        something to select uses it for that - see
+        MDATViewer.mousePressEvent - and a view with nothing to select
+        ignores it."""
+        panning = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         if event.button() == Qt.MouseButton.RightButton:
-            self.begin_look()
+            if navigating(event):
+                self.begin_dolly()
+            else:
+                self.begin_look()
         elif event.button() == Qt.MouseButton.MiddleButton:
-            self.begin_orbit(
-                panning=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self.begin_orbit(panning=panning)
+        elif (event.button() == Qt.MouseButton.LeftButton
+                and navigating(event)):
+            self.begin_orbit(panning=panning)
         self.last_pos = event.pos()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton:
+            self.end_dolly()
             self.end_look()
-        elif event.button() == Qt.MouseButton.MiddleButton:
+        elif event.button() in (Qt.MouseButton.MiddleButton,
+                                Qt.MouseButton.LeftButton):
             self.end_orbit()
 
     def mouseMoveEvent(self, event):
@@ -542,9 +738,9 @@ class CameraControls:
             dx = pos.x() - self.display_center[0]
             dy = pos.y() - self.display_center[1]
 
-            self.camera_angle_h += dx * self.mouse_sensitivity
-            self.camera_angle_v = max(-89.0, min(89.0,
-                                                 self.camera_angle_v + dy * self.mouse_sensitivity))
+            self.camera_angle_h += dx * self.look_sensitivity
+            self.camera_angle_v = max(-89.0, min(
+                89.0, self.camera_angle_v + dy * self.look_sensitivity))
 
             QCursor.setPos(self.widget.mapToGlobal(QPoint(*self.display_center)))
             self.widget.update()
@@ -558,6 +754,8 @@ class CameraControls:
             dy = pos.y() - self.last_pos.y()
             if self.orbit_mode == "pan":
                 self.pan(dx, dy)
+            elif self.orbit_mode == "dolly":
+                self.dolly(dy)
             else:
                 self.orbit(dx, dy)
             self.widget.update()
@@ -586,6 +784,16 @@ class CameraEventMixin:
     to set self.camera_controls before any event can arrive, which for a
     QOpenGLWidget means in __init__."""
 
+    def event(self, event):
+        # A trackpad's pinch is a native gesture rather than a wheel, and
+        # Qt hands it over as an event of its own - see
+        # CameraControls.native_gesture. Everything else is none of our
+        # business and goes where it would have gone.
+        if (event.type() == QEvent.Type.NativeGesture
+                and self.camera_controls.native_gesture(event)):
+            return True
+        return super().event(event)
+
     def wheelEvent(self, event):
         self.camera_controls.wheelEvent(event)
 
@@ -601,6 +809,7 @@ class CameraEventMixin:
         # middle button, the drag cursor stuck on.
         self.camera_controls.end_look()
         self.camera_controls.end_orbit()
+        self.camera_controls.end_dolly()
         super().focusOutEvent(event)
 
     def mouseMoveEvent(self, event):
