@@ -66,13 +66,75 @@ def parse(exe, offset, counts):
     return out
 
 
+def parse_loose(exe, offset, counts):
+    """The same lists where a track may stop short of the next one's
+    start - which is what this editor leaves behind when a replaced
+    piece of music is shorter than the one it replaced (see
+    formats/audio/music_edit.py). The starts still say where each slot
+    is; only the sums no longer close, so more is asked of the shape:
+    most channels hold several tracks and their last one starts well in."""
+    out = []
+    for n, total in enumerate(counts):
+        tracks, end = [], 0
+        while True:
+            if offset + PAIR > len(exe):
+                return None
+            start, length = struct.unpack_from("<HH", exe, offset)
+            if tracks and start == 0:
+                break                           # the next channel's list
+            if (not tracks and start) or length < 2 or start < end or start + length > total:
+                if tracks and n == len(counts) - 1:
+                    break                       # whatever follows the table
+                return None
+            tracks.append((start, length))
+            end = start + length
+            offset += PAIR
+        out.append(tracks)
+    several = [t for t, total in zip(out, counts) if len(t) > 1 and t[-1][0] >= total // 4]
+    return out if len(several) * 2 >= len(counts) else None
+
+
 def find_table(exe, counts):
-    """(offset, tracks) for the first place the whole table parses."""
-    for offset in range(0, len(exe) - PAIR, 2):
-        tracks = parse(exe, offset, counts)
-        if tracks is not None:
-            return offset, tracks
+    """(offset, tracks) for the first place the whole table parses -
+    exactly if anywhere does, else as an edited one."""
+    for reader in (parse, parse_loose):
+        for offset in range(0, len(exe) - PAIR, 2):
+            tracks = reader(exe, offset, counts)
+            if tracks is not None:
+                return offset, tracks
     return None
+
+
+def slots(tracks, counts):
+    """[[(start, length, room), ...], ...]: `room` is the sectors a track
+    has to itself, up to where the next one starts - its length, unless
+    it was shortened."""
+    out = []
+    for listed, total in zip(tracks, counts):
+        ends = [start for start, _length in listed[1:]] + [total]
+        out.append([(start, length, end - start) for (start, length), end in zip(listed, ends)])
+    return out
+
+
+class TableError(ValueError):
+    """Raised when MAIN.EXE's track table is not where it was."""
+
+
+def set_lengths(exe, lengths):
+    """`exe` with new track lengths.
+
+    `lengths` is {file offset of a (start, length) pair: (start, sectors)}.
+    The game plays a track from its start to start + (length - 2) and,
+    if the piece loops, seeks back to the start when the drive passes
+    that (f_StartStreamedAudioTrack and f_RunStreamedAudioPlaybackWorker
+    in the decomp) - so the length IS the loop point. The start is
+    checked, not written: a table that moved is refused, not guessed at."""
+    out = bytearray(exe)
+    for at, (start, sectors) in lengths.items():
+        if at + PAIR > len(out) or struct.unpack_from("<H", out, at)[0] != start:
+            raise TableError("MAIN.EXE's music table is not where it was when the music was replaced.")
+        struct.pack_into("<H", out, at + 2, sectors)
+    return bytes(out)
 
 
 def is_silent(payload):
@@ -118,13 +180,19 @@ def trim_padding(image, lba, indices):
     return indices[:0] if run >= PAD_RUN else indices
 
 
-def split(image, lba, sectors, exe=None):
-    """The pieces of music in one XA file.
+def pieces(image, lba, sectors, exe=None):
+    """The pieces of music in one XA file, as dicts:
 
-    Yields (channel, ordinal, indices) with `indices` the sector numbers
-    of one track, ready for xa.decode_channel. With a table the channels
-    are split into their tracks; without one each channel is a single
-    piece with its trailing padding removed."""
+        channel, ordinal    which, as the disc numbers them
+        indices             the sectors the game plays, for xa.decode_channel
+        room                every sector the track has to itself - what a
+                            replacement may fill
+        entry               where MAIN.EXE keeps this track's (start, length)
+                            pair, as a file offset - or None where there
+                            is no table, and so no length to change
+
+    With a table the channels are split into their tracks; without one
+    each channel is a single piece with its trailing padding removed."""
     chans = xa.channel_map(image, lba, sectors)
     order = sorted(chans)
     counts = [len(chans[key]) for key in order]
@@ -133,7 +201,7 @@ def split(image, lba, sectors, exe=None):
     if exe:
         found = find_table(exe, counts)
         if found:
-            tracks = found[1]
+            at, tracks = found[0], slots(found[1], counts)
 
     out = []
     for n, key in enumerate(order):
@@ -141,8 +209,15 @@ def split(image, lba, sectors, exe=None):
         channel = key[1]
         if tracks is None:
             kept = trim_padding(image, lba, indices)
-            out.append((channel, 0, kept))
+            out.append(dict(channel=channel, ordinal=0, indices=kept, room=indices, entry=None, start=0))
             continue
-        for ordinal, (start, length) in enumerate(tracks[n]):
-            out.append((channel, ordinal, indices[start:start + length]))
+        for ordinal, (start, length, room) in enumerate(tracks[n]):
+            out.append(dict(channel=channel, ordinal=ordinal, indices=indices[start:start + length],
+                            room=indices[start:start + room], entry=at, start=start))
+            at += PAIR
     return out
+
+
+def split(image, lba, sectors, exe=None):
+    """[(channel, ordinal, indices)] - pieces(), for what only plays them."""
+    return [(p["channel"], p["ordinal"], p["indices"]) for p in pieces(image, lba, sectors, exe)]

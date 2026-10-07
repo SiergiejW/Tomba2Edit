@@ -21,10 +21,13 @@ import os
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                             QPushButton, QSplitter, QVBoxLayout, QWidget)
+                             QMessageBox, QPushButton, QSplitter, QVBoxLayout,
+                             QWidget)
 
 from formats.audio import audio_export
+from formats.audio import audio_import
 from formats.audio import bgm
+from formats.audio import music_edit
 from formats.audio import seq
 from formats.audio import seq_notes
 from formats.audio import voice
@@ -56,21 +59,45 @@ class _Decode(QThread):
 
     done = pyqtSignal(str, object, str)
 
-    def __init__(self, key, image, lba, indices):
+    def __init__(self, key, image, lba, indices, overrides=None):
         super().__init__()
         self.key = key
-        self.args = (image, lba, indices)
+        self.args = (image, lba, indices, overrides)
 
     def run(self):
-        image, lba, indices = self.args
+        image, lba, indices, overrides = self.args
         try:
             with open(image, "rb") as f:
-                samples, rate, speakers = xa.decode_channel(f, lba, indices)
+                samples, rate, speakers = xa.decode_channel(
+                    f, lba, indices, overrides=overrides)
             self.done.emit(self.key, xa.wav_bytes(samples, rate, speakers),
                            f"{rate} Hz "
                            f"{'stereo' if speakers == 2 else 'mono'}")
         except Exception as exc:
             self.done.emit(self.key, None, str(exc))
+
+
+class _Encode(QThread):
+    """A replacement resampled, coded and staged, off the GUI thread."""
+
+    progress = pyqtSignal(int)
+    done = pyqtSignal(object, str)      # (sectors, was cut, seconds) or None, why not
+
+    def __init__(self, store, image, lba, piece, frames, rate):
+        super().__init__()
+        self.args = (store, image, lba, piece, frames, rate)
+
+    def run(self):
+        store, image, lba, piece, frames, rate = self.args
+        try:
+            ready = music_edit.conform(frames, rate)
+            ready, cut = music_edit.fit(ready, piece)
+            used = music_edit.stage(
+                store, image, lba, piece, ready,
+                progress=lambda done, total: self.progress.emit(done * 100 // max(total, 1)))
+            self.done.emit((used, cut, len(ready) / music_edit.RATE), "")
+        except Exception as exc:
+            self.done.emit(None, str(exc))
 
 
 class _Render(QThread):
@@ -113,6 +140,22 @@ class MusicPanel(QWidget):
             "Only needed for a disc opened as a folder - opening a BIN "
             "normally sets this up on its own")
         self.pick.clicked.connect(self._browse)
+
+        # Music of the user's own in a BGM slot - formats/audio/music_edit.py.
+        # MainWindow hands over the store that staged disc sectors live in.
+        self.edits = None
+        self._pieces = {}           # key -> (lba, piece) for the streamed tracks
+        self._encode = None
+        self.replace = QPushButton("Replace Music...")
+        self.replace.setToolTip(
+            "Put an MP3 or WAV of your own in place of the selected BGM "
+            "track. It is given its own length, so it loops at its own end")
+        self.replace.clicked.connect(self._replace)
+        self.replace.setEnabled(False)
+        self.restore = QPushButton("Restore Original")
+        self.restore.setToolTip("Take the selected track's replacement back out")
+        self.restore.clicked.connect(self._restore)
+        self.restore.setEnabled(False)
         self.transport = AudioTransport(
             source="Music",
             columns=["Index", "Length", "Stream", "Channel", "Track"],
@@ -202,6 +245,8 @@ class MusicPanel(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(self.pick)
+        top.addWidget(self.replace)
+        top.addWidget(self.restore)
         top.addStretch(1)
         top.addWidget(self.edit_notes)
         top.addWidget(self.export_midi)
@@ -240,13 +285,22 @@ class MusicPanel(QWidget):
         if path:
             self.set_image(path)
 
+    def set_edit_store(self, store):
+        """The store staged disc sectors live in - re-recorded dialogue's,
+        which replaced music shares."""
+        self.edits = store
+
+    def replaced(self):
+        """How many pieces of music are waiting to be written."""
+        return music_edit.count(self.edits)
+
     def set_image(self, path):
         """List every piece of music the disc carries."""
         self.transport.stop()
         self._cache.clear()
         self._by_key = {}
+        self._pieces = {}
         self._load_sequences(path)
-        entries = []
         try:
             exe = voice.extract_file(path, "MAIN.EXE")
             for name in STREAMS:
@@ -255,54 +309,189 @@ class MusicPanel(QWidget):
                     continue
                 lba, sectors = where
                 with open(path, "rb") as f:
-                    pieces = bgm.split(f, lba, sectors, exe)
-                    f.seek(lba * xa.SECTOR)
-                    first = f.read(xa.SECTOR)
-                speakers, rate, _bits = xa.coding(first[xa.SUBHEADER + 3])
-                frames = xa.SAMPLES_PER_SECTOR // max(speakers, 1)
-                stem = name.split(".")[0]
+                    found = bgm.pieces(f, lba, sectors, exe)
                 per_channel = {}
-                for channel, _ordinal, _indices in pieces:
-                    per_channel[channel] = per_channel.get(channel, 0) + 1
-                for channel, ordinal, indices in pieces:
-                    key = f"{name}:{channel}:{ordinal + 1}"
-                    self._by_key[key] = ("xa", (lba, indices))
-                    length = clock(len(indices) * frames * 1000 // rate)
-                    track = (f"{ordinal + 1} of {per_channel[channel]}"
-                            if per_channel[channel] > 1 else "")
-                    entries.append((
-                        key, f"{stem} {len(entries) + 1}",
-                        (len(entries) + 1, length, stem, channel, track),
-                    ))
+                for piece in found:
+                    per_channel[piece["channel"]] = per_channel.get(piece["channel"], 0) + 1
+                for piece in found:
+                    piece["of"] = per_channel[piece["channel"]]
+                    self._pieces[f"{name}:{piece['channel']}:{piece['ordinal'] + 1}"] = (lba, piece)
         except Exception as exc:
             self.status.setText(f"Could not read the disc: {exc}")
             return
-        if not self._by_key:
+        if not self._pieces:
             self.status.setText(
                 f"{os.path.basename(path)} has no streamed music in it - "
                 "an ISO or a CD folder cannot carry it.")
             self.transport.set_entries([])
             self.export_all.setEnabled(False)
+            self.replace.setEnabled(False)
+            self.restore.setEnabled(False)
             return
         self.image = path
-        audio = self._audio_track(path)
-        if audio:
-            size = os.path.getsize(audio) - CDDA_PREGAP
-            key = "TRACK2"
-            self._by_key[key] = ("cdda", audio)
-            entries.append((
-                key, "Track 2",
-                (len(entries) + 1, clock(size * 1000 // CDDA_BYTES_PER_SECOND),
-                 "CD audio", "", ""),
-            ))
         disc = self.names.load(path)
-        self.transport.set_entries(entries, self.names.names())
+        count = self._fill()
         self.export_all.setEnabled(True)
+        self.replace.setEnabled(self.edits is not None)
+        self.restore.setEnabled(self.edits is not None)
         self.status.setText(
-            f"{os.path.basename(path)}: {len(entries)} piece(s) of music"
+            f"{os.path.basename(path)}: {count} piece(s) of music"
             + (f", {len(self.names.names())} named ({disc})." if disc else ".")
             + " A track takes a few seconds to decode the first time, then "
             "it is kept. Select one and press F2, or Rename, to name it.")
+
+    def _overrides(self):
+        """Staged sectors, if they are this disc's."""
+        if self.edits is not None and self.edits.image == self.image and self.edits.sectors:
+            return self.edits.sectors
+        return None
+
+    def _plays(self, lba, piece):
+        """The sectors a piece plays: its own length if it was replaced."""
+        length = music_edit.staged_length(self.edits, piece) if self._overrides() else None
+        return piece["room"][:length] if length else piece["indices"]
+
+    def _fill(self, select=None):
+        """The BGM list from the pieces in hand. Returns how many rows."""
+        entries = []
+        self._by_key = {}
+        for key, (lba, piece) in self._pieces.items():
+            stem = key.split(".")[0]
+            indices = self._plays(lba, piece)
+            self._by_key[key] = ("xa", (lba, indices))
+            swapped = self._overrides() is not None and music_edit.staged(self.edits, lba, piece)
+            track = f"{piece['ordinal'] + 1} of {piece['of']}" if piece["of"] > 1 else ""
+            entries.append((
+                key, f"{stem} {len(entries) + 1}",
+                (len(entries) + 1,
+                 clock(len(indices) * music_edit.FRAMES * 1000 // music_edit.RATE),
+                 stem + (" (replaced)" if swapped else ""), piece["channel"], track),
+            ))
+        audio = self._audio_track(self.image)
+        if audio:
+            size = os.path.getsize(audio) - CDDA_PREGAP
+            self._by_key["TRACK2"] = ("cdda", audio)
+            entries.append((
+                "TRACK2", "Track 2",
+                (len(entries) + 1, clock(size * 1000 // CDDA_BYTES_PER_SECOND),
+                 "CD audio", "", ""),
+            ))
+        self.transport.set_entries(entries, self.names.names())
+        if select is not None:
+            self._select(select)
+        return len(entries)
+
+    def _select(self, key):
+        table = self.transport.lists[0]
+        for row in range(table.rowCount()):
+            table.setCurrentCell(row, table.name_col)
+            if self.transport.key_in(table) == key:
+                return
+        if table.rowCount():
+            table.setCurrentCell(0, table.name_col)
+
+    # --- music of the user's own ---------------------------------------
+
+    def _selected_piece(self):
+        """(key, lba, piece) for the BGM list's row, or None with the
+        status line saying why not."""
+        key = self.transport.key_in(self.transport.lists[0])
+        if key == "TRACK2":
+            self.status.setText("Track 2 is plain CD audio, a file of its own beside the "
+                                "data track - not something this replaces.")
+            return None
+        if key not in self._pieces:
+            self.status.setText("Pick a piece in the BGM list on the left first.")
+            return None
+        lba, piece = self._pieces[key]
+        if piece["entry"] is None:
+            self.status.setText(
+                f"{key.split(':')[0]} has no track table in MAIN.EXE to give a replacement "
+                "its own length, so only BGM.XA's tracks can be replaced.")
+            return None
+        if self.edits is None:
+            self.status.setText("Open the disc or a project first: there is nowhere to keep a replacement.")
+            return None
+        return key, lba, piece
+
+    def _replace(self):
+        chosen = self._selected_piece()
+        if chosen is None:
+            return
+        key, lba, piece = chosen
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Music to put in place of {self._caption(key)}", "", audio_import.FILTER)
+        if not path:
+            return
+        self.transport.stop()
+        self.status.setText(f"Reading {os.path.basename(path)}...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            frames, rate = audio_import.load(path)
+            sounding = audio_import.trim_end(frames)
+        except audio_import.AudioImportError as exc:
+            self.status.setText(str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not len(sounding):
+            self.status.setText(f"{os.path.basename(path)} is silent from end to end.")
+            return
+        name = os.path.basename(path)
+        length, holds = len(sounding) / rate, music_edit.seconds(piece)
+        if length > holds and QMessageBox.question(
+                self, "Longer than the slot",
+                f"{name} is {clock(int(length * 1000))} long. This track's place on the disc holds "
+                f"{clock(int(holds * 1000))}: the next track starts where it ends, and no coding makes "
+                "a slot last longer than the drive takes to pass it.\n\n"
+                f"Cut it to {clock(int(holds * 1000))}, fading out over the last second? "
+                "It then loops from there back to its start.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+            self.status.setText("Nothing was replaced.")
+            return
+        self._stop_decode()
+        self.replace.setEnabled(False)
+        self.restore.setEnabled(False)
+        self._encode = _Encode(self.edits, self.image, lba, piece, frames, rate)
+        self._encode.progress.connect(
+            lambda percent: self.status.setText(f"Coding {name} for the disc... {percent}%"))
+        self._encode.done.connect(
+            lambda result, why: self._replaced(key, piece, name, result, why))
+        self.status.setText(f"Resampling {name} to {music_edit.RATE} Hz...")
+        self._encode.start()
+
+    def _replaced(self, key, piece, name, result, why):
+        self.replace.setEnabled(True)
+        self.restore.setEnabled(True)
+        if result is None:
+            self.status.setText(f"Could not replace it: {why}")
+            return
+        used, cut, length = result
+        self._cache.pop(key, None)
+        self._fill(select=key)
+        self.edits_changed.emit()
+        self.status.setText(
+            f"{self._caption(key)} is now {name}, {clock(int(length * 1000))}"
+            + (" - cut to fit, with a fade" if cut else "")
+            + f". It loops at its own end: the track's length goes from {len(piece['indices'])} to "
+            f"{used + 1} sectors in MAIN.EXE when the disc is built. Play it here to hear what the "
+            "game will; Build Disc writes it, Save Project keeps it.")
+
+    def _restore(self):
+        chosen = self._selected_piece()
+        if chosen is None:
+            return
+        key, lba, piece = chosen
+        if not music_edit.staged(self.edits, lba, piece):
+            self.status.setText(f"{self._caption(key)} is the disc's own music already.")
+            return
+        self.transport.stop()
+        music_edit.unstage(self.edits, lba, piece)
+        self._cache.pop(key, None)
+        self._fill(select=key)
+        self.edits_changed.emit()
+        self.status.setText(f"{self._caption(key)} is the disc's own music again.")
 
     @staticmethod
     def _audio_track(path):
@@ -346,7 +535,9 @@ class MusicPanel(QWidget):
         lba, indices = payload
         self._stop_decode()
         self.status.setText("Decoding..." if play else "Decoding to save...")
-        self._decode = _Decode(key, self.image, lba, indices)
+        # A copy of what is staged: a replacement can be coded while this runs.
+        overrides = dict(self._overrides() or {}) or None
+        self._decode = _Decode(key, self.image, lba, indices, overrides)
         self._decode.done.connect(self._decoded)
         self._decode.start()
 
@@ -461,7 +652,8 @@ class MusicPanel(QWidget):
         else:
             lba, indices = payload
             with open(self.image, "rb") as f:
-                samples, rate, speakers = xa.decode_channel(f, lba, indices)
+                samples, rate, speakers = xa.decode_channel(
+                    f, lba, indices, overrides=self._overrides())
             wav = xa.wav_bytes(samples, rate, speakers)
         self._cache[key] = wav
         return wav
@@ -777,4 +969,6 @@ class MusicPanel(QWidget):
         self.transport.stop()
         self._stop_decode()
         self._stop_render()
+        if self._encode is not None and self._encode.isRunning():
+            self._encode.wait(60000)
         super().closeEvent(event)

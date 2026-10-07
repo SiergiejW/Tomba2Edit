@@ -338,6 +338,125 @@ def encode_full_sector(original_sector, samples, state=None):
     return bytes(sector), new_state
 
 
+def encode_stream(frames, sectors, progress=None):
+    """A whole clip as `sectors` sectors of ADPCM groups (2304 bytes each).
+
+    `frames` is an int16 numpy array, (n,) mono or (n, 2) stereo; short
+    is padded with silence, long is cut. encode_sector() tries every
+    filter and shift on every unit, which is right for a spoken line and
+    minutes of waiting for a piece of music, so this splits the work:
+
+        which filter              for every unit at once, from how well
+                                  each predicts the SOURCE, and with it
+                                  the smallest step that leaves headroom
+                                  for what the decoder's rounding feeds
+                                  back
+        the nibbles               one sample after another against the
+                                  decoder's own reconstruction, as they
+                                  must be - at that step and at the next
+                                  finer one, keeping the closer. The
+                                  finer one wins whenever nothing clips
+
+    On music that is not already ADPCM: 32.7 dB of signal over noise,
+    where trying everything gets 33.3 and one step alone 30.3. About
+    seven seconds for an 88-second stereo slot. `progress(done, total)`
+    is called now and then with units coded."""
+    import numpy as np
+
+    frames = np.asarray(frames, dtype=np.int16)
+    speakers = 2 if frames.ndim == 2 and frames.shape[1] == 2 else 1
+    per_sector = SAMPLES_PER_SECTOR // speakers
+    held = np.zeros((sectors * per_sector, speakers), np.int64)
+    usable = frames.reshape(-1, speakers)[:len(held)]
+    held[:len(usable)] = usable
+    units = len(held) // UNIT_SAMPLES                   # per speaker
+    nibbles = np.zeros((speakers, units, UNIT_SAMPLES), np.uint8)
+    params = np.zeros((speakers, units), np.uint8)
+    total, done = speakers * units, 0
+    for speaker in range(speakers):
+        x = held[:, speaker]
+        before = np.concatenate(([0], x[:-1]))
+        earlier = np.concatenate(([0, 0], x[:-2]))
+        best = None
+        for number, (k0, k1) in enumerate(FILTERS):
+            left = (x - ((before * k0 + earlier * k1 + 32) >> 6)).reshape(units, UNIT_SAMPLES)
+            reach = np.abs(left).max(axis=1)
+            # step 2**e; a nibble spans -8..7 of them and 6.5 is kept for the source
+            step = np.clip(np.ceil(np.log2(np.maximum(reach, 1) / 6.5)), 0, 12).astype(np.int64)
+            score = step * (1 << 40) + (left * left).sum(axis=1)
+            if best is None:
+                best, which, steps = score, np.zeros(units, np.int64), step
+            else:
+                better = score < best
+                best = np.where(better, score, best)
+                which = np.where(better, number, which)
+                steps = np.where(better, step, steps)
+        samples = x.tolist()
+        chosen, exponents = which.tolist(), steps.tolist()
+        out, head = nibbles[speaker], params[speaker]
+        old = older = 0
+        at = 0
+        for unit in range(units):
+            k0, k1 = FILTERS[chosen[unit]]
+            chunk = samples[at:at + UNIT_SAMPLES]
+            kept = None
+            for e in (exponents[unit], exponents[unit] - 1):
+                if e < 0:
+                    break
+                half = (1 << e) >> 1
+                o, ol, wrong, row = old, older, 0, []
+                for s in chunk:
+                    predicted = (o * k0 + ol * k1 + 32) >> 6
+                    nib = (s - predicted + half) >> e
+                    if nib > 7:
+                        nib = 7
+                    elif nib < -8:
+                        nib = -8
+                    value = (nib << e) + predicted
+                    if value > 32767:
+                        value = 32767
+                    elif value < -32768:
+                        value = -32768
+                    wrong += (value - s) * (value - s)
+                    ol, o = o, value
+                    row.append(nib & 15)
+                if kept is None or wrong < kept[0]:
+                    kept = (wrong, row, o, ol, e)
+            out[unit] = kept[1]
+            old, older = kept[2], kept[3]
+            head[unit] = (chosen[unit] << 4) | (12 - kept[4])
+            at += UNIT_SAMPLES
+            if progress and unit % 4096 == 0:
+                progress(done + unit, total)
+        done += units
+    # Into the groups' own order. Mono: eight units a group, one after
+    # another. Stereo: four moments a group, left in the even unit and
+    # right in the odd.
+    if speakers == 2:
+        placed = np.stack([nibbles[0], nibbles[1]], axis=1).reshape(sectors, GROUPS, 4, 2, UNIT_SAMPLES)
+        placed = placed.reshape(sectors, GROUPS, UNITS, UNIT_SAMPLES)
+        heads = np.stack([params[0], params[1]], axis=1).reshape(sectors, GROUPS, UNITS)
+    else:
+        placed = nibbles[0].reshape(sectors, GROUPS, UNITS, UNIT_SAMPLES)
+        heads = params[0].reshape(sectors, GROUPS, UNITS)
+    body = np.zeros((sectors, GROUPS, GROUP_LEN), np.uint8)
+    body[:, :, 0:4] = body[:, :, 4:8] = heads[:, :, 0:4]
+    body[:, :, 8:12] = body[:, :, 12:16] = heads[:, :, 4:8]
+    for pair in range(UNITS // 2):
+        body[:, :, 16 + pair:GROUP_LEN:4] = placed[:, :, 2 * pair] | (placed[:, :, 2 * pair + 1] << 4)
+    if progress:
+        progress(total, total)
+    return [body[n].tobytes() for n in range(sectors)]
+
+
+def with_audio(original_sector, body):
+    """`original_sector` (2352 bytes) carrying `body` instead: the same
+    address, file, channel and coding, the checksum redone."""
+    sector = bytearray(original_sector)
+    sector[PAYLOAD:PAYLOAD + FORM2_LEN] = body + b"\0" * (FORM2_LEN - len(body))
+    return cdsector.rebuild_form2(sector)
+
+
 def wav_bytes_raw(pcm, rate, channels=1):
     """A WAV around PCM that is already bytes - a CD audio track, which
     needs no decoding at all."""

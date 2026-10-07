@@ -74,6 +74,8 @@ class ViewerDispatchMixin:
         # Sequences and swapped sound effects, both edits to TOMBA2.SND.
         n_seq = len(self.snd_edits.sequences)
         n_sfx = len(self.snd_edits.sounds)
+        # Replaced BGM tracks: staged disc sectors, written by Build Disc.
+        n_bgm = self.music_panel.replaced()
 
         staged = n_txtd or n_files
         # By widget rather than by index: these were fixed positions, so
@@ -83,7 +85,7 @@ class ViewerDispatchMixin:
                 (self.dat_panel, "Data View (DAT)", staged),
                 (self.mainexe_viewer, "MAIN.EXE", n_mainexe),
                 (self.bins_viewer, "BINs", n_sop),
-                (self.music_panel, "Music", n_seq),
+                (self.music_panel, "Music", n_seq or n_bgm),
                 (self.sfx_panel, "SFX", n_sfx)):
             at = self.main_tabs.indexOf(widget)
             if at >= 0:
@@ -91,7 +93,7 @@ class ViewerDispatchMixin:
 
         renamed = " Names have been changed - File > Export Labels to keep them."             if getattr(self, "labels_dirty", False) else ""
 
-        if not (n_txtd or n_files or n_mainexe or n_sop or n_seq or n_sfx):
+        if not (n_txtd or n_files or n_mainexe or n_sop or n_seq or n_sfx or n_bgm):
             self.statusBar().showMessage(
                 ("No pending edits." + renamed) if renamed else "No pending edits.")
         else:
@@ -106,6 +108,7 @@ class ViewerDispatchMixin:
                     (n_mainexe, "MAIN.EXE entry", "MAIN.EXE entries"),
                     (n_sop, "SOP.BIN line", "SOP.BIN lines"),
                     (n_seq, "sequence", "sequences"),
+                    (n_bgm, "replaced music track", "replaced music tracks"),
                     (n_sfx, "sound effect", "sound effects")):
                 if count:
                     parts.append(f"{count} {one if count == 1 else many}")

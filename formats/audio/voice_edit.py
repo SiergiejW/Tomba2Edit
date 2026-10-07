@@ -15,6 +15,10 @@ class VoiceEditStore:
     def __init__(self):
         self.image = None
         self.sectors = {}          # absolute lba -> raw 2352 bytes
+        # What staged sectors need written elsewhere to mean anything:
+        # replaced music's new track lengths, for MAIN.EXE's table
+        # (formats/audio/music_edit.py). JSON-shaped; saved with them.
+        self.meta = {}
 
     def set_image(self, path):
         """Opening a different disc starts over - a staged sector's
@@ -22,6 +26,7 @@ class VoiceEditStore:
         if path != self.image:
             self.image = path
             self.sectors.clear()
+            self.meta.clear()
 
     def stage_clip(self, image_path, indices, samples):
         """Encode `samples` into exactly len(indices) sectors and stage
@@ -59,6 +64,7 @@ class VoiceEditStore:
 
     def clear(self):
         self.sectors.clear()
+        self.meta.clear()
 
     def export(self, destination, progress=None):
         if not self.sectors:
@@ -93,7 +99,7 @@ class VoiceEditStore:
             json.dump({"sector_size": xa.SECTOR,
                        "disc_digest": disc_digest,
                        "image": os.path.basename(self.image or ""),
-                       "sectors": order}, f)
+                       "sectors": order, "meta": self.meta}, f)
         return len(order)
 
     def from_files(self, index_path, blob_path, image=None,
@@ -127,4 +133,6 @@ class VoiceEditStore:
         self.image = image or self.image
         for n, lba in enumerate(order):
             self.sectors[int(lba)] = blob[n * size:(n + 1) * size]
+        if isinstance(index.get("meta"), dict):
+            self.meta.update(index["meta"])
         return len(order), None

@@ -402,6 +402,9 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
         self.voice_edits = VoiceEditStore()
         self.voice_panel.set_edit_store(self.voice_edits)
         self.txtd_viewer.set_edit_store(self.voice_edits)
+        # Replaced BGM is staged disc sectors too, so it shares the store
+        # and with it Build Disc and the project file.
+        self.music_panel.set_edit_store(self.voice_edits)
         self.txtd_viewer.content_changed.connect(self.on_txtd_content_changed)
         self.txtd_viewer.twin_edits_toggled.connect(self._set_twin_edits)
         self.txt2_viewer.content_changed.connect(self.on_txt2_content_changed)

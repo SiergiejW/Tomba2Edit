@@ -338,6 +338,23 @@ class DiscMixin:
                     idx if edits else source_idx):
                 return
 
+            # Replaced music plays for its own length only if MAIN.EXE's
+            # track table says so - formats/audio/music_edit.py.
+            from formats.audio import music_edit
+            music = music_edit.count(voice_edits) if voice_edits else 0
+            if music:
+                try:
+                    exe = replacements.get("MAIN.EXE")
+                    if exe is None:
+                        with open(self.mainexe_viewer.exe_path, "rb") as f:
+                            exe = f.read()
+                    replacements["MAIN.EXE"] = music_edit.patch_exe(exe, voice_edits)
+                except (OSError, ValueError, TypeError) as exc:
+                    QMessageBox.critical(
+                        self, "Save failed",
+                        f"The replaced music's lengths could not be written into MAIN.EXE: {exc}")
+                    return
+
             self.statusBar().showMessage("Copying the track...", 0)
             QApplication.processEvents()
             try:
@@ -345,7 +362,9 @@ class DiscMixin:
                 if voice_edits:
                     bin_writer.write_sectors(target, voice_edits.sectors)
                     notes.append(
-                        f"VOICE.XA: {voice_edits.count()} sector(s) patched")
+                        f"XA audio: {voice_edits.count()} sector(s) patched"
+                        + (f" - {music} replaced music track(s), with their "
+                           "lengths set in MAIN.EXE" if music else ""))
             except Exception as exc:
                 QMessageBox.critical(self, "Save failed", str(exc))
                 self.statusBar().clearMessage()
