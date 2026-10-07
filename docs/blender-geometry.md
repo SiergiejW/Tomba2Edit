@@ -173,6 +173,40 @@ hack, the untouched disc peaks at **80,432 bytes** in the Town opening. That,
 not the mesh, is why the first full-detail Village port froze, and why the
 shipped one was decimated to fit under Town's own load.
 
+### Knowing before the game freezes
+
+A frozen game after an import is this buffer. A real case, from the resume
+state DuckStation saved on exit: draw packets across Tomba's struct at
+0x800E7E68. The level had *fewer* faces than Town (2,621 against 3,378), and
+the area's RAM was untouched. What counts is how much one camera catches, on
+top of everything else in the frame: in the frame that overflowed, the stock
+game writes 73,692 bytes, and the import's scenery cost 8,596 more than
+Town's does from there - 82,288, which is 368 too many.
+
+`game/frame_budget.py` forecasts it. Collision, actors, scripts and camera
+stay Town's when the MDAT is replaced, so every frame's camera is the stock
+game's. `game/town_views.json` holds 8,799 of them, recorded from the US disc
+through the opening and a walk each way along the street, with what each
+frame wrote and how much of that was scenery. A new MDAT's frame is the
+rest, as recorded, plus its own scenery under that camera by the game's own
+rule. Against the disc above, frame for frame over 827 frames: never more
+than 104 bytes out.
+
+* The import window has **Check this selection against the game's frame
+  buffer**. It takes a few seconds, runs again before an import, and names
+  the objects that cost most in the heaviest frame. For the case above:
+  unticking the two it named first was enough for 4:3 (peak 77,988), four
+  for an emulator's 16:9 hack as well (76,932) - no patch, no slowdown.
+* **Build Disc** asks when Town does not fit, and can add
+  `game/primitive_buffer.py`'s patch to MAIN.EXE. That removes the freeze;
+  frames over 65,536 bytes then wait for the GPU, which is slower there.
+* The widescreen hack puts more on screen. Its forecast covers the scenery
+  only, so it is a floor: 79,752 for the stock opening, 80,432 measured.
+* It is blind to what was not recorded: other parts of the level, other
+  events. US retail Town only.
+
+    python -m game.frame_budget MDAT.bin DRWB.bin
+
 How Town decides what to draw (`formats/drawmaps/visibility.py`, ported from
 the decomp and checked against a savestate):
 
