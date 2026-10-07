@@ -399,7 +399,7 @@ reductions retain the existing one-quarter-resolution minimum and are counted
 in the import result; geometry is not simplified by texture packing.
 
 The supplied `swap.glb` contains 2,699 triangles. The importer reconstructs
-1,117 quads and retains 465 triangles. A regression compares every resulting
+1,118 quads and retains 463 triangles. A regression compares every resulting
 triangle's positions, UVs, colours and material against the source GLB. GLB
 cannot encode the original quad boundaries, so reconstructed pairings are not
 proof of the original Blender topology. OBJ retains authored quads. Automatic
