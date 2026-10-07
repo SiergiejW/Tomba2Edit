@@ -63,6 +63,10 @@ class ImportResult:
     # MDAT cells (col, row) holding no original packet: the level's DRWB
     # knows nothing about them. See drwb_parser.reveal().
     new_cells: tuple = ()
+    # game.frame_budget.Forecast, where the level's frames are on record.
+    frames: object = None
+    # MDAT: {cell: the Blender object of each packet, in the cell's order}.
+    objects: dict = None
 
 
 def _material(raw):
@@ -114,14 +118,44 @@ def _finite(values, what):
     return values
 
 
-def read_obj(path):
+def _srgb(v):
+    return v * 12.92 if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+
+
+def _linear(v):
+    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def shades(own, linear):
+    """A file's 0..1 vertex colour -> the game's 0-15, where 9 is unshaded.
+
+    Two scales reach Blender. write_obj() puts n/15 in an OBJ, which
+    Blender reads as sRGB. A PS1 tool's GLB has 1.0 for unshaded, which
+    glTF calls linear. Blender then writes an OBJ in sRGB and a GLB linear,
+    whichever it was given (measured: 0.695 in, 0.851 out in an OBJ), so
+    there are four cases. `own`: the model has this program's materials.
+    `linear`: the file is a glTF.
+    """
+    if own:
+        scale, curve = 15, (_srgb if linear else float)
+    else:
+        scale, curve = packet.COLOR_NEUTRAL, (float if linear else _linear)
+    return lambda rgb: tuple(max(0, min(15, round(curve(min(1., max(0., v))) * scale))) for v in rgb)
+
+
+def read_obj(path, scale=SCALE, place=None, *, raw_positions=False, colors=None):
     """Read polygons, per-corner UVs and Blender's optional vertex colours.
 
     Negative indices are relative to the arrays at that line, as OBJ requires.
     Normals and smoothing groups do not affect PSX geometry. Reject n-gons
     explicitly: silently triangulating them changes the game's packet budget.
+
+    `scale` is game units per OBJ unit. `place` maps a scaled (x, y, z) to
+    where it stands in the level - for a model that was not built there.
+    `colors` turns a file colour into what a face keeps; see shades().
     """
-    vertices, uvs, colors, faces = [], [], [], []
+    colors = colors or shades(True, False)
+    vertices, uvs, tints, faces = [], [], [], []
     material, obj = "", ""
     path = Path(path)
     if path.stat().st_size > 64 * 1024 * 1024:
@@ -141,17 +175,25 @@ def read_obj(path):
             if op == "v":
                 if len(values) not in (3, 4, 6, 7):
                     raise ExchangeError("Expected XYZ, optional W, or XYZ RGB[A].")
-                xyz = _finite(tuple(float(x) * SCALE for x in values[:3]), "Position")
-                xyz = tuple(round(x) for x in xyz)
-                if not (-32768 <= xyz[0] <= 32767 and -32767 <= xyz[1] <= 32768 and -32768 <= xyz[2] <= 32767):
-                    raise ExchangeError("Position exceeds signed 16-bit game coordinates (100 game units per OBJ unit).")
+                xyz = _finite(tuple(float(x) * scale for x in values[:3]), "Position")
+                if place:
+                    xyz = _finite(tuple(place(xyz)), "Placed position")
+                if not raw_positions:
+                    xyz = tuple(round(x) for x in xyz)
+                if not raw_positions and not (-32768 <= xyz[0] <= 32767 and -32767 <= xyz[1] <= 32768 and -32768 <= xyz[2] <= 32767):
+                    raise ExchangeError(
+                        f"Position {values[0]}, {values[1]}, {values[2]} lands at {xyz} in game units, "
+                        "outside the signed 16-bit range. One OBJ unit is 100 game units here, so a model "
+                        "in another game's units has to be scaled and placed first: in Blender against "
+                        "the exported level, or with scripts/import_foreign_level.py, which also "
+                        "installs its textures.")
                 if len(values) == 4 and float(values[3]) != 1:
                     raise ExchangeError("Homogeneous OBJ positions with W other than 1 are unsupported.")
                 vertices.append(xyz)
                 rgb = _finite(tuple(float(x) for x in values[3:6]), "Colour") if len(values) >= 6 else None
                 if rgb and any(x < -0.00001 or x > 1.00001 for x in rgb):
                     raise ExchangeError("OBJ vertex colours must be in 0..1.")
-                colors.append(tuple(max(0, min(15, round(x * 15))) for x in rgb) if rgb else None)
+                tints.append(colors(rgb) if rgb else None)
             elif op == "vt":
                 uv = _finite(tuple(float(x) for x in values[:2]), "UV")
                 if len(uv) != 2:
@@ -173,13 +215,13 @@ def read_obj(path):
                     corner = token.split("/")
                     vi = index(corner[0], len(vertices))
                     points.append(vertices[vi])
-                    rgb.append(colors[vi])
+                    rgb.append(tints[vi])
                     texels.append(uvs[index(corner[1], len(uvs))] if len(corner) > 1 and corner[1] else None)
                 faces.append(Face(tuple(points), tuple(texels), tuple(rgb), material, obj))
                 if len(faces) > MAX_FACES:
                     raise ExchangeError(f"More than {MAX_FACES} polygons; simplify the model first.")
         except (ValueError, IndexError) as exc:
-            raise ExchangeError(f"OBJ line {line_no}: {exc}") from exc
+            raise ExchangeError(f'OBJ line {line_no}, Blender object "{obj or "(unnamed)"}": {exc}') from exc
     return faces
 
 
@@ -317,6 +359,13 @@ def _packet_pressure(blob, kind, part):
 
 def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=(), cell_size=None,
                growth_alignment=1):
+    return import_faces(read_obj(path), blob, kind, part, max_growth=max_growth,
+                        material_library=material_library, cell_size=cell_size,
+                        growth_alignment=growth_alignment)
+
+
+def import_faces(faces, blob, kind, part=None, *, max_growth=0, material_library=(), cell_size=None,
+                 growth_alignment=1):
     """Replace all MDAT geometry, or exactly one SMST body.
 
     Default memory budget is the selected resource's current byte size. An
@@ -326,7 +375,12 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
     originals = records(blob, kind, part)
     if growth_alignment not in (1, 2048):
         raise ExchangeError('Unsupported resource growth alignment.')
-    faces = read_obj(path)
+    faces = list(faces)
+    for face in faces:
+        for x, y, z in face.vertices:
+            if (not all(math.isfinite(v) and v == round(v) for v in (x, y, z))
+                    or not (-32768 <= x <= 32767 and -32767 <= y <= 32768 and -32768 <= z <= 32767)):
+                raise ExchangeError(f'Blender object "{face.object or "(unnamed)"}" is outside the game coordinate range. Reduce its scale or move it in the import preview.')
     if kind == 'MDAT' and not faces:
         raise ExchangeError("An MDAT replacement must contain some geometry.")
     exact, without_colors, templates = defaultdict(deque), defaultdict(deque), {}
@@ -335,9 +389,8 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         without_colors[_key(record.face, False)].append(i)
         shape = 'tri' if len(record.raw) == 36 else 'quad'
         templates.setdefault((record.face.material, shape), record.raw)
-    # Offline converters may supply packets whose textures they have explicitly
-    # installed in the destination IMG. The interactive importer uses only the
-    # selected resource's materials.
+    # The import dialog and offline converters can supply packets whose
+    # texture placement has been prepared for the destination IMG.
     for record in material_library:
         shape = 'tri' if len(record.raw) == 36 else 'quad'
         templates.setdefault((record.face.material, shape), record.raw)
@@ -359,12 +412,16 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
             # Only existing source materials are allowed: otherwise arbitrary
             # names could silently reference unloaded texture pages or flags.
             if not any(name == face.material for name, _ in templates):
-                raise ExchangeError(f"Unknown material {face.material or '(none)'}. Assign a T2 material from the target export to this face.")
+                raise ExchangeError(
+                    f'Unknown material {face.material or "(none)"} in Blender object "{face.object or "(unnamed)"}" '
+                    'which is not installed in this target. For new artwork, use ordinary Blender '
+                    'material names and export their MTL and texture images together.')
             converted.append((_encode(face, templates), None, face))
     tris = sum(len(f.vertices) == 3 for f in faces)
     quads = len(faces) - tris
     if len(used) == len(originals) == len(faces):
         return ImportResult(bytes(blob), tris, quads, True, len(used), 'Byte-identical: every original packet and all padding preserved.')
+    objects = None
     if kind == 'SMST':
         bodies = bodies_of(blob)
         old = bodies[part]
@@ -390,7 +447,7 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
             cell_size = _cell_size(grid)
         elif cell_size not in (640, 1024):
             raise ExchangeError('Unsupported game drawmap cell size.')
-        cells = defaultdict(list)
+        cells, named = defaultdict(list), defaultdict(list)
         kept = set()
         for raw, owner, face in converted:
             if owner is not None:
@@ -400,12 +457,16 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
                 z = sum(v[2] for v in face.vertices) / len(face.vertices)
                 col, row = math.floor(x / cell_size), math.floor(z / cell_size)
                 if not 0 <= col < grid.width or not 0 <= row < grid.height:
-                    raise ExchangeError(f"Face centre ({x:.0f}, {z:.0f}) lies outside the original {grid.width} x {grid.height} drawmap. Fit the geometry within the target level.")
+                    raise ExchangeError(f'Blender object "{face.object or "(unnamed)"}" extends outside the target level at ({x:.0f}, {z:.0f}). Use Fit selected objects to target, or reduce its scale in the preview.')
                 # Very large polygons cannot be culled reliably from one cell.
                 if any(max(v[a] for v in face.vertices) - min(v[a] for v in face.vertices) > 2 * cell_size for a in (0, 2)):
                     raise ExchangeError('A new face spans more than two drawmap cells. Subdivide it before import.')
                 owner = row * grid.width + col
             cells[owner].append(raw)
+            named[owner].append(face.object)
+        # A group keeps its triangles before its quads (_body).
+        objects = {cell: tuple(n for size in (36, 44) for r, n in zip(packets, named[cell]) if len(r) == size)
+                   for cell, packets in cells.items()}
         result = bytearray(blob[:grid.data_start])
         struct.pack_into(f'<{grid.cell_count}H', result, 4, *([0xffff] * grid.cell_count))
         for cell, packets in sorted(cells.items()):
@@ -451,4 +512,4 @@ def import_obj(path, blob, kind, part=None, *, max_growth=0, material_library=()
         raise ExchangeError(f'Replacement needs {growth} extra bytes; the verified budget allows {max_growth}. Simplify the mesh. The original resource has not been changed.')
     note = f'{tris} triangles, {quads} quads; {len(used)} original packets reused; {growth:+d} bytes. Collision unchanged.'
     return ImportResult(result, tris, quads, False, len(used), note + (' ' + warning if warning else ''),
-                        warning, new_cells)
+                        warning, new_cells, objects=objects)

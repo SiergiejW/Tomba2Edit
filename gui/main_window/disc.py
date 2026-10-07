@@ -332,6 +332,12 @@ class DiscMixin:
                     "unreadable:\n\n" + "\n".join(problems[:6]))
                 return
 
+            source_idx = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
+            if not self._offer_frame_buffer_patch(
+                    replacements, dat if edits else self.dat_file,
+                    idx if edits else source_idx):
+                return
+
             self.statusBar().showMessage("Copying the track...", 0)
             QApplication.processEvents()
             try:
@@ -390,6 +396,43 @@ class DiscMixin:
             self.bins_viewer.mark_exported()
         self.img_dirty = False
         self._refresh_edit_status()
+
+    def _offer_frame_buffer_patch(self, replacements, dat, idx):
+        """A Town heavier than the frame's primitive buffer freezes the
+        game (game/frame_budget.py). Offer primitive_buffer's patch for
+        the MAIN.EXE going on the disc. False: the user backed out."""
+        from game import frame_budget, game_build, primitive_buffer
+        exe_path = getattr(self.mainexe_viewer, "exe_path", None)
+        if (game_build.current().name != "us-retail" or not exe_path
+                or not frame_budget.VIEWS.is_file()):
+            return True
+        try:
+            forecast = frame_budget.forecast_disc(dat, idx)
+            exe = replacements.get("MAIN.EXE")
+            if exe is None:
+                with open(exe_path, "rb") as f:
+                    exe = f.read()
+            if forecast.safe or primitive_buffer.is_applied(exe):
+                return True
+            patched = primitive_buffer.apply(exe)
+        except (ValueError, OSError, KeyError, IndexError):
+            return True                 # not a Town this can read: build as asked
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Town is too heavy for the game's frame buffer")
+        box.setText(
+            forecast.text() + "\n\nThe frame-buffer patch changes MAIN.EXE so a heavy "
+            f"frame may use {frame_budget.PATCHED:,} bytes: it waits for the GPU before "
+            "such a frame, so those views can run slower, and everything else is as "
+            "before. Without it this disc freezes where the frames are too heavy.")
+        add = box.addButton("Add the patch (recommended)", QMessageBox.ButtonRole.AcceptRole)
+        skip = box.addButton("Build without it", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is add:
+            replacements["MAIN.EXE"] = patched
+            return True
+        return box.clickedButton() is skip
 
     def _copy_audio_track(self, source, target):
         """Bring the disc's audio track and a cue sheet along - see

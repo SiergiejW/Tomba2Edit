@@ -107,23 +107,17 @@ class FileEditsMixin:
             return
         self._stage_entry_edit(entry, data, label)
 
-    def _stage_drawmap_mask(self, item, new_cells):
-        """Open Town's DRWB for the cells an imported MDAT added.
-
-        The DRWB says which regions each drawmap cell is drawn from (see
-        formats/drawmaps/drwb_parser.py). Geometry the level never had
-        lands in cells it masks out, and vanishes depending on where
-        Tomba stands. Rebuilt from the disc's own DRWB every time, so
-        importing the original back clears it. US Town only - the one
-        mask whose bits are decoded."""
+    def _town_mask(self, item):
+        """(entry, bytes) of the disc's own DRWB beside a US Town MDAT,
+        or None - the one mask whose bits are decoded."""
         from formats.archive.format_detect import best
         from formats.archive.repacker import parse_idx
-        from formats.drawmaps.drwb_parser import DISC_SIZE, reveal
+        from formats.drawmaps.drwb_parser import DISC_SIZE
         from game import game_build
         entry = self._entry_of(item)
         if (not entry or entry["kind"] != "sdat" or entry["area"] != 4
                 or game_build.current().name != "us-retail"):
-            return
+            return None
         idx = os.path.join(os.path.dirname(self.dat_file), "TOMBA2.IDX")
         chunk = parse_idx(idx)[entry["area"]]
         pointers = chunk["sdat_pointers"]
@@ -137,12 +131,36 @@ class FileEditsMixin:
                 match = best(original)
                 if match is None or match.kind != "DRWB":
                     continue
-                mask = {"kind": "sdat", "area": entry["area"], "file_idx": slot,
-                        "address": chunk["dat_start"] + offset, "size": DISC_SIZE,
-                        "key": (entry["area"], slot)}
-                self._stage_entry_edit(mask, reveal(original, new_cells),
-                                       "DRWB opened for the imported MDAT")
-                return
+                return ({"kind": "sdat", "area": entry["area"], "file_idx": slot,
+                         "address": chunk["dat_start"] + offset, "size": DISC_SIZE,
+                         "key": (entry["area"], slot)}, original)
+        return None
+
+    def _stage_drawmap_mask(self, item, new_cells):
+        """Open Town's DRWB for the cells an imported MDAT added.
+
+        The DRWB says which regions each drawmap cell is drawn from (see
+        formats/drawmaps/drwb_parser.py). Geometry the level never had
+        lands in cells it masks out, and vanishes depending on where
+        Tomba stands. Rebuilt from the disc's own DRWB every time, so
+        importing the original back clears it. US Town only."""
+        from formats.drawmaps.drwb_parser import reveal
+        found = self._town_mask(item)
+        if found:
+            self._stage_entry_edit(found[0], reveal(found[1], new_cells),
+                                   "DRWB opened for the imported MDAT")
+
+    def _geometry_frame_forecast(self, item, result):
+        """What an imported Town MDAT needs of the frame's primitive
+        buffer (game/frame_budget.py), or None where no frames are on
+        record."""
+        from formats.drawmaps.drwb_parser import reveal
+        from game import frame_budget
+        found = self._town_mask(item)
+        if not found or not frame_budget.VIEWS.is_file():
+            return None
+        return frame_budget.forecast_both(result.data, reveal(found[1], result.new_cells),
+                                          objects=result.objects)
 
     def _stage_entry_edit(self, entry, data, label):
         with open(self.dat_file, "rb") as f:

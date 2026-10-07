@@ -181,6 +181,19 @@ class Scenery:
         `rotation` and `translation` are the camera matrix the game
         keeps at scratchpad 0xF8. `x_scale` is what an emulator's
         widescreen hack multiplies screen X by - (3, 4) for 16:9."""
+        _pick, keep, quad = self._kept(pointers, rotation, translation, h, offset, x_scale)
+        return int((keep & ~quad).sum()), int((keep & quad).sum())
+
+    def drawn(self, pointers, rotation, translation, h=350, offset=(160 << 16, 120 << 16),
+              x_scale=(1, 1)):
+        """Stage two, a record at a time: bytes each writes (0, 40 or 52),
+        in the order the groups hold them."""
+        pick, keep, quad = self._kept(pointers, rotation, translation, h, offset, x_scale)
+        out = np.zeros(len(self._owner), dtype=np.int64)
+        out[pick] = keep * np.where(quad, QUAD_BYTES, TRI_BYTES)
+        return out
+
+    def _kept(self, pointers, rotation, translation, h, offset, x_scale):
         pick = np.isin(self._owner, list(pointers))
         v, quad, mode = self._corners[pick], self._quad[pick], self._mode[pick]
         mac = (np.einsum("ij,nkj->nki", np.asarray(rotation, dtype=np.int64), v)
@@ -213,7 +226,7 @@ class Scenery:
         band = otz >> 10
         slot = (otz >> np.minimum(band, 31)) + band * 0x200
         keep &= (slot >= 4) & (slot <= 0x7FF)
-        return int((keep & ~quad).sum()), int((keep & quad).sum())
+        return pick, keep, quad
 
     def emitted_bytes(self, *args, **kwargs):
         triangles, quads = self.emitted(*args, **kwargs)

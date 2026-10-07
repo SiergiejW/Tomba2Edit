@@ -1,27 +1,128 @@
 # Editing MDAT and SMST in Blender 5.2
 
 Tomba2Edit uses Blender's built-in **Wavefront OBJ** importer and exporter.
-No add-on, custom Blender format or metadata sidecar is required. Use the OBJ
-buttons for geometry that will go back into the game; glTF remains available
-for rendering and animation exports.
+No add-on, custom Blender format or metadata sidecar is required. Geometry
+goes out as OBJ and comes back as OBJ or as **glTF (.glb)**; a model from
+somewhere else is best brought in as a .glb, which carries its textures and
+vertex colours inside it (see below).
 
 ## Workflow
 
 1. Open your disc in Tomba2Edit. Open an MDAT resource, or open an SMST and
    select **one part** in its parts list.
 2. Click **Export Blender OBJ**. Keep the OBJ, MTL and PNG files together.
-3. In Blender 5.2, use **File → Import → Wavefront (.obj)** with scale **1**,
+3. In Blender 5.2, use **File â†’ Import â†’ Wavefront (.obj)** with scale **1**,
    Forward **-Z**, Up **Y**. One Blender unit represents 100 game units.
 4. Edit or completely replace the mesh. New topology, vertices, faces, UVs and
    vertex colours are supported. Assign the exported `T2_...` materials to new
    faces and keep their names: they identify the game's texture pages, palettes
    and draw settings. Use triangles and quads; triangulate n-gons yourself.
-5. Use **File → Export → Wavefront (.obj)** with scale **1**, Forward **-Z**,
+5. Use **File â†’ Export â†’ Wavefront (.obj)** with scale **1**, Forward **-Z**,
    Up **Y**, **UV Coordinates**, **Materials** and **Vertex Colors** enabled.
    Leave **Triangulated Mesh** disabled to retain quads. Export only the meshes
    being replaced. Blender exports evaluated object transforms.
-6. In the same Tomba2Edit resource/part, click **Import Blender OBJ**. Inspect
-   the staged result, then use **Export Project** or **Build Disc** to save it.
+6. In the same Tomba2Edit resource/part, click **Import from Blender**. The import
+   window lists the names from Blender's Outliner. Click a name to highlight
+   its wireframe in orange; tick the objects to import. Gray shows the original
+   target and cyan shows the replacement. Unchanged exports keep their original
+   placement and T2 materials. Click **Import selected objects**, inspect the
+   staged result, then use **Export Project** or **Build Disc** to save it.
+
+## Importing your own model through the interface
+
+The same **Import from Blender** button accepts foreign meshes. No command-line
+conversion is required. Foreign models start uniformly fitted to the target;
+adjust **Scale**, **Turn around vertical axis**, and **Move X/Y/Z** in the preview.
+Use the Top and Front views to check placement. **Fit selected objects to target**
+fits the checked objects together. Drawmap rebuilding is automatic. Oversized
+new or changed MDAT faces are split automatically, interpolating UVs and vertex
+colours. This does not reduce polygon density or change collision.
+
+A Tomba2Edit export keeps the target's installed materials and its
+byte-identical round-trip path; faces on `T2_...` materials keep them even in
+a file that also holds foreign ones. For everything else the window has three
+choices under **Textures and vertex colours**, and says under each what it
+found.
+
+### Which file format
+
+What Blender 5.2 writes for a scene that came from another PS1 tool's GLB
+(packed images, a colour attribute), measured:
+
+| Export | Vertex colours | Textures |
+| --- | --- | --- |
+| OBJ, defaults | none | none: a packed image has no file for the MTL to name |
+| OBJ, **Geometry: Colors** ticked | yes | none |
+| glTF 2.0 (.glb), defaults | yes | every image, embedded |
+
+So export a foreign model as **.glb**. It holds only triangles; the importer
+joins them back into quads where two share an edge and agree on UV and colour
+there, along the diagonal the game draws a quad with, so the picture is the
+same and the frame costs 52 bytes instead of 80. The Village came back as 758
+triangles and 3,055 quads from 6,868 triangles.
+
+### Textures
+
+* **Automatic (recommended).** The model's own images first: embedded in a
+  .glb, or the files an MTL names. Where they do not cover it, a `.vram` with
+  the model's name, then a `.glb` in the same folder that has images under the
+  same material names (so an OBJ exported beside the GLB it was made from just
+  works). The window names the file it took and how many materials it covers.
+* **Images from a file I choose.** A .glb/.gltf or an .mtl.
+* **Exact copy from the source game's VRAM dump.** A raw 1,048,576-byte dump;
+  materials named `Page_XXXX_CLUT_XXXX` read their texels and palette from it.
+* **No textures: plain material colours.**
+
+Nothing is imported untextured without asking. Pictures of one PS1 page seen
+through several CLUTs (`Page_0011_CLUT_79D2`, `Page_0011_CLUT_7A12`...) are
+put back as that one 4-bit page with a palette each, so they cost what they
+cost in the source game and match it texel for texel: 0 of 1,985,412 texels
+differ from the VRAM dump for the Village. Any other picture is reduced to
+16 colours, at up to 256 texels a side; the result line says which happened.
+
+**`mods/Blender-Import-Example`** is the OBJ route with real image files:
+`edited.obj`, `edited.mtl` and 63 PNGs. Keep the folder together and select
+its `edited.obj`.
+
+### Texture room
+
+New textures go where the replaced model's were. **Also VRAM a savestate
+shows the game leaves empty** adds what no file of the level loads into and a
+savestate taken there shows unused (10,623 halfwords in Town). If something
+still has no room at full size, the window says how many regions and how
+small, and asks before anything is shrunk or written. The full Village: 33
+of 94 regions shrunk without a savestate, 4 of 60 with one.
+
+### Vertex colours
+
+Read automatically. This program's OBJ writes 9/15 for unshaded; a PS1
+tool's GLB writes 1.0, and Blender re-encodes on the way out of an OBJ
+(0.695 becomes 0.851) but not a GLB, so the scale is picked from the
+materials and the file type. A file without colours imports evenly lit, and
+the window says so and why.
+
+Texture preparation includes other staged edits. It only reuses texture space
+freed by the replaced resource and verified gaps between those tiles; other
+resources and animated palettes are protected. For SMST, the other parts'
+texture references are protected too. Some texture regions may be reduced to
+fit, and the result reports how many. If there is insufficient room, importing
+stops before changing the project. New textures for shared TRAIL models are not
+supported by this window; editing a Tomba2Edit export with its existing
+materials remains supported for those models.
+
+Cancelling the window changes nothing. Successful texture import updates the
+working project's IDX/IMG pair and stages geometry for normal project/disc
+export; it does not overwrite your original ROM. Save the result with
+**Build Disc**. A successful import is not a full gameplay stability test:
+the rendering limits below still apply, especially to dense replacement levels.
+
+Validated on 2026-10-07: 27 automated interchange/placement/transaction tests;
+real Qt button tests for original MDAT and SMST byte identity; imports of the
+supplied colour-only OBJ and the PNG-backed example; colour and image imports
+into SMST part 61 with all other 86 part bodies unchanged. The rebuilt IMG is
+decoded and compared with the planned pixels before it can be saved. The new
+example has not had a gameplay stability run; earlier runtime results below
+refer to the named, separately built ROMs.
 
 An MDAT import replaces its entire geometry and rebuilds its cell pointers.
 An SMST import replaces only the selected part. All other part bodies stay
@@ -38,8 +139,8 @@ through or behind new scenery when it does not match those paths.
 ## Limits and validation
 
 * Positions round to integer game units and must fit signed 16-bit storage.
-  UVs address the material's 256×256 PSX page and must stay inside 0..1.
-* Vertex colours use the game's 0–15 range, represented as 0–1 in OBJ; neutral
+  UVs address the material's 256Ă—256 PSX page and must stay inside 0..1.
+* Vertex colours use the game's 0â€“15 range, represented as 0â€“1 in OBJ; neutral
   is 9/15. Missing colours preserve matching original packets; new faces
   without colours receive neutral shading. Enable Vertex Colors on export.
 * Matching tolerates reordered faces/vertices and a different first corner of
@@ -75,7 +176,7 @@ shipped one was decimated to fit under Town's own load.
 How Town decides what to draw (`formats/drawmaps/visibility.py`, ported from
 the decomp and checked against a savestate):
 
-1. A view triangle from the camera, 80° wide and 14,080 units deep at Town's
+1. A view triangle from the camera, 80Â° wide and 14,080 units deep at Town's
    start, is laid over the drawmap. Cells inside it are listed if the **DRWB**
    allows it: the DRWB's low nibble is the region of the cell Tomba stands in,
    its high nibble the regions a cell is drawn from.
@@ -93,10 +194,10 @@ Two patches (US retail) go with a level denser than Town:
 * `game/primitive_buffer.py` (MAIN.EXE). A frame that follows one over 65,536
   bytes waits for the GPU and may then use all 163,840 bytes; lighter frames
   are untouched. Needed even in 4:3: the Village's opening reaches 95,700.
-* `game/view_wedge.py` (A00.BIN). The view triangle is 40° either side of the
-  heading, the screen shows 24.6° (4:3) or 31.4° (16:9 hack). Along the
+* `game/view_wedge.py` (A00.BIN). The view triangle is 40Â° either side of the
+  heading, the screen shows 24.6Â° (4:3) or 31.4Â° (16:9 hack). Along the
   opening route Town transforms 860 to 1,170 polygons a frame, the Village
-  1,400 to 2,000. At 32° the Village is 760 to 1,480 and no cell with
+  1,400 to 2,000. At 32Â° the Village is 760 to 1,480 and no cell with
   something on screen is dropped in either aspect ratio.
 
 ```powershell
@@ -144,13 +245,13 @@ How it got there, and what the tool should do by itself:
   five rectangles (11 faces) found no room and were shrunk to between 8/16
   and 12/16. Every other face reads exactly the texels it read in Tomba 1.
 
-The scripts that did this are in `work/blender_geometry/claude_session`; it
-is not yet part of the importer.
-
-The workflow uses textures already installed in the target game. Changing an
-exported PNG or assigning an arbitrary Blender material does not install new
-texture data. External model ports need their textures placed into destination
-VRAM separately. That step is already done for the example below.
+The scripts for that earlier build are in `work/blender_geometry/claude_session`.
+The normal import window now exposes texture installation as described above.
+It conservatively avoids spare VRAM which would require a runtime savestate to
+validate, so its packing results can differ from those earlier offline builds.
+Exports retaining native `T2_...` material names preserve installed textures.
+To import new artwork, give the Blender materials ordinary names and export
+their image references in the MTL.
 
 ## Requested Tomba 1 replacements
 
@@ -209,7 +310,7 @@ are diagnostic/source material and can exceed the drawing budget.
   completed the opening dialogue and ran **10,200 gameplay frames** with
   movement, jumps and menu input. Per-frame checks peaked at **67,500 / 81,920
   bytes** on that gameplay route. A further 4:3 route also passed.
-* **DuckStation 0.1-12074**, using the user's widescreen and 9× resolution
+* **DuckStation 0.1-12074**, using the user's widescreen and 9Ă— resolution
   overrides, passed **1,800 completed game frames** of walking and jumping.
   A debugger breakpoint after drawing checked the arena on every game frame:
   peak **68,048 / 81,920 bytes**. Controller input was supplied through a

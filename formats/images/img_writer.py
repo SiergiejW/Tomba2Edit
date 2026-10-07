@@ -114,6 +114,33 @@ def add_shards(chunk, new_shards):
     return _assemble(records, bodies)
 
 
+def merged(shards):
+    """`shards` with rectangles that sit edge to edge joined into one.
+
+    Every shard costs at least a sector, so sixteen 16x1 palettes stacked
+    in a column are far cheaper as one 16x16."""
+    shards = list(shards)
+    while True:
+        for i, (x, y, w, h, p) in enumerate(shards):
+            joined = None
+            for j, (xx, yy, ww, hh, q) in enumerate(shards):
+                if i == j:
+                    continue
+                if y == yy and h == hh and x + w == xx:
+                    rows = (p[r * w * 2:(r + 1) * w * 2] + q[r * ww * 2:(r + 1) * ww * 2]
+                            for r in range(h))
+                    joined = (x, y, w + ww, h, b"".join(rows))
+                elif x == xx and w == ww and y + h == yy:
+                    joined = (x, y, w, h + hh, p + q)
+                if joined:
+                    shards = [s for k, s in enumerate(shards) if k not in (i, j)] + [joined]
+                    break
+            if joined:
+                break
+        else:
+            return shards
+
+
 def paint(chunk, new_shards):
     """`chunk` with `new_shards` written into the shards it already has.
 

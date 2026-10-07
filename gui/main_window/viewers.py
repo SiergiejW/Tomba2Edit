@@ -331,6 +331,13 @@ class ViewerDispatchMixin:
                                     lambda item=selected_item: self._geometry_growth_budget(item))
                                 self.mdat_panel.geometry_cell_size = (
                                     lambda item=selected_item: self._geometry_cell_size(item))
+                                self.mdat_panel.prepare_geometry_textures = (
+                                    lambda source, vram, part, kept=None, state=None, item=selected_item:
+                                    self._prepare_geometry_textures(item, source, vram, part, kept, state))
+                                self.mdat_panel.commit_geometry_textures = self._commit_geometry_textures
+                                self.mdat_panel.geometry_frame_forecast = (
+                                    lambda result, item=selected_item:
+                                    self._geometry_frame_forecast(item, result))
                                 if not success:
                                     QMessageBox.critical(self, "Error", "Failed to load MDAT data")
                                 self.mdat_panel.populate()
@@ -402,6 +409,10 @@ class ViewerDispatchMixin:
                                     self._stage_file_edit(item, blob, label))
                                 self.smst_panel.geometry_growth_budget = (
                                     lambda item=selected_item: self._geometry_growth_budget(item))
+                                self.smst_panel.prepare_geometry_textures = (
+                                    lambda source, vram, part, kept=None, state=None, item=selected_item:
+                                    self._prepare_geometry_textures(item, source, vram, part, kept, state))
+                                self.smst_panel.commit_geometry_textures = self._commit_geometry_textures
                                 # So the VRAM view's CLUT list offers the
                                 # palettes this model actually samples,
                                 # rather than making the user find them.

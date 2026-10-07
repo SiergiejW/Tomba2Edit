@@ -20,6 +20,24 @@ class TextureMigrationMixin:
     the window through self.
     """
 
+    def _prepare_geometry_textures(self, item, source, vram, part, kept=None, state=None):
+        from game.geometry_textures import prepare
+        from gui.widgets.import_worker import run_import
+        entry = self._entry_of(item)
+        if not entry:
+            raise ValueError('Select a model from the loaded disc first.')
+        cd = os.path.dirname(self.dat_file)
+        edits = self._pack_pending_file_edits()
+        overlay = self.overlay_for_area(entry['area']) if entry.get('area') is not None else None
+        return run_import(lambda: prepare(cd, entry, edits, source, vram,
+                                         part=part, overlay=overlay, kept=kept, state=state), self)
+
+    def _commit_geometry_textures(self, prepared):
+        from game.geometry_textures import commit
+        commit(prepared)
+        self._chunk_vram_cache = {}
+        self._note_img_written()
+
     def _chunk_vram(self, area):
         """One area's IMG chunk, decompressed. Cached - a check walks
         several areas and each decompress is not cheap."""
