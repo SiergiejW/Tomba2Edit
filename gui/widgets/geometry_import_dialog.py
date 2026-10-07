@@ -292,7 +292,8 @@ class GeometryImportDialog(QDialog):
             lo,hi=bounds(self.preview.faces)
             quads=sum(len(f.vertices)==4 for f in faces)
             self.summary.setText(f'{len({f.object for f in faces})} objects, {len(faces)-quads:,} triangles and {quads:,} quads. Highlighted: {self.preview.selected or "(unnamed)"}.\n'
-                + 'Placed size X/Y/Z: '+', '.join(f'{hi[a]-lo[a]:,.1f}' for a in range(3))+' game units.\nFind the same object by name in Blender’s Outliner.')
+                + 'Placed size X/Y/Z: '+', '.join(f'{hi[a]-lo[a]:,.1f}' for a in range(3))+' game units.\nFind the same object by name in Blender’s Outliner.'
+                + ('\nGLB stores triangles: the quads above are reconstructed. Use OBJ to retain authored quad boundaries.' if self.path.suffix.lower() in GLTF else ''))
         else:self.summary.setText('Tick at least one object to import.')
 
     def change_view(self,index):self.preview.view=index;self.preview.update()

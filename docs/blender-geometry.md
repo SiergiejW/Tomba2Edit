@@ -31,8 +31,9 @@ vertex colours inside it (see below).
 ## Importing your own model through the interface
 
 The same **Import from Blender** button accepts foreign meshes. No command-line
-conversion is required. Foreign models start uniformly fitted to the target;
-adjust **Scale**, **Turn around vertical axis**, and **Move X/Y/Z** in the preview.
+conversion is required. **Keep exported placement is the default** for every
+model: 100 game units per exported unit, with no added rotation or translation.
+Adjust **Scale**, **Turn around vertical axis**, and **Move X/Y/Z** only when wanted.
 Use the Top and Front views to check placement. **Fit selected objects to target**
 fits the checked objects together. Drawmap rebuilding is automatic. Oversized
 new or changed MDAT faces are split automatically, interpolating UVs and vertex
@@ -386,3 +387,33 @@ binary is included in source control.
 
 Blender's settings are described in the
 [official OBJ manual](https://docs.blender.org/manual/en/latest/files/import_export/obj.html).
+
+
+## Packing and quad checks (2026-10-07)
+
+Texture packing reports its current attempt and stage and can be cancelled
+before any project files change. Unchanged free-space searches are cached.
+If filling the full-size tiles first leaves an impossible layout, the allocator
+starts over and reserves room for all texture regions together. Texture
+reductions retain the existing one-quarter-resolution minimum and are counted
+in the import result; geometry is not simplified by texture packing.
+
+The supplied `swap.glb` contains 2,699 triangles. The importer reconstructs
+1,117 quads and retains 465 triangles. A regression compares every resulting
+triangle's positions, UVs, colours and material against the source GLB. GLB
+cannot encode the original quad boundaries, so reconstructed pairings are not
+proof of the original Blender topology. OBJ retains authored quads. Automatic
+splitting of oversized quads now makes smaller quads rather than triangles.
+
+The reported 179x114 texture failure is covered by the new reservation pass.
+The supplied GLB completes preparation against the original Town resources in
+about 20 seconds in the local test. Most reduced regions retain 15/16 of each
+dimension; the smallest retains 8/16. Exported placement remains unchanged.
+
+Music import preserves the source amplitude. The supplied Tomba 1 WAV changed
+by less than 0.001 dB RMS in a ten-second resample/XA encode/decode test. The
+US game's own mixer applies CD music attenuation (0x47FF/0x8000), plus its
+Music setting (default 7 out of 9) and other runtime mixing. The editor preview
+is the encoded recording, not an emulation of that live game mix. Raise the
+in-game Music setting before changing the recording's gain: this WAV already
+peaks at -0.18 dBFS, so a plain boost can clip its peaks.

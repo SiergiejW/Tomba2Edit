@@ -475,8 +475,8 @@ class MusicPanel(QWidget):
             f"{self._caption(key)} is now {name}, {clock(int(length * 1000))}"
             + (" - cut to fit, with a fade" if cut else "")
             + f". It loops at its own end: the track's length goes from {len(piece['indices'])} to "
-            f"{used + 1} sectors in MAIN.EXE when the disc is built. Play it here to hear what the "
-            "game will; Build Disc writes it, Save Project keeps it.")
+            f"{used + 1} sectors in MAIN.EXE when the disc is built. Preview plays the encoded audio; "
+            "the game also applies its Music volume and mixer attenuation. Build Disc writes it, Save Project keeps it.")
 
     def _restore(self):
         chosen = self._selected_piece()

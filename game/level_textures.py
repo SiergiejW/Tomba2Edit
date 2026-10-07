@@ -227,6 +227,7 @@ class Space:
         self.pages = [p for p in range(32) if self._block(p).any()]
         self._tables = {}
         self._counts = {p: {} for p in self.pages}
+        self.reserved = {}
 
     def _block(self, page):
         px, py = (page % 16) * PAGE_W, (page // 16) * PAGE_H
@@ -367,6 +368,33 @@ def pack(blob, free, tries=60, seed=1, progress=None, cancelled=None):
             break
         if n == 0:
             first = frozenset(result[4])
+    if cost[0]:
+        # Full-size-first packing can consume the space needed by the remaining
+        # large tiles. Start over, reserving reduced rectangles largest first,
+        # while retaining the same quarter-size quality floor.
+        space, failed = Space(taken), []
+        queue = sorted(items, key=lambda item: _area(item[:3]))
+        while queue:
+            if cancelled and cancelled():
+                raise migration.MigrationError('Import cancelled. The project was not changed.')
+            page, box, packets, own = queue.pop()
+            tile = (page,box,packets)
+            spot = _fit_smaller(tile,space)
+            if spot is None:
+                halves = (migration.split_to_fit(blob,page,packets,own,lambda w,h:False,depth=10)
+                          if len(packets)>1 else [])
+                if len(halves)>1:
+                    queue.extend((page,b,p,own) for b,p in halves)
+                    queue.sort(key=lambda item:_area(item[:3]))
+                    continue
+                raise migration.MigrationError(
+                    'The model’s textures do not fit the space freed by the target, even at one-quarter resolution. '
+                    'Reduce or combine texture images in Blender. The project was not changed.')
+            space.reserved[(page,box,tuple(packets))] = spot
+            failed.append(tile)
+            if progress:
+                progress(tries-1,len(failed),len(queue))
+        return [], clut_dest, failed, space
     return best[1], clut_dest, best[2], best[3]
 
 
@@ -378,6 +406,9 @@ def _area(tile):
 def _fit_smaller(tile, space):
     """Room for a leftover tile at the largest sixteenth of its size that
     has any: (sixteenths, x, y, halfwords, new width, new height). Takes it."""
+    reserved = space.reserved.pop((tile[0],tile[1],tuple(tile[2])),None)
+    if reserved is not None:
+        return reserved
     box = tile[1]
     wide, tall = box[2] - box[0] + 1, box[3] - box[1] + 1
     for num in range(15, 3, -1):

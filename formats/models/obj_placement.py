@@ -44,18 +44,26 @@ def subdivide(faces, span):
         return replace(face, vertices=tuple(face.vertices[i] for i in indices),
                        uvs=tuple(face.uvs[i] for i in indices),
                        colors=tuple(face.colors[i] for i in indices))
+    def midpoint(a,b):
+        return None if a is None or b is None else tuple(round((x+y)/2) for x,y in zip(a,b))
     while pending:
         face = pending.pop()
         if all(max(v[a] for v in face.vertices)-min(v[a] for v in face.vertices) <= span for a in (0,2)):
             output.append(face)
             continue
         if len(face.vertices)==4:
-            pending.extend((corner(face,(0,1,2)),corner(face,(0,2,3))))
+            # Centre lies on the original rendering diagonal. Four smaller
+            # quads preserve the original two-triangle surface and its UVs.
+            def extended(values):
+                return values+tuple(midpoint(values[i],values[j]) for i,j in
+                                    ((0,1),(1,2),(2,3),(3,0),(0,2)))
+            divided=replace(face,vertices=extended(face.vertices),uvs=extended(face.uvs),
+                            colors=extended(face.colors))
+            pending.extend(corner(divided,ring) for ring in
+                           ((0,4,8,7),(4,1,5,8),(8,5,2,6),(7,8,6,3)))
         else:
             i,j=max(((0,1),(1,2),(2,0)),key=lambda ij:sum((face.vertices[ij[0]][a]-face.vertices[ij[1]][a])**2 for a in (0,2)))
             k=3-i-j
-            def midpoint(a,b):
-                return None if a is None or b is None else tuple(round((x+y)/2) for x,y in zip(a,b))
             extended=replace(face,vertices=face.vertices+(midpoint(face.vertices[i],face.vertices[j]),),
                 uvs=face.uvs+(midpoint(face.uvs[i],face.uvs[j]),),
                 colors=face.colors+(midpoint(face.colors[i],face.colors[j]),))
