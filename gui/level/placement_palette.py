@@ -12,7 +12,22 @@ PRESETS = (("chest", "Chest", "Red chest"),
 
 
 def preset_icon(kind):
-    """Code-native icons stay crisp and do not depend on a disc being open."""
+    """The preset's icon, rendered from US retail game art by
+    scripts/build_palette_icons.py; a drawn stand-in only if that's missing."""
+    from icons.icons import resource_path
+    path = resource_path(f"icons/palette/{kind}.png")
+    art = QPixmap(path)
+    if not art.isNull():
+        icon = QIcon()
+        # Pixel art: halve with nearest sampling, keep the full size for HiDPI.
+        icon.addPixmap(art.scaled(88, 72, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.FastTransformation))
+        icon.addPixmap(art)
+        return icon
+    return _drawn_icon(kind)
+
+
+def _drawn_icon(kind):
     pix = QPixmap(88, 72)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
