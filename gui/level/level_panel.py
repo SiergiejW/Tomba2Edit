@@ -339,6 +339,7 @@ class LevelEditorPanel(QWidget):
         self._scene_memory_cache.clear()
         self._placement_dirty = False
         self._placement_files.clear()
+        self._saved_files = {}
         self._repair_legacy_pickups()
         self._filling = True
         self.area_box.clear()
@@ -1300,6 +1301,26 @@ class LevelEditorPanel(QWidget):
         self._placement_dirty = True
         self._refresh_edited_scene(instance.index)
         self.viewer.show_status("Placed. Change its type or contents in Selected.", done=True)
+
+    def has_unsaved_changes(self):
+        """Level edits not yet in a saved project. Staged files stay in
+        _placement_files for the whole session (Build Disc needs them), so
+        their mere presence says nothing about whether they were saved."""
+        return bool(self._placement_dirty
+                    or self._placement_files != getattr(self, "_saved_files", {}))
+
+    def mark_saved(self):
+        self._saved_files = dict(self._placement_files)
+
+    def unsaved_summary(self):
+        """'' or a phrase naming the unsaved level files, for a prompt."""
+        if not self.has_unsaved_changes():
+            return ""
+        saved = getattr(self, "_saved_files", {})
+        names = sorted(n for n, data in self._placement_files.items() if saved.get(n) != data)
+        if self._placement_dirty:
+            return "unapplied changes to the current level"
+        return f"{len(names)} edited level file(s) ({', '.join(names[:4])}{'...' if len(names) > 4 else ''})"
 
     def _repair_legacy_pickups(self):
         """Move a project saved with the first, crashing item layout into

@@ -404,6 +404,7 @@ class ProjectMixin:
                 cd_dir, self.preview_glyph_top())
 
         self._project_snapshot_path = project_dir
+        self.level_panel.mark_saved()
         if not announce:
             return True
         QMessageBox.information(
@@ -427,8 +428,7 @@ class ProjectMixin:
                         or self.mainexe_viewer.has_pending_edits()
                         or self.bins_viewer.has_pending_edits()
                         or translation.active().chars
-                        or self.level_panel._placement_dirty
-                        or self.level_panel._placement_files)
+                        or self.level_panel.has_unsaved_changes())
             if has_work:
                 answer = QMessageBox.question(
                     self, "Save the project first?",

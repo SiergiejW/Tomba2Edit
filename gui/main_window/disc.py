@@ -219,6 +219,31 @@ class DiscMixin:
             return found
         return getattr(self.voice_panel, "image", None)
 
+    def _confirm_discard_session(self, opening):
+        """Ask before replacing the session, but only when something is
+        actually unsaved - and say what it is."""
+        unsaved = []
+        if self.pending_txtd_edits:
+            unsaved.append(f"{len(self.pending_txtd_edits)} TXTD/TXT2 edit(s)")
+        if self.pending_file_edits:
+            unsaved.append(f"{len(self.pending_file_edits)} file edit(s)")
+        if self.mainexe_viewer.has_pending_edits():
+            unsaved.append(f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE text edit(s)")
+        if self.bins_viewer.has_pending_edits():
+            unsaved.append(f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s)")
+        level = self.level_panel.unsaved_summary()
+        if level:
+            unsaved.append(level)
+        if not unsaved:
+            return True
+        proceed = QMessageBox.question(
+            self, "Discard unsaved edits?",
+            "Not saved yet:\n\n    " + "\n    ".join(unsaved) +
+            f"\n\nOpening a new {opening} will discard them.\n\nContinue anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return proceed == QMessageBox.StandardButton.Yes
+
     def export_bin(self):
         """Write the edits into a copy of the disc's data track.
 
@@ -637,23 +662,8 @@ class DiscMixin:
             QMessageBox.critical(self, "Couldn't open that disc", str(exc))
             return
 
-        if (self.pending_txtd_edits or self.pending_file_edits
-                or self.mainexe_viewer.has_pending_edits()
-                or self.bins_viewer.has_pending_edits()
-                or self.level_panel._placement_dirty
-                or self.level_panel._placement_files):
-            proceed = QMessageBox.question(
-                self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
-                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
-                f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
-                "exported yet. Any current level placements will also be closed. "
-                "Opening a new disc will discard this working session.\n\nContinue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if proceed != QMessageBox.StandardButton.Yes:
-                return
+        if not self._confirm_discard_session("disc"):
+            return
 
         # Starting a fresh ISO always throws away whatever was extracted
         # for the previous one.
@@ -773,23 +783,8 @@ class DiscMixin:
             )
             return
 
-        if (self.pending_txtd_edits or self.pending_file_edits
-                or self.mainexe_viewer.has_pending_edits()
-                or self.bins_viewer.has_pending_edits()
-                or self.level_panel._placement_dirty
-                or self.level_panel._placement_files):
-            proceed = QMessageBox.question(
-                self, "Discard pending edits?",
-                f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
-                f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
-                f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
-                "exported yet. Any current level placements will also be closed. "
-                "Opening a new folder will discard this working session.\n\nContinue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if proceed != QMessageBox.StandardButton.Yes:
-                return
+        if not self._confirm_discard_session("folder"):
+            return
 
         # No extracted-file tree can stand in for the image, so
         # export_iso() still has to refuse until one is attached.
