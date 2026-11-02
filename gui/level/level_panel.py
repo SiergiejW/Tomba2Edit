@@ -1328,8 +1328,9 @@ class LevelEditorPanel(QWidget):
         if not self.exe_path or not os.path.isfile(self.exe_path):
             return
         from game import pickup_edit
+        overlays = self._all_overlay_paths()
         try:
-            files = pickup_edit.repair_legacy_layout(self.exe_path, self._all_overlay_paths())
+            files = pickup_edit.repair_legacy_layout(self.exe_path, overlays)
             if files:
                 self._write_placement_files(files)
         except (ValueError, OSError) as exc:
@@ -1339,6 +1340,16 @@ class LevelEditorPanel(QWidget):
                 f"game, and it couldn't be repaired automatically:\n\n{exc}")
             return
         if not files:
+            # Older custom tables drew every added item with the shared icon;
+            # give it the area's own ground sprite where the area has one.
+            try:
+                art = pickup_edit.refresh_custom_presentation(self.exe_path, overlays)
+                if art:
+                    self._write_placement_files(art)
+            except (ValueError, OSError):
+                return
+            for path, data in art.items():
+                self._placement_files[os.path.basename(path)] = data
             return
         for path, data in files.items():
             self._placement_files[os.path.basename(path)] = data

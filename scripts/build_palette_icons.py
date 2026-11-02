@@ -9,7 +9,7 @@ Every icon is the game's own art, not a drawing:
     crystal  100 AP crystal - resident sprite 6 recoloured with reward 4's
              CLUT, exactly what the game draws
     apple    red apple - resident sprite 0 with reward 0's CLUT
-    item     Red Key - its inventory icon, resident sprite 159
+    item     Red Key - its ground sprite, Fishermen's own sprite file frame 9
     weapon   wooden Boomerang - the 3D model the game spawns for reward 18:
              a model pickup reads the reward's palette field as the model
              file (1, resident) and its sequence as the group (16)
@@ -40,21 +40,10 @@ import retail_icon_render                                    # noqa: E402
 
 SIZE = (176, 144)
 RESIDENT, FISHERMEN = 1, 4
-SPRITES = {"crystal": (6, 4), "apple": (0, 0), "item": (159, None)}
+SPRITES = {"crystal": (6, 4), "apple": (0, 0), "item": (9, None)}
+# The Red Key's ground sprite lives only in Fishermen's own sprite file.
+AREA_SPRITES = {"item": FISHERMEN}
 WEAPON_REWARD = 18
-# Inventory icons carry the menu's frame and backing in their own texels.
-FRAMED = {"item"}
-
-
-def _unframe(image):
-    """Clear an inventory icon's border colour and its backing colour."""
-    pixels = image.load()
-    border, backing = pixels[0, 0], pixels[2, 2]
-    for y in range(image.height):
-        for x in range(image.width):
-            if pixels[x, y] in (border, backing):
-                pixels[x, y] = (0, 0, 0, 0)
-    return image
 
 
 def _files(idx, chunk):
@@ -101,7 +90,8 @@ def build(retail, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     made = {}
 
-    # The chest: its real model, body and lid where the game puts them.
+    # The chest: its real model, body and lid where the game puts them. The
+    # lid hinges at game +Z (the back), so the camera sits on the -Z side.
     at, size = files[pickup_art.CHEST_FILE]
     with open(dat_path, "rb") as f:
         f.seek(at)
@@ -112,27 +102,30 @@ def build(retail, out_dir):
              lid[1]: retail_icon_render.pose(offset=offsets[1])}
     made["chest"] = retail_icon_render.render_model(
         model, vram, groups=[body[1], lid[1]], poses=poses,
-        size=SIZE, yaw=-35.0, margin=10)
+        size=SIZE, yaw=-125.0, margin=10)
 
     # The weapon: the model its reward names, out of the same resident file.
+    # It's a flat upright card, so it's turned in its own plane (90° clockwise).
     art = pickup_art.reward_art(exe)[WEAPON_REWARD]
     assert art.clut & 0x7FFF == pickup_art.CHEST_FILE, "weapon model is not in resident file 1"
     made["weapon"] = retail_icon_render.render_model(
-        model, vram, groups=[art.sequence], size=SIZE, yaw=90.0, elevation=60.0, margin=14)
+        model, vram, groups=[art.sequence], size=SIZE[::-1], yaw=90.0, elevation=60.0,
+        margin=14).rotate(-90, expand=True)
 
     # Sprites, through the same renderer and CLUT override the editor uses.
-    at, size = files[0]
-    bank = load_sprt(dat_path, at, 0, size)
     textures = sprt_render.VRAMTextures(vram, stp=True)
     rewards = pickup_art.reward_art(exe)
+    banks = {}
     for kind, (frame, reward) in SPRITES.items():
-        sprite = bank.sprites[frame]
+        chunk = AREA_SPRITES.get(kind, RESIDENT)
+        if chunk not in banks:
+            at, size = _files(idx, chunk)[0 if chunk == RESIDENT else pickup_art.AREA_BANK_FILE]
+            banks[chunk] = load_sprt(dat_path, at, 0, size)
+        sprite = banks[chunk].sprites[frame]
         if reward is not None and rewards[reward].recolored:
             clut = rewards[reward].clut
             sprite = replace(sprite, pieces=[replace(p, clut=clut) for p in sprite.pieces])
         image, _x, _y = sprt_render.render_sprite(sprite, textures)
-        if kind in FRAMED:
-            image = _unframe(image)
         made[kind] = _fit(image)
 
     for kind, image in made.items():

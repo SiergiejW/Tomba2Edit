@@ -209,25 +209,24 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
         dat_panel_layout.addWidget(self.dat_view)
         dat_panel.setLayout(dat_panel_layout)
 
-        # Tab 1 (default): the existing tree + per-file viewer splitter.
-        # Tab 2: MAIN.EXE's own string-pool editor (gui/mainbin_viewer.py) -
-        # populated whenever a MAIN.EXE is found alongside the opened
-        # ISO/folder (see open_iso_dialog/open_folder_dialog), left empty
-        # otherwise.
+        # Tab 1 (default): the Level Editor - a whole area at once rather
+        # than a file at a time: the room, its background, and everything
+        # the area's overlay stands in it - see gui/level/.
+        # Then the tree + per-file viewer splitter, and MAIN.EXE's own
+        # string-pool editor (gui/mainbin_viewer.py) - populated whenever a
+        # MAIN.EXE is found alongside the opened ISO/folder (see
+        # open_iso_dialog/open_folder_dialog), left empty otherwise.
         self.mainexe_viewer = MainExeViewer()
         self.bins_viewer = BinsViewer()
         self.main_tabs = QTabWidget()
+        self.level_panel = LevelEditorPanel()
+        self.main_tabs.addTab(self.level_panel, "Level Editor")
         self.main_tabs.addTab(self.splitter, "Indexed View (IDX)")
         self.main_tabs.addTab(dat_panel, "Data View (DAT)")
         self.img_browser = IMGBrowser()
         self.main_tabs.addTab(self.img_browser, "Image View (IMG)")
         self.main_tabs.addTab(self.mainexe_viewer, "MAIN.EXE")
         self.main_tabs.addTab(self.bins_viewer, "BINs")
-        # A whole area at once rather than a file at a time: the room,
-        # its background, and everything the area's overlay stands in
-        # it - see gui/level/.
-        self.level_panel = LevelEditorPanel()
-        self.main_tabs.addTab(self.level_panel, "Level Editor")
         # Its own tab rather than beside the text: the voice track has to
         # be opened from a raw BIN, which is a different file from the
         # disc the rest of the tool is working on.

@@ -166,9 +166,10 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
     (WINDOW_START). Five audited MAIN references then use it; every reader
     acts on a live pickup, which only exists while an area overlay is
     loaded. All native definitions remain byte-identical and in native
-    order. Custom entries deliberately use the resident Lunch Box
-    presentation; their inventory grant and message use the selected item
-    definition. The caller must commit ALL returned files together.
+    order. Custom entries use the area's own ground sprite where
+    AREA_ITEM_ART names one, else the resident Lunch Box presentation;
+    their inventory grant and message use the selected item definition.
+    The caller must commit ALL returned files together.
     """
     exe_path = str(exe_path)
     exe = Path(exe_path).read_bytes()
@@ -197,7 +198,8 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
             raise placement.PlacementError("The custom item reward definitions differ between overlays.")
         if any(data[CUSTOM_OFFSET:CUSTOM_OFFSET + len(native)] != native for data in sources.values()):
             raise placement.PlacementError("The custom table no longer matches the native reward definitions.")
-        mapping = {item: reward for reward, item in enumerate(next(iter(columns))) if item >= 0}
+        mapping = {item: reward for reward, item in enumerate(next(iter(columns)))
+                   if reward >= NATIVE_REWARDS and item >= 0}
     elif any(any(data[CUSTOM_OFFSET:end]) for data in sources.values()):
         raise placement.PlacementError("An overlay already occupies the reserved custom reward address.")
     else:
@@ -362,14 +364,16 @@ def reward_catalog(exe_path, overlay_path=None, area=None):
         else:
             category = "weapon" if types.get(art.item, ("", False))[1] else "item"
             label = art.grants
-        if reward >= NATIVE_REWARDS:
+        area_art = art.clut & 0x7FFF == pickup_art.AREA_BANK
+        if reward >= NATIVE_REWARDS and not area_art:
             label += " (shared pickup icon)"
         available = bool(art.frames)
         reason = "" if available else "This area's native sprite sequence is unavailable."
         # An area-bank sprite is numbered in THIS area's own sprite file and
         # sequence table, which hold only what the area itself shows. Any
         # other index reads another sprite or runs off the end of the table.
-        if available and art.clut & 0x7FFF == pickup_art.AREA_BANK and reward not in shipped:
+        # Custom rows only point there when AREA_ITEM_ART vouches for it.
+        if available and area_art and reward < NATIVE_REWARDS and reward not in shipped:
             available = False
             reason = "This area has no art of its own for this pickup."
         if art.item in SCRIPTED_ITEM_GRANTS:

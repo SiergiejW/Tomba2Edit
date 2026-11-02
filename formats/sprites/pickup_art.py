@@ -422,7 +422,11 @@ def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
                             sequence=sequence, clut=clut,
                             name=names.get(item, f"item {item}"))
             try:
-                art.frames, art.loops = _sequence(data, base, sequence)
+                if art.resident:
+                    art.frames, art.loops = _sequence(data, base, sequence)
+                elif area is not None and 0 <= area < AREA_SEQUENCE_COUNT:
+                    art.frames, art.loops = _area_sequence(data, base, overlay,
+                                                           area, sequence)
             except PickupArtError:
                 pass
             out[reward] = art

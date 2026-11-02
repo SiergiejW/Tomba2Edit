@@ -96,7 +96,7 @@ class TreeMixin:
             self.tree_view.expand(walked)
             walked = walked.parent()
 
-        self.main_tabs.setCurrentIndex(0)
+        self.main_tabs.setCurrentWidget(self.splitter)
         self.tree_view.selectionModel().setCurrentIndex(
             target_index,
             QItemSelectionModel.SelectionFlag.ClearAndSelect

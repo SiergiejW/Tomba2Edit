@@ -973,11 +973,17 @@ class LevelScene:
     # --- loading ------------------------------------------------------
 
     def load(self, dat_path, idx_path, chunk_index, overlay_path=None,
-             exe_path=None, progress=FRESH, publish=None):
+             exe_path=None, progress=FRESH, publish=None, fast=False):
         """Read one area. Never raises for a missing piece - an area
         with no background, no overlay or no asset pack is still worth
-        opening, and the notes say what was not there."""
+        opening, and the notes say what was not there.
+
+        `fast` (the Level Editor's Edit mode) skips running the actors'
+        code: objects come from their handlers' models, nothing is
+        recorded, and only the fresh game is read."""
         self.__init__()
+        if fast:
+            progress = FRESH
         self.dat_path = dat_path
         self.chunk_index = chunk_index
         self.overlay_path = overlay_path
@@ -990,7 +996,7 @@ class LevelScene:
         # The same area, built from the same disc and the same code, is the
         # same scene - game/scene_cache.py keeps it.
         name = scene_cache.key(dat_path, idx_path, chunk_index, overlay_path or "",
-                               exe_path or "", progress)
+                               exe_path or "", progress, *(("fast",) if fast else ()))
         kept = scene_cache.read(name)
         if kept is not None:
             self.__dict__.update(kept)
@@ -1030,7 +1036,7 @@ class LevelScene:
             except OSError:
                 pass
             self.placements = placement_module.load_placements(overlay_path)
-            if publish is not None:
+            if publish is not None and not fast:
                 self.instances = [Instance(index=n, role="room",
                     label=f"Area ({where})", room=n)
                     for n, (where, _room) in enumerate(self.rooms)]
@@ -1077,7 +1083,7 @@ class LevelScene:
         # heading off the plane it stands on.
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
         self.model_names = placement_module.load_model_names()
-        if overlay_path and exe_path:
+        if overlay_path and exe_path and not fast:
             self.world = self._simulate(idx_path, publish)
 
         self._built_model = None

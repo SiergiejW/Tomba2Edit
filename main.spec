@@ -74,6 +74,9 @@ def _icon_files():
     # Zippo (gui/widgets/mascot.py loads him by path, like the background):
     # without him the built exe shows blank labels where he stands.
     wanted.add("icons/tomba/zippo.png")
+    # Level Editor palette presets (gui/level/placement_palette.py).
+    for kind in ("chest", "crystal", "item", "apple", "weapon"):
+        wanted.add(f"icons/palette/{kind}.png")
     wanted = sorted(wanted)
     files = []
     for relative in wanted:

@@ -148,7 +148,7 @@ def sprites(scene, vram):
     return atlas, quads
 
 
-def background(scene, vram, overlay):
+def background(scene, vram, overlay, fast=False):
     from formats.background import bgmp_render
     from formats.background.bgmp_parser import load_bgmp
     from gui.level.level_panel import LevelEditorPanel
@@ -161,7 +161,9 @@ def background(scene, vram, overlay):
     bg = load_bgmp(scene.dat_path, scene.dat_start, *entry)
     textures = bgmp_render.BackgroundTextures(vram) if vram else None
     offset = bgmp_render.detect_page_y_offset(bg, textures)
-    phases = LevelEditorPanel._background_frames(None, bg, vram, offset, overlay)
+    # Edit mode: one still frame, no palette animation run.
+    phases = LevelEditorPanel._background_frames(None, bg, vram, offset,
+                                                 None if fast else overlay)
     if sky is not None:
         phases = [(sky_gradient.under(image, sky), ms) for image, ms in phases]
     return phases
@@ -172,6 +174,9 @@ def main(argv):
     manifest, directory = argv
     with open(manifest, encoding="utf-8") as f:
         args = json.load(f)
+    # (dat, idx, chunk, overlay, exe, progress[, fast])
+    fast = bool(args[6]) if len(args) > 6 else False
+    args = args[:6]
     vram = load_vram(args[0], args[1], args[2])
     phases = None
     sequence = 0
@@ -185,7 +190,7 @@ def main(argv):
         # UV animations are looked for in the rooms themselves: the level's
         # other faces with the same palette are captured drawings, which
         # already carry the frames they were recorded in.
-        prepared = (*prepared, prepare_animation_data(
+        prepared = (*prepared, ({}, {}, ()) if fast else prepare_animation_data(
             vram, scene.build(), args[3],
             uv_models=[room for _where, room in scene.rooms]))
         positions = scene.positions(scene.build())
@@ -203,7 +208,7 @@ def main(argv):
         scene._prepared_collision = {view: scene.collision(view, bounds)
                                      for view in (None, "all", *bounds)}
         if phases is None:
-            phases = background(scene, vram, args[3])
+            phases = background(scene, vram, args[3], fast)
         atlas = sprites(scene, vram)
         state = {k: v for k, v in scene.__dict__.items() if k != "world"}
         path = os.path.join(directory, f"stage-{sequence}.pickle")
@@ -216,7 +221,7 @@ def main(argv):
 
     # stdout is the snapshot protocol; normal diagnostics stay on stderr.
     with contextlib.redirect_stdout(_StatusTee(sys.stderr, protocol)):
-        scene = LevelScene().load(*args, publish=publish)
+        scene = LevelScene().load(*args, publish=publish, fast=fast)
         publish(scene, "Ready", complete=True)
     return 0
 

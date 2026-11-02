@@ -22,13 +22,13 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
 )
 from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
-                             QMenu, QMessageBox, QStyle)
+                             QMenu, QMessageBox, QStyle, QToolBar)
 
 from game import game_build
 from formats.models import gltf_export
@@ -166,6 +166,8 @@ class LevelViewer(SMSTViewer):
     part_changed = pyqtSignal(object, object)
     pickup_dropped = pyqtSignal(str, object)
     edit_failed = pyqtSignal(str)
+    # True for Edit mode, False for Preview.
+    mode_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -200,6 +202,31 @@ class LevelViewer(SMSTViewer):
         self._status_hold = QTimer(self)
         self._status_hold.setSingleShot(True)
         self._status_hold.timeout.connect(self._status_animation.start)
+
+        # Preview: the area as the game runs it. Edit: a fast load - no actor
+        # code run, nothing recorded - and the only mode that takes new pickups.
+        self.edit_mode = False
+        self.mode_bar = QToolBar(self)
+        self.mode_bar.setObjectName("viewerToolbar")
+        self.mode_bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        modes = QActionGroup(self)
+        modes.setExclusive(True)
+        self.preview_action = QAction("Preview mode", self)
+        self.preview_action.setToolTip(
+            "The area as the game runs it: every actor's code run, effects "
+            "and idle poses recorded. Slow to load; nothing can be added.")
+        self.edit_action = QAction("Edit mode", self)
+        self.edit_action.setToolTip(
+            "Fast load for placing things: no actor code is run and nothing "
+            "is recorded, objects show their models as placed. Drag pickups "
+            "in from the palette.")
+        for action in (self.preview_action, self.edit_action):
+            action.setCheckable(True)
+            modes.addAction(action)
+            self.mode_bar.addAction(action)
+        self.preview_action.setChecked(True)
+        self.edit_action.toggled.connect(self._set_edit_mode)
+        self.layout().insertWidget(0, self.mode_bar)
 
         self.gif_action.setToolTip(
             "Record the selected row alone, framed, over one loop of whatever "
@@ -1117,10 +1144,14 @@ class LevelViewer(SMSTViewer):
         right, up = self._camera_axes()
         return self._plane_point(x, y, anchor, np.cross(right, up))
 
+    def _set_edit_mode(self, on):
+        self.edit_mode = on
+        self.mode_changed.emit(on)
+
     def dragEnterEvent(self, event):
         from gui.level.placement_palette import MIME
         if (event.mimeData().hasFormat(MIME) and self.scene is not None
-                and not getattr(self, "loading", False)):
+                and self.edit_mode and not getattr(self, "loading", False)):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1131,7 +1162,7 @@ class LevelViewer(SMSTViewer):
     def dropEvent(self, event):
         from gui.level.placement_palette import MIME
         if (not event.mimeData().hasFormat(MIME) or self.scene is None
-                or getattr(self, "loading", False)):
+                or not self.edit_mode or getattr(self, "loading", False)):
             event.ignore()
             return
         kind = bytes(event.mimeData().data(MIME)).decode("ascii", errors="replace")
