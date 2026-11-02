@@ -131,6 +131,34 @@ def custom_reward_records(exe, overlay):
     return out
 
 
+def refresh_custom_presentation(exe_path, overlay_paths):
+    """{path: bytes} re-drawing every custom reward with each area's own
+    art (AREA_ITEM_ART), or {} when nothing changes."""
+    exe = Path(exe_path).read_bytes()
+    paths = {Path(p).stem.upper(): str(p) for p in overlay_paths if p}
+    if not custom_rewards_supported(exe) or not set(US_OVERLAY_SIZES) <= set(paths):
+        return {}
+    datas = {n: Path(paths[n]).read_bytes() for n in US_OVERLAY_SIZES}
+    if not all(d[CUSTOM_TAG_AT:CUSTOM_END] == CUSTOM_TAG for d in datas.values()):
+        return {}
+    items = [_custom_items(d[CUSTOM_OFFSET:CUSTOM_TAG_AT]) for d in datas.values()]
+    if len(set(items)) != 1:
+        return {}
+    size = pickup_art.REWARD.size
+    at = pickup_art.REWARD_TABLE - struct.unpack_from("<I", exe, 0x18)[0] + placement.EXE_TEXT
+    native = exe[at:at + NATIVE_REWARDS * size]
+    template = pickup_art.REWARD.unpack_from(native, 13 * size)
+    mapping = {item: r for r, item in enumerate(items[0]) if r >= NATIVE_REWARDS and item >= 0}
+    out = {}
+    for name, data in datas.items():
+        table = custom_table(native, mapping, name, template)
+        if data[CUSTOM_OFFSET:CUSTOM_TAG_AT] != table:
+            new = bytearray(data)
+            new[CUSTOM_OFFSET:CUSTOM_TAG_AT] = table
+            out[paths[name]] = bytes(new)
+    return out
+
+
 def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
     """Prepare a transaction adding selected inventory IDs as native rewards.
 
@@ -161,29 +189,24 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
               for data in sources.values()]
     if any(tagged) and not all(tagged):
         raise placement.PlacementError("Custom reward tables are inconsistent across the project overlays.")
-    table = (next(iter(sources.values()))[CUSTOM_OFFSET:CUSTOM_TAG_AT] if all(tagged)
-             else native + b"".join(pickup_art.REWARD.pack(0, 0, 0, 0, -1)
-                                   for _ in range(CUSTOM_COUNT - NATIVE_REWARDS)))
     if all(tagged):
-        if any(data[CUSTOM_OFFSET:CUSTOM_TAG_AT] != table for data in sources.values()):
+        # Presentation may differ per area; which item each selector grants
+        # may not, or a save made in one area would mean another elsewhere.
+        columns = {_custom_items(data[CUSTOM_OFFSET:CUSTOM_TAG_AT]) for data in sources.values()}
+        if len(columns) != 1:
             raise placement.PlacementError("The custom item reward definitions differ between overlays.")
-        if table[:len(native)] != native:
+        if any(data[CUSTOM_OFFSET:CUSTOM_OFFSET + len(native)] != native for data in sources.values()):
             raise placement.PlacementError("The custom table no longer matches the native reward definitions.")
+        mapping = {item: reward for reward, item in enumerate(next(iter(columns))) if item >= 0}
     elif any(any(data[CUSTOM_OFFSET:end]) for data in sources.values()):
         raise placement.PlacementError("An overlay already occupies the reserved custom reward address.")
+    else:
+        mapping = {}
     if any(US_OVERLAY_SIZES[name] > CUSTOM_OFFSET for name in sources):
         raise placement.PlacementError("An overlay's own code reaches the custom reward window.")
-    table = bytearray(table)
-    mapping = {}
-    free = []
-    for reward in range(NATIVE_REWARDS, CUSTOM_COUNT):
-        item = pickup_art.REWARD.unpack_from(table, reward * pickup_art.REWARD.size)[-1]
-        if item < 0:
-            free.append(reward)
-        else:
-            mapping[item] = reward
+    free = [r for r in range(NATIVE_REWARDS, CUSTOM_COUNT) if r not in mapping.values()]
     # Native selector 13 is a stationary, universally resident sprite.
-    template = list(pickup_art.REWARD.unpack_from(native, 13 * pickup_art.REWARD.size))
+    template = pickup_art.REWARD.unpack_from(native, 13 * pickup_art.REWARD.size)
     if template[1] & 0x7FFF == pickup_art.AREA_BANK or template[-1] != 92:
         raise placement.PlacementError("The verified resident presentation for custom rewards differs.")
     for item in dict.fromkeys(int(v) for v in item_ids):
@@ -195,10 +218,7 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
             continue
         if not free:
             raise placement.PlacementError("All 77 custom ground-reward slots are in use.")
-        reward = free.pop(0)
-        template[-1] = item
-        table[reward * pickup_art.REWARD.size:(reward + 1) * pickup_art.REWARD.size] = pickup_art.REWARD.pack(*template)
-        mapping[item] = reward
+        mapping[item] = free.pop(0)
     # MAIN.EXE keeps its retail size: no resident copy. Anything past
     # 0x800BE800 that MAIN loads lands in live memory (BSS, the overlay
     # heap, the resident chunk) and the readers only run inside areas.
@@ -212,10 +232,38 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
         data = bytearray(original)
         if len(data) < end:
             data.extend(bytes(end - len(data)))
-        data[CUSTOM_OFFSET:CUSTOM_TAG_AT] = table
+        data[CUSTOM_OFFSET:CUSTOM_TAG_AT] = custom_table(native, mapping, name, template)
         data[CUSTOM_TAG_AT:end] = CUSTOM_TAG
         files[paths[name]] = bytes(data)
     return CustomRewards(files, mapping)
+
+
+# Where an item's real ground sprite lives: {item: {overlay: sequence in
+# that overlay's own sequence table}}. A custom reward there draws it
+# through the game's area-sprite path (palette 1); elsewhere it uses the
+# shared resident icon. Red Key: Fishermen sprite 9 = sequence 2.
+AREA_ITEM_ART = {29: {"A00": 2}}
+
+
+def _custom_items(table):
+    """The item column of a custom table, selector by selector."""
+    return tuple(pickup_art.REWARD.unpack_from(table, r * pickup_art.REWARD.size)[-1]
+                 for r in range(CUSTOM_COUNT))
+
+
+def custom_table(native, mapping, overlay_name, template):
+    """One overlay's custom reward table: native rows untouched, then each
+    mapped item drawn with this area's own art if it has any."""
+    rows = bytearray(native + b"".join(pickup_art.REWARD.pack(0, 0, 0, 0, -1)
+                                        for _ in range(CUSTOM_COUNT - NATIVE_REWARDS)))
+    for item, reward in mapping.items():
+        sequence = AREA_ITEM_ART.get(item, {}).get(overlay_name)
+        if sequence is not None:
+            row = (sequence, pickup_art.AREA_BANK, template[2], template[3], item)
+        else:
+            row = (*template[:-1], item)
+        pickup_art.REWARD.pack_into(rows, reward * pickup_art.REWARD.size, *row)
+    return bytes(rows)
 
 
 @dataclass(frozen=True)
@@ -550,13 +598,19 @@ def repair_legacy_layout(exe_path, overlay_paths):
         struct.pack_into("<I", exe, _word_at(exe, h_at), words[0])
         struct.pack_into("<I", exe, _word_at(exe, l_at), words[1])
     if custom is not None:
+        size = pickup_art.REWARD.size
+        at = pickup_art.REWARD_TABLE - t_addr + placement.EXE_TEXT
+        native = bytes(exe[at:at + NATIVE_REWARDS * size])
+        template = pickup_art.REWARD.unpack_from(native, 13 * size)
+        mapping = {item: reward for reward, item in enumerate(_custom_items(custom))
+                   if reward >= NATIVE_REWARDS and item >= 0}
         for name in US_OVERLAY_SIZES:
             if name not in datas:
                 raise placement.PlacementError("All 22 area overlays are needed to move the custom rewards.")
             data = out.setdefault(name, bytearray(datas[name]))
             if len(data) < CUSTOM_END:
                 data.extend(bytes(CUSTOM_END - len(data)))
-            data[CUSTOM_OFFSET:CUSTOM_TAG_AT] = custom
+            data[CUSTOM_OFFSET:CUSTOM_TAG_AT] = custom_table(native, mapping, name, template)
             data[CUSTOM_TAG_AT:CUSTOM_END] = CUSTOM_TAG
     target = TABLES_OFFSET
     for number in sorted(moved):
