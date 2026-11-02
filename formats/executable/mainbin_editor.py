@@ -81,6 +81,51 @@ def _prefix_digest(data):
     return hashlib.sha256(bytes(prefix)).hexdigest()
 
 
+def _verified_reward_extension(data, build):
+    """Recognize the editor's exact US reward-table extension.
+
+    A matching header alone cannot authorize arbitrary resized executables.
+    Keep the native layout check and allow only our tagged, bounded image
+    with all five audited pointer pairs and the original reward prefix.
+    """
+    if build is not BUILDS["en"]:
+        return False
+    from game import game_build, pickup_edit
+    from formats.sprites import pickup_art
+
+    target = game_build.US_OVERLAY_BASE + pickup_edit.CUSTOM_OFFSET
+    table_at = EXE_HEADER_SIZE + target - RAM_BASE
+    tag_at = table_at + pickup_edit.CUSTOM_COUNT * pickup_art.REWARD.size
+    end = tag_at + len(pickup_edit.CUSTOM_TAG)
+    expected = EXE_HEADER_SIZE + ((end - EXE_HEADER_SIZE + 0x7FF) & ~0x7FF)
+    if (len(data) != expected
+            or struct.unpack_from("<I", data, T_SIZE_FIELD_OFFSET)[0] != expected - EXE_HEADER_SIZE
+            or data[tag_at:end] != pickup_edit.CUSTOM_TAG
+            or any(data[build["file_size"]:table_at])
+            or any(data[end:])):
+        return False
+    for hi_address, hi, lo_address, lo in pickup_edit.REWARD_REFS:
+        high = struct.unpack_from("<I", data, EXE_HEADER_SIZE + hi_address - RAM_BASE)[0]
+        low = struct.unpack_from("<I", data, EXE_HEADER_SIZE + lo_address - RAM_BASE)[0]
+        if (high != (hi & 0xFFFF0000) | ((target + 0x8000) >> 16 & 0xFFFF)
+                or low != (lo & 0xFFFF0000) | (target & 0xFFFF)):
+            return False
+    # This branch accepts only the audited US header, independent of the
+    # build currently selected by a different viewer.
+    native_at = EXE_HEADER_SIZE + 0x800A29CC - RAM_BASE
+    native_size = pickup_edit.NATIVE_REWARDS * pickup_art.REWARD.size
+    if data[table_at:table_at + native_size] != data[native_at:native_at + native_size]:
+        return False
+    template = pickup_art.REWARD.unpack_from(data, native_at + 13 * pickup_art.REWARD.size)
+    empty = (0, 0, 0, 0, -1)
+    for reward in range(pickup_edit.NATIVE_REWARDS, pickup_edit.CUSTOM_COUNT):
+        record = pickup_art.REWARD.unpack_from(data, table_at + reward * pickup_art.REWARD.size)
+        if record != empty and (record[:-1] != template[:-1]
+                                or not 0 <= record[-1] < pickup_art.ITEM_COUNT):
+            return False
+    return True
+
+
 def detect_build(exe_path):
     """Returns the matching entry from BUILDS for exe_path, or raises
     UnsupportedExeError. Call before trusting any offset in this module."""
@@ -88,7 +133,8 @@ def detect_build(exe_path):
         data = f.read()
     digest = _prefix_digest(data)
     for build in BUILDS.values():
-        if len(data) == build["file_size"] and digest == build["prefix_sha256"]:
+        if (digest == build["prefix_sha256"]
+                and (len(data) == build["file_size"] or _verified_reward_extension(data, build))):
             return build
     known = ", ".join(b["label"] for b in BUILDS.values())
     raise UnsupportedExeError(

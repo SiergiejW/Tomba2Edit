@@ -391,7 +391,7 @@ class Pickup:
         return ", ".join(bits)
 
 
-def _pickup(data, offset):
+def _pickup(data, offset, *, scan=False):
     """The pickup record at `offset`, or None if what is there isn't one."""
     if offset < 0 or offset + PICKUP_SIZE > len(data):
         return None
@@ -407,7 +407,11 @@ def _pickup(data, offset):
         return None
     if not 0 <= bit <= PICKUP_MAX_BIT:
         return None
-    if not (0 < abs(x) < 32000 and abs(y) < 32000 and 0 < abs(z) < 32000):
+    if not (abs(x) <= 32768 and abs(y) <= 32768 and abs(z) <= 32768):
+        return None
+    # A pointer proves a table's location; zero is a legitimate edited
+    # coordinate there. Shape scans still need the original stronger test.
+    if scan and not (0 < abs(x) < 32000 and abs(y) < 32000 and 0 < abs(z) < 32000):
         return None
     return Pickup(index=0, table=0, offset=offset, x=x, y=y, z=z, type=kind,
                   alloc=alloc, persist=persist, reward=reward, bit=bit,
@@ -485,11 +489,11 @@ def scan_pickups(data):
               for offset in range(record.offset, record.offset + RECORD_SIZE)}
     tables, at = [], 0
     while at + PICKUP_SIZE <= len(data):
-        if at in placed or _pickup(data, at) is None:
+        if at in placed or _pickup(data, at, scan=True) is None:
             at += 2
             continue
         run, end = [], at
-        while (record := _pickup(data, end)) is not None and end not in placed:
+        while (record := _pickup(data, end, scan=True)) is not None and end not in placed:
             run.append(record)
             end += PICKUP_SIZE
         if (len(run) >= MIN_PICKUPS and end < len(data) and data[end] == END
@@ -519,11 +523,17 @@ def load_pickups(overlay_path, exe_path):
 
 
 def patch_pickups(data, pickups):
-    """`data` with each pickup's position written back."""
+    """Patch existing records, including their reward and collision plane.
+
+    Growing a table additionally requires MAIN.EXE pointer updates; use
+    game.pickup_edit.stage_pickups for records added in the editor.
+    """
+    from game.pickup_edit import pack_pickup
     out = bytearray(data)
     for pickup in pickups:
-        struct.pack_into("<hhh", out, pickup.offset + 4,
-                         int(pickup.x), int(pickup.y), int(pickup.z))
+        if pickup.offset < 0 or pickup.offset + PICKUP_SIZE > len(out):
+            raise PlacementError("New pickups must be saved with MAIN.EXE's table pointers.")
+        out[pickup.offset:pickup.offset + PICKUP_SIZE] = pack_pickup(pickup)
     return bytes(out)
 
 

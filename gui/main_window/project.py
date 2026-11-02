@@ -168,6 +168,9 @@ class ProjectMixin:
                 self, "No disc open", "Open a Tomba! 2 disc first.")
             return False
 
+        if not self.level_panel.apply_changes():
+            return False
+
         if project_dir is None:
             project_dir = QFileDialog.getExistingDirectory(
                 self, "Choose an empty or existing project folder")
@@ -202,6 +205,8 @@ class ProjectMixin:
         sop_path = self.bins_viewer.sop_viewer.sop_path
         sop_edits = self.bins_viewer.all_edits()
         project_state = self._translation_project_state()
+        overlay_sources = list(dict.fromkeys(filter(None, (
+            self.overlay_for_area(chunk) for chunk in range(4, 26)))))
         in_place = (os.path.normcase(os.path.abspath(source_cd))
                     == os.path.normcase(os.path.abspath(cd_dir)))
 
@@ -253,9 +258,18 @@ class ProjectMixin:
                         shutil.copy2(exe_path, stage_exe)
 
                 stage_sop = None
+                stage_overlays = []
+                if overlay_sources:
+                    stage_bin = os.path.join(stage, "BIN")
+                    os.makedirs(stage_bin, exist_ok=True)
+                    for source_overlay in overlay_sources:
+                        relative = "BIN/" + os.path.basename(source_overlay)
+                        destination = os.path.join(stage_bin, os.path.basename(source_overlay))
+                        shutil.copy2(source_overlay, destination)
+                        stage_overlays.append((destination, relative))
                 if sop_path:
                     stage_bin = os.path.join(stage, "BIN")
-                    os.makedirs(stage_bin)
+                    os.makedirs(stage_bin, exist_ok=True)
                     stage_sop = os.path.join(stage_bin, "SOP.BIN")
                     if sop_edits:
                         sop_repack_pool(
@@ -315,6 +329,7 @@ class ProjectMixin:
                     "cd_folder": game_folder_name,
                     "main_exe": "MAIN.EXE" if exe_path else None,
                     "sop_bin": "BIN/SOP.BIN" if sop_path else None,
+                    "overlays": [relative for _, relative in stage_overlays],
                     "snd": "TOMBA2.SND" if stage_snd else None,
                     "labels": "labels.json" if stage_labels else None,
                     "voice_index": ("voice/edits.json"
@@ -343,6 +358,10 @@ class ProjectMixin:
                 if stage_sop:
                     os.makedirs(os.path.dirname(output_sop), exist_ok=True)
                     os.replace(stage_sop, output_sop)
+                for staged_overlay, relative in stage_overlays:
+                    destination = os.path.join(project_dir, relative)
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    os.replace(staged_overlay, destination)
                 if stage_snd:
                     os.replace(stage_snd,
                                os.path.join(project_dir, "TOMBA2.SND"))
@@ -407,7 +426,9 @@ class ProjectMixin:
                         or self.pending_file_edits
                         or self.mainexe_viewer.has_pending_edits()
                         or self.bins_viewer.has_pending_edits()
-                        or translation.active().chars)
+                        or translation.active().chars
+                        or self.level_panel._placement_dirty
+                        or self.level_panel._placement_files)
             if has_work:
                 answer = QMessageBox.question(
                     self, "Save the project first?",

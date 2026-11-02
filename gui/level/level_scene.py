@@ -372,6 +372,9 @@ class Instance:
     # Four view-space corners its picture is stretched across instead of
     # facing the camera - a kind-0x14 quad such as a rope.
     quad: tuple = None
+    # A chest's contents preview follows its editable pickup, independently
+    # of actor assemblies and the captured simulation.
+    pickup_parent: int = None
 
     @property
     def timed(self):
@@ -1653,6 +1656,8 @@ class LevelScene:
         A record whose `plane` is 0 - or past the end of the area's
         planes - is not told which one it is on, and the game looks for
         the plane whose box the chest stands in. So does this."""
+        if self.can_rotate_pickup(record):
+            return (record.plane & 0xFF) * 360.0 / 256.0
         at = record.plane - PLANE_BASE
         if not 0 <= at < len(self.planes):
             at = self._plane_containing(record.x, record.z)
@@ -1669,6 +1674,338 @@ class LevelScene:
                     and z0 - slack <= z <= z1 + slack):
                 return at
         return None
+
+    # --- editable persistent pickups ---------------------------------
+
+    @staticmethod
+    def can_rotate_pickup(record):
+        """Mode 4 alone stores a chest's authored yaw in its plane byte.
+
+        FUN_8003fc78 sets actor yaw to plane << 4. All ordinary outdoor
+        chests derive their heading from collision instead.
+        """
+        return bool(record is not None and record.chest
+                    and record.behaviour == CHEST_AUTHORED)
+
+    def rotate_pickup(self, instance, angle):
+        if not self.can_rotate_pickup(instance.pickup):
+            raise placement_module.PlacementError(
+                "This pickup takes its orientation from collision.")
+        instance.pickup.plane = int(round(float(angle) * 256.0 / 360.0)) & 0xFF
+        instance.angle = self.chest_heading(instance.pickup)
+        self.__dict__.pop("_built_model", None)
+        return instance.angle
+
+    @staticmethod
+    def _pickup_view(view):
+        if isinstance(view, tuple) and len(view) == 2 and view[0] == "room":
+            return view[1]
+        return None if view in (None, "all", "area") else view
+
+    def pickup_table_for_view(self, view=None):
+        """A native selector already called by this area's overlay.
+
+        An interior chest may share an outdoor table; the actor's interior
+        flag gates visibility. Do not invent a selector for an area without
+        a native pickup table, because nothing would call it in the game.
+        """
+        room = self._pickup_view(view)
+        matches = [r for r in self.pickups if bool(r.type & INTERIOR_FLAG)
+                   == (room is not None)
+                   and (room is None or r.persist == int(room) - 1)]
+        if not matches:
+            matches = [r for r in self.pickups if not r.type & INTERIOR_FLAG]
+        if not matches:
+            matches = list(self.pickups)
+        if not matches:
+            raise placement_module.PlacementError(
+                "This area has no native pickup table to extend.")
+        return matches[0].table
+
+    @staticmethod
+    def _inside_polygon(x, z, corners):
+        """Boundary-inclusive test for a town collision floor's corners."""
+        signs = []
+        for (ax, az), (bx, bz) in zip(corners, corners[1:] + corners[:1]):
+            cross = (bx - ax) * (z - az) - (bz - az) * (x - ax)
+            if abs(cross) > 1e-6:
+                signs.append(cross > 0)
+        return not signs or all(s == signs[0] for s in signs)
+
+    def _town_floor(self, point, view=None):
+        x, y, z = point
+        room = self._pickup_view(view)
+        datasets = town_collision.find(self.overlay_data) if self.overlay_data else []
+        floors = []
+        for number, dataset in enumerate(datasets):
+            if (number == 0) != (room is None):
+                continue
+            for plane in dataset.planes:
+                if plane.kind not in ("floor", "foothold"):
+                    continue
+                if self._inside_polygon(x, z, plane.corners):
+                    floors.append(plane.height(x, z))
+        if not floors:
+            return None
+        # Prefer a floor beneath the point, so a bridge does not pull a
+        # pickup up from the floor underneath it. Game Y increases down.
+        beneath = [h for h in floors if h >= y - 0.5]
+        return min(beneath) if beneath else min(floors, key=lambda h: abs(h - y))
+
+    @staticmethod
+    def _scld_project(entry, point):
+        """A native descriptor and leaf-cell projection, or None.
+
+        Uses the dominant-axis 2.14 slope and the integer cell profile,
+        as f_ProjectActorOntoAreaPlane/f_ComputeAreaPlaneCellCorrection do.
+        Directional link cells that cannot supply a concrete leaf are
+        rejected instead of approximating a location across empty space.
+        """
+        from formats.collision.scld_geometry import geometry
+        x, y, z = (int(round(v)) for v in point)
+        dx, dz = entry.xxx2 - entry.xxx1, entry.yyy2 - entry.yyy1
+        gradient = entry.unkn if entry.unkn < 0x8000 else entry.unkn - 0x10000
+        if abs(dx) >= abs(dz):
+            x = max(min(entry.xxx1, entry.xxx2), min(max(entry.xxx1, entry.xxx2), x))
+            z = entry.yyy1 + (((x - entry.xxx1) * gradient) >> 14)
+        else:
+            z = max(min(entry.yyy1, entry.yyy2), min(max(entry.yyy1, entry.yyy2), z))
+            x = entry.xxx1 + (((z - entry.yyy1) * gradient) >> 14)
+        ox, oz = entry.origin
+        col, row = (x - ox) >> 6, (z - oz) >> 6
+        slot = next((s for s in geometry(entry).slots
+                     if s.col == col and s.row == row), None)
+        if slot is None:
+            return None
+        lx, lz = (x - ox) & 63, (z - oz) & 63
+        if slot.flags & 2:
+            lx ^= 63
+        if slot.flags & 1:
+            lz ^= 63
+        if slot.flags & 4:
+            lx, lz = lz, lx
+        along = lx
+        lo, hi = slot.profile & 0xFF, slot.profile >> 8
+        if slot.flags & 8:
+            lz = lo + (((hi - lo) * lx) >> 6)
+        elif lo != 63:
+            lz = int(hi * (lx - lo) / (lo ^ 63))
+        else:
+            return None             # native division would trap
+        if slot.flags & 4:
+            lx, lz = lz, lx
+        if slot.flags & 2:
+            lx = 63 - lx
+        if slot.flags & 1:
+            lz = 63 - lz
+        x, z = ox + col * 64 + lx, oz + row * 64 + lz
+        floors = []
+        for index in slot.records:
+            surface = entry.path[index]
+            if not surface.kind & 1:
+                continue
+            if slot.flags & 8:
+                height = surface.pos + ((surface.elevation * along) >> 6)
+            else:
+                height = surface.pos + int(surface.elevation * (along - lo) / (lo ^ 63))
+            floors.append(height)
+        beneath = [height for height in floors if height >= y - 0.5]
+        floor = (min(beneath) if beneath else
+                 min(floors, key=lambda height: abs(height - y)) if floors else None)
+        return (x, y, z), floor
+
+    def pickup_position(self, point, plane=0, *, snap_ground=False,
+                        view=None, locked_plane=False):
+        """(view point, native plane) suitable for a persistent pickup.
+
+        Outdoors the point is projected onto actual SCLD cells. Towns use
+        their overlay floor polygons and keep free X/Z. Height stays
+        editable unless the caller explicitly requests a floor snap.
+        """
+        native = view_point(point)
+        if not all(math.isfinite(v) for v in native):
+            raise placement_module.PlacementError("The pickup position must be finite.")
+        if not self.planes:
+            floor = self._town_floor(native, view)
+            if floor is None:
+                raise placement_module.PlacementError(
+                    "There is no decoded collision floor at this position.")
+            x, y, z = native
+            if snap_ground:
+                y = floor
+            result, number = (x, y, z), plane
+        else:
+            candidates = []
+            for at, entry in enumerate(self.planes):
+                number = entry.index + PLANE_BASE
+                if locked_plane and number != plane:
+                    continue
+                projected = self._scld_project(entry, native)
+                if projected is None:
+                    continue
+                pos, floor = projected
+                if snap_ground and floor is None:
+                    continue
+                dx, dz = pos[0] - native[0], pos[2] - native[2]
+                # At overlapping collision lanes, vertical distance to the
+                # actual floor resolves the ambiguity before plane ordering.
+                distance = dx * dx + dz * dz
+                if floor is not None:
+                    distance += min(abs(floor - native[1]), 512.0) ** 2 * 0.01
+                if number == plane:
+                    distance -= 0.01
+                candidates.append((distance, number, pos, floor))
+            if not candidates:
+                raise placement_module.PlacementError(
+                    "No concrete collision cell supports this pickup position.")
+            _distance, number, result, floor = min(candidates, key=lambda c: c[0])
+            if snap_ground:
+                result = (result[0], floor, result[2])
+        native = tuple(int(round(v)) for v in result)
+        if any(v < -32768 or v > 32767 for v in native):
+            raise placement_module.PlacementError(
+                "The pickup position exceeds the game's signed 16-bit coordinates.")
+        return view_point(native), number
+
+    def add_pickup(self, record, point=None, view=None):
+        """Append a native pickup and its visual without rerunning actors."""
+        if not self.overlay_path or not self.exe_path:
+            raise placement_module.PlacementError(
+                "An extracted overlay and MAIN.EXE are required to add pickups.")
+        known_tables = {p.table for p in self.pickups}
+        if record.table not in known_tables:
+            raise placement_module.PlacementError(
+                "This area's native spawner does not call that pickup table.")
+        room = self._pickup_view(view)
+        if room is not None and not record.chest:
+            raise placement_module.PlacementError(
+                "The native table spawner assigns an interior only to chests; "
+                "place loose pickups in the Area view.")
+        if point is None:
+            point = view_point(record.position)
+        old_record = copy.copy(record)
+        try:
+            if room is not None:
+                record.type |= INTERIOR_FLAG
+                record.persist = int(room) - 1
+            else:
+                record.type &= ~INTERIOR_FLAG
+            if record.chest and not self.planes:
+                record.behaviour = CHEST_AUTHORED
+                record.plane = 0
+            snap = record.chest or record.apple
+            pos, plane = self.pickup_position(point, record.plane,
+                                              snap_ground=snap, view=view)
+            record.x, record.y, record.z = (int(round(v)) for v in view_point(pos))
+            if not self.can_rotate_pickup(record):
+                record.plane = plane
+        except Exception:
+            record.__dict__.update(old_record.__dict__)
+            raise
+        self.pickups.append(record)
+        instance = Instance(index=len(self.instances), role="pickup", label="",
+                            pickup=record, x=pos[0], y=pos[1], z=pos[2])
+        self.instances.append(instance)
+        self.refresh_pickup(instance)
+        return instance
+
+    def move_pickup(self, instance, point=None, axis="free", snap_ground=False):
+        record = instance.pickup
+        if record is None:
+            raise placement_module.PlacementError("This instance has no pickup record.")
+        if point is None:
+            point = (instance.x, instance.y, instance.z)
+        point = tuple(float(v) for v in point)
+        if axis == "vertical":
+            point = (instance.x, point[1], instance.z)
+        elif axis == "horizontal":
+            point = (point[0], instance.y, point[2])
+        elif axis != "free":
+            raise placement_module.PlacementError(f"Unknown movement axis: {axis}")
+        view = instance.scene
+        if axis == "vertical":
+            # A vertical edit must never choose another lane or alter X/Z.
+            if not math.isfinite(point[1]) or not -32767 <= point[1] <= 32768:
+                raise placement_module.PlacementError(
+                    "The pickup height exceeds the game's signed 16-bit coordinates.")
+            pos, plane = point, record.plane
+        else:
+            pos, plane = self.pickup_position(point, record.plane,
+                                              snap_ground=snap_ground, view=view,
+                                              locked_plane=axis == "horizontal")
+        instance.x, instance.y, instance.z = pos
+        instance.to_record()
+        if not self.can_rotate_pickup(record):
+            record.plane = plane
+        if record.chest:
+            instance.angle = self.chest_heading(record)
+        self._move_pickup_contents(instance)
+        self.__dict__.pop("_built_model", None)
+        return instance
+
+    def _move_pickup_contents(self, instance):
+        for child in self.instances:
+            if (child.role == "spawned"
+                    and child.label == instance.label + ": contents"):
+                child.pickup_parent = instance.index
+            if child.pickup_parent == instance.index:
+                child.x, child.y, child.z = (instance.x,
+                                             instance.y + CHEST_CONTENTS_LIFT,
+                                             instance.z)
+                child.scene = instance.scene
+
+    def refresh_pickup(self, instance):
+        """Refresh one editable pickup after changing its native fields."""
+        record = instance.pickup
+        if record is None:
+            return instance
+        old_label = instance.label
+        art = self.reward_art.get(record.contents if record.chest else record.art_reward)
+        instance.art = art
+        instance.label = record.name(art)
+        instance.scene = record.persist + 1 if record.type & INTERIOR_FLAG else None
+        instance.assembly = None
+        instance.authored = False
+        instance.sources = ()
+        instance.offsets = ()
+        instance.tris = instance.quads = 0
+        if record.chest:
+            instance.sources = tuple(self.chest_models.get(record.art_reward, ()))
+            instance.offsets = self.chest_offsets
+            instance.angle = self.chest_heading(record)
+        elif record.type & placement_module.TYPE_MASK:
+            # Model-backed pickups use palette as file and sequence as group.
+            source = (art.clut & 0x7FFF, art.sequence) if art is not None else None
+            if source and self.group(source)[1] is not None:
+                instance.sources = (source,)
+                instance.art = None
+        # Existing chest previews predate pickup_parent. Adopt them by the
+        # exact old label, keeping indices and other captures unchanged.
+        children = [i for i in self.instances
+                    if i.pickup_parent == instance.index
+                    or (i.role == "spawned" and i.label == old_label + ": contents")]
+        if record.chest and art is not None and not children:
+            child = Instance(index=len(self.instances), role="spawned",
+                             label=instance.label + ": contents",
+                             pickup_parent=instance.index)
+            self.instances.append(child)
+            children.append(child)
+        for child in children:
+            child.pickup_parent = instance.index
+            child.label = instance.label + ": contents"
+            child.sources, child.art = (), None
+            child.assembly = None
+            child.tris = child.quads = 0
+            if record.chest and art is not None:
+                source = (art.clut & 0x7FFF, art.sequence)
+                if record.reward & 0x80 and self.group(source)[1] is not None:
+                    child.sources = (source,)
+                else:
+                    child.art = art
+            child.note = f"reward {record.contents}, what the chest gives when opened"
+        self._move_pickup_contents(instance)
+        self.__dict__.pop("_built_model", None)
+        return instance
 
     @property
     def area_index(self):
@@ -2477,6 +2814,7 @@ class LevelScene:
             "tri_count": 0, "quad_count": 0, "groups": self.instances,
         }
         for instance in self.instances:
+            instance.tris = instance.quads = 0
             instance.first_vertex = len(scene["vertices"])
             instance.first_face = len(scene["faces"])
             if instance.role == "room":

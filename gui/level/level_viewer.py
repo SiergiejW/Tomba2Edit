@@ -28,7 +28,7 @@ from PyQt6.QtOpenGL import (
     QOpenGLVertexArrayObject,
 )
 from PyQt6.QtWidgets import (QFileDialog, QGraphicsOpacityEffect, QLabel,
-                             QMessageBox, QStyle)
+                             QMenu, QMessageBox, QStyle)
 
 from game import game_build
 from formats.models import gltf_export
@@ -164,11 +164,17 @@ class LevelViewer(SMSTViewer):
     # (instance, part) when a part of the selection is picked, part None
     # when it goes back to the whole.
     part_changed = pyqtSignal(object, object)
+    pickup_dropped = pyqtSignal(str, object)
+    edit_failed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = None
         self.selected = None
+        self._moving = None
+        self._context_press = None
+        self.setAcceptDrops(True)
+        self.setMouseTracking(True)
 
         # An SMST is laid out on a grid because nothing says where its
         # parts go; a level says exactly where everything goes.
@@ -385,6 +391,9 @@ class LevelViewer(SMSTViewer):
         binding an object to a different model rebuilds every array, but
         it is still the same level and they are still looking at the
         part of it they were looking at."""
+        self._moving = None
+        self._context_press = None
+        self.unsetCursor()
         self.scene = scene
         # Each recorded effect's frame instances, in order - one shows a tick.
         self._flips = [i.flip_frames for i in scene.instances
@@ -609,6 +618,10 @@ class LevelViewer(SMSTViewer):
         super().enterEvent(event)
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self._moving is not None:
+            self._finish_move(cancel=True)
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
             self.frame_selection()
             return
@@ -1068,6 +1081,154 @@ class LevelViewer(SMSTViewer):
             return None
         return (origin + direction * t) * UNIT_SCALE
 
+    def placement_point(self, x, y):
+        """A point on visible level geometry under a palette drop."""
+        ray = self._ray(x, y)
+        if ray is None or self.scene is None:
+            return None
+        origin, direction = ray
+        if self.model_data and len(self.model_data.get("faces") or ()):
+            if self._face_instance is None or self._pick_vertices is None:
+                self._build_face_index()
+            vertices, faces = self._pick_vertices, self._pick_faces
+            a = vertices[faces[:, 0]]
+            e1, e2 = vertices[faces[:, 1]] - a, vertices[faces[:, 2]] - a
+            cross = np.cross(direction, e2)
+            det = np.einsum("ij,ij->i", e1, cross)
+            live = np.abs(det) > 1e-12
+            inv = np.divide(1.0, det, out=np.zeros_like(det), where=live)
+            delta = origin - a
+            u = np.einsum("ij,ij->i", delta, cross) * inv
+            q = np.cross(delta, e1)
+            v = np.einsum("j,ij->i", direction, q) * inv
+            t = np.einsum("ij,ij->i", e2, q) * inv
+            hit = live & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-6)
+            hidden = self.hidden_groups | self._flip_hidden()
+            if hidden:
+                hit &= ~np.isin(self._face_instance, list(hidden))
+            if hit.any():
+                return (origin + direction * float(t[hit].min())) * UNIT_SCALE
+        # Dropping into empty space requires a visible object/level anchor;
+        # native collision projection then chooses a valid lane or floor.
+        visible = [i for i in self.instances if i.index not in self.hidden_groups]
+        if not visible:
+            return None
+        anchor = np.mean([(i.x, i.y, i.z) for i in visible], axis=0)
+        right, up = self._camera_axes()
+        return self._plane_point(x, y, anchor, np.cross(right, up))
+
+    def dragEnterEvent(self, event):
+        from gui.level.placement_palette import MIME
+        if (event.mimeData().hasFormat(MIME) and self.scene is not None
+                and not getattr(self, "loading", False)):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        from gui.level.placement_palette import MIME
+        if (not event.mimeData().hasFormat(MIME) or self.scene is None
+                or getattr(self, "loading", False)):
+            event.ignore()
+            return
+        kind = bytes(event.mimeData().data(MIME)).decode("ascii", errors="replace")
+        if kind not in ("chest", "crystal", "item", "apple", "weapon"):
+            event.ignore()
+            return
+        p = event.position()
+        point = self.placement_point(p.x(), p.y())
+        if point is None:
+            event.ignore()
+            return
+        self.pickup_dropped.emit(kind, tuple(point))
+        event.acceptProposedAction()
+
+    def begin_move(self, mode="free"):
+        instance = next((i for i in self.instances if i.index == self.selected), None)
+        if (instance is None or not instance.movable or instance.authored
+                or getattr(self, "loading", False)):
+            return
+        from PyQt6.QtGui import QCursor
+        cursor = self.mapFromGlobal(QCursor.pos())
+        anchor = np.array((instance.x, instance.y, instance.z), dtype=float)
+        right, up = self._camera_axes()
+        normal = np.cross(right, up)
+        start = self._plane_point(cursor.x(), cursor.y(), anchor, normal)
+        self._moving = (instance.index, mode, anchor, normal, start,
+                        None if instance.pickup is None else instance.pickup.plane)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.controls_label.setText("Move: follow mouse | Left-click: place | Esc/right-click: cancel")
+
+    def _finish_move(self, cancel=False):
+        if self._moving is None:
+            return
+        index, mode, anchor, normal, start, plane = self._moving
+        self._moving = None
+        instance = self.instances[index]
+        if cancel:
+            instance.x, instance.y, instance.z = anchor
+            if plane is not None:
+                instance.pickup.plane = plane
+                if instance.pickup.chest:
+                    instance.angle = self.scene.chest_heading(instance.pickup)
+                self.scene._move_pickup_contents(instance)
+            instance.to_record()
+            self.refresh_instance(index)
+        else:
+            self.instance_moved.emit(index)
+        self.unsetCursor()
+        self.controls_label.setText(CONTROLS)
+
+    def mouseMoveEvent(self, event):
+        if self._moving is not None:
+            index, mode, anchor, normal, start, plane = self._moving
+            p = event.position()
+            point = self._plane_point(p.x(), p.y(), anchor, normal)
+            if point is not None:
+                target = anchor + point - (start if start is not None else anchor)
+                if mode == "vertical":
+                    target[0], target[2] = anchor[0], anchor[2]
+                elif mode == "horizontal":
+                    target[1] = anchor[1]
+                instance = self.instances[index]
+                try:
+                    if instance.pickup is not None:
+                        self.scene.move_pickup(instance, target, axis=mode)
+                    else:
+                        instance.x, instance.y, instance.z = target
+                        instance.to_record()
+                    self.refresh_instance(index)
+                except ValueError:
+                    pass  # Keep the last valid point while outside collision.
+            event.accept()
+            return
+        if self._context_press is not None:
+            point, index = self._context_press
+            if (event.position().toPoint() - point).manhattanLength() > 6:
+                self._context_press = None
+                self.camera_controls.begin_look()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._context_press is not None and event.button() == Qt.MouseButton.RightButton:
+            point, index = self._context_press
+            self._context_press = None
+            self.select(index)
+            menu = QMenu(self)
+            for title, mode in (("Move", "free"), ("Move vertically", "vertical"),
+                                ("Move horizontally", "horizontal")):
+                action = menu.addAction(title)
+                action.triggered.connect(lambda checked=False, m=mode: self.begin_move(m))
+            menu.exec(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def mousePressEvent(self, event):
         """Pick, never move: a click selects the instance under the
         cursor, and a second click on it goes one deeper - the part under
@@ -1075,6 +1236,20 @@ class LevelViewer(SMSTViewer):
 
         With the navigation key held the press is the camera's instead -
         that is how a trackpad orbits - and nothing is picked."""
+        if self._moving is not None and event.button() in (
+                Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            self._finish_move(cancel=event.button() == Qt.MouseButton.RightButton)
+            event.accept()
+            return
+        if (event.button() == Qt.MouseButton.RightButton and not navigating(event)
+                and not getattr(self, "loading", False)):
+            p = event.position().toPoint()
+            index = self.pick(p.x(), p.y())
+            instance = next((i for i in self.instances if i.index == index), None)
+            if instance is not None and instance.movable and not instance.authored:
+                self._context_press = (p, index)
+                event.accept()
+                return
         if (event.button() != Qt.MouseButton.LeftButton
                 or navigating(event)):
             super().mousePressEvent(event)

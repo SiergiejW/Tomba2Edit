@@ -111,6 +111,16 @@ def members(folder, manifest):
         full = os.path.join(folder, relative)
         if os.path.isfile(full):
             found.append((full, relative.replace(os.sep, "/")))
+    for relative in manifest.get("overlays", []):
+        if not isinstance(relative, str):
+            raise ProjectFileError("Invalid overlay path in project manifest.")
+        normalized = relative.replace("\\", "/")
+        if (not normalized.startswith("BIN/") or ".." in normalized.split("/")
+                or normalized.count("/") != 1):
+            raise ProjectFileError("Invalid overlay path in project manifest.")
+        full = os.path.join(folder, normalized)
+        if os.path.isfile(full) and all(name != normalized for _, name in found):
+            found.append((full, normalized))
     return found
 
 

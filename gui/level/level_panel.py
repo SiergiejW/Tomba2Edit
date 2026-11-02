@@ -39,6 +39,7 @@ from gui.widgets.dot_delegate import DOT_COLOR, DotDelegate
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
 from gui.widgets.panel_title import make_panel_title
+from gui.level.placement_palette import PlacementPalette
 
 COLUMNS = ["Instance", "Model", "X", "Y", "Z", "Angle"]
 # How many of an interior's rows the Rooms box names.
@@ -90,6 +91,8 @@ class LevelEditorPanel(QWidget):
         self._background_cache = {}
         self._sprite_cache = {}
         self._scene_memory_cache = {}
+        self._placement_dirty = False
+        self._placement_files = {}
 
         # Pre-rendered phases of the background, flipped by a timer -
         # the same trick the BGMP viewer uses, since re-rendering a
@@ -112,6 +115,7 @@ class LevelEditorPanel(QWidget):
         self.viewer.selection_changed.connect(self._on_view_selection)
         self.viewer.instance_moved.connect(self._on_instance_moved)
         self.viewer.part_changed.connect(self._on_part_selected)
+        self.viewer.pickup_dropped.connect(self._add_pickup)
 
         self.area_box = QComboBox(self)
         self.area_box.setMinimumWidth(340)
@@ -212,6 +216,20 @@ class LevelEditorPanel(QWidget):
         edit_layout.addWidget(self.details)
         edit_layout.addLayout(form)
 
+        self.pickup_options = QGroupBox("Pickup", self)
+        pickup_form = QFormLayout(self.pickup_options)
+        self.pickup_kind = QComboBox(self)
+        self.pickup_reward = QComboBox(self)
+        self.pickup_category = QComboBox(self)
+        self.pickup_category.setEnabled(False)
+        self.pickup_kind.currentIndexChanged.connect(self._on_pickup_option)
+        self.pickup_reward.currentIndexChanged.connect(self._on_pickup_option)
+        pickup_form.addRow("Type", self.pickup_kind)
+        pickup_form.addRow("Contents / item", self.pickup_reward)
+        pickup_form.addRow("Item category", self.pickup_category)
+        edit_layout.addWidget(self.pickup_options)
+        self.pickup_options.hide()
+
         self.keep_button = QPushButton("Keep models", self)
         self.keep_button.setToolTip(
             "Write the models picked by hand into labels/placements.json, "
@@ -231,10 +249,13 @@ class LevelEditorPanel(QWidget):
             "animated texture - alone and framed, as an animated GIF over one "
             "loop of it. With nothing selected, the whole view.")
         self.gif_button.clicked.connect(lambda: self.viewer.save_gif())
-        self.save_button = QPushButton("Save overlay as...", self)
+        self.apply_button = QPushButton("Apply changes", self)
+        self.apply_button.setToolTip("Apply level changes to the working game files for project/disc saving.")
+        self.apply_button.clicked.connect(lambda: self.apply_changes(announce=True))
+        self.save_button = QPushButton("Export overlay...", self)
         self.save_button.setToolTip(
             "Write a copy of this area's Axx.BIN with the positions and "
-            "angles as they are here. Only those bytes change.")
+            "pickup options as they are here. Apply changes first when adding records.")
         self.save_button.clicked.connect(self._save_overlay)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
@@ -242,6 +263,7 @@ class LevelEditorPanel(QWidget):
         buttons.addWidget(self.name_button)
         buttons.addWidget(self.gif_button)
         buttons.addWidget(self.save_button)
+        edit_layout.addWidget(self.apply_button)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -265,7 +287,20 @@ class LevelEditorPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(left)
-        splitter.addWidget(self.viewer)
+        self.palette = PlacementPalette(self)
+        self.palette.setEnabled(False)
+        palette_panel = QWidget(self)
+        palette_layout = QVBoxLayout(palette_panel)
+        palette_layout.setContentsMargins(6, 3, 6, 0)
+        palette_layout.addWidget(QLabel("Add objects — drag into the level", self))
+        palette_layout.addWidget(self.palette)
+        viewport_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        viewport_splitter.addWidget(self.viewer)
+        viewport_splitter.addWidget(palette_panel)
+        viewport_splitter.setStretchFactor(0, 1)
+        viewport_splitter.setStretchFactor(1, 0)
+        viewport_splitter.setSizes([700, 150])
+        splitter.addWidget(viewport_splitter)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([420, 900])
@@ -293,6 +328,7 @@ class LevelEditorPanel(QWidget):
         business working out where an Axx.BIN lives or how to decompress
         a VRAM chunk when the window already knows both."""
         self._cancel_load()
+        self.scene = None
         self.dat_path = dat_path
         self.idx_path = idx_path
         self.overlay_for_area = overlay_for_area
@@ -301,6 +337,8 @@ class LevelEditorPanel(QWidget):
         self._background_cache.clear()
         self._sprite_cache.clear()
         self._scene_memory_cache.clear()
+        self._placement_dirty = False
+        self._placement_files.clear()
         self._filling = True
         self.area_box.clear()
         rooms = self._areas_with_rooms()
@@ -342,6 +380,8 @@ class LevelEditorPanel(QWidget):
                        self.keep_button, self.save_button,
                        *self.boxes.values()):
             widget.setEnabled(on)
+        self.palette.setEnabled(on and not getattr(self, "_loading", False))
+        self.apply_button.setEnabled(on)
 
     # --- loading an area ----------------------------------------------
 
@@ -367,6 +407,8 @@ class LevelEditorPanel(QWidget):
 
     def load_area(self, chunk, keep_camera=False, keep_view="all"):
         """Start a cancellable background load; the GUI remains navigable."""
+        if not self.apply_changes():
+            return
         from gui.level.progressive_load import LevelLoad
         from PyQt6.QtWidgets import QApplication
         self._cancel_load()
@@ -397,6 +439,8 @@ class LevelEditorPanel(QWidget):
         # starts once the authoritative result arrives, so a later stage can
         # never overwrite a user's model/position change.
         self.viewer.loading = True
+        self.palette.setEnabled(False)
+        self.apply_button.setEnabled(False)
         for button in (self.keep_button, self.name_button, self.save_button,
                        self.gif_button):
             button.setEnabled(False)
@@ -539,6 +583,8 @@ class LevelEditorPanel(QWidget):
                             + (f"Loaded in {time.perf_counter() - self._stage_started:.1f}s."
                                if complete else "You can explore while loading continues."))
         if complete:
+            self.palette.setEnabled(True)
+            self.apply_button.setEnabled(True)
             self.viewer.show_status(
                 f"AREA_{self.chunk:02X} loaded in "
                 f"{time.perf_counter() - self._stage_started:.1f}s", done=True)
@@ -564,53 +610,11 @@ class LevelEditorPanel(QWidget):
         if cached is not None:
             self.viewer.set_sprites(*cached)
             return
-        # Two banks: the one every area shares, and the area's own -
-        # a handful of rewards are drawn out of the second.
-        wheres = {"resident": scene.resident.get(
-                      pickup_sprites.RESIDENT_SPRT_ID)}
-        own = scene.by_id.get(pickup_sprites.AREA_SPRT_ID)
-        if own is not None:
-            wheres["area"] = (scene.dat_start, own)
         try:
-            banks = {}
-            for name, where in wheres.items():
-                if where is None:
-                    continue
-                start, (offset, size) = where
-                banks[name] = pickup_sprites.SpriteBank(
-                    scene.dat_path, start, offset, size, vram)
-            wanted = pickup_sprites.wanted_frames(scene.instances)
-            captured, captured_steps, captured_units = [], {}, {}
-            if scene.captured_billboards:
-                from formats.sprites import sprite_rip
-                from gui.level.level_scene import CLIP_HZ
-                for index, polygons in scene.captured_billboards.items():
-                    ripped = sprite_rip.rip_polygons(
-                        polygons, vram, 1000.0 / CLIP_HZ, return_scale=True)
-                    if not ripped:
-                        continue
-                    frames, units = ripped
-                    keys = []
-                    for frame, (image, _ms) in enumerate(frames):
-                        key = ("captured", index, frame)
-                        pixels = np.asarray(image, dtype=np.uint8)
-                        captured.append((key, pixels, image.width / 2,
-                                         image.height / 2))
-                        keys.append(key)
-                    captured_steps[index] = keys
-                    captured_units[index] = units
-            atlas, placed = pickup_sprites.build_atlas(
-                banks, wanted, extra=captured)
-            quads = pickup_sprites.billboards(scene.instances, placed)
-            for index, keys in captured_steps.items():
-                instance = scene.instances[index]
-                steps = tuple((placed[key], 1) for key in keys if key in placed)
-                if steps:
-                    quads.append(pickup_sprites.Billboard(
-                        index=index, x=instance.x, y=instance.y, z=instance.z,
-                        steps=steps, loops=True,
-                        blend=getattr(scene, "captured_billboard_blends", {}).get(index),
-                        units=float(captured_units[index])))
+            # Keep captured particles as deduplicated native cards, using
+            # the same compact atlas as the progressive area loader.
+            from gui.level.load_worker import sprites
+            atlas, quads = sprites(scene, vram)
         except Exception as e:
             scene.notes.append(f"couldn't cut the pickup sprites: {e}")
             return
@@ -976,6 +980,7 @@ class LevelEditorPanel(QWidget):
 
     def _on_instance_moved(self, index):
         self._scene_memory_cache.clear()
+        self._placement_dirty = True
         instance = self._instance(index)
         row = self._row_of(index)
         if instance is None or row is None:
@@ -1007,6 +1012,7 @@ class LevelEditorPanel(QWidget):
         table, record number, file offset - is what identifies it; the
         model it draws with is named by the DAT ids it comes from."""
         if instance is None:
+            self.pickup_options.hide()
             print("selected: nothing")
             return
         area = f"AREA_{self.chunk:02X}" if self.chunk is not None else "level"
@@ -1069,6 +1075,16 @@ class LevelEditorPanel(QWidget):
         for box in self.boxes.values():
             box.setEnabled(instance.movable and not instance.authored
                            and not getattr(self, "_loading", False))
+        if instance.pickup is not None:
+            self.boxes["Angle"].setEnabled(
+                self.scene.can_rotate_pickup(instance.pickup)
+                and not getattr(self, "_loading", False))
+            self.boxes["Angle"].setToolTip(
+                "Town chest rotation uses the game's 256 direction steps."
+                if self.scene.can_rotate_pickup(instance.pickup) else
+                "The game determines this pickup's rotation from collision.")
+            self.model_box.setEnabled(False)
+        self._fill_pickup_options(instance)
         self._filling = False
 
     def _fill_boxes(self, instance):
@@ -1085,14 +1101,40 @@ class LevelEditorPanel(QWidget):
         instance = self._instance(self.viewer.selected)
         if instance is None or not instance.movable:
             return
-        instance.game_position = tuple(self.boxes[n].value() for n in ("X", "Y", "Z"))
-        instance.angle = self.boxes["Angle"].value()
-        instance.to_record()
+        try:
+            if instance.pickup is not None:
+                requested = tuple(self.boxes[n].value() for n in ("X", "Y", "Z"))
+                previous = tuple(round(v) for v in instance.game_position)
+                changed = {at for at, (old, new) in enumerate(zip(previous, requested))
+                           if old != new}
+                if changed:
+                    # A height edit must not choose another collision lane.
+                    # Rotation-only edits likewise leave the position alone.
+                    axis = ("vertical" if changed == {1} else
+                            "horizontal" if 1 not in changed else "free")
+                    point = level_scene.view_point(requested)
+                    self.scene.move_pickup(instance, point, axis=axis)
+                if self.scene.can_rotate_pickup(instance.pickup):
+                    self.scene.rotate_pickup(instance, self.boxes["Angle"].value())
+            else:
+                instance.game_position = tuple(self.boxes[n].value() for n in ("X", "Y", "Z"))
+                instance.angle = self.boxes["Angle"].value()
+                instance.to_record()
+        except ValueError as exc:
+            self._filling = True
+            self._fill_boxes(instance)
+            self._filling = False
+            self.viewer.show_status(str(exc), done=True)
+            return
+        self._placement_dirty = True
         self.viewer.refresh_instance(instance.index)
         row = self._row_of(instance.index)
-        if row is not None:
-            self._filling = True
-            self._fill_row(row, instance)
+        self._filling = True
+        try:
+            self._fill_boxes(instance)
+            if row is not None:
+                self._fill_row(row, instance)
+        finally:
             self._filling = False
 
     def _on_model_changed(self, _index):
@@ -1139,6 +1181,224 @@ class LevelEditorPanel(QWidget):
             self.viewer.select(selected)
 
     # --- saving -------------------------------------------------------
+
+    def _catalog(self):
+        from game import pickup_edit
+        return pickup_edit.reward_catalog(
+            self.exe_path, self.scene.overlay_path, self.scene.area_index)
+
+    def _fill_pickup_options(self, instance):
+        record = instance.pickup
+        self.pickup_options.setVisible(record is not None)
+        if record is None:
+            return
+        self.pickup_kind.clear()
+        self.pickup_reward.clear()
+        self.pickup_category.clear()
+        category = "chest" if record.chest else self._pickup_category(record)
+        if record.chest:
+            for value, label in placement_module.CHEST_KINDS.items():
+                self.pickup_kind.addItem(label.capitalize(), value)
+            self.pickup_kind.setCurrentIndex(self.pickup_kind.findData(record.art_reward))
+        else:
+            self.pickup_kind.addItem(category.capitalize(), category)
+        self.pickup_kind.setEnabled(record.chest and not getattr(self, "_loading", False))
+        selected = record.contents if record.chest else record.art_reward
+        for entry in self._catalog():
+            if not record.chest and entry.category != category:
+                continue
+            row = self.pickup_reward.count()
+            self.pickup_reward.addItem(entry.label, entry.reward)
+            if not entry.available:
+                self.pickup_reward.model().item(row).setEnabled(False)
+                self.pickup_reward.setItemData(row, entry.reason, Qt.ItemDataRole.ToolTipRole)
+        match = self.pickup_reward.findData(selected)
+        if match < 0:
+            self.pickup_reward.addItem(f"Reward {selected}", selected)
+            match = self.pickup_reward.count() - 1
+        self.pickup_reward.setCurrentIndex(match)
+        entry = next((e for e in self._catalog() if e.reward == selected), None)
+        self.pickup_category.addItem(entry.item_type if entry else "Native pickup")
+        self.pickup_reward.setEnabled(not getattr(self, "_loading", False))
+
+    def _pickup_category(self, record):
+        if record.chest:
+            return "chest"
+        entry = next((e for e in self._catalog() if e.reward == record.art_reward), None)
+        return entry.category if entry else "item"
+
+    def _on_pickup_option(self, _index):
+        if self._filling or self.scene is None or getattr(self, "_loading", False):
+            return
+        instance = self._instance(self.viewer.selected)
+        if instance is None or instance.pickup is None:
+            return
+        record = instance.pickup
+        reward = self.pickup_reward.currentData()
+        if reward is None:
+            return
+        try:
+            reward = self._resolve_reward(reward)
+        except (ValueError, OSError) as exc:
+            QMessageBox.information(self, "Couldn't select this item", str(exc))
+            self._show_details(instance.index)
+            return
+        if record.chest:
+            kind = self.pickup_kind.currentData()
+            if kind is not None:
+                record.reward = (record.reward & 0x80) | kind
+            record.config = (record.config & ~placement_module.CONTENTS_MASK) | reward
+        else:
+            record.reward = (record.reward & 0x80) | reward
+        self.scene.refresh_pickup(instance)
+        self._placement_dirty = True
+        self._refresh_edited_scene(instance.index)
+
+    def _refresh_edited_scene(self, selected):
+        self._scene_memory_cache.clear()
+        self._sprite_cache.clear()
+        self._rebuild()
+        self._load_sprites(self.scene, self.viewer.vram_raw_bytes)
+        self.viewer.select(selected)
+        self._show_details(selected)
+        self._sync_motion_animation(self.viewer.animate_action.isChecked())
+
+    def _add_pickup(self, category, point):
+        if self.scene is None or getattr(self, "_loading", False):
+            return
+        from game import pickup_edit
+        try:
+            overlays = self._all_overlay_paths()
+            reward = pickup_edit.default_reward(category, self._catalog())
+            # The active scene can contain unsaved additions, so it also
+            # participates in native persistence-bit allocation.
+            record = pickup_edit.new_pickup(
+                category, self.scene.pickups, self.exe_path,
+                overlay_paths=overlays,
+                table=self.scene.pickup_table_for_view(self.view_box.currentData()),
+                overlay_path=self.scene.overlay_path, area=self.scene.area_index,
+                reward=4 if reward >= 256 else reward)
+            old_instances = len(self.scene.instances)
+            instance = self.scene.add_pickup(
+                record, point=point, view=self.view_box.currentData())
+            try:
+                resolved = self._resolve_reward(reward)
+                if record.chest:
+                    record.config = (record.config & ~placement_module.CONTENTS_MASK) | resolved
+                else:
+                    record.reward = resolved
+                self.scene.refresh_pickup(instance)
+            except (ValueError, OSError):
+                self.scene.pickups.remove(record)
+                del self.scene.instances[old_instances:]
+                self.scene.__dict__.pop("_built_model", None)
+                raise
+        except (ValueError, OSError) as exc:
+            QMessageBox.information(self, "Couldn't place this object", str(exc))
+            return
+        self._placement_dirty = True
+        self._refresh_edited_scene(instance.index)
+        self.viewer.show_status("Placed. Change its type or contents in Selected.", done=True)
+
+    def _all_overlay_paths(self):
+        return list(dict.fromkeys(filter(None, (
+            self.overlay_for_area(chunk) for chunk in range(
+                level_scene.FIRST_AREA_CHUNK,
+                level_scene.FIRST_AREA_CHUNK + placement_module.AREA_COUNT)))))
+
+    @staticmethod
+    def _write_placement_files(files):
+        """Stage every file first and restore originals if a replace fails."""
+        import tempfile
+        staged, committed = [], []
+        try:
+            for path, data in files.items():
+                with open(path, "rb") as source:
+                    old = source.read()
+                with tempfile.NamedTemporaryFile(dir=os.path.dirname(path),
+                        prefix=".placement-", delete=False) as output:
+                    output.write(data)
+                    staged.append((path, output.name, old))
+            for path, temporary, old in staged:
+                os.replace(temporary, path)
+                committed.append((path, old))
+        except OSError:
+            for path, old in committed:
+                with open(path, "wb") as output:
+                    output.write(old)
+            raise
+        finally:
+            for path, temporary, old in staged:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
+    def _resolve_reward(self, reward):
+        """Virtual inventory choices become native selectors in a saved bundle."""
+        if reward < 256:
+            return reward
+        from game import pickup_edit
+        from formats.sprites import pickup_art
+        bundle = pickup_edit.ensure_custom_rewards(
+            self.exe_path, self._all_overlay_paths(), item_ids=(reward - 256,))
+        self._write_placement_files(bundle.files)
+        for path, data in bundle.files.items():
+            self._placement_files[os.path.basename(path)] = data
+        with open(self.scene.overlay_path, "rb") as source:
+            self.scene.overlay_data = source.read()
+        self.scene.reward_art = pickup_art.reward_art(
+            self.exe_path, overlay=self.scene.overlay_data, area=self.scene.area_index)
+        self._scene_memory_cache.clear()
+        return bundle.item_rewards[reward - 256]
+
+    def disc_replacements(self):
+        """Current staged files, including edits restored from a project."""
+        replacements = dict(self._placement_files)
+        # Folder projects hold the full overlay files; their source image
+        # still has the unedited originals. Include those files on rebuild.
+        if self.dat_path:
+            for root in (os.path.dirname(self.dat_path),
+                         os.path.dirname(os.path.dirname(self.dat_path))):
+                folder = os.path.join(root, "BIN")
+                if os.path.isdir(folder):
+                    for name in os.listdir(folder):
+                        path = os.path.join(folder, name)
+                        if name.upper().endswith(".BIN") and os.path.isfile(path):
+                            with open(path, "rb") as source:
+                                replacements[name] = source.read()
+        if self.exe_path and os.path.isfile(self.exe_path):
+            with open(self.exe_path, "rb") as source:
+                replacements["MAIN.EXE"] = source.read()
+        return replacements
+
+    def apply_changes(self, announce=False):
+        """Stage native records before an area switch, project save or export."""
+        if not self._placement_dirty or self.scene is None:
+            return True
+        from game import pickup_edit
+        try:
+            overlay_path = self.scene.overlay_path
+            with open(overlay_path, "rb") as source:
+                old_overlay = source.read()
+            with open(self.exe_path, "rb") as source:
+                old_exe = source.read()
+            overlay = placement_module.patch(old_overlay, self.scene.placements)
+            overlay, exe, records = pickup_edit.stage_pickups(
+                overlay, old_exe, self.scene.pickups)
+            self._write_placement_files({overlay_path: overlay, self.exe_path: exe})
+            updated = {(r.table, r.index): r for r in records}
+            for before in self.scene.pickups:
+                before.__dict__.update(updated[before.table, before.index].__dict__)
+            self.scene.overlay_data = overlay
+            self._placement_files[os.path.basename(overlay_path)] = overlay
+            self._placement_files["MAIN.EXE"] = exe
+            self._placement_dirty = False
+            self._scene_memory_cache.clear()
+            if announce:
+                self.viewer.show_status("Level changes applied. Save Project or Build Disc to keep them.", done=True)
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(self, "Couldn't apply level changes", str(exc))
+            return False
+        return True
 
     def _keep_models(self):
         """Write the models the objects are set to into
@@ -1237,14 +1497,13 @@ class LevelEditorPanel(QWidget):
             self, "Save the patched overlay", name, "Overlay (*.BIN);;All files (*)")
         if not path:
             return
+        if not self.apply_changes():
+            return
         try:
             with open(self.scene.overlay_path, "rb") as f:
                 data = f.read()
-            patched = placement_module.patch(data, self.scene.placements)
-            patched = placement_module.patch_pickups(patched,
-                                                     self.scene.pickups)
             with open(path, "wb") as f:
-                f.write(patched)
+                f.write(data)
         except OSError as e:
             QMessageBox.critical(self, "Couldn't write it", str(e))
             return
@@ -1252,4 +1511,4 @@ class LevelEditorPanel(QWidget):
             self, "Saved",
             f"Wrote {len(self.scene.placements)} object record(s) and "
             f"{len(self.scene.pickups)} pickup(s) into a copy of {name}. "
-            f"Only the positions and angles differ from the original.")
+            "New pickup tables also require the updated MAIN.EXE; use Save Project or Build Disc to keep both.")

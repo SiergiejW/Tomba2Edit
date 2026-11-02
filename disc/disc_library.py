@@ -25,7 +25,6 @@ Two shapes show up under iso/, and both are handled:
                       cannot work.
 """
 import os
-import re
 
 _EXTS = (".bin", ".img", ".car")
 
@@ -43,10 +42,6 @@ _MAX_DEPTH = 4
 # Relative to this file: disc/ -> project root -> iso.
 DEFAULT_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "iso"))
-
-_CUE_FILE = re.compile(r'FILE\s+"([^"]+)"', re.IGNORECASE)
-_CUE_TRACK = re.compile(r'TRACK\s+\d+\s+(\S+)', re.IGNORECASE)
-
 
 def _data_track_from_cue(cue_path):
     """The data track's own file, out of a .cue - the FILE line most

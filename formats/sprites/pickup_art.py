@@ -71,7 +71,7 @@ DEMO_REWARD = struct.Struct("<hHBBBBh")
 # The table has no terminator, so it is read to a length. Fifty is where
 # it stops making sense - entry 50 asks for sprite 2912 out of a bank of
 # a few hundred - and the highest reward the disc actually uses is 37.
-REWARD_COUNT = 50
+REWARD_COUNT = 51
 
 # A reward's top bit isn't part of the number: the spawner keeps it as a
 # flag of its own and masks the reward down to seven bits before looking
@@ -411,6 +411,21 @@ def reward_art(exe_path, count=REWARD_COUNT, overlay=None, area=None):
         except PickupArtError:
             art.frames, art.loops = (), False
         out[reward] = art
+    # Optional editor rewards live in the same reserved overlay window in
+    # every area, reached by audited MAIN instruction patches. Keep native
+    # definitions unchanged; only the tagged extension supplies extras.
+    if overlay:
+        from game.pickup_edit import custom_reward_records
+        for reward, fields in custom_reward_records(data, overlay).items():
+            sequence, clut, width, height, item = fields
+            art = RewardArt(reward=reward, width=width, height=height, item=item,
+                            sequence=sequence, clut=clut,
+                            name=names.get(item, f"item {item}"))
+            try:
+                art.frames, art.loops = _sequence(data, base, sequence)
+            except PickupArtError:
+                pass
+            out[reward] = art
     return out
 
 

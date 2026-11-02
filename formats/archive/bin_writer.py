@@ -176,6 +176,16 @@ def patch_track(source, destination, replacements, progress=None):
             out.seek(rec_sector * SECTOR)
             out.write(cdsector.rebuild(sector))
             notes.append(f"{key}: {len(payload):,} bytes, {where}")
+        if append_at > total_sectors:
+            # CAR images declare their exact length. A grown overlay must
+            # remain inside the ISO volume advertised to the emulator.
+            pvd = _read_sector(out, 16)
+            volume_sectors = struct.unpack_from("<I", pvd, DATA_AT + 80)[0]
+            if append_at > volume_sectors:
+                struct.pack_into("<I", pvd, DATA_AT + 80, append_at)
+                struct.pack_into(">I", pvd, DATA_AT + 84, append_at)
+                out.seek(16 * SECTOR)
+                out.write(cdsector.rebuild(pvd))
     return notes
 
 

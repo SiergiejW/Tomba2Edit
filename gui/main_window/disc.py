@@ -68,7 +68,7 @@ class DiscMixin:
         self.current_iso_path = track
         self.source_disc = record
         self._disc_search_failed = False
-        self._theme_settings.setValue(self.DISC_SETTING, track)
+        self._theme_settings.setValue(self.DISC_SETTING, path)
 
         # Everything that plays off the disc is pointed at it here, so
         # attaching it once is enough - the Dialogues tab should never
@@ -233,6 +233,7 @@ class DiscMixin:
 
         if not self.level_panel.apply_changes():
             return
+        level_replacements = self.level_panel.disc_replacements()
 
         # A project holds the game's files, not the disc they came from,
         # so this asks for the image rather than refusing outright the
@@ -265,7 +266,7 @@ class DiscMixin:
         voice_mismatch = bool(self.voice_edits.count() and not voice_edits)
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.img_dirty and not voice_edits
+                and not self.img_dirty and not voice_edits and not level_replacements
                 # An edited sequence or a swapped sound effect is an
                 # edit to TOMBA2.SND, which this writes further down -
                 # leaving it out of the count made Build Disc refuse a
@@ -288,7 +289,7 @@ class DiscMixin:
         if edits is None:
             return
         edits += self._pack_pending_file_edits()
-        replacements = {}
+        replacements = dict(level_replacements)
         with tempfile.TemporaryDirectory(prefix="tomba2bin_") as work:
             try:
                 if edits:
@@ -467,11 +468,16 @@ class DiscMixin:
         export)."""
         from formats.archive import bin_writer
 
+        record = self.source_disc or {}
+        cue = record.get("cue")
+        if cue and os.path.isfile(cue) and source_disc.matches(cue, record):
+            source = cue
         return bin_writer.copy_audio_track(source, target)
 
     def export_all_files(self):
         if not self.level_panel.apply_changes():
             return
+        level_replacements = self.level_panel.disc_replacements()
         # all_edits(), not pending_edits() - every export runs against
         # the untouched source exe fresh, so it must reapply every
         # change made since load (edited AND already-exported alike),
@@ -482,7 +488,7 @@ class DiscMixin:
         snd_edited = self.snd_edits.count()
         if (not self.pending_txtd_edits and not self.pending_file_edits
                 and not mainexe_edits and not sop_edits
-                and not self.img_dirty and not snd_edited):
+                and not self.img_dirty and not snd_edited and not level_replacements):
             QMessageBox.information(
                 self, "Nothing to export",
                 "No text, replaced file, MAIN.EXE, SOP.BIN, music or font "
@@ -516,6 +522,13 @@ class DiscMixin:
             return
 
         output_paths = [output_dat, output_idx]
+        for name, payload in level_replacements.items():
+            folder = out_dir if name.upper() == "MAIN.EXE" else os.path.join(out_dir, "BIN")
+            os.makedirs(folder, exist_ok=True)
+            output = os.path.join(folder, name)
+            with open(output, "wb") as f:
+                f.write(payload)
+            output_paths.append(output)
         img = self._edited_img()
         if img is not None:
             output_img = os.path.join(out_dir, "TOMBA2.IMG")
@@ -626,13 +639,16 @@ class DiscMixin:
 
         if (self.pending_txtd_edits or self.pending_file_edits
                 or self.mainexe_viewer.has_pending_edits()
-                or self.bins_viewer.has_pending_edits()):
+                or self.bins_viewer.has_pending_edits()
+                or self.level_panel._placement_dirty
+                or self.level_panel._placement_files):
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
                 f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
                 f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
                 f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
-                "exported yet. Opening a new ISO will discard them.\n\nContinue anyway?",
+                "exported yet. Any current level placements will also be closed. "
+                "Opening a new disc will discard this working session.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -759,13 +775,16 @@ class DiscMixin:
 
         if (self.pending_txtd_edits or self.pending_file_edits
                 or self.mainexe_viewer.has_pending_edits()
-                or self.bins_viewer.has_pending_edits()):
+                or self.bins_viewer.has_pending_edits()
+                or self.level_panel._placement_dirty
+                or self.level_panel._placement_files):
             proceed = QMessageBox.question(
                 self, "Discard pending edits?",
                 f"You have {len(self.pending_txtd_edits)} TXTD/TXT2 edit(s), "
                 f"{len(self.mainexe_viewer.pending_edits())} MAIN.EXE edit(s), and "
                 f"{len(self.bins_viewer.pending_edits())} SOP.BIN edit(s) that haven't been "
-                "exported yet. Opening a new folder will discard them.\n\nContinue anyway?",
+                "exported yet. Any current level placements will also be closed. "
+                "Opening a new folder will discard this working session.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -884,6 +903,7 @@ class DiscMixin:
         files 'Export Files' hands back."""
         if not self.level_panel.apply_changes():
             return
+        level_replacements = self.level_panel.disc_replacements()
         if not self.current_iso_path or not self.iso_handler or not getattr(self, 'dat_file', None):
             QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
             return
@@ -899,7 +919,7 @@ class DiscMixin:
         mainexe_edits = self.mainexe_viewer.all_edits()
         sop_edits = self.bins_viewer.all_edits()
         has_any_edits = (bool(edits) or bool(mainexe_edits)
-                         or bool(sop_edits) or self.img_dirty)
+                         or bool(sop_edits) or self.img_dirty or bool(level_replacements))
 
         default_name = os.path.splitext(os.path.basename(self.current_iso_path))[0]
         default_name += "_edited.iso" if has_any_edits else "_copy.iso"
@@ -914,7 +934,7 @@ class DiscMixin:
         from formats.archive.repacker import repack_files
         from disc.iso_builder import build_iso
 
-        replacements = {}
+        replacements = dict(level_replacements)
         tmp_repack_dir = None
         try:
             if edits or mainexe_edits or sop_edits:

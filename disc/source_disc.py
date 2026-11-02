@@ -154,7 +154,7 @@ def cue_beside(track_path):
             for listed, _kind in cue_tracks(candidate):
                 if os.path.abspath(listed) == target:
                     return candidate
-        except OSError:
+        except (OSError, SourceDiscError):
             continue
     return None
 
@@ -321,7 +321,7 @@ def record(path):
     track = data_track(path)
     stored = fingerprint(track)
     stored["path"] = os.path.abspath(track)
-    cue = cue_beside(track)
+    cue = path if os.path.splitext(path)[1].lower() == ".cue" else cue_beside(track)
     if cue:
         stored["cue"] = os.path.abspath(cue)
     return stored
