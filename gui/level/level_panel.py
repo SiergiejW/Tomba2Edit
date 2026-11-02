@@ -339,6 +339,7 @@ class LevelEditorPanel(QWidget):
         self._scene_memory_cache.clear()
         self._placement_dirty = False
         self._placement_files.clear()
+        self._repair_legacy_pickups()
         self._filling = True
         self.area_box.clear()
         rooms = self._areas_with_rooms()
@@ -1299,6 +1300,33 @@ class LevelEditorPanel(QWidget):
         self._placement_dirty = True
         self._refresh_edited_scene(instance.index)
         self.viewer.show_status("Placed. Change its type or contents in Selected.", done=True)
+
+    def _repair_legacy_pickups(self):
+        """Move a project saved with the first, crashing item layout into
+        the free RAM window (game/pickup_edit.py)."""
+        if not self.exe_path or not os.path.isfile(self.exe_path):
+            return
+        from game import pickup_edit
+        try:
+            files = pickup_edit.repair_legacy_layout(self.exe_path, self._all_overlay_paths())
+            if files:
+                self._write_placement_files(files)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(
+                self, "Item placements need attention",
+                f"This project's added items use an old layout that crashes the "
+                f"game, and it couldn't be repaired automatically:\n\n{exc}")
+            return
+        if not files:
+            return
+        for path, data in files.items():
+            self._placement_files[os.path.basename(path)] = data
+        QMessageBox.information(
+            self, "Item placements repaired",
+            "This project's added items were stored in RAM the game also "
+            "uses, which made levels crash on load. They have been moved to "
+            "free memory; nothing you placed was lost.\n\n"
+            "Save the project and rebuild the disc to use the fix.")
 
     def _all_overlay_paths(self):
         return list(dict.fromkeys(filter(None, (

@@ -82,25 +82,26 @@ def _prefix_digest(data):
 
 
 def _verified_reward_extension(data, build):
-    """Recognize the editor's exact US reward-table extension.
+    """Recognize the editor's FIRST-layout US reward-table extension.
 
-    A matching header alone cannot authorize arbitrary resized executables.
-    Keep the native layout check and allow only our tagged, bounded image
-    with all five audited pointer pairs and the original reward prefix.
+    That layout grew MAIN.EXE to carry a table at overlay +0x70000 and
+    crashes the game (game/pickup_edit.py LEGACY_*); it is recognised only
+    so such a project still opens and repair_legacy_layout can fix it. The
+    current layout keeps MAIN.EXE at its retail size.
     """
     if build is not BUILDS["en"]:
         return False
     from game import game_build, pickup_edit
     from formats.sprites import pickup_art
 
-    target = game_build.US_OVERLAY_BASE + pickup_edit.CUSTOM_OFFSET
+    target = game_build.US_OVERLAY_BASE + pickup_edit.LEGACY_OFFSET
     table_at = EXE_HEADER_SIZE + target - RAM_BASE
     tag_at = table_at + pickup_edit.CUSTOM_COUNT * pickup_art.REWARD.size
-    end = tag_at + len(pickup_edit.CUSTOM_TAG)
+    end = tag_at + len(pickup_edit.LEGACY_TAG)
     expected = EXE_HEADER_SIZE + ((end - EXE_HEADER_SIZE + 0x7FF) & ~0x7FF)
     if (len(data) != expected
             or struct.unpack_from("<I", data, T_SIZE_FIELD_OFFSET)[0] != expected - EXE_HEADER_SIZE
-            or data[tag_at:end] != pickup_edit.CUSTOM_TAG
+            or data[tag_at:end] != pickup_edit.LEGACY_TAG
             or any(data[build["file_size"]:table_at])
             or any(data[end:])):
         return False

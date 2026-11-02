@@ -13,16 +13,44 @@ from game import game_build, placement
 
 # The native placement manager keeps one 32-bit visibility/allocated mask.
 MAX_TABLE_RECORDS = 32
+TABLE_CAPACITY = (MAX_TABLE_RECORDS + 1) * placement.PICKUP_SIZE
 # Both native collection banks are 128 bytes. Reserve the lower half for
 # shipped/scripted placements, including ones outside the persistent tables.
 NEW_BIT_START = 512
 BANK_BITS = 1024
 NATIVE_REWARDS = 51
 ITEM_TYPES = {0: "Equipment", 1: "One-time / contextual", 2: "Story / automatic"}
-CUSTOM_OFFSET = 0x70000
+
+# The only RAM no overlay ever uses (US retail). Measured over 70 savestates
+# in every area: nothing writes 0x8014E944 (the end of A00, the largest
+# overlay) .. 0x80157002. Below is each overlay's code and heap - a small
+# overlay's heap starts at its own file end - and above is a live 4 KB block
+# and then the resident System chunk at 0x80158000 (pickup sprites, chest
+# models). Extension data rides in the area overlays, padded out to here.
+WINDOW_START = 0x8014E960
+WINDOW_END = 0x80157000
+CUSTOM_OFFSET = WINDOW_START - game_build.US_OVERLAY_BASE
 CUSTOM_COUNT = 128
-CUSTOM_TAG = b"T2EDIT_REWARDS_V1"
+CUSTOM_TAG = b"T2EDIT_REWARDS_V2"
 CUSTOM_TAG_AT = CUSTOM_OFFSET + CUSTOM_COUNT * pickup_art.REWARD.size
+CUSTOM_END = CUSTOM_TAG_AT + len(CUSTOM_TAG)
+TABLES_OFFSET = (CUSTOM_END + 0xF) & ~0xF
+WINDOW_LIMIT = WINDOW_END - game_build.US_OVERLAY_BASE
+
+# The first layout put the reward table at overlay +0x70000 and a copy in
+# MAIN.EXE. That is inside the resident System chunk: loading any padded
+# overlay zeroed the shared sprite bank, the sprite part loop then never
+# ended and its packets overran BSS into the BIOS interrupt chain.
+LEGACY_OFFSET = 0x70000
+LEGACY_TAG = b"T2EDIT_REWARDS_V1"
+LEGACY_TAG_AT = LEGACY_OFFSET + CUSTOM_COUNT * pickup_art.REWARD.size
+US_EXE_SIZE = 716800
+US_OVERLAY_SIZES = {
+    "A00": 285096, "A01": 202460, "A02": 201004, "A03": 78444, "A04": 250788,
+    "A05": 234164, "A06": 284348, "A07": 229720, "A08": 266124, "A09": 22125,
+    "A0A": 126520, "A0B": 115560, "A0C": 123328, "A0D": 119592, "A0E": 124656,
+    "A0F": 135500, "A0G": 17980, "A0H": 14016, "A0I": 15152, "A0J": 19068,
+    "A0K": 93380, "A0L": 74832}
 # These quest components deliberately skip the generic inventory-add path
 # in f_GrantNonGemPickupReward and need their own area's scripted actor.
 SCRIPTED_ITEM_GRANTS = frozenset((0xA0, 0xA1, 0xA2, 0xA3))
@@ -51,10 +79,22 @@ def _word_at(exe, address):
     return at
 
 
-def _custom_ref_words(hi, lo):
-    target = placement.OVERLAY_BASE + CUSTOM_OFFSET
+def _ref_words(hi, lo, target):
     return ((hi & 0xFFFF0000) | ((target + 0x8000) >> 16 & 0xFFFF),
             (lo & 0xFFFF0000) | (target & 0xFFFF))
+
+
+def _custom_ref_words(hi, lo):
+    return _ref_words(hi, lo, WINDOW_START)
+
+
+def _legacy_ref_words(hi, lo):
+    return _ref_words(hi, lo, game_build.US_OVERLAY_BASE + LEGACY_OFFSET)
+
+
+def window_supported():
+    """Whether the free-RAM window was measured for the open build."""
+    return game_build.current().name == "us-retail"
 
 
 def custom_rewards_supported(exe):
@@ -94,26 +134,25 @@ def custom_reward_records(exe, overlay):
 def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
     """Prepare a transaction adding selected inventory IDs as native rewards.
 
-    Every area overlay receives the same table at a fixed unused address
-    below the area's resource region. Five audited MAIN references then use
-    it. All native definitions remain byte-identical and in native order.
-    Custom entries deliberately use the resident Lunch Box presentation;
-    their inventory grant and message use the selected item definition.
-    The caller must commit ALL returned files together before exporting.
+    Every area overlay receives the same table in the free-RAM window
+    (WINDOW_START). Five audited MAIN references then use it; every reader
+    acts on a live pickup, which only exists while an area overlay is
+    loaded. All native definitions remain byte-identical and in native
+    order. Custom entries deliberately use the resident Lunch Box
+    presentation; their inventory grant and message use the selected item
+    definition. The caller must commit ALL returned files together.
     """
     exe_path = str(exe_path)
     exe = Path(exe_path).read_bytes()
-    if not custom_rewards_supported(exe):
+    if not custom_rewards_supported(exe) or not window_supported():
         raise placement.PlacementError(
             "Custom item rewards require the verified US retail executable layout.")
     paths = {Path(p).stem.upper(): str(p) for p in overlay_paths if p}
-    required = {f"A0{c}" for c in "0123456789ABCDEFGHIJKL"}
+    required = set(US_OVERLAY_SIZES)
     if not required.issubset(paths):
         raise placement.PlacementError("All 22 area overlays are required to enable custom item rewards.")
     sources = {name: Path(paths[name]).read_bytes() for name in sorted(required)}
-    end = CUSTOM_TAG_AT + len(CUSTOM_TAG)
-    if placement.OVERLAY_BASE + end > game_build.current().area_base:
-        raise placement.PlacementError("The custom reward table would overlap area resources.")
+    end = CUSTOM_END
     at = pickup_art.REWARD_TABLE - struct.unpack_from("<I", exe, 0x18)[0] + placement.EXE_TEXT
     native = exe[at:at + NATIVE_REWARDS * pickup_art.REWARD.size]
     if len(native) != NATIVE_REWARDS * pickup_art.REWARD.size:
@@ -130,8 +169,10 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
             raise placement.PlacementError("The custom item reward definitions differ between overlays.")
         if table[:len(native)] != native:
             raise placement.PlacementError("The custom table no longer matches the native reward definitions.")
-    elif any(len(data) > CUSTOM_OFFSET for data in sources.values()):
+    elif any(any(data[CUSTOM_OFFSET:end]) for data in sources.values()):
         raise placement.PlacementError("An overlay already occupies the reserved custom reward address.")
+    if any(US_OVERLAY_SIZES[name] > CUSTOM_OFFSET for name in sources):
+        raise placement.PlacementError("An overlay's own code reaches the custom reward window.")
     table = bytearray(table)
     mapping = {}
     free = []
@@ -158,28 +199,14 @@ def ensure_custom_rewards(exe_path, overlay_paths, *, item_ids=(29,)):
         template[-1] = item
         table[reward * pickup_art.REWARD.size:(reward + 1) * pickup_art.REWARD.size] = pickup_art.REWARD.pack(*template)
         mapping[item] = reward
+    # MAIN.EXE keeps its retail size: no resident copy. Anything past
+    # 0x800BE800 that MAIN loads lands in live memory (BSS, the overlay
+    # heap, the resident chunk) and the readers only run inside areas.
     patched_exe = bytearray(exe)
     for hi_at, hi, lo_at, lo in REWARD_REFS:
         new_hi, new_lo = _custom_ref_words(hi, lo)
         struct.pack_into("<I", patched_exe, _word_at(exe, hi_at), new_hi)
         struct.pack_into("<I", patched_exe, _word_at(exe, lo_at), new_lo)
-    # Make the table resident from boot as well. Scripted linked rewards
-    # can run before the first area overlay; loading the same bytes with
-    # MAIN guarantees those consumers see valid native definitions too.
-    # The startup's BSS clear ends at 0x80106228, below the overlay base.
-    base = struct.unpack_from("<I", exe, 0x18)[0]
-    resident_at = placement.OVERLAY_BASE + CUSTOM_OFFSET - base + placement.EXE_TEXT
-    resident_end = resident_at + len(table) + len(CUSTOM_TAG)
-    resident_tag = exe[resident_at + len(table):resident_end]
-    if (len(exe) > resident_at and resident_tag != CUSTOM_TAG
-            and any(exe[resident_at:resident_end])):
-        raise placement.PlacementError("MAIN.EXE already uses the reserved custom reward address.")
-    padded_end = (resident_end + 0x7FF) & ~0x7FF
-    if len(patched_exe) < padded_end:
-        patched_exe.extend(bytes(padded_end - len(patched_exe)))
-    patched_exe[resident_at:resident_at + len(table)] = table
-    patched_exe[resident_at + len(table):resident_end] = CUSTOM_TAG
-    struct.pack_into("<I", patched_exe, 0x1C, len(patched_exe) - placement.EXE_TEXT)
     files = {exe_path: bytes(patched_exe)}
     for name, original in sources.items():
         data = bytearray(original)
@@ -218,6 +245,53 @@ def item_types(exe_path):
     return result
 
 
+def shipped_rewards(overlay_path, exe_path):
+    """Rewards this area's own shipped records show, loose or in a chest.
+
+    Editor-added records take bits from NEW_BIT_START up, so they never
+    vouch for art the area doesn't really have."""
+    if not overlay_path or not exe_path:
+        return set()
+    out = set()
+    for record in placement.load_pickups(overlay_path, exe_path):
+        if record.bit >= NEW_BIT_START:
+            continue
+        out.add(record.contents if record.chest else record.art_reward)
+    return out
+
+
+def table_kind(records):
+    """'chest' or 'loose' for a homogeneous table, else None. Retail never
+    mixes the two in one table, so the editor doesn't either."""
+    chests = {r.chest for r in records}
+    if chests == {True}:
+        return "chest"
+    if chests == {False}:
+        return "loose"
+    return None
+
+
+def table_for(category, pickups, preferred=None):
+    """The table a new pickup of `category` joins: one of this area's own
+    tables holding the same kind of record, with room left."""
+    want = "chest" if category == "chest" else "loose"
+    by = {}
+    for record in pickups:
+        by.setdefault(record.table, []).append(record)
+    fits = [t for t, rows in by.items()
+            if table_kind(rows) == want and len(rows) < MAX_TABLE_RECORDS]
+    if preferred in fits:
+        return preferred
+    if fits:
+        return min(fits, key=lambda t: len(by[t]))
+    if any(table_kind(rows) == want for rows in by.values()):
+        raise placement.PlacementError(
+            f"Every native {want} table in this area is full ({MAX_TABLE_RECORDS} records).")
+    raise placement.PlacementError(
+        f"This area has no native {'chest' if want == 'chest' else 'pickup'} table "
+        "to extend. Its spawn code would have to be added first.")
+
+
 def reward_catalog(exe_path, overlay_path=None, area=None):
     """Native reward choices, with unsafe/missing local artwork disabled.
 
@@ -229,6 +303,7 @@ def reward_catalog(exe_path, overlay_path=None, area=None):
     arts = pickup_art.reward_art(exe_path, count=NATIVE_REWARDS,
                                  overlay=overlay, area=area)
     types = item_types(exe_path)
+    shipped = shipped_rewards(overlay_path, exe_path)
     result = []
     for reward, art in arts.items():
         if reward in (0, 1):
@@ -243,6 +318,12 @@ def reward_catalog(exe_path, overlay_path=None, area=None):
             label += " (shared pickup icon)"
         available = bool(art.frames)
         reason = "" if available else "This area's native sprite sequence is unavailable."
+        # An area-bank sprite is numbered in THIS area's own sprite file and
+        # sequence table, which hold only what the area itself shows. Any
+        # other index reads another sprite or runs off the end of the table.
+        if available and art.clut & 0x7FFF == pickup_art.AREA_BANK and reward not in shipped:
+            available = False
+            reason = "This area has no art of its own for this pickup."
         if art.item in SCRIPTED_ITEM_GRANTS:
             available = False
             reason = "This quest component requires its native scripted actor to grant it."
@@ -312,16 +393,10 @@ def new_pickup(category, pickups, exe_path, overlay_paths=None, *, table=None,
         raise placement.PlacementError("Adding pickups is not supported in demo builds.")
     if not placement._pointer_array(placement.pickup_addresses(exe_path)):
         raise placement.PlacementError("This build has no verified persistent-pickup pointer array.")
-    tables = sorted({r.table for r in pickups})
-    if table is None:
-        table = next((t for t in tables
-                      if sum(r.table == t for r in pickups) < MAX_TABLE_RECORDS),
-                     tables[0] if tables else None)
-    if table not in tables:
+    if not window_supported():
         raise placement.PlacementError(
-            "This area has no native pickup table to extend. Its spawn code must be added first.")
-    if sum(r.table == table for r in pickups) >= MAX_TABLE_RECORDS:
-        raise placement.PlacementError("This native pickup table is full (32 records).")
+            "Adding pickups needs free RAM measured for this build; only US retail has been.")
+    table = table_for(category, pickups, preferred=table)
     if interior is not None and category != "chest":
         raise placement.PlacementError("Native interior placement currently supports chests only.")
     if reward is None:
@@ -383,21 +458,143 @@ def _exe_table(exe):
     return at, addresses
 
 
+def _table_end(data, offset):
+    """End offset (just past the 0xFF) of a valid pickup table, or None."""
+    at, rows = offset, []
+    while (record := placement._pickup(data, at)) is not None:
+        rows.append(record)
+        at += placement.PICKUP_SIZE
+    if not rows or at >= len(data) or data[at] != placement.END:
+        return None
+    if not all(placement._ordered(r.bit for r in rows if r.apple is which)
+               for which in (True, False)):
+        return None
+    return at + 1
+
+
+def repair_legacy_layout(exe_path, overlay_paths):
+    """{path: bytes} moving a first-layout project into the free window,
+    or {} when there is nothing to repair.
+
+    The first layout padded overlays to +0x70000 (inside the resident
+    System chunk), grew MAIN.EXE to carry a copy, and appended grown tables
+    right past an overlay's end (inside its heap). Everything it added is
+    recognised exactly - anything else past a retail length is refused,
+    not discarded."""
+    if not window_supported() or not exe_path:
+        return {}
+    exe = bytearray(Path(exe_path).read_bytes())
+    paths = {Path(p).stem.upper(): str(p) for p in overlay_paths or () if p}
+    datas = {n: Path(p).read_bytes() for n, p in paths.items()
+             if n in US_OVERLAY_SIZES and Path(p).is_file()}
+    pointer_at, addresses = _exe_table(exe)
+    t_addr = struct.unpack_from("<I", exe, placement.EXE_BASE_AT)[0]
+    base = game_build.US_OVERLAY_BASE
+
+    # Tables the first layout moved, and who owns each.
+    moved = {}
+    for number, address in enumerate(addresses):
+        off = address - base if address else -1
+        if off < 0 or TABLES_OFFSET <= off < WINDOW_LIMIT:
+            continue
+        owners = [n for n, d in datas.items()
+                  if off >= US_OVERLAY_SIZES[n] and _table_end(d, off)]
+        if len(owners) > 1:
+            raise placement.PlacementError(
+                f"Pickup table {number} reads as valid in several overlays; refusing to guess.")
+        if owners:
+            name = owners[0]
+            moved[number] = (name, address, datas[name][off:_table_end(datas[name], off)])
+
+    tagged = [n for n, d in datas.items()
+              if d[LEGACY_TAG_AT:LEGACY_TAG_AT + len(LEGACY_TAG)] == LEGACY_TAG]
+    custom = datas[tagged[0]][LEGACY_OFFSET:LEGACY_TAG_AT] if tagged else None
+    if tagged and any(datas[n][LEGACY_OFFSET:LEGACY_TAG_AT] != custom for n in tagged):
+        raise placement.PlacementError("The old custom reward tables differ between overlays.")
+    refs = [(struct.unpack_from("<I", exe, _word_at(exe, h))[0],
+             struct.unpack_from("<I", exe, _word_at(exe, l))[0]) for h, _, l, _ in REWARD_REFS]
+    legacy_refs = any(pair == _legacy_ref_words(hi, lo)
+                      for pair, (_, hi, _, lo) in zip(refs, REWARD_REFS))
+    if not (moved or tagged or legacy_refs or len(exe) > US_EXE_SIZE):
+        return {}
+
+    # Everything past a retail length must be ours, or nothing is touched.
+    for name, data in datas.items():
+        retail = US_OVERLAY_SIZES[name]
+        known = bytearray(len(data))
+        if name in tagged:
+            known[LEGACY_OFFSET:LEGACY_TAG_AT + len(LEGACY_TAG)] = b"\x01" * (
+                LEGACY_TAG_AT + len(LEGACY_TAG) - LEGACY_OFFSET)
+        for owner, address, raw in moved.values():
+            if owner == name:
+                off = address - base
+                known[off:off + len(raw)] = b"\x01" * len(raw)
+        foreign = [i for i in range(retail, len(data)) if data[i] and not known[i]]
+        if foreign:
+            raise placement.PlacementError(
+                f"{name}.BIN holds unrecognised data past its retail length "
+                f"(at +0x{foreign[0]:X}); it was left untouched.")
+    if len(exe) > US_EXE_SIZE:
+        start = base + LEGACY_OFFSET - t_addr + placement.EXE_TEXT
+        end = start + LEGACY_TAG_AT - LEGACY_OFFSET + len(LEGACY_TAG)
+        if any(exe[US_EXE_SIZE:start]) or any(exe[end:]):
+            raise placement.PlacementError(
+                "MAIN.EXE holds unrecognised data past its retail length; it was left untouched.")
+        del exe[US_EXE_SIZE:]
+        struct.pack_into("<I", exe, 0x1C, US_EXE_SIZE - placement.EXE_TEXT)
+
+    out = {name: bytearray(data[:US_OVERLAY_SIZES[name]])
+           for name, data in datas.items() if len(data) > US_OVERLAY_SIZES[name]}
+    for (h_at, hi, l_at, lo) in REWARD_REFS:
+        words = _custom_ref_words(hi, lo) if custom is not None else (hi, lo)
+        struct.pack_into("<I", exe, _word_at(exe, h_at), words[0])
+        struct.pack_into("<I", exe, _word_at(exe, l_at), words[1])
+    if custom is not None:
+        for name in US_OVERLAY_SIZES:
+            if name not in datas:
+                raise placement.PlacementError("All 22 area overlays are needed to move the custom rewards.")
+            data = out.setdefault(name, bytearray(datas[name]))
+            if len(data) < CUSTOM_END:
+                data.extend(bytes(CUSTOM_END - len(data)))
+            data[CUSTOM_OFFSET:CUSTOM_TAG_AT] = custom
+            data[CUSTOM_TAG_AT:CUSTOM_END] = CUSTOM_TAG
+    target = TABLES_OFFSET
+    for number in sorted(moved):
+        name, address, raw = moved[number]
+        if target + TABLE_CAPACITY > WINDOW_LIMIT:
+            raise placement.PlacementError("The free RAM window has no room for every moved table.")
+        data = out.setdefault(name, bytearray(datas[name]))
+        if len(data) < target + TABLE_CAPACITY:
+            data.extend(bytes(target + TABLE_CAPACITY - len(data)))
+        data[target:target + TABLE_CAPACITY] = raw + bytes(TABLE_CAPACITY - len(raw))
+        for alias, original in enumerate(addresses):
+            if original == address:
+                struct.pack_into("<I", exe, pointer_at + alias * 4, base + target)
+        target += TABLE_CAPACITY
+    files = {str(exe_path): bytes(exe)}
+    files.update({paths[name]: bytes(data) for name, data in out.items()})
+    return files
+
+
 def stage_pickups(overlay_bytes, exe_bytes, pickups):
     """Return (overlay, MAIN.EXE, records) ready to stage together.
 
-    Existing-size tables are patched in place. Grown tables are appended,
-    leaving every original instruction/data address untouched, and all
-    matching MAIN pointer aliases are updated. No input records mutate.
+    Existing-size tables are patched in place. A grown table moves into
+    the free-RAM window (WINDOW_START..WINDOW_END), never just past the
+    overlay's file end: that is where the overlay's own heap starts. Every
+    original instruction/data address stays put and all matching MAIN
+    pointer aliases are updated. No input records mutate.
     """
     overlay, exe = bytearray(overlay_bytes), bytearray(exe_bytes)
     pointer_at, addresses = _exe_table(exe)
-    # MAIN's array is shared by every overlay. Equal overlay lengths must
-    # not produce equal new pointer values: a later area would otherwise
-    # look like an alias of the earlier area's relocated table.
+    # MAIN's array is shared by every overlay, so every area's relocated
+    # table gets its own slot of the window: one overlay's padding then
+    # reads as nothing at another's address. The custom reward table
+    # keeps the window's head.
     reserved = [(address - placement.OVERLAY_BASE,
-                 address - placement.OVERLAY_BASE + (MAX_TABLE_RECORDS + 1) * placement.PICKUP_SIZE)
+                 address - placement.OVERLAY_BASE + TABLE_CAPACITY)
                 for address in addresses if address]
+    reserved.append((CUSTOM_OFFSET, TABLES_OFFSET))
     groups = {}
     for record in pickups:
         if not 0 <= record.table < placement.PICKUP_TABLE_COUNT:
@@ -429,23 +626,28 @@ def stage_pickups(overlay_bytes, exe_bytes, pickups):
             if len(set(bits)) != len(bits):
                 raise placement.PlacementError("Two pickups share one collected-item save bit.")
         payload = b"".join(pack_pickup(r) for r in records)
-        if growing:
-            target = (len(overlay) + 3) & ~3
-            capacity = (MAX_TABLE_RECORDS + 1) * placement.PICKUP_SIZE
+        if growing and TABLES_OFFSET <= old_at < WINDOW_LIMIT:
+            # Already in its own window slot, sized for a full table.
+            target = old_at
+            overlay[target:target + len(payload) + 1] = payload + bytes([placement.END])
+        elif growing:
+            if not window_supported():
+                raise placement.PlacementError(
+                    "Adding pickups needs free RAM measured for this build; only US retail has been.")
+            target = TABLES_OFFSET
             while True:
                 overlaps = [hi for lo, hi in reserved
-                            if target < hi and target + capacity > lo]
+                            if target < hi and target + TABLE_CAPACITY > lo]
                 if not overlaps:
                     break
-                target = (max(overlaps) + 3) & ~3
-            end = target + len(payload) + placement.PICKUP_SIZE
-            limit = min(game_build.current().area_base - placement.OVERLAY_BASE,
-                        placement.OVERLAY_REACH)
-            if end > limit:
-                raise placement.PlacementError("The overlay has no safe RAM space for more pickups.")
-            overlay.extend(bytes(target - len(overlay)))
-            overlay.extend(payload + bytes([placement.END]) + bytes(placement.PICKUP_SIZE - 1))
-            reserved.append((target, target + capacity))
+                target = (max(overlaps) + 0xF) & ~0xF
+            if target + TABLE_CAPACITY > WINDOW_LIMIT:
+                raise placement.PlacementError("The free RAM window has no room for another pickup table.")
+            if len(overlay) < target + TABLE_CAPACITY:
+                overlay.extend(bytes(target + TABLE_CAPACITY - len(overlay)))
+            slot = payload + bytes([placement.END])
+            overlay[target:target + TABLE_CAPACITY] = slot + bytes(TABLE_CAPACITY - len(slot))
+            reserved.append((target, target + TABLE_CAPACITY))
             for alias, original in enumerate(addresses):
                 if original == address:
                     struct.pack_into("<I", exe, pointer_at + alias * 4,
