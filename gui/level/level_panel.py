@@ -116,6 +116,7 @@ class LevelEditorPanel(QWidget):
         self.viewer.instance_moved.connect(self._on_instance_moved)
         self.viewer.part_changed.connect(self._on_part_selected)
         self.viewer.pickup_dropped.connect(self._add_pickup)
+        self.viewer.mode_changed.connect(self._on_mode_changed)
 
         self.area_box = QComboBox(self)
         self.area_box.setMinimumWidth(340)
@@ -292,7 +293,8 @@ class LevelEditorPanel(QWidget):
         palette_panel = QWidget(self)
         palette_layout = QVBoxLayout(palette_panel)
         palette_layout.setContentsMargins(6, 3, 6, 0)
-        palette_layout.addWidget(QLabel("Add objects — drag into the level", self))
+        self.palette_label = QLabel("Add objects — switch to Edit mode to place them", self)
+        palette_layout.addWidget(self.palette_label)
         palette_layout.addWidget(self.palette)
         viewport_splitter = QSplitter(Qt.Orientation.Vertical, self)
         viewport_splitter.addWidget(self.viewer)
@@ -378,12 +380,27 @@ class LevelEditorPanel(QWidget):
         return out
 
     def _enable(self, on):
-        for widget in (self.table, self.model_box, self.progress_box,
+        for widget in (self.table, self.model_box,
                        self.keep_button, self.save_button,
                        *self.boxes.values()):
             widget.setEnabled(on)
-        self.palette.setEnabled(on and not getattr(self, "_loading", False))
+        self.progress_box.setEnabled(on and not self.viewer.edit_mode)
+        self.palette.setEnabled(on and self.viewer.edit_mode
+                                and not getattr(self, "_loading", False))
         self.apply_button.setEnabled(on)
+
+    def _on_mode_changed(self, edit):
+        """Preview <-> Edit: drop whatever the other mode was loading and
+        reload this area its way, same camera, same room."""
+        self.progress_box.setEnabled(not edit and self.scene is not None)
+        self.palette_label.setText(
+            "Add objects — drag into the level" if edit
+            else "Add objects — switch to Edit mode to place them")
+        self.palette.setEnabled(edit and self.scene is not None
+                                and not getattr(self, "_loading", False))
+        if self.chunk is not None and self.dat_path:
+            self.load_area(self.chunk, keep_camera=True,
+                           keep_view=self.view_box.currentData())
 
     # --- loading an area ----------------------------------------------
 
@@ -432,7 +449,8 @@ class LevelEditorPanel(QWidget):
         self._stage_seen = self._hold_stages
         self._stage_keep_camera = keep_camera
         self._stage_overlay = self.overlay_for_area(chunk)
-        self._stage_progress = self.progress_box.currentData()
+        self._stage_fast = self.viewer.edit_mode
+        self._stage_progress = FRESH if self._stage_fast else self.progress_box.currentData()
         self._stage_started = time.perf_counter()
         generation = self._load_generation
         self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")
@@ -449,13 +467,14 @@ class LevelEditorPanel(QWidget):
         for box in self.boxes.values():
             box.setEnabled(False)
         self.model_box.setEnabled(False)
-        cached = self._scene_memory_cache.get((chunk, self._stage_progress))
+        cached = self._scene_memory_cache.get(
+            (chunk, self._stage_progress, self._stage_fast))
         if cached is not None:
             QTimer.singleShot(0, lambda: self._accept_stage(generation, cached))
             return
         loader = LevelLoad((self.dat_path, self.idx_path, chunk,
                             self._stage_overlay, self.exe_path,
-                            self._stage_progress), self)
+                            self._stage_progress, self._stage_fast), self)
         if not hasattr(self, "_loaders"):
             self._loaders = []
         self._loaders.append(loader)
@@ -585,13 +604,14 @@ class LevelEditorPanel(QWidget):
                             + (f"Loaded in {time.perf_counter() - self._stage_started:.1f}s."
                                if complete else "You can explore while loading continues."))
         if complete:
-            self.palette.setEnabled(True)
+            self.palette.setEnabled(self.viewer.edit_mode)
             self.apply_button.setEnabled(True)
             self.viewer.show_status(
                 f"AREA_{self.chunk:02X} loaded in "
                 f"{time.perf_counter() - self._stage_started:.1f}s", done=True)
             self._remember(self._scene_memory_cache,
-                           (self.chunk, self._stage_progress), payload, keep=6)
+                           (self.chunk, self._stage_progress, self._stage_fast),
+                           payload, keep=6)
             for button in (self.keep_button, self.name_button, self.save_button,
                            self.gif_button):
                 button.setEnabled(True)
@@ -1266,7 +1286,8 @@ class LevelEditorPanel(QWidget):
         self._sync_motion_animation(self.viewer.animate_action.isChecked())
 
     def _add_pickup(self, category, point):
-        if self.scene is None or getattr(self, "_loading", False):
+        if (self.scene is None or not self.viewer.edit_mode
+                or getattr(self, "_loading", False)):
             return
         from game import pickup_edit
         try:
