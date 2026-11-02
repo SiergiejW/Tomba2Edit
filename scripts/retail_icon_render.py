@@ -116,7 +116,7 @@ def render_model(model, vram, *, groups=None, poses=None, **options):
 
 
 def render_parts(parts, vram, *, size=128, yaw=45.0, elevation=35.264389682754654,
-                 margin=8, supersample=3):
+                 margin=8, supersample=3, cull=0):
     """PIL RGBA image from ``(model, group-or-None, matrix-or-None)`` parts.
 
     ``size`` is an integer square size or (width, height). Transparent texels
@@ -164,6 +164,10 @@ def render_parts(parts, vram, *, size=128, yaw=45.0, elevation=35.26438968275465
         a, b, c = screen
         denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
         if abs(denominator) < 1e-10:
+            return
+        # The GPU never draws a back face; a chest's inner walls sit right
+        # behind its outer ones and would win the depth test.
+        if cull and np.sign(denominator) == cull:
             return
         xx, yy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
         w0 = ((b[1] - c[1]) * (xx - c[0]) + (c[0] - b[0]) * (yy - c[1])) / denominator

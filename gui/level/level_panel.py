@@ -440,10 +440,13 @@ class LevelEditorPanel(QWidget):
         # provide it; never promote that temporary fallback into the request.
         self._requested_view = keep_view
         self._keep_view = keep_view
+        # The scene on screen, not self.chunk: a switch made before this
+        # area's first stage still shows the last area, with its VRAM.
+        same = self.scene is not None and self.scene.chunk_index == chunk
+        keep_camera = keep_camera and same
         # A Progress switch keeps the scene in hand - and the room it shows -
         # until the other one is complete, rather than starting from markers.
-        self._hold_stages = (keep_camera and self.scene is not None
-                             and self.chunk == chunk)
+        self._hold_stages = keep_camera
         self.chunk = chunk
         self._loading = True
         self._stage_seen = self._hold_stages

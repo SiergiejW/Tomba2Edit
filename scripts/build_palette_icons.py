@@ -91,7 +91,8 @@ def build(retail, out_dir):
     made = {}
 
     # The chest: its real model, body and lid where the game puts them. The
-    # lid hinges at game +Z (the back), so the camera sits on the -Z side.
+    # keyhole face is view -X; back faces culled as the GPU does, or the
+    # inner walls cover the outer ones.
     at, size = files[pickup_art.CHEST_FILE]
     with open(dat_path, "rb") as f:
         f.seek(at)
@@ -102,7 +103,7 @@ def build(retail, out_dir):
              lid[1]: retail_icon_render.pose(offset=offsets[1])}
     made["chest"] = retail_icon_render.render_model(
         model, vram, groups=[body[1], lid[1]], poses=poses,
-        size=SIZE, yaw=-125.0, margin=10)
+        size=SIZE, yaw=-125.0, margin=10, cull=1)
 
     # The weapon: the model its reward names, out of the same resident file.
     # It's a flat upright card, so it's turned in its own plane (90° clockwise).
