@@ -77,6 +77,8 @@ object, every animation.
 ### Disc images
 
 * Read PlayStation CD/ISO data and BIN/CUE rips
+* Open and save Special Edition CAR disc images; preserve CUE track metadata
+  when building edited BIN/CUE copies. See [disc images](docs/disc-images.md).
 * Rebuild ISO9660 images with modified files
 * Patch in place where it matters - the CD audio and XA music only
   survive that way
@@ -89,6 +91,10 @@ object, every animation.
 * **BGMP** background maps
 * A level editor that assembles a whole area - objects, pickups, chests,
   rooms, effects - by running the game's own handlers
+* Drag chests, crystals, items, health pickups and weapons from the palette
+  below the viewport; edit their native options, move them along collision,
+  and keep the changes in projects and disc builds.
+  See [placement editing](docs/placement-editing.md) for supported builds and limits.
 
 ### 3D models and animation
 
