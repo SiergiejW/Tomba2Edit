@@ -483,12 +483,12 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
         attach_disc_action.triggered.connect(self.attach_disc_dialog)
         self.attach_disc_action = attach_disc_action
 
-        export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Build Disc (BIN/CUE)...", self)
+        export_bin_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), "Build Disc (BIN/CUE/CAR)...", self)
         export_bin_action.setToolTip(
             "Write the edits into a copy of the disc's data track and put a "
             "cue sheet and the audio track beside it. Only the edited files' "
             "sectors change, so the XA music and voice survive - this is the "
-            "one that stays playable")
+            "one that stays playable. Special Edition CAR images save as CAR")
         export_bin_action.triggered.connect(self.export_bin)
         self.export_bin_action = export_bin_action
 

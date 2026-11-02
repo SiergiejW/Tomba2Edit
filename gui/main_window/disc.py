@@ -231,6 +231,9 @@ class DiscMixin:
 
         from formats.archive import bin_writer
 
+        if not self.level_panel.apply_changes():
+            return
+
         # A project holds the game's files, not the disc they came from,
         # so this asks for the image rather than refusing outright the
         # way it used to - "no track open" was accurate and useless, and
@@ -271,9 +274,13 @@ class DiscMixin:
             QMessageBox.information(self, "Nothing to save",
                                     "No edits are pending.")
             return
-        default = os.path.splitext(os.path.basename(source))[0] + " (edited).bin"
+        is_car = os.path.splitext(source)[1].lower() == ".car"
+        extension = ".car" if is_car else ".bin"
+        default = os.path.splitext(os.path.basename(source))[0] + " (edited)" + extension
+        filters = ("Special Edition disc (*.car);;Disc track (*.bin)" if is_car
+                   else "Disc track (*.bin)")
         target, _ = QFileDialog.getSaveFileName(
-            self, "Save patched data track", default, "Disc track (*.bin)")
+            self, "Save patched disc image", default, filters)
         if not target:
             return
 
@@ -463,6 +470,8 @@ class DiscMixin:
         return bin_writer.copy_audio_track(source, target)
 
     def export_all_files(self):
+        if not self.level_panel.apply_changes():
+            return
         # all_edits(), not pending_edits() - every export runs against
         # the untouched source exe fresh, so it must reapply every
         # change made since load (edited AND already-exported alike),
@@ -599,11 +608,20 @@ class DiscMixin:
             title = "Select a Tomba! 2 ISO"
             filters = "Disc image (*.iso *.img);;All files (*)"
         else:
-            title = "Select the disc's data track (Track 1)"
-            filters = ("Disc data track (*.bin);;Disc image "
-                       "(*.iso *.img);;All files (*)")
+            title = "Open a Tomba! 2 disc image or cue sheet"
+            filters = source_disc.FILTER
         iso_path, _ = QFileDialog.getOpenFileName(self, title, "", filters)
         if not iso_path:
+            return
+
+        selected_path = iso_path
+        try:
+            # All consumers below (audio, movies, extraction and saving)
+            # need the binary image, rather than the cue sheet's text.
+            iso_path = source_disc.data_track(selected_path)
+            disc_record = source_disc.record(selected_path)
+        except source_disc.SourceDiscError as exc:
+            QMessageBox.critical(self, "Couldn't open that disc", str(exc))
             return
 
         if (self.pending_txtd_edits or self.pending_file_edits
@@ -663,8 +681,11 @@ class DiscMixin:
         self._load_bins(self.iso_handler.bin_overlays, self.iso_handler.extracted_files.get("SOP.BIN"))
 
         self.current_iso_path = iso_path
+        self.source_disc = disc_record
+        self._disc_search_failed = False
+        self._theme_settings.setValue(self.DISC_SETTING, selected_path)
         self._load_snd(iso_path)
-        self.folder_info_label.setText(f"Loaded ISO: {iso_path}")
+        self.folder_info_label.setText(f"Loaded disc: {selected_path}")
         # The Dialogues tab reads its audio out of the same track, so
         # opening the disc is enough - it should not have to be opened a
         # second time over there. A 2048-byte ISO simply has no voice in
@@ -861,6 +882,8 @@ class DiscMixin:
         etc.) is carried over from the original image unchanged, so this
         produces a complete, ready-to-play image instead of the two loose
         files 'Export Files' hands back."""
+        if not self.level_panel.apply_changes():
+            return
         if not self.current_iso_path or not self.iso_handler or not getattr(self, 'dat_file', None):
             QMessageBox.critical(self, "Error", "No TOMBA2 ISO is open.")
             return

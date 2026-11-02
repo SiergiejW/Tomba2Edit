@@ -48,11 +48,12 @@ PVD_LBA = 16                    # where ISO9660 puts the volume descriptor
 # different games can't collide on the early structure alone.
 _PROBE_LBAS = (16, 17, 23, 100, 5000, 40000, 120000)
 
-FILTER = ("Disc image (*.cue *.bin *.img *.iso);;"
-          "Cue sheet (*.cue);;All files (*)")
+FILTER = ("Disc image (*.cue *.bin *.img *.iso *.car);;"
+          "Cue sheet (*.cue);;Special Edition disc (*.car);;All files (*)")
 
 _FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"|^\s*FILE\s+(\S+)', re.I)
 _TRACK_RE = re.compile(r"^\s*TRACK\s+\d+\s+(\S+)", re.I)
+_INDEX_RE = re.compile(r"^\s*INDEX\s+01\s+(\d+):(\d+):(\d+)", re.I)
 
 
 class SourceDiscError(Exception):
@@ -63,26 +64,43 @@ class SourceDiscError(Exception):
 # Cue sheets
 # ----------------------------------------------------------------------
 
-def cue_tracks(cue_path):
-    """[(absolute file path, track type)] for a cue sheet, in order.
+def cue_entries(cue_path):
+    """Tracks and their INDEX 01 offsets, including tracks sharing a FILE.
 
-    The type is what the TRACK line says - "MODE2/2352", "AUDIO" and so
-    on - for the first track each FILE carries, which is all this needs:
-    a PS1 rip puts one track in each file."""
+    Offsets are sectors within the referenced file, not disc LBAs. Keeping
+    that distinction prevents opening the wrong sectors of a pregapped rip.
+    """
     folder = os.path.dirname(os.path.abspath(cue_path))
     out = []
-    pending = None
-    with open(cue_path, "r", encoding="utf-8", errors="replace") as f:
+    current_file = None
+    current_track = None
+    with open(cue_path, "r", encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             match = _FILE_RE.match(line)
             if match:
-                pending = match.group(1) or match.group(2)
+                current_file = match.group(1) or match.group(2)
+                current_track = None
                 continue
             match = _TRACK_RE.match(line)
-            if match and pending is not None:
-                out.append((os.path.join(folder, pending), match.group(1).upper()))
-                pending = None
+            if match and current_file is not None:
+                current_track = {
+                    "path": os.path.abspath(os.path.join(folder, current_file)),
+                    "kind": match.group(1).upper(), "index": None,
+                }
+                out.append(current_track)
+                continue
+            match = _INDEX_RE.match(line)
+            if match and current_track is not None:
+                minute, second, frame = map(int, match.groups())
+                if second >= 60 or frame >= 75:
+                    raise SourceDiscError("The cue sheet has an invalid INDEX 01 time.")
+                current_track["index"] = minute * 60 * 75 + second * 75 + frame
     return out
+
+
+def cue_tracks(cue_path):
+    """[(absolute file path, track type)] for every track, in order."""
+    return [(entry["path"], entry["kind"]) for entry in cue_entries(cue_path)]
 
 
 def data_track(path):
@@ -94,12 +112,16 @@ def data_track(path):
     pair of .bin files without the other."""
     if os.path.splitext(path)[1].lower() != ".cue":
         return path
-    tracks = cue_tracks(path)
+    try:
+        tracks = cue_entries(path)
+    except OSError as exc:
+        raise SourceDiscError(str(exc)) from exc
     if not tracks:
         raise SourceDiscError(
             f"{os.path.basename(path)} lists no tracks - it may be empty or "
             "not a cue sheet at all.")
-    for track_path, kind in tracks:
+    for entry in tracks:
+        track_path, kind = entry["path"], entry["kind"]
         if kind.startswith("AUDIO"):
             continue
         if not os.path.exists(track_path):
@@ -107,6 +129,11 @@ def data_track(path):
                 f"{os.path.basename(path)} points at "
                 f"{os.path.basename(track_path)}, which isn't beside it. "
                 "Both files have to travel together.")
+        if entry["index"] not in (None, 0):
+            raise SourceDiscError(
+                "This cue's data track starts partway through its file. "
+                "Open a rip whose data track starts at INDEX 01 00:00:00; "
+                "a stored data-track pregap is not supported yet.")
         return track_path
     raise SourceDiscError(
         f"{os.path.basename(path)} lists only audio tracks - the data track "
@@ -276,7 +303,7 @@ def locate(stored, hints=()):
                 return found
         for entry in sorted(os.listdir(hint)):
             if os.path.splitext(entry)[1].lower() not in (
-                    ".cue", ".bin", ".img", ".iso"):
+                    ".cue", ".bin", ".img", ".iso", ".car"):
                 continue
             candidate = os.path.join(hint, entry)
             try:

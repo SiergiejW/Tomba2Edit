@@ -27,7 +27,7 @@ Two shapes show up under iso/, and both are handled:
 import os
 import re
 
-_EXTS = (".bin", ".img")
+_EXTS = (".bin", ".img", ".car")
 
 # A raw PSX data track is hundreds of megabytes; anything smaller under
 # one of these names is something else entirely - an extracted CD
@@ -54,22 +54,11 @@ def _data_track_from_cue(cue_path):
     multi-track dump (game data + CD audio) doesn't hand back the audio
     track by mistake. None if the cue has no such track, or can't be
     read at all."""
+    from disc.source_disc import data_track, SourceDiscError
     try:
-        with open(cue_path, "r", encoding="ascii", errors="ignore") as f:
-            text = f.read()
-    except OSError:
+        return data_track(cue_path)
+    except (SourceDiscError, OSError):
         return None
-    current = None
-    for line in text.splitlines():
-        m = _CUE_FILE.search(line)
-        if m:
-            current = m.group(1)
-            continue
-        m = _CUE_TRACK.search(line)
-        if m and current and m.group(1).upper().startswith("MODE2"):
-            path = os.path.join(os.path.dirname(cue_path), current)
-            return path if os.path.isfile(path) else None
-    return None
 
 
 def _find_in(folder):

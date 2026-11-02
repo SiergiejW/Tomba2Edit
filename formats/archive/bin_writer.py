@@ -27,6 +27,7 @@ import mmap
 import os
 import shutil
 import struct
+import re
 
 from disc import cdsector
 from disc.iso9660 import ISO9660Reader, LOGICAL_SECTOR_SIZE
@@ -109,7 +110,11 @@ def patch_track(source, destination, replacements, progress=None):
 
     `replacements` is {FILENAME: bytes}. Returns a note per file saying
     whether it went in place or was appended."""
-    if os.path.abspath(source) == os.path.abspath(destination):
+    from disc.source_disc import data_track
+    source = data_track(source)
+    if (os.path.normcase(os.path.abspath(source)) ==
+            os.path.normcase(os.path.abspath(destination))
+            or os.path.exists(destination) and os.path.samefile(source, destination)):
         raise BinWriteError("Write the patched track to a new file, not "
                             "over the one being read.")
     with open(source, "rb") as f:
@@ -118,7 +123,7 @@ def patch_track(source, destination, replacements, progress=None):
         except (ValueError, OSError):
             whole = f.read()
         reader = ISO9660Reader(whole)
-        if reader.sector_size == SECTOR:
+        if reader.sector_size == SECTOR and reader.data_offset == DATA_AT:
             records = _records(reader, whole)
             total_sectors = len(whole) // SECTOR
         else:
@@ -128,7 +133,7 @@ def patch_track(source, destination, replacements, progress=None):
     if records is None:
         raise BinWriteError(
             f"{os.path.basename(source)} has {reader.sector_size}-byte "
-            "sectors. Only a raw 2352-byte data track can be patched; an "
+            "sectors. Only a raw 2352-byte Mode 2 data track can be patched; an "
             "ISO has no room for the audio sectors.")
 
     missing = [n for n in replacements if n.upper() not in records]
@@ -241,6 +246,18 @@ def copy_audio_track(source, target):
     only to find its own Track 2, never read otherwise); `target` is
     the patched copy already written. Returns a note about what was
     done, for a status line to show."""
+    from disc.source_disc import cue_beside, data_track
+
+    source_cue = (os.fspath(source) if os.path.splitext(source)[1].lower() == ".cue"
+                  else cue_beside(source))
+    source = data_track(source)
+    # CAR is the full raw image consumed by the Special Edition. Its audio
+    # sectors are already in the image; an invented CUE is not part of it.
+    if os.path.splitext(target)[1].lower() == ".car":
+        return "Saved as a Special Edition CAR image."
+    if source_cue:
+        return _copy_cue_tracks(source_cue, source, target)
+
     folder = os.path.dirname(source)
     stem = os.path.basename(source)
     audio = None
@@ -260,3 +277,48 @@ def copy_audio_track(source, target):
         note = "The audio track was copied beside it."
     cue = write_cue(os.path.join(out_dir, out_stem + ".cue"), tracks)
     return (note + f" Cue sheet: {os.path.basename(cue)}").strip()
+
+
+def _copy_cue_tracks(source_cue, source, target):
+    """Copy every referenced file and retain track indices and pregaps.
+
+    A combined BIN may hold both data and audio tracks; its later TRACK
+    lines must keep referencing that same output file. Split dumps may
+    call their audio files anything, so the CUE is the source of truth.
+    """
+    file_line = re.compile(r'^(\s*FILE\s+)(?:"([^"]+)"|(\S+))(.*)$', re.I)
+    folder = os.path.dirname(os.path.abspath(source_cue))
+    out_dir = os.path.dirname(os.path.abspath(target))
+    out_stem = os.path.splitext(os.path.basename(target))[0]
+    cue_target = os.path.join(out_dir, out_stem + ".cue")
+    if os.path.normcase(os.path.abspath(source_cue)) == os.path.normcase(cue_target):
+        raise BinWriteError("The output cue would overwrite the source cue. "
+                            "Choose another output name or folder.")
+    mapped = {os.path.normcase(os.path.abspath(source)): os.path.basename(target)}
+    copies, lines = [], []
+    with open(source_cue, "r", encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            match = file_line.match(line.rstrip("\r\n"))
+            if match:
+                listed = os.path.abspath(os.path.join(folder, match.group(2) or match.group(3)))
+                key = os.path.normcase(listed)
+                if key not in mapped:
+                    if not os.path.isfile(listed):
+                        raise BinWriteError(f"The cue's audio file is missing: {listed}")
+                    suffix = os.path.splitext(listed)[1] or ".bin"
+                    name = f"{out_stem} (Track {len(mapped) + 1}){suffix}"
+                    copied = os.path.join(out_dir, name)
+                    if (os.path.normcase(copied) != key
+                            and os.path.exists(copied) and os.path.samefile(copied, listed)):
+                        raise BinWriteError("An output audio file aliases its source.")
+                    copies.append((listed, copied))
+                    mapped[key] = name
+                line = f'{match.group(1)}"{mapped[key]}"{match.group(4)}\n'
+            lines.append(line)
+    for listed, copied in copies:
+        if os.path.normcase(listed) != os.path.normcase(copied):
+            shutil.copyfile(listed, copied)
+    with open(cue_target, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return (f"Copied {len(copies)} audio file(s). "
+            f"Cue sheet: {os.path.basename(cue_target)} (original track indices preserved).")

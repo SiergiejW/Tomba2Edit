@@ -14,6 +14,7 @@ import shutil
 import tempfile
 
 from disc.iso9660 import ISO9660Reader, ISOFormatError
+from disc.source_disc import data_track
 
 REQUIRED_FILES = ("TOMBA2.DAT", "TOMBA2.IDX", "TOMBA2.IMG")
 
@@ -68,6 +69,9 @@ class ISOHandler:
         REQUIRED_FILES - a missing optional file is just absent from the
         returned dict); the temp directory is cleaned up automatically if
         it does."""
+        # A CUE is a descriptor, never an ISO byte stream. CAR files need
+        # no conversion: the Special Edition stores raw Mode 2 sectors.
+        iso_path = data_track(iso_path)
         self.cleanup()
         self.temp_dir = tempfile.mkdtemp(prefix="tomba2edit_")
 

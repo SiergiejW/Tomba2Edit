@@ -10,17 +10,6 @@ for _stream in (sys.stdout, sys.stderr):
 version = "0.4.3"
 
 def _install_crash_report():
-    """Make an unhandled exception say something before it kills us.
-
-    PyQt6 does not let an exception raised inside a slot propagate: it
-    calls qFatal(), which calls abort(), and Windows reports that as
-    0xC0000409 with nothing printed and every pending edit gone. A one
-    line typo therefore looks exactly like a memory corruption bug.
-
-    sys.excepthook still runs first, so this is the last chance to say
-    what actually happened. The traceback also goes to a file beside the
-    program, because the abort follows immediately and a dialog is no
-    use to someone who was not watching."""
     import os
     import traceback
 
