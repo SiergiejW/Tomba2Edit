@@ -254,6 +254,24 @@ class LevelEditorPanel(QWidget):
             "animated texture - alone and framed, as an animated GIF over one "
             "loop of it. With nothing selected, the whole view.")
         self.gif_button.clicked.connect(lambda: self.viewer.save_gif())
+        from gui.level.level_undo import LevelUndo
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        self.undo = LevelUndo(self)
+        self.undo_button = QPushButton("Undo", self)
+        self.undo_button.setToolTip("Undo the last level edit (Ctrl+Z).")
+        self.undo_button.clicked.connect(self.undo.undo)
+        self.redo_button = QPushButton("Redo", self)
+        self.redo_button.setToolTip("Redo (Ctrl+Y or Ctrl+Shift+Z).")
+        self.redo_button.clicked.connect(self.undo.redo)
+        for keys, slot in (("Ctrl+Z", self.undo.undo), ("Ctrl+Y", self.undo.redo),
+                           ("Ctrl+Shift+Z", self.undo.redo)):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+        self.undo.changed = self._undo_changed
+        self._undo_changed()
+        self.viewer.edit_starting.connect(lambda: self.undo.remember())
+        self.viewer.edit_cancelled.connect(self.undo.forget_last)
         self.apply_button = QPushButton("Apply changes", self)
         self.apply_button.setToolTip("Apply level changes to the working game files for project/disc saving.")
         self.apply_button.clicked.connect(lambda: self.apply_changes(announce=True))
@@ -264,6 +282,8 @@ class LevelEditorPanel(QWidget):
         self.save_button.clicked.connect(self._save_overlay)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.addWidget(self.undo_button)
+        buttons.addWidget(self.redo_button)
         buttons.addWidget(self.keep_button)
         buttons.addWidget(self.name_button)
         buttons.addWidget(self.gif_button)
@@ -433,6 +453,7 @@ class LevelEditorPanel(QWidget):
         if not self.apply_changes():
             return
         self._close_events()
+        self.undo.clear()
         from gui.level.progressive_load import LevelLoad
         from PyQt6.QtWidgets import QApplication
         self._cancel_load()
@@ -1150,6 +1171,10 @@ class LevelEditorPanel(QWidget):
         self._event_editor = editor
         editor.show()
 
+    def _undo_changed(self):
+        self.undo_button.setEnabled(bool(self.undo.undo_stack))
+        self.redo_button.setEnabled(bool(self.undo.redo_stack))
+
     def _close_events(self):
         """Close the Events window, putting back anything it previewed."""
         editor = getattr(self, '_event_editor', None)
@@ -1176,6 +1201,7 @@ class LevelEditorPanel(QWidget):
         instance = self._instance(self.viewer.selected)
         if instance is None or not instance.movable:
             return
+        self.undo.remember(("box", instance.index))
         try:
             if instance.pickup is not None:
                 requested = tuple(self.boxes[n].value() for n in ("X", "Y", "Z"))
@@ -1222,6 +1248,7 @@ class LevelEditorPanel(QWidget):
         source = self.model_box.currentData()
         if source == instance.source:
             return
+        self.undo.remember()
         instance.source = source
         key = instance_key(instance)
         if key is not None:
@@ -1318,6 +1345,7 @@ class LevelEditorPanel(QWidget):
             QMessageBox.information(self, "Couldn't select this item", str(exc))
             self._show_details(instance.index)
             return
+        self.undo.remember()
         if record.chest:
             kind = self.pickup_kind.currentData()
             if kind is not None:
@@ -1355,6 +1383,7 @@ class LevelEditorPanel(QWidget):
                 overlay_path=self.scene.overlay_path, area=self.scene.area_index,
                 reward=4 if reward >= 256 else reward)
             old_instances = len(self.scene.instances)
+            self.undo.remember()
             instance = self.scene.add_pickup(
                 record, point=point, view=self.view_box.currentData())
             try:
@@ -1368,6 +1397,7 @@ class LevelEditorPanel(QWidget):
                 self.scene.pickups.remove(record)
                 del self.scene.instances[old_instances:]
                 self.scene.__dict__.pop("_built_model", None)
+                self.undo.forget_last()
                 raise
         except (ValueError, OSError) as exc:
             QMessageBox.information(self, "Couldn't place this object", str(exc))

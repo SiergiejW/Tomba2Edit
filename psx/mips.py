@@ -91,7 +91,7 @@ class Instruction:
         """The instruction as a line of assembly, for reading by eye."""
         name = self.name or f".word 0x{self.word:08X}"
         r = REGISTERS
-        if name in LOADS or name in STORES:
+        if name in LOADS or name in STORES or name in ("lwl", "lwr", "swl", "swr"):
             return f"{name:6s} {r[self.rt]}, {self.imm}({r[self.rs]})"
         if name == "lui":
             return f"lui    {r[self.rt]}, 0x{self.unsigned:04X}"
@@ -147,3 +147,129 @@ class Image:
         """A stretch of code as lines, for reading by eye."""
         return [f"0x{i.address:08X}  {i.word:08X}  {i.text()}"
                 for i in self.walk(address, count)]
+
+
+# --- assembling: the inverse of Instruction.text() -----------------------
+
+_OPS = {name: op for op, name in OPCODES.items()}
+_FUNCS = {name: funct for funct, name in FUNCTS.items()}
+_REGIMM = {"bltz": 0, "bgez": 1, "bltzal": 16, "bgezal": 17}
+_ALIASES = {"s8": 30, "fp": 30, "r0": 0}
+
+
+class AssemblyError(ValueError):
+    pass
+
+
+def _register(token):
+    token = token.strip().lstrip("$").lower()
+    if token in _ALIASES:
+        return _ALIASES[token]
+    if token in REGISTERS:
+        return REGISTERS.index(token)
+    if token.isdigit() and int(token) < 32:
+        return int(token)
+    raise AssemblyError(f"Unknown register '{token}'.")
+
+
+def _number(token):
+    token = token.strip().lower()
+    try:
+        return int(token, 0)
+    except ValueError:
+        raise AssemblyError(f"Not a number: '{token}'.") from None
+
+
+def _imm16(value, signed):
+    low, high = (-0x8000, 0x7FFF) if signed else (0, 0xFFFF)
+    if not low <= value <= high:
+        raise AssemblyError(f"Immediate {value} does not fit 16 bits.")
+    return value & 0xFFFF
+
+
+def assemble(text, address):
+    """One instruction, written the way Instruction.text() prints it, as a
+    32-bit word. `address` is where it sits (branches are relative).
+    Also takes `nop` and `.word 0x...` (for anything unnamed)."""
+    line = text.split("#")[0].split(";")[0].strip()
+    if not line:
+        raise AssemblyError("Empty instruction.")
+    name, _, rest = line.partition(" ")
+    name = name.lower()
+    args = [a.strip() for a in rest.split(",")] if rest.strip() else []
+    if name == "nop":
+        return 0
+    if name == ".word":
+        return _number(args[0]) & 0xFFFFFFFF
+    r = _register
+
+    def need(count):
+        if len(args) != count:
+            raise AssemblyError(f"'{name}' takes {count} operand(s).")
+
+    def branch_offset(target):
+        delta = target - (address + 4)
+        if delta % 4:
+            raise AssemblyError("A branch target must be word aligned.")
+        return _imm16(delta // 4, True)
+
+    if name in LOADS or name in STORES or name in ("lwl", "lwr", "swl", "swr"):
+        need(2)
+        offset, _, base = args[1].partition("(")
+        if not base.endswith(")"):
+            raise AssemblyError("Memory operands are written offset(base).")
+        return (_OPS[name] << 26 | r(base[:-1]) << 21 | r(args[0]) << 16
+                | _imm16(_number(offset or "0"), True))
+    if name == "lui":
+        need(2)
+        return _OPS[name] << 26 | r(args[0]) << 16 | _imm16(_number(args[1]), False)
+    if name in ("addiu", "addi", "slti", "sltiu"):
+        need(3)
+        return (_OPS[name] << 26 | r(args[1]) << 21 | r(args[0]) << 16
+                | _imm16(_number(args[2]), True))
+    if name in ("andi", "ori", "xori"):
+        need(3)
+        return (_OPS[name] << 26 | r(args[1]) << 21 | r(args[0]) << 16
+                | _imm16(_number(args[2]), False))
+    if name in ("j", "jal"):
+        need(1)
+        target = _number(args[0])
+        if target & 3 or (target & 0xF0000000) != ((address + 4) & 0xF0000000):
+            raise AssemblyError("Jump target is unaligned or outside this 256 MB region.")
+        return _OPS[name] << 26 | (target >> 2) & 0x3FFFFFF
+    if name in ("beq", "bne"):
+        need(3)
+        return (_OPS[name] << 26 | r(args[0]) << 21 | r(args[1]) << 16
+                | branch_offset(_number(args[2])))
+    if name in ("blez", "bgtz"):
+        need(2)
+        return _OPS[name] << 26 | r(args[0]) << 21 | branch_offset(_number(args[1]))
+    if name in _REGIMM:
+        need(2)
+        return 1 << 26 | r(args[0]) << 21 | _REGIMM[name] << 16 | branch_offset(_number(args[1]))
+    if name in _FUNCS:
+        funct = _FUNCS[name]
+        if name in ("sll", "srl", "sra"):
+            need(3)
+            shift = _number(args[2])
+            if not 0 <= shift < 32:
+                raise AssemblyError("Shift amount is 0..31.")
+            return r(args[1]) << 16 | r(args[0]) << 11 | shift << 6 | funct
+        if name == "jr":
+            need(1)
+            return r(args[0]) << 21 | funct
+        if name == "jalr":
+            need(2)
+            return r(args[1]) << 21 | r(args[0]) << 11 | funct
+        if name in ("mfhi", "mflo"):
+            need(1)
+            return r(args[0]) << 11 | funct
+        if name in ("mult", "multu", "div", "divu"):
+            need(2)
+            return r(args[0]) << 21 | r(args[1]) << 16 | funct
+        if name == "syscall":
+            return funct
+        # Everything else prints as "rd, rs, rt".
+        need(3)
+        return r(args[1]) << 21 | r(args[2]) << 16 | r(args[0]) << 11 | funct
+    raise AssemblyError(f"Unknown instruction '{name}'.")

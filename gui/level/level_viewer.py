@@ -165,6 +165,9 @@ class LevelViewer(SMSTViewer):
     # when it goes back to the whole.
     part_changed = pyqtSignal(object, object)
     pickup_dropped = pyqtSignal(str, object)
+    # Around a drag, so the panel's undo takes one step per drag.
+    edit_starting = pyqtSignal()
+    edit_cancelled = pyqtSignal()
     edit_failed = pyqtSignal(str)
     # True for Edit mode, False for Preview.
     mode_changed = pyqtSignal(bool)
@@ -1203,6 +1206,7 @@ class LevelViewer(SMSTViewer):
         right, up = self._camera_axes()
         normal = np.cross(right, up)
         start = self._plane_point(cursor.x(), cursor.y(), anchor, normal)
+        self.edit_starting.emit()
         self._moving = (instance.index, mode, anchor, normal, start,
                         None if instance.pickup is None else instance.pickup.plane)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -1215,6 +1219,7 @@ class LevelViewer(SMSTViewer):
         self._moving = None
         instance = self.instances[index]
         if cancel:
+            self.edit_cancelled.emit()
             instance.x, instance.y, instance.z = anchor
             if plane is not None:
                 instance.pickup.plane = plane

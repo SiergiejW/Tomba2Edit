@@ -260,9 +260,26 @@ class EventEditor(QDialog):
         self.preview_tabs.addTab(self.model_tab,'Model / animation')
         self.path_preview=PathPreview()
         self.preview_tabs.addTab(self.path_preview,'Scene path')
+        code_tab=QWidget();code_layout=QVBoxLayout(code_tab);code_layout.setContentsMargins(0,0,0,0)
+        code_bar=QHBoxLayout()
+        self.code_edit=QPushButton('Edit code');self.code_edit.setCheckable(True)
+        self.code_edit.setToolTip('Edit the instructions shown, in place: a changed line is assembled at its own address.')
+        self.code_edit.toggled.connect(self.edit_code)
+        self.code_save=QPushButton('Save code');self.code_save.clicked.connect(self.save_code)
+        self.code_undo=QPushButton('Undo');self.code_redo=QPushButton('Redo')
+        self.code_discard=QPushButton('Discard');self.code_discard.clicked.connect(lambda:self.code_edit.setChecked(False))
+        for b in (self.code_edit,self.code_save,self.code_undo,self.code_redo,self.code_discard):code_bar.addWidget(b)
+        code_bar.addStretch();code_layout.addLayout(code_bar)
         self.code_preview=QPlainTextEdit();self.code_preview.setReadOnly(True)
         self.code_preview.setFont(QFont('Consolas',9))
-        self.preview_tabs.addTab(self.code_preview,'Native code')
+        self.code_preview.setUndoRedoEnabled(True)
+        self.code_undo.clicked.connect(self.code_preview.undo);self.code_redo.clicked.connect(self.code_preview.redo)
+        self.code_preview.undoAvailable.connect(lambda on:self.code_undo.setEnabled(on and self.code_edit.isChecked()))
+        self.code_preview.redoAvailable.connect(lambda on:self.code_redo.setEnabled(on and self.code_edit.isChecked()))
+        code_layout.addWidget(self.code_preview,1)
+        self.code_tab=code_tab
+        self.preview_tabs.addTab(code_tab,'Native code')
+        for b in (self.code_save,self.code_undo,self.code_redo,self.code_discard):b.setEnabled(False)
         self.model_viewer=None;self.animation_job=None;self.animation_frames=[];self.animation_tick=0
         self.preview_generation=0
         self.animation_timer=QTimer(self);self.animation_timer.setInterval(33)
@@ -320,7 +337,14 @@ class EventEditor(QDialog):
         self.down=QPushButton('Move down');self.down.clicked.connect(lambda:self.move(1))
         self.remove=QPushButton('Delete');self.remove.clicked.connect(self.delete)
         self.revert=QPushButton('Revert page');self.revert.clicked.connect(self.revert_page)
-        for b in (self.up,self.down,self.remove,self.revert):edit_row.addWidget(b)
+        self.undo_button=QPushButton('Undo');self.undo_button.clicked.connect(self.undo)
+        self.redo_button=QPushButton('Redo');self.redo_button.clicked.connect(self.redo)
+        self.undo_button.setToolTip('Undo the last event edit (Ctrl+Z).');self.redo_button.setToolTip('Redo (Ctrl+Y or Ctrl+Shift+Z).')
+        for b in (self.up,self.down,self.remove,self.revert,self.undo_button,self.redo_button):edit_row.addWidget(b)
+        from PyQt6.QtGui import QKeySequence,QShortcut
+        self._undo,self._redo,self._text_session=[],[],None
+        for keys,slot in (('Ctrl+Z',self.undo),('Ctrl+Y',self.redo),('Ctrl+Shift+Z',self.redo)):
+            shortcut=QShortcut(QKeySequence(keys),self);shortcut.activated.connect(slot)
         layout.addLayout(edit_row)
         self.shared=QCheckBox('Apply shared script binding and dialogue-entry changes')
         self.shared.setToolTip('This edits the selected native call site. Other actors that use it receive the same changes.')
@@ -334,6 +358,7 @@ class EventEditor(QDialog):
         self.actions.currentRowChanged.connect(self.row_chosen)
         self.viewport=ViewportPreview(self)
         self.shared.toggled.connect(self.update_enabled)
+        self._undo_state()
         self.page_changed(0)
 
     def page_changed(self,index):
@@ -348,7 +373,7 @@ class EventEditor(QDialog):
                 from game.event_preview import native_code_at
                 try:self.code_preview.setPlainText('Native handler — this entity’s behaviour runs here.\n\n'+native_code_at(self.exe,self.overlay,self.native_handler,160))
                 except ValueError as exc:self.code_preview.setPlainText(str(exc))
-                self.preview_tabs.setCurrentWidget(self.code_preview)
+                self.preview_tabs.setCurrentWidget(self.code_tab)
             else:self.code_preview.setPlainText('No native handler is associated with this entity.')
             self.path_preview.set([],None,self.start_position(),self.others(),'No event page')
             self.status.setText('No statically resolved native scripts were found for this entity. '
@@ -436,6 +461,7 @@ class EventEditor(QDialog):
             if self.selected<len(nodes) and self.fields:
                 values=[box.value() for box in self.fields]
                 if values!=nodes[self.selected].operands:
+                    self.remember()
                     nodes[self.selected].set_operands(values)
                     for n,line in enumerate(self.row_texts(nodes)):
                         item=self.actions.item(n)
@@ -486,7 +512,103 @@ class EventEditor(QDialog):
         else:self.status.setText('Wait timers use game ticks. Animation IDs and movement parameters belong to this actor’s native resources.')
         self.update_enabled()
 
+    # --- editing native code in place ---
+
+    CODE_LINE=r'^\s*(?:0x)?([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})\s+(.+?)\s*$'
+
+    def _code_lines(self,text):
+        import re
+        out={}
+        for line in text.splitlines():
+            m=re.match(self.CODE_LINE,line)
+            if m:out[int(m.group(1),16)]=(int(m.group(2),16),' '.join(m.group(3).split()))
+        return out
+
+    def edit_code(self,on):
+        if on:
+            self._code_original=self.code_preview.toPlainText()
+            if not self._code_lines(self._code_original):
+                self.code_edit.setChecked(False);self.status.setText('There are no instructions here to edit.');return
+            self.code_preview.setReadOnly(False);self.code_preview.document().clearUndoRedoStacks()
+            self.code_save.setEnabled(True);self.code_discard.setEnabled(True)
+            self.status.setText('Editing native code: change an instruction or its word; addresses stay where they are. Save writes the area file (or MAIN.EXE).')
+        else:
+            original=getattr(self,'_code_original',None)
+            self.code_preview.setReadOnly(True)
+            if original is not None and self.code_preview.toPlainText()!=original:
+                self.code_preview.setPlainText(original)
+            self._code_original=None
+            for b in (self.code_save,self.code_undo,self.code_redo,self.code_discard):b.setEnabled(False)
+
+    def code_changes(self):
+        """{address: new word} from the edited text, or raise ValueError."""
+        from psx.mips import assemble,AssemblyError,Instruction
+        before=self._code_lines(self._code_original or '')
+        after=self._code_lines(self.code_preview.toPlainText())
+        changes={}
+        for address,(word,text) in after.items():
+            if address not in before:
+                raise ValueError(f'0x{address:08X} was not in the code shown; only existing instructions can be changed, in place.')
+            old_word,old_text=before[address]
+            if word==old_word and text==old_text:continue
+            if text==old_text:new=word            # the word itself was edited
+            else:
+                try:new=assemble(text,address)
+                except AssemblyError as exc:raise ValueError(f'0x{address:08X}: {exc}') from None
+            if new!=old_word:changes[address]=new
+        return changes
+
+    def save_code(self):
+        import struct
+        try:changes=self.code_changes()
+        except ValueError as exc:
+            QMessageBox.warning(self,'Code not saved',str(exc));return
+        if not changes:
+            self.status.setText('No instruction changed.');self.code_edit.setChecked(False);return
+        resident=[a for a in changes if a<script.BASE]
+        from psx.mips import Instruction
+        listing='\n'.join(f'0x{a:08X}: {Instruction(a,w).text()}' for a,w in sorted(changes.items())[:12])
+        warn='\n\nMAIN.EXE is shared by every area.' if resident else ''
+        if QMessageBox.question(self,'Save native code',f'Write {len(changes)} instruction(s)?\n\n{listing}{warn}')!=QMessageBox.StandardButton.Yes:
+            return
+        panel=self.panel;files={}
+        main=struct.unpack_from('<I',self.exe,24)[0]
+        overlay=bytearray(self.overlay);exe=bytearray(self.exe)
+        for address,word in changes.items():
+            if address>=script.BASE:
+                at=address-script.BASE
+                if at+4>len(overlay):QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is past the area file.');return
+                struct.pack_into('<I',overlay,at,word)
+            else:
+                at=address-main+0x800
+                if not 0x800<=at<=len(exe)-4:QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is outside MAIN.EXE.');return
+                struct.pack_into('<I',exe,at,word)
+        try:
+            if bytes(overlay)!=self.overlay:
+                path=panel.scene.overlay_path
+                if Path(path).read_bytes()!=self.overlay:raise ValueError('The area file changed. Reopen Events before saving code.')
+                files[path]=bytes(overlay)
+            if bytes(exe)!=self.exe:
+                if Path(panel.exe_path).read_bytes()!=self.exe:raise ValueError('MAIN.EXE changed. Reopen Events before saving code.')
+                files[panel.exe_path]=bytes(exe)
+            panel._write_placement_files(files)
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'Code not saved',str(exc));return
+        for path,data in files.items():panel._placement_files[Path(path).name]=data
+        if bytes(overlay)!=self.overlay:panel.scene.overlay_data=bytes(overlay)
+        self.overlay,self.exe=bytes(overlay),bytes(exe)
+        panel._scene_memory_cache.clear()
+        self._code_original=None;self.code_edit.setChecked(False)
+        c=self.drafts[self.active][self.selected] if self.active is not None and self.selected is not None else None
+        if c is not None:self.show_code(c)
+        self.status.setText(f'Wrote {len(changes)} instruction(s).')
+
     def show_code(self,c):
+        if self.code_edit.isChecked():
+            if self.code_preview.toPlainText()!=(self._code_original or ''):
+                if QMessageBox.question(self,'Unsaved code','Discard the code edit?')!=QMessageBox.StandardButton.Yes:
+                    return
+            self.code_edit.setChecked(False)
         import struct
         from game.event_preview import native_code,native_code_at
         try:
@@ -570,9 +692,47 @@ class EventEditor(QDialog):
     def _edit(self,action,row):
         if self.selected is None:return
         self.store_operands()
+        self.remember()
         try:action()
         except ValueError as exc:self.status.setText(str(exc));return
         self.selected=None;self.populate(row)
+
+    # --- undo / redo: whole-editor snapshots (pages and dialogue text) ---
+
+    def _snapshot(self):
+        return (deepcopy(self.drafts),deepcopy(self.bank) if self.bank is not None else None,
+                self.active,self.selected)
+
+    def remember(self):
+        self._undo.append(self._snapshot());del self._undo[:-200]
+        if not getattr(self,'_stepping',False):self._redo.clear()
+        self._undo_state()
+
+    def _undo_state(self):
+        if hasattr(self,'undo_button'):
+            self.undo_button.setEnabled(bool(self._undo));self.redo_button.setEnabled(bool(self._redo))
+
+    def undo(self):self._step(self._undo,self._redo)
+    def redo(self):self._step(self._redo,self._undo)
+
+    def _step(self,source,target):
+        self._stepping=True
+        try:self.store_operands()
+        finally:self._stepping=False
+        if not source:return
+        target.append(self._snapshot())
+        drafts,bank,active,selected=source.pop()
+        self.drafts=drafts
+        if bank is not None:
+            # Keep the same dict: the text editor's pending edits share it.
+            if self.bank is None:self.bank=bank
+            else:self.bank.clear();self.bank.update(bank)
+        self.linked_entry=None;self._text_session=None
+        self.selected=None
+        if active is not None and active!=self.active:
+            self.pages.blockSignals(True);self.pages.setCurrentIndex(active);self.pages.blockSignals(False)
+            self.active=active
+        self.populate(selected or 0);self._undo_state()
 
     def _new_operands(self):
         opcode=self.types.currentData()
@@ -617,7 +777,7 @@ class EventEditor(QDialog):
         picked=self.pick_dialogue(c.operands[0]&0xfff,max(c.operands[1],0))
         if picked is None:return
         values=c.operands;values[0]=(values[0]&~0xfff)|picked[0];values[1]=picked[1]
-        c.set_operands(values);row=self.selected;self.selected=None;self.populate(row)
+        self.remember();c.set_operands(values);row=self.selected;self.selected=None;self.populate(row)
 
     def go_to_txtd(self):
         """Show the area's dialogue file in the Indexed View, on this line."""
@@ -673,6 +833,7 @@ class EventEditor(QDialog):
 
     def revert_page(self):
         if self.active in self.originals:
+            self.remember()
             self.drafts[self.active]=deepcopy(self.originals[self.active]);self.selected=None;self.populate(0)
 
     def load_bank(self):
@@ -700,7 +861,11 @@ class EventEditor(QDialog):
         self.text_preview.blockSignals(False)
 
     def edit_text(self):
-        if self.linked_entry is not None:self.linked_entry['text']=self.text_preview.toPlainText()
+        if self.linked_entry is not None:
+            # One undo step per line edited, not per keystroke.
+            if self._text_session is not id(self.linked_entry):
+                self.remember();self._text_session=id(self.linked_entry)
+            self.linked_entry['text']=self.text_preview.toPlainText()
 
     def decode_voice(self):
         if self.voice_job and self.voice_job.isRunning():return
@@ -717,7 +882,14 @@ class EventEditor(QDialog):
              VoiceDecode(image,self.panel.scene.overlay_path,self.bank['entries'],self.linked_master,
                         deepcopy(self.linked_entry),self.panel))
         generation=self.preview_generation
-        self.voice_job=job;job.decoded.connect(lambda result,g=generation:self.voice_ready(result,g));job.start()
+        # A bound slot, not a lambda: Qt drops it if this window is gone
+        # by the time the decode finishes.
+        job.generation=generation
+        self.voice_job=job;job.decoded.connect(self._voice_decoded);job.start()
+
+    def _voice_decoded(self,result):
+        job=self.voice_job
+        self.voice_ready(result,getattr(job,'generation',None))
 
     def voice_ready(self,result,generation=None):
         if generation is not None and generation!=self.preview_generation:return
@@ -749,6 +921,9 @@ class EventEditor(QDialog):
             self.voice_ready((samples,rate,note))
         except Exception as exc:self.status.setText(str(exc))
 
+    def _animation_key_of(self,command):
+        return (command.opcode,tuple(command.operands),self.bindings[self.active].animations)
+
     def preview_model_action(self):
         if self.selected is None:
             self.preview_tabs.setCurrentWidget(self.model_tab)
@@ -757,26 +932,36 @@ class EventEditor(QDialog):
         self.preview_tabs.setCurrentWidget(self.model_tab)
         if command.opcode not in (1,30):
             self.show_model_parts(None);return
-        key=(command.opcode,tuple(command.operands),self.bindings[self.active].animations)
+        key=self._animation_key_of(command)
         cached=getattr(self,'_animation_cache',{}).get(key)
         if cached is not None:
             self.animation_ready(cached);return
-        if self.animation_job and self.animation_job.isRunning():return
+        if self.animation_job and self.animation_job.isRunning():
+            # Plays as soon as it is ready, if this action is still selected.
+            self.model_note.setText('Still initialising the entity’s native animation - it plays when ready.')
+            return
         self.preview_model_button.setEnabled(False);self.model_note.setText('Initialising the selected entity’s native animation…')
-        self._animation_key=key
         job=AnimationDecode(self.panel.scene,self.instance,command,self.panel,self.bindings[self.active].animations)
-        generation=self.preview_generation
-        self.animation_job=job;job.decoded.connect(lambda result,g=generation:self.animation_ready(result,g));job.start()
+        job.key=key
+        self.animation_job=job;job.decoded.connect(self._animation_decoded);job.start()
+
+    def _animation_decoded(self,result):
+        """Cache every result; play it if its action is (still) selected."""
+        job=self.animation_job;key=getattr(job,'key',None)
+        self.preview_model_button.setEnabled(True)
+        frames,note=result
+        if frames and key is not None:
+            self._animation_cache=getattr(self,'_animation_cache',{});self._animation_cache[key]=result
+        nodes=self.drafts.get(self.active,())
+        current=nodes[self.selected] if self.selected is not None and self.selected<len(nodes) else None
+        if current is not None and current.opcode in (1,30) and self._animation_key_of(current)==key:
+            self.animation_ready(result)
 
     def animation_ready(self,result,generation=None):
         self.preview_model_button.setEnabled(True)
-        if generation is not None and generation!=self.preview_generation:return
         if not self.isVisible():return
         frames,note=result;self.model_note.setText(note)
         if not frames:return
-        key=getattr(self,'_animation_key',None)
-        if key is not None:
-            self._animation_cache=getattr(self,'_animation_cache',{});self._animation_cache[key]=result
         self.animation_frames=frames;self.animation_tick=0
         self.show_model_parts(frames[0],frame=True);self.animation_timer.start()
 

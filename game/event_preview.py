@@ -54,7 +54,10 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None):
     clip=read_clip(bytes(world.mem.ram),actor_sim.RAM_BASE,pointer,actor_sim._ANY_POSE)
     transform=world._transform_of(actor.handler)
     if transform is None:raise ValueError('The entity’s part-transform routine is unresolved.')
-    world.cpu.call(0x80041718,(actor.address,animation,mode),sp=actor_sim.STACK)
+    # Unblended (mode 0): a non-zero mode is f_StartActorSkeletalAnimationBlend,
+    # which eases over that many ticks out of whatever pose the actor holds -
+    # here an arbitrary idle tick, so those first frames were noise.
+    world.cpu.call(0x80041718,(actor.address,animation,0),sp=actor_sim.STACK)
     models,_=world._maps();frames=[]
     for tick in range(min(max(1,clip.duration),max_ticks)):
         world.cpu.call(transform,(actor.address,),budget=200000,sp=actor_sim.STACK)
@@ -62,7 +65,8 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None):
         if not parts:raise ValueError('The native animation produced no model parts.')
         frames.append(parts)
         world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
-    return frames,f'Animation {animation}: {len(frames)} native ticks at 30 Hz'+(' (preview capped)' if clip.duration>max_ticks else '')
+    eased=f'; in game it eases in over {mode} ticks from the previous pose' if mode else ''
+    return frames,f'Animation {animation}: {len(frames)} native ticks at 30 Hz'+(' (preview capped)' if clip.duration>max_ticks else '')+eased
 
 def native_code(exe,overlay,command,count=64):
     read=event_script.reader(exe,overlay)

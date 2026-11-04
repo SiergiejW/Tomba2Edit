@@ -70,6 +70,7 @@ class TranslationGizmo(QWidget):
             d=end-start;t=np.clip(np.dot(point-start,d)/np.dot(d,d),.15,1)
             if np.linalg.norm(point-(start+t*d))<=9:
                 i=self.viewer.instances[self.viewer.selected]
+                getattr(self.viewer,'edit_starting',None) and self.viewer.edit_starting.emit()
                 self.drag=(i,line,point,np.array((i.x,i.y,i.z)),
                            None if i.pickup is None else i.pickup.plane,i.angle)
                 self.grabMouse();self.viewer.setFocus();event.accept();return
@@ -94,6 +95,7 @@ class TranslationGizmo(QWidget):
 
     def cancel(self):
         if self.drag is None:return
+        getattr(self.viewer,'edit_cancelled',None) and self.viewer.edit_cancelled.emit()
         i,line,initial,anchor,plane,angle=self.drag
         i.x,i.y,i.z=anchor;i.angle=angle
         if i.pickup is not None:i.pickup.plane=plane
