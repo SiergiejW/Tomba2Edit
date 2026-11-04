@@ -7,55 +7,53 @@ verified US retail layout.
 
 ## Implemented workflow
 
-The inspector discovers literal native script bindings reachable from an
-entity's handler. Each resolved entry point is a page; it does not claim
-that every quest condition or dynamic table has been recovered. Known
-commands have editable parameters. Timer waits, dialogue presentations,
-animation, resource messages, sound, voice, position and camera-angle
-commands can be inserted before a selected action.
+**Events / actions…** (Level Editor, any selected entity) opens one window:
+the action stack on the left, previews on the right.
 
-Applying compiles a copied script into the verified extension window,
-relocates its conditional pointers and redirects the selected native call
-site. The original script bytes remain intact. Ambiguous or unsupported
-bindings and invalid control flow are refused. A shared-edit checkbox is
-required: per-entity handler isolation is not implemented, so actors using
-that same call site receive the same edit. Project/disc builds include the
-changed overlay through the existing level-file staging path.
+- **Pages** are the literal scripts the entity's handler starts. Discovery
+  floods the handler's control flow (both branch paths, jump tables, tail
+  jumps, overlay calls) and resolves the script register backwards at every
+  call to the three loaders: `f_LoadActorScript` 0x80040D68 (a1),
+  `f_InitializeActorScript` 0x80040CDC (a2, also gives the animation table)
+  and `f_LoadCurrentScriptActorScript` 0x80070888 (a0). Paths that build
+  different pointers give one page each. Dynamic tables stay unresolved.
+- **Rows** read like RPG Maker: `◆ Wait 21 ticks (0.70 s)`,
+  `◆ Spawn presentation: dialogue 3, entry 2 — "Whoooa!…"`,
+  `◆ If progress[44] == 7 ⟶ #19 if true`. Rows inside a forward jump are
+  indented, jump targets show `◁ #NN`, and colours mark the kind of action.
+  Jumps into shared resident scripts stay external pointers.
+- **Editing**: typed fields for decoded commands, raw fields behind a
+  checkbox, insert before/after (extended 16-byte records for moves and
+  camera focus), delete, move up/down and revert page. Conditional and
+  end actions cannot be deleted. A swap that would change what a jump runs
+  is refused.
+- **Previews**: dialogue text (editable, staged with the IDX text editor's
+  pending edits) and linked voice; resident voice IDs; sound effects from
+  their VAB waveform; item names for item messages; skeletal animation
+  played on the entity's own model (on request); a top-down **scene path**
+  of set-position and move actions and camera focus points over the room's
+  other entities, with known durations; disassembly of each callback and of
+  the target of **Run native code** (command 62).
+- **Applying** compiles the page into the event region, the top 8 KB of
+  the free-RAM window (0x80155000..0x80157000), and redirects the call
+  site's `lui`/`addiu` pair. Custom rewards and grown pickup tables stay
+  below it (`pickup_edit.TABLES_LIMIT`). Re-editing a page reuses its slot
+  when nothing else references it. A `lui` in a scratch register is
+  redirected only if the scratch register is dead after the `addiu`. A
+  `lui` shared by several pages is redirected only if the new high half
+  matches.
 
-Every decoded command offers its native instructions and raw operands in
-Preview, including actions whose semantics remain unknown. Presentation
-commands resolve the area's TXTD bank and dialogue entry. Runtime-selected
-entries are explicitly listed as candidates. Dialogue edits join the same
-pending edits and cache as the IDX text editor. Linked voice uses the
-existing master/channel/clip resolver; explicit resident voice commands
-use their native XA descriptors. Sound previews resolve native sound
-definitions to VAB waveforms; SPU envelopes and the gameplay mixer are not
-simulated.
+Command semantics come from the US decomp. Callback results: 0 waits,
+1 done (a branch form then takes its pointer), 2 continues and 3 jumps.
+Only 42/43/44 (and native/area code) return 2/3. 6 and 9 are waits, not
+conditions. Conditions jump when they hold (mode -1 always, 0 ==, 1 <=,
+2 >=, 3 any bit). 49–61 are Tomba/interior commands and 62 calls native
+code at operands 1|2<<16.
 
-Animation playback is requested explicitly. It initialises the selected
-native entity in its own area/interior, uses its animation table and model
-parts, then samples the requested skeletal animation. It works for modelled
-entities generally, not just NPCs. It refuses unresolved runtime targets
-instead of choosing another character's model. The preview is capped at
-120 ticks and can show the selected entity's static model or native sprite
-when the action itself has no decoded visual preview. Movement and camera
-commands currently offer native-code inspection and a static model view;
-their full scene effects are not simulated in the preview.
-
-Edit mode initialises NPCs and all listed interiors without recording pose,
-particle or line clips and without probing speculative event actors. Cold
-initialisation still executes native setup; a measured A00 load took about
-9.4 seconds and a cached reopen about 0.1 seconds on the development PC.
-Selected writable entities have a native-axis translation gizmo. Authored
-NPC scene-table positions are writable when the binding is unambiguous;
-script-controlled or unresolved positions remain immovable.
-
-Tests cover unchanged native round trips, branch relocation, insertion,
-executing inserted waits through the retail MIPS interpreter, event-window
-layout, dialogue staging, draft isolation, no-recording fast mode, gizmo
-axes, commit and cancellation. A retail Windmill animation preview resolved
-17 model parts and animation 2's 24 native ticks. Emulator playthrough is
-still required for edited conversations and save/load behavior.
+Verified on retail: Windmill (9 pages), Kainen (9), Mining Town miners
+(3, with animation 6 playing on the miner's model). Edited pages execute
+through the retail interpreter in tests. Emulator playthrough of an edited
+conversation is still outstanding.
 
 ## What the game already supports
 

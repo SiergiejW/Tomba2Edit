@@ -475,6 +475,36 @@ def _allocate(data, size, current, current_size, own_lo):
     if at + size > EVENT_END: raise ValueError('The event extension region is full.')
     return at
 
+def _reads(i, reg):
+    if i.name in ('lui', 'j', 'jal') or i.name is None: return False
+    if i.word >> 26 == 0: return reg in (i.rs, i.rt)
+    if i.name in ('beq', 'bne') or i.name in ('sb', 'sh', 'sw', 'swl', 'swr'): return reg in (i.rs, i.rt)
+    return i.rs == reg
+
+def _scratch_dies(read, hi_at, lo_at, base, reg):
+    """Whether a `lui base` only feeds the `addiu reg, base` at lo_at.
+
+    Straight-line check: between them nothing else reads `base`, and after
+    it `base` is rewritten (or clobbered by a call) before any other read
+    or branch. With base == reg the pointer register itself is the target."""
+    from psx.mips import Instruction
+    if base == reg: return True
+    at = hi_at + 4
+    for _ in range(24):
+        i = Instruction(at, struct.unpack('<I', read(at, 4))[0])
+        if at != lo_at:
+            if _reads(i, base): return False
+            if _dest(i) == base: return at > lo_at
+            if i.name == 'jal' and at > lo_at and base in CALLER_SAVED: return True
+            if i.name in ('j', 'jr', 'jalr', 'beq', 'bne', 'blez', 'bgtz', 'bltz', 'bgez'):
+                if at < lo_at: return False
+                # Delay slot runs first; then the scratch must not live on.
+                slot = Instruction(at+4, struct.unpack('<I', read(at+4, 4))[0])
+                if _reads(slot, base): return False
+                return _dest(slot) == base or (i.name == 'jal' and base in CALLER_SAVED)
+        at += 4
+    return False
+
 def stage(exe,overlay,binding,commands):
     """Copy a script into the event region and rebind this call site."""
     if game_build.current().name!='us-retail': raise ValueError('Event writing currently requires US retail.')
@@ -487,8 +517,8 @@ def stage(exe,overlay,binding,commands):
     if binding.hi_at<BASE or binding.lo_at<BASE: raise ValueError('Resident shared bindings are read-only.')
     hi,lo=binding.hi_word,binding.lo_word
     if hi>>26!=15 or lo>>26 not in (9,13): raise ValueError('Unverified script pointer instructions.')
-    reg=binding.register
-    if (hi>>16)&31!=reg or (lo>>21)&31!=reg or (lo>>16)&31!=reg:
+    reg=binding.register;base=(hi>>16)&31
+    if (lo>>21)&31!=base or (lo>>16)&31!=reg or not _scratch_dies(read,binding.hi_at,binding.lo_at,base,reg):
         raise ValueError('This shared pointer materialization cannot yet be redirected safely.')
     size = sum(len(c.raw) for c in commands)
     try: current_size = sum(len(c.raw) for c in read_graph(read, binding.script))
