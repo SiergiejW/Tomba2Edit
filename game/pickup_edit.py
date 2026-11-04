@@ -29,6 +29,9 @@ ITEM_TYPES = {0: "Equipment", 1: "One-time / contextual", 2: "Story / automatic"
 # models). Extension data rides in the area overlays, padded out to here.
 WINDOW_START = 0x8014E960
 WINDOW_END = 0x80157000
+# The window's top 8 KB holds edited event scripts (game/event_script.py);
+# grown pickup tables stop below it.
+EVENT_START = WINDOW_END - 0x2000
 CUSTOM_OFFSET = WINDOW_START - game_build.US_OVERLAY_BASE
 CUSTOM_COUNT = 128
 CUSTOM_TAG = b"T2EDIT_REWARDS_V2"
@@ -36,6 +39,7 @@ CUSTOM_TAG_AT = CUSTOM_OFFSET + CUSTOM_COUNT * pickup_art.REWARD.size
 CUSTOM_END = CUSTOM_TAG_AT + len(CUSTOM_TAG)
 TABLES_OFFSET = (CUSTOM_END + 0xF) & ~0xF
 WINDOW_LIMIT = WINDOW_END - game_build.US_OVERLAY_BASE
+TABLES_LIMIT = EVENT_START - game_build.US_OVERLAY_BASE
 
 # The first layout put the reward table at overlay +0x70000 and a copy in
 # MAIN.EXE. That is inside the resident System chunk: loading any padded
@@ -619,7 +623,7 @@ def repair_legacy_layout(exe_path, overlay_paths):
     target = TABLES_OFFSET
     for number in sorted(moved):
         name, address, raw = moved[number]
-        if target + TABLE_CAPACITY > WINDOW_LIMIT:
+        if target + TABLE_CAPACITY > TABLES_LIMIT:
             raise placement.PlacementError("The free RAM window has no room for every moved table.")
         data = out.setdefault(name, bytearray(datas[name]))
         if len(data) < target + TABLE_CAPACITY:
@@ -699,7 +703,7 @@ def stage_pickups(overlay_bytes, exe_bytes, pickups):
                 if not overlaps:
                     break
                 target = (max(overlaps) + 0xF) & ~0xF
-            if target + TABLE_CAPACITY > WINDOW_LIMIT:
+            if target + TABLE_CAPACITY > TABLES_LIMIT:
                 raise placement.PlacementError("The free RAM window has no room for another pickup table.")
             if len(overlay) < target + TABLE_CAPACITY:
                 overlay.extend(bytes(target + TABLE_CAPACITY - len(overlay)))

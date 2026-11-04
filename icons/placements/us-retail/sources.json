@@ -1,0 +1,31 @@
+{
+  "source": "US retail",
+  "main_sha256": "cb580f5bd42895b1c452dffe53e1c8cb639a029e0afec194ae197fdfda9721ed",
+  "chest": {
+    "resident_file": 1,
+    "groups": [
+      3,
+      4
+    ],
+    "projection": "isometric"
+  },
+  "weapon": {
+    "resident_file": 1,
+    "group": 16,
+    "projection": "isometric"
+  },
+  "item": {
+    "chunk": 4,
+    "file": 10,
+    "frame": 9,
+    "kind": "native sprite"
+  },
+  "crystal": {
+    "reward": 4,
+    "kind": "native sprite"
+  },
+  "apple": {
+    "reward": 0,
+    "kind": "native sprite"
+  }
+}

@@ -987,7 +987,8 @@ class World:
             # As the game's collision step does each frame: a released rock
             # falling beside another is stopped where the game stops it.
             self._resolve_contacts(budget)
-            self._read()
+            if not getattr(self, 'static_edit', False) or _frame == frames-1:
+                self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
         for _settle in range(SETTLE_FRAMES):
@@ -2374,7 +2375,7 @@ class World:
                      workers=False)
         return gated
 
-    def run_rooms(self, spawner, area_number, frames=FRAMES):
+    def run_rooms(self, spawner, area_number, frames=FRAMES, record=True):
         """Every room the area's scene spawner has a table for, each run
         from the state the area opened in, into `rooms`."""
         base = self.snapshot()
@@ -2395,7 +2396,8 @@ class World:
                      workers=False)
             self.harvest()
             room = [a for a in self.actors if a.scene == scene]
-            self.record_pose_clips(room)
+            if record:
+                self.record_pose_clips(room)
             rooms[scene] = [self.by_address[a.address] for a in room
                             if a.address in self.by_address]
             self.room_trails[scene] = dict(self.trail_slots)
@@ -3002,7 +3004,7 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=(), finished=(), log=None, publish=None, ground_fireflies=()):
+             chests=(), finished=(), log=None, publish=None, ground_fireflies=(), fast=False):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
     area with no placement records is its spawner's scene 0.
@@ -3011,6 +3013,26 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     say = log or (lambda _message, _actors=None: None)
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
                   purified=purified, finished=finished)
+    if fast:
+        # Initialise native actors and every room without playing or recording
+        # cutscenes, skeletal loops, particles, lines or speculative events.
+        frames = 12
+        world.static_edit = True
+        world.start_workers()
+        for record in records:
+            world.place(record, units)
+        if spawner:
+            world.enter_scene(spawner, area_number, 0)
+        world.run(frames, workers=False)
+        for pickup in world.tag_chests(chests):
+            world.place_chest(pickup)
+        world.run(2, workers=False)
+        world.harvest()
+        if spawner:
+            if publish: publish(world, 'Static actors ready; loading interiors')
+            world.run_rooms(spawner, area_number, frames, record=False)
+        say('Static NPCs and interiors ready; no animation recording', world.actors)
+        return world
     world.start_workers()
     say(f"placing {len(records)} record(s)")
     for record in records:

@@ -583,6 +583,30 @@ class TXTDViewer(QWidget):
         else:
             item.setData(None, Qt.ItemDataRole.ForegroundRole)
 
+    def stage_external_data(self, DAT, datstart, offset, data, locations, id_val=13):
+        """Keep event-editor text edits in the same cache as IDX text edits."""
+        original = None
+        for location in locations:
+            location = tuple(location)
+            cached = self._file_state_cache.get(location)
+            if cached is not None:
+                baseline = dict(cached.get('original_entry_texts', {}))
+            else:
+                if original is None:
+                    original = txtd.preview(DAT, datstart + offset, verbose=False)
+                baseline = {(m,e): entry['text']
+                            for m,master in enumerate(original.get('entries',()))
+                            for e,entry in enumerate(master.get('entries',()))}
+            changed = {(m,e) for m,master in enumerate(data.get('entries',()))
+                       for e,entry in enumerate(master.get('entries',()))
+                       if entry['text'] != baseline.get((m,e))}
+            self._file_state_cache[location] = {'data':data,
+                'original_entry_texts':baseline, 'edited_locations':changed,
+                'exported_locations':set((cached or {}).get('exported_locations',()))-changed}
+        if (getattr(self,'dat_start',None) == datstart and getattr(self,'offset',None)==offset
+                and (self.chunk_index,self.file_index) in self._file_state_cache):
+            self.load_txtd_data(DAT,datstart,offset,self.chunk_index,self.file_index,id_val)
+
     def load_txtd_data(self, DAT, datstart, offset, chunk_index=None, file_index=None, id_val=None):
         """
         chunk_index/file_index/id_val identify which SDAT slot this

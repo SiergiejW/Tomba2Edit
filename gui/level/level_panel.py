@@ -216,6 +216,10 @@ class LevelEditorPanel(QWidget):
         edit_layout.setContentsMargins(6, 6, 6, 6)
         edit_layout.addWidget(self.details)
         edit_layout.addLayout(form)
+        self.events_button = QPushButton('Events / actions…', self)
+        self.events_button.setEnabled(False)
+        self.events_button.clicked.connect(self._open_events)
+        edit_layout.addWidget(self.events_button)
 
         self.pickup_options = QGroupBox("Pickup", self)
         pickup_form = QFormLayout(self.pickup_options)
@@ -293,7 +297,7 @@ class LevelEditorPanel(QWidget):
         palette_panel = QWidget(self)
         palette_layout = QVBoxLayout(palette_panel)
         palette_layout.setContentsMargins(6, 3, 6, 0)
-        self.palette_label = QLabel("Add objects — switch to Edit mode to place them", self)
+        self.palette_label = QLabel("Add objects — drag into the level", self)
         palette_layout.addWidget(self.palette_label)
         palette_layout.addWidget(self.palette)
         viewport_splitter = QSplitter(Qt.Orientation.Vertical, self)
@@ -1067,6 +1071,9 @@ class LevelEditorPanel(QWidget):
 
     def _show_details(self, index):
         instance = self._instance(index)
+        self.events_button.setEnabled(instance is not None and bool(self.exe_path)
+                                      and bool(self.scene and self.scene.overlay_path)
+                                      and not getattr(self, '_loading', False))
         self._print_selection(instance)
         if instance is None:
             self.details.setText("Click something in the view, or pick a row.")
@@ -1109,6 +1116,11 @@ class LevelEditorPanel(QWidget):
                 if self.scene.can_rotate_pickup(instance.pickup) else
                 "The game determines this pickup's rotation from collision.")
             self.model_box.setEnabled(False)
+        if getattr(instance, 'native_scene_offset', None) is not None:
+            # Scene records store position only; rotation is the NPC's code.
+            self.boxes['Angle'].setEnabled(False)
+            self.boxes['Angle'].setToolTip('This NPC’s scene record stores position; rotation is controlled by its native actions.')
+            self.model_box.setEnabled(False)
         self._fill_pickup_options(instance)
         self._filling = False
 
@@ -1118,6 +1130,17 @@ class LevelEditorPanel(QWidget):
         for name, value in zip(("X", "Y", "Z"), instance.game_position):
             self.boxes[name].setValue(value)
         self.boxes["Angle"].setValue(instance.angle)
+
+    def _open_events(self):
+        instance = self._instance(self.viewer.selected)
+        if instance is None or not self.apply_changes():
+            return
+        from gui.level.event_editor import EventEditor
+        try:
+            editor = EventEditor(self, instance)
+            editor.exec()
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, 'Could not read native events', str(exc))
 
     def _on_box_changed(self, _value):
         if self._filling:
@@ -1466,6 +1489,17 @@ class LevelEditorPanel(QWidget):
             with open(self.exe_path, "rb") as source:
                 old_exe = source.read()
             overlay = placement_module.patch(old_overlay, self.scene.placements)
+            import struct
+            native=bytearray(overlay)
+            for instance in self.scene.instances:
+                offset=getattr(instance,'native_scene_offset',None)
+                if offset is None:continue
+                if offset<0 or offset+16>len(native):raise ValueError('Scene placement offset is outside the area file.')
+                expected=getattr(self.scene,'event_handlers',{}).get(instance.index)
+                if expected is not None and struct.unpack_from('<I',native,offset+12)[0]!=expected:
+                    raise ValueError('The NPC scene binding changed. Reload the area before applying its position.')
+                struct.pack_into('<hhh',native,offset+4,*(int(round(v)) for v in instance.game_position))
+            overlay=bytes(native)
             overlay, exe, records = pickup_edit.stage_pickups(
                 overlay, old_exe, self.scene.pickups)
             self._write_placement_files({overlay_path: overlay, self.exe_path: exe})

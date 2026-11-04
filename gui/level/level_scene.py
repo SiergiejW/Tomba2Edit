@@ -357,6 +357,7 @@ class Instance:
     # another instance's assembly.
     follow: tuple = None
     note: str = ""
+    native_scene_offset: int = None
     # Which room it is in - the scene index its area's spawner filled it
     # from, interior scene - 1 - or None for the area itself.
     scene: int = None
@@ -416,7 +417,7 @@ class Instance:
     @property
     def movable(self):
         # Something spawned is where its spawner puts it.
-        return self.role not in ("room", "spawned")
+        return self.native_scene_offset is not None or self.role not in ("room", "spawned")
 
     @property
     def marked(self):
@@ -978,9 +979,8 @@ class LevelScene:
         with no background, no overlay or no asset pack is still worth
         opening, and the notes say what was not there.
 
-        `fast` (the Level Editor's Edit mode) skips running the actors'
-        code: objects come from their handlers' models, nothing is
-        recorded, and only the fresh game is read."""
+        `fast` initialises native actors and interiors without recording
+        effects or animation loops. Only the fresh game is read."""
         self.__init__()
         if fast:
             progress = FRESH
@@ -989,6 +989,7 @@ class LevelScene:
         self.overlay_path = overlay_path
         self.exe_path = exe_path
         self.progress = progress
+        self.fast = fast
         # Every address the loaders know is US retail's until this says
         # which build the disc is.
         self.build_name = game_build.use(exe_path).name
@@ -996,7 +997,7 @@ class LevelScene:
         # The same area, built from the same disc and the same code, is the
         # same scene - game/scene_cache.py keeps it.
         name = scene_cache.key(dat_path, idx_path, chunk_index, overlay_path or "",
-                               exe_path or "", progress, *(("fast",) if fast else ()))
+                               exe_path or "", progress, *(("fast-static-v3",) if fast else ()))
         kept = scene_cache.read(name)
         if kept is not None:
             self.__dict__.update(kept)
@@ -1083,7 +1084,7 @@ class LevelScene:
         # heading off the plane it stands on.
         self.planes = self._load_planes(idx_path, dat_path, chunk_index)
         self.model_names = placement_module.load_model_names()
-        if overlay_path and exe_path and not fast:
+        if overlay_path and exe_path:
             self.world = self._simulate(idx_path, publish)
 
         self._built_model = None
@@ -1260,7 +1261,7 @@ class LevelScene:
                 finished=(actor_sim.progress_bytes(self.overlay_data)
                           if self.progress == EVENTS_DONE and self.overlay_data else ()),
                 log=self._log_actors, publish=stage if publish else None,
-                ground_fireflies=self._firefly_spots)
+                ground_fireflies=self._firefly_spots, fast=getattr(self,'fast',False))
         except Exception as e:
             if publish is not None:
                 raise
@@ -2771,6 +2772,41 @@ class LevelScene:
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
         self.instances = instances
+        # The worker serialises scenes without their emulated RAM. Retain
+        # explicit native handler identities for the Events inspector.
+        self.event_handlers = {}
+        if self.world is not None:
+            actors = [*self.world.actors]
+            for room in self.world.rooms.values(): actors.extend(room)
+            for instance in instances:
+                names = instance.label+' '+(instance.note or '')
+                found = {a.handler for a in actors if self.handler_name(a.handler) in names}
+                if len(found)==1: self.event_handlers[instance.index]=found.pop()
+            # Only expose authored scene-table positions when the initialised
+            # actor still stands at that record. Script-controlled positions
+            # and ambiguous duplicate records remain immovable.
+            spawner=self._scene_spawner()
+            used=set()
+            if spawner:
+                tables=self.world._scene_tables(spawner)
+                for instance in instances:
+                    handler=self.event_handlers.get(instance.index)
+                    if not handler or instance.placement is not None:continue
+                    scene=instance.scene or 0
+                    candidates=[]
+                    for table in tables:
+                        pointer=self.world.mem.read(table+scene*4,4)
+                        rows=self.world._records_at(pointer)
+                        if rows is None:continue
+                        for n,row in enumerate(rows):
+                            if row[-1]!=handler:continue
+                            offset=pointer+n*actor_sim.SCENE_RECORD-actor_sim.OVERLAY_BASE
+                            if offset in used:continue
+                            distance=np.linalg.norm(np.array(instance.game_position)-np.array(row[4:7]))
+                            if distance<=128:candidates.append((distance,offset))
+                    candidates=sorted(set(candidates))
+                    if candidates and (len(candidates)==1 or candidates[1][0]-candidates[0][0]>1):
+                        instance.native_scene_offset=candidates[0][1];used.add(candidates[0][1])
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""

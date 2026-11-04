@@ -172,6 +172,8 @@ class LevelViewer(SMSTViewer):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = None
+        from gui.level.translation_gizmo import TranslationGizmo
+        self.translation_gizmo = TranslationGizmo(self)
         self.selected = None
         self._moving = None
         self._context_press = None
@@ -217,14 +219,14 @@ class LevelViewer(SMSTViewer):
             "and idle poses recorded. Slow to load; nothing can be added.")
         self.edit_action = QAction("Edit mode", self)
         self.edit_action.setToolTip(
-            "Fast load for placing things: no actor code is run and nothing "
-            "is recorded, objects show their models as placed. Drag pickups "
-            "in from the palette.")
+            "Initialise NPCs, objects and interiors without recording animation "
+            "or effects. Drag pickups from the palette and use the selection gizmo.")
         for action in (self.preview_action, self.edit_action):
             action.setCheckable(True)
             modes.addAction(action)
             self.mode_bar.addAction(action)
-        self.preview_action.setChecked(True)
+        self.edit_action.setChecked(True)
+        self.edit_mode = True
         self.edit_action.toggled.connect(self._set_edit_mode)
         self.layout().insertWidget(0, self.mode_bar)
 
@@ -645,6 +647,8 @@ class LevelViewer(SMSTViewer):
         super().enterEvent(event)
 
     def keyPressEvent(self, event):
+        if event.key()==Qt.Key.Key_Escape and self.translation_gizmo.drag is not None:
+            self.translation_gizmo.cancel();event.accept();return
         if event.key() == Qt.Key.Key_Escape and self._moving is not None:
             self._finish_move(cancel=True)
             event.accept()
@@ -2106,6 +2110,7 @@ class LevelViewer(SMSTViewer):
     def paintGL(self):
         self._paint_level()
         self._paint_badges()
+        self.translation_gizmo.sync()
 
     def _badges(self):
         """[(instance index, its box's 8 corners as GL-unit xyzw)] for
