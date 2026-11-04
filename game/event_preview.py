@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from game import actor_sim, actor_assembly, event_script
 
-def animation_frames(scene,instance,command,max_ticks=120):
+def animation_frames(scene,instance,command,max_ticks=120,animations=None):
     """Initialise just the selected scene and sample one requested animation.
 
     No level-wide recording or guessed model/animation pairing is used.
@@ -45,6 +45,9 @@ def animation_frames(scene,instance,command,max_ticks=120):
         # Identical copies sharing one animation table preview the same.
         raise ValueError('Several identical native actors match this selection; preview target is ambiguous.')
     actor=actors[0];table=world.mem.read(actor.address+0x7c,4)
+    if not actor_sim._in_ram(table) and animations and actor_sim._in_ram(animations):
+        # Attached when the page starts (f_InitializeActorScript's literal).
+        table=animations;world.mem.write(actor.address+0x7c,4,table)
     if not actor_sim._in_ram(table):raise ValueError('This entity has no native skeletal animation table.')
     pointer=world.mem.read(table+animation*4,4)
     from formats.animation.sequences import read_clip

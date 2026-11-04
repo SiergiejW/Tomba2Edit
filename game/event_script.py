@@ -6,6 +6,10 @@ from game import game_build, pickup_edit
 
 BASE = 0x80108F9C
 LOAD_SCRIPT = 0x80040D68
+# Native entry points that start a script, and the register holding it:
+# f_LoadActorScript (a1), f_InitializeActorScript (a2) and
+# f_LoadCurrentScriptActorScript (a0).
+LOADERS = {LOAD_SCRIPT: 5, 0x80040CDC: 6, 0x80070888: 4}
 CALLBACKS = 0x800A3B78
 TICK_HZ = 30
 # Edited scripts live at the top of the free-RAM window, clear of the custom
@@ -287,6 +291,9 @@ class Binding:
     lo_word: int
     caller: int
     shared_hi: bool = False
+    register: int = 5
+    # f_InitializeActorScript also attaches the actor's animation table.
+    animations: int = None
 
 def _dest(i):
     if i.name in ('lui','addiu','addi','ori','andi','xori','slti','sltiu') or i.name in ('lb','lbu','lh','lhu','lw','lwl','lwr'):
@@ -322,7 +329,7 @@ class Flow:
                     if image.at(slot).name in ('j','jal','jr','beq','bne'): break
                     if i.name == 'jal' or i.name == 'jalr':
                         if i.name == 'jal':
-                            if i.target == LOAD_SCRIPT: self.calls.append(at)
+                            if i.target in LOADERS: self.calls.append((at, LOADERS[i.target]))
                             elif BASE <= i.target < self.overlay_end and i.target not in roots:
                                 roots.add(i.target); work.append(i.target)
                         self._edge(slot, at + 8, call=True); at += 8; continue
@@ -412,15 +419,17 @@ def discover(exe, overlay, handler):
     flow = Flow(exe, overlay, handler)
     read = reader(exe, overlay)
     found = {}
-    for call in flow.calls:
-        for value in flow.after(5, call + 4):
+    for call, register in flow.calls:
+        for value in flow.after(register, call + 4):
             if value is None or value[1] is None or value[2] is None: continue
             address, hi, lo = value
             if (hi, lo) in found: continue
             try: read_graph(read, address)
             except ValueError: continue
+            tables = {v[0] for v in flow.after(5, call + 4) if v} if register == 6 else set()
             found[(hi, lo)] = Binding(address, hi, lo, struct.unpack('<I', read(hi, 4))[0],
-                                      struct.unpack('<I', read(lo, 4))[0], call)
+                                      struct.unpack('<I', read(lo, 4))[0], call, register=register,
+                                      animations=tables.pop() if len(tables) == 1 else None)
     by_hi = {}
     for b in found.values(): by_hi.setdefault(b.hi_at, []).append(b)
     for group in by_hi.values():
@@ -478,7 +487,8 @@ def stage(exe,overlay,binding,commands):
     if binding.hi_at<BASE or binding.lo_at<BASE: raise ValueError('Resident shared bindings are read-only.')
     hi,lo=binding.hi_word,binding.lo_word
     if hi>>26!=15 or lo>>26 not in (9,13): raise ValueError('Unverified script pointer instructions.')
-    if (hi>>16)&31!=5 or (lo>>21)&31!=5 or (lo>>16)&31!=5:
+    reg=binding.register
+    if (hi>>16)&31!=reg or (lo>>21)&31!=reg or (lo>>16)&31!=reg:
         raise ValueError('This shared pointer materialization cannot yet be redirected safely.')
     size = sum(len(c.raw) for c in commands)
     try: current_size = sum(len(c.raw) for c in read_graph(read, binding.script))

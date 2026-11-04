@@ -32,8 +32,8 @@ class VoiceDecode(QObject):
         except Exception as exc:self.emit_result((None,0,str(exc)))
 
 class AnimationDecode(VoiceDecode):
-    def __init__(self,scene,instance,command,parent):
-        QObject.__init__(self,parent);self.args=(scene,instance,deepcopy(command));self.worker=None
+    def __init__(self,scene,instance,command,parent,animations=None):
+        QObject.__init__(self,parent);self.args=(scene,instance,deepcopy(command),120,animations);self.worker=None
     def run(self):
         try:
             from game.event_preview import animation_frames
@@ -552,7 +552,7 @@ class EventEditor(QDialog):
             self.show_model_parts(None);return
         if self.animation_job and self.animation_job.isRunning():return
         self.preview_model_button.setEnabled(False);self.model_note.setText('Initialising the selected entity’s native animation…')
-        job=AnimationDecode(self.panel.scene,self.instance,command,self.panel)
+        job=AnimationDecode(self.panel.scene,self.instance,command,self.panel,self.bindings[self.active].animations)
         generation=self.preview_generation
         self.animation_job=job;job.decoded.connect(lambda result,g=generation:self.animation_ready(result,g));job.start()
 
