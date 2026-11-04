@@ -315,6 +315,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             "where the camera is now.")
         self.gif_action.triggered.connect(self.save_gif)
         self.toolbar.addAction(self.gif_action)
+        from gui.widgets.camera_controls import install_camera_tools
+        install_camera_tools(self, self._picked_points)
 
         self.stats_label = QLabel(self)
         self.stats_label.setObjectName("viewerOverlay")
@@ -327,6 +329,8 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.setSpacing(0)  # stacked toolbars sit flush
         layout.addWidget(self.toolbar)
         layout.addStretch()
 
@@ -971,7 +975,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             drawable = ~hidden[self._face_polygon]
         return polygon_pick.nearest_polygon(
             ray[0], ray[1], self._pick_vertices, self._pick_faces,
-            self._face_polygon, drawable)
+            self._face_polygon, drawable, mvp=self._model_view_projection())
 
     def keyPressEvent(self, event):
         """F frames what is picked, the way every viewport does."""
@@ -1139,6 +1143,13 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         picked. What F does in every view."""
         self.camera_controls.glide_to_points(self._selection_points())
         self.update()
+
+    def _picked_points(self):
+        """The highlighted part's vertices, or None when none is."""
+        if self.highlighted_group is None:
+            return None
+        points = self._selection_points()
+        return None if points is None or len(points) == len(self._positions()) else points
 
     def _selection_points(self):
         """The highlighted part's vertices, in GL units, or every vertex

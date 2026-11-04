@@ -58,15 +58,45 @@ def ray_through(mvp, x, y, width, height):
     return near, direction / length
 
 
+def front_facing(mvp, vertices, faces, det=None):
+    """Which triangles face the camera, by GL's own rule: counter-clockwise
+    on screen after projection (glFrontFace's default, which the views
+    cull against). A back face is never picked - a click goes through it
+    to whatever it shows, culled or not.
+
+    A triangle with a corner behind the camera has no screen winding; for
+    those the ray's Moller-Trumbore `det` decides (front where det > 0)."""
+    matrix = np.array(mvp.data(), dtype=np.float64).reshape(4, 4).T
+    clip = np.c_[vertices, np.ones(len(vertices))] @ matrix.T
+    w = clip[:, 3]
+    safe = np.where(np.abs(w) > 1e-12, w, 1e-12)
+    ndc = clip[:, :2] / safe[:, None]
+    p0, p1, p2 = ndc[faces[:, 0]], ndc[faces[:, 1]], ndc[faces[:, 2]]
+    area = ((p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1])
+            - (p2[:, 0] - p0[:, 0]) * (p1[:, 1] - p0[:, 1]))
+    front = area > 0
+    behind = (w[faces] <= 0).any(axis=1)
+    if behind.any() and det is not None:
+        front[behind] = det[behind] > 0
+    return front
+
+
 def nearest_polygon(origin, direction, vertices, faces, face_polygon,
-                    drawable=None):
+                    drawable=None, mvp=None):
     """The polygon of the nearest triangle the ray crosses, or None.
 
     Moller-Trumbore over every triangle at once. `drawable` is an
     optional boolean mask over triangles, so a hidden part cannot be
-    picked through the empty space where it is not being drawn."""
+    picked through the empty space where it is not being drawn. Given
+    the view's `mvp`, back faces are skipped (see front_facing)."""
     if not len(faces):
         return None
+    if mvp is not None:
+        a = vertices[faces[:, 0]]
+        det = np.einsum("ij,ij->i", vertices[faces[:, 1]] - a,
+                        np.cross(direction, vertices[faces[:, 2]] - a))
+        front = front_facing(mvp, vertices, faces, det)
+        drawable = front if drawable is None else (drawable & front)
     a = vertices[faces[:, 0]]
     edge1 = vertices[faces[:, 1]] - a
     edge2 = vertices[faces[:, 2]] - a

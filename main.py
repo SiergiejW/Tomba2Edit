@@ -36,6 +36,15 @@ def _install_crash_report():
             pass
 
     sys.excepthook = hook
+    # Native crashes (driver, Qt) skip the hook; faulthandler still writes
+    # every thread's Python stack to the same log.
+    try:
+        import faulthandler
+        global _fault_log
+        _fault_log = open(log, "a", encoding="utf-8")
+        faulthandler.enable(_fault_log, all_threads=True)
+    except Exception:
+        pass
 
 def main():
     print(f"Tomba2Edit ver{version}")

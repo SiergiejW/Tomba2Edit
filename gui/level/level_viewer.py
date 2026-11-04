@@ -38,7 +38,7 @@ from gui.widgets.camera_controls import (
 from formats.models.smst_viewer import SMSTViewer, WEIGHTS
 from gui import gl_profile
 from gui import theme
-from gui.widgets import collision_overlay, export_dialog
+from gui.widgets import collision_overlay, export_dialog, polygon_pick
 from gui.widgets.collision_options import CollisionOptions, add_menu_button
 
 # World units per GL unit. A room is thousands of units across, so it
@@ -229,6 +229,17 @@ class LevelViewer(SMSTViewer):
         self.edit_mode = True
         self.edit_action.toggled.connect(self._set_edit_mode)
         self.layout().insertWidget(0, self.mode_bar)
+        # The main row is full here; the Camera menu rides with the modes.
+        from PyQt6.QtWidgets import QToolButton, QSizePolicy, QWidget
+        self.toolbar.removeAction(self.camera_action)
+        spacer = QWidget(self.mode_bar)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        spacer.setStyleSheet("background: transparent;")
+        self.mode_bar.addWidget(spacer)
+        self.mode_bar.addAction(self.camera_action)
+        button = self.mode_bar.widgetForAction(self.camera_action)
+        if isinstance(button, QToolButton):
+            button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
 
         self.gif_action.setToolTip(
             "Record the selected row alone, framed, over one loop of whatever "
@@ -329,11 +340,7 @@ class LevelViewer(SMSTViewer):
         self.lines_action.toggled.connect(self._toggle_lines)
         self.toolbar.insertAction(self.collision_action, self.lines_action)
 
-        self.orbit_action = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
-            "Orbit selection", self)
-        self.orbit_action.setCheckable(True)
-        self.orbit_action.setChecked(True)
+        self.toolbar.removeAction(self.orbit_action)
         self.orbit_action.setToolTip(
             "Middle-drag circles the selected object instead of whatever is "
             "in the middle of the view. Off, orbiting works as usual even "
@@ -971,10 +978,14 @@ class LevelViewer(SMSTViewer):
             qvec = np.cross(tvec, edge1)
             v = np.einsum("j,ij->i", direction, qvec) * inv
             t = np.einsum("ij,ij->i", edge2, qvec) * inv
-            # Only a face turned towards the camera (det < 0 in these axes,
-            # measured against what a cast ray sees first): a click passes
-            # through a face's back to whatever is behind it.
-            hit = (live & (det < 0) & (u >= -1e-6) & (v >= -1e-6)
+            # Only a face turned towards the camera, by GL's own rule
+            # (counter-clockwise on screen): a click passes through a back
+            # face - a room's culled outer wall - to whatever it shows.
+            # The old "det < 0" test had the sign inverted and kept exactly
+            # the culled faces.
+            front = polygon_pick.front_facing(self._model_view_projection(),
+                                              vertices, faces, det)
+            hit = (live & front & (u >= -1e-6) & (v >= -1e-6)
                    & (u + v <= 1 + 1e-6) & (t > 1e-6))
             hidden = self.hidden_groups | self._flip_hidden()
             if hidden:

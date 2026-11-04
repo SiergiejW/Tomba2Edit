@@ -169,6 +169,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
             "and the rest) in the colours they are drawn in.")
         self.export_action.triggered.connect(self.export_to_gltf)
         self.toolbar.addAction(self.export_action)
+        from gui.widgets.camera_controls import install_camera_tools
+        install_camera_tools(self, self._picked_points)
 
         self.stats_label = QLabel(self)
         self.stats_label.setObjectName("viewerOverlay")
@@ -181,6 +183,8 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.setSpacing(0)  # stacked toolbars sit flush
         layout.addWidget(self.toolbar)
         layout.addStretch()
 
@@ -548,6 +552,12 @@ class SCLDViewer(CameraEventMixin, QOpenGLWidget):
         highlighted. What F does in every view."""
         self.camera_controls.glide_to_points(self._selection_points())
         self.update()
+
+    def _picked_points(self):
+        """The highlighted entry's collision points, or None."""
+        if self.highlighted_entry is None:
+            return None
+        return self._selection_points()
 
     def _selection_points(self):
         """The highlighted entry's collision, in view units, or every

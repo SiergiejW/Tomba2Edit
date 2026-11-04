@@ -197,6 +197,12 @@ def _mix(a, b, t):
                   round(a.blue() + (b.blue() - a.blue()) * t)).name()
 
 
+def _rgba(colour, alpha):
+    """`colour` with `alpha` (0-255), as a QSS rgba()."""
+    q = QColor(colour)
+    return f"rgba({q.red()}, {q.green()}, {q.blue()}, {alpha})"
+
+
 def colours(name=None):
     """{role: "#rrggbb"} for a modern theme - its greys and ACCENT, with what
     ACCENT implies: a hover shade, a selection tint, and text that reads on
@@ -825,14 +831,16 @@ QScrollBar::add-page, QScrollBar::sub-page {{
 }}
 
 /* the 3D views' own chrome */
+/* see-through, so the level shows behind; stacked bars sit flush */
 QToolBar#viewerToolbar {{
-    background-color: {c["ground"]};
-    border-bottom: 1px solid {c["line"]};
-    padding: 4px;
+    background-color: transparent;
+    border: none;
+    padding: 1px 4px;
+    spacing: 2px;
 }}
 QToolBar#viewerToolbar QToolButton {{
-    background-color: transparent;
-    color: {c["faint"]};
+    background-color: {_rgba(c["ground"], 90)};
+    color: {c["text"]};
     border: 1px solid transparent;
     border-bottom: 2px solid transparent;
     border-radius: 7px;
@@ -841,18 +849,18 @@ QToolBar#viewerToolbar QToolButton {{
     font-size: 11px;
 }}
 QToolBar#viewerToolbar QToolButton:hover {{
-    background-color: {c["hover"]};
+    background-color: {_rgba(c["hover"], 190)};
     color: {c["text"]};
 }}
 /* on: lifted, with an accent underline - the accent kept to a stroke */
 QToolBar#viewerToolbar QToolButton:checked {{
-    background-color: {c["raised"]};
+    background-color: {_rgba(c["raised"], 170)};
     color: {c["text"]};
-    border: 1px solid {c["line"]};
+    border: 1px solid {_rgba(c["line"], 170)};
     border-bottom: 2px solid {c["accent"]};
 }}
 QToolBar#viewerToolbar QToolButton:checked:hover {{
-    background-color: {c["hover"]};
+    background-color: {_rgba(c["hover"], 210)};
 }}
 QLabel#viewerOverlay {{
     background-color: rgba(17, 17, 17, 200);

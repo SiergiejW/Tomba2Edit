@@ -174,6 +174,8 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             "where the camera is now.")
         self.gif_action.triggered.connect(self.save_gif)
         self.toolbar.addAction(self.gif_action)
+        from gui.widgets.camera_controls import install_camera_tools
+        install_camera_tools(self, self._picked_points)
 
         # Stats overlay - tri/quad count (static per model) and live camera
         # position, updated once per frame in paintGL().
@@ -190,6 +192,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         # Layout
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # No margins
+        layout.setSpacing(0)  # stacked toolbars sit flush
         layout.addWidget(self.toolbar)
         layout.addStretch()
 
@@ -384,7 +387,7 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             self._build_face_index()
         return polygon_pick.nearest_polygon(
             ray[0], ray[1], self._pick_vertices, self._pick_faces,
-            self._face_polygon)
+            self._face_polygon, mvp=self._model_view_projection())
 
     def _build_face_index(self):
         """Arrays the ray test needs, and which triangle belongs to which
@@ -896,6 +899,12 @@ class MDATViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
         the whole level. What F does in every view."""
         self.camera_controls.glide_to_points(self._selection_points())
         self.update()
+
+    def _picked_points(self):
+        """The picked polygon's or entry's vertices, or None."""
+        if self.selected_polygon is None and self.selected_entry is None:
+            return None
+        return self._selection_points()
 
     def _selection_points(self):
         """The vertices of what is picked, in view units - the polygon,
