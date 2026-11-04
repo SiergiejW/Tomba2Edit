@@ -432,6 +432,7 @@ class LevelEditorPanel(QWidget):
         """Start a cancellable background load; the GUI remains navigable."""
         if not self.apply_changes():
             return
+        self._close_events()
         from gui.level.progressive_load import LevelLoad
         from PyQt6.QtWidgets import QApplication
         self._cancel_load()
@@ -1136,11 +1137,37 @@ class LevelEditorPanel(QWidget):
         if instance is None or not self.apply_changes():
             return
         from gui.level.event_editor import EventEditor
+        # Not modal: its previews play in this panel's viewport, which has
+        # to stay visible beside it. One at a time.
+        self._close_events()
         try:
             editor = EventEditor(self, instance)
-            editor.exec()
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, 'Could not read native events', str(exc))
+            return
+        editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        editor.destroyed.connect(lambda *_: setattr(self, '_event_editor', None))
+        self._event_editor = editor
+        editor.show()
+
+    def _close_events(self):
+        """Close the Events window, putting back anything it previewed."""
+        editor = getattr(self, '_event_editor', None)
+        self._event_editor = None
+        if editor is not None:
+            try:
+                editor.stop_preview()
+                editor.close()
+            except RuntimeError:
+                pass
+
+    def stop_event_preview(self):
+        editor = getattr(self, '_event_editor', None)
+        if editor is not None:
+            try:
+                editor.stop_preview()
+            except RuntimeError:
+                self._event_editor = None
 
     def _on_box_changed(self, _value):
         if self._filling:
@@ -1479,6 +1506,9 @@ class LevelEditorPanel(QWidget):
 
     def apply_changes(self, announce=False):
         """Stage native records before an area switch, project save or export."""
+        # A playing event preview has moved an NPC on screen only; put it
+        # back before anything reads positions to write them.
+        self.stop_event_preview()
         if not self._placement_dirty or self.scene is None:
             return True
         from game import pickup_edit

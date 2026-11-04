@@ -698,6 +698,19 @@ class TXTDViewer(QWidget):
         finally:
             self._loading = False
 
+    def select_entry(self, master_index, entry_index):
+        """Select and show one entry - how the event editor's Go to TXTD
+        lands on the line an action speaks. Returns whether it exists."""
+        item = getattr(self, "_entry_items", {}).get((master_index, entry_index))
+        if item is None:
+            item = getattr(self, "_master_items", {}).get(master_index)
+        if item is None:
+            return False
+        index = self.tree_model.indexFromItem(item)
+        self.tree.setCurrentIndex(index)
+        self.tree.scrollTo(index)
+        return True
+
     def on_tree_selection_changed(self):
         self._loading = True
         try:

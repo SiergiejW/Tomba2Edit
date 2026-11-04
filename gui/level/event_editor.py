@@ -111,11 +111,124 @@ class PathPreview(QWidget):
                    f'{self.note}   ● start  ▲ move  ▢ camera focus   known time so far ≈ {total/30:.2f} s ({total} ticks)')
 
 
+class DialoguePicker(QDialog):
+    """Choose a dialogue master and entry from the area's TXTD."""
+    def __init__(self,parent,bank,master=None,entry=None):
+        super().__init__(parent);self.setWindowTitle('Choose dialogue');self.resize(720,520)
+        self.bank=bank;layout=QVBoxLayout(self)
+        self.masters=QComboBox()
+        for n,m in enumerate(bank['entries']):
+            first=next((' '.join(e['text'].split('{$')[0].split()) for e in m['entries'] if e['text'].strip()),'')
+            self.masters.addItem(f'Dialogue {n} ({len(m["entries"])} entries) — {first[:50]}',n)
+        layout.addWidget(self.masters)
+        self.entries=QListWidget();layout.addWidget(self.entries,1)
+        self.text=QPlainTextEdit();self.text.setReadOnly(True);self.text.setMaximumHeight(110);layout.addWidget(self.text)
+        row=QHBoxLayout();row.addStretch()
+        ok=QPushButton('Use this line');ok.clicked.connect(self.accept);cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject)
+        row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
+        self.masters.currentIndexChanged.connect(self.fill)
+        self.entries.currentRowChanged.connect(self.show_line)
+        self.entries.itemDoubleClicked.connect(lambda *_:self.accept())
+        if master is not None and 0<=master<self.masters.count():self.masters.setCurrentIndex(master)
+        self.fill(self.masters.currentIndex())
+        if entry is not None and 0<=entry<self.entries.count():self.entries.setCurrentRow(entry)
+    def fill(self,index):
+        self.entries.clear()
+        for n,e in enumerate(self.bank['entries'][index]['entries'] if index>=0 else ()):
+            self.entries.addItem(f'{n:3d}  '+e['text'].split('{$')[0].replace('\n',' ').strip()[:90])
+        self.entries.setCurrentRow(0)
+    def show_line(self,row):
+        m=self.masters.currentIndex()
+        entries=self.bank['entries'][m]['entries'] if m>=0 else []
+        self.text.setPlainText(entries[row]['text'] if 0<=row<len(entries) else '')
+    def chosen(self):
+        if self.masters.currentIndex()<0 or self.entries.currentRow()<0:return None
+        return self.masters.currentData(),self.entries.currentRow()
+
+
+class ViewportPreview(QObject):
+    """Plays a move or camera action once in the level viewport, then puts
+    everything back. Display only: no record is written, nothing is marked
+    as changed, and stop() restores at once (the panel calls it before it
+    applies anything)."""
+    FPS = 30
+    def __init__(self,editor):
+        super().__init__(editor)
+        self.editor=editor;self.timer=QTimer(self);self.timer.setInterval(16)
+        self.timer.timeout.connect(self.step);self.saved=None;self.camera=None;self.clock=None;self.track=None
+    def viewer(self):
+        return getattr(self.editor.panel,'viewer',None)
+    def play(self,nodes,row):
+        """Start the selected row's preview; False if it has none here."""
+        from game.event_preview import trace
+        self.stop()
+        viewer=self.viewer();instance=self.editor.instance
+        start=self.editor.start_position()
+        if viewer is None or start is None:return False
+        if not any(i is instance for i in getattr(viewer,'instances',())):return False
+        steps=[s for s in trace(nodes,row,start) if s[0]==row]
+        if not steps:return False
+        _,kind,a,b,ticks=steps[-1]
+        import numpy as np
+        if kind in ('move','set'):
+            seconds=0.6 if kind=='set' else min(6.0,max(0.4,(ticks or np.linalg.norm(np.array(b)-np.array(a))/10)/self.FPS))
+            self.saved=(instance,(instance.x,instance.y,instance.z))
+            self.track=('move',np.array(a,dtype=float),np.array(b,dtype=float),seconds,0.8)
+            self.editor.status.setText(f'Previewing in the viewport: {kind} over {seconds:.2f} s, then back. Nothing is written.')
+        elif kind=='camera':
+            c=viewer.camera_controls
+            self.camera=(c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance)
+            self.track=('camera',np.array(b,dtype=float),0.6,1.2)
+            self.editor.status.setText('Previewing the camera focus in the viewport, then back.')
+        else:
+            return False
+        from PyQt6.QtCore import QElapsedTimer
+        self.clock=QElapsedTimer();self.clock.start();self.started=False;self.timer.start()
+        return True
+    def _place(self,point):
+        instance=self.saved[0]
+        instance.game_position=tuple(float(v) for v in point)
+        self.viewer().refresh_instance(instance.index)
+    def step(self):
+        viewer=self.viewer()
+        if viewer is None or self.track is None:self.stop();return
+        t=self.clock.elapsed()/1000
+        if self.track[0]=='move':
+            _,a,b,seconds,hold=self.track
+            f=min(1.0,t/seconds) if seconds else 1.0
+            self._place(a+(b-a)*f)
+            if t>=seconds+hold:self.stop()
+        else:
+            _,point,seconds,hold=self.track
+            c=viewer.camera_controls
+            if not self.started:
+                from gui.level.level_scene import view_point
+                from gui.level.level_viewer import UNIT_SCALE
+                centre=tuple(v/UNIT_SCALE for v in view_point(point))
+                c.glide_to(centre,1.2,frames=max(1,int(seconds*60)))
+                self.started=True
+            if t>=seconds+hold:self.stop()
+    def stop(self):
+        self.timer.stop();viewer=self.viewer()
+        if self.saved is not None:
+            instance,(x,y,z)=self.saved;self.saved=None
+            instance.x,instance.y,instance.z=x,y,z
+            if viewer is not None:
+                try:viewer.refresh_instance(instance.index)
+                except Exception:pass
+        if self.camera is not None and viewer is not None:
+            c=viewer.camera_controls;c.stop_glide()
+            (c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance)=self.camera
+            viewer.update()
+        self.camera=None;self.track=None
+
+
 class EventEditor(QDialog):
     def __init__(self, panel, instance):
         super().__init__(panel)
         self.panel,self.instance=panel,instance
         self.setWindowTitle('Events — '+instance.label)
+        self.setModal(False);self.setWindowFlag(Qt.WindowType.Window,True)
         self.resize(1320,840)
         self.exe=Path(panel.exe_path).read_bytes()
         self.overlay=Path(panel.scene.overlay_path).read_bytes()
@@ -163,6 +276,13 @@ class EventEditor(QDialog):
             self.pages.addItem(f'Page {n+1} — script 0x{binding.script:08X} (loaded at 0x{binding.caller:08X})',n)
         layout.addWidget(self.pages)
         self.actions=QListWidget();self.actions.setFont(QFont('Consolas',9));layout.addWidget(self.actions,1)
+        play_row=QHBoxLayout()
+        self.play_button=QPushButton('▶ Play');self.play_button.setToolTip('Preview the selected action again: moves and camera in the level viewport, text, voice, sound and animation here.')
+        self.play_button.clicked.connect(lambda:self.play_selected(manual=True))
+        self.autoplay=QCheckBox('Autoplay');self.autoplay.setChecked(True)
+        self.autoplay.setToolTip('Preview each action as soon as it is selected.')
+        play_row.addWidget(self.play_button);play_row.addWidget(self.autoplay);play_row.addStretch()
+        layout.addLayout(play_row)
         self.flow=QLabel();self.flow.setWordWrap(True);layout.addWidget(self.flow)
         self.form_widget=QWidget();self.form=QFormLayout(self.form_widget)
         layout.addWidget(self.form_widget)
@@ -172,6 +292,14 @@ class EventEditor(QDialog):
         self.fields=[]
         self.text_choices=QComboBox();self.text_choices.currentIndexChanged.connect(self.choose_text)
         text_layout.addWidget(self.text_choices)
+        text_buttons=QHBoxLayout()
+        self.pick_text=QPushButton('Choose dialogue…');self.pick_text.clicked.connect(self.choose_dialogue)
+        self.pick_text.setToolTip('Pick the dialogue master and entry this action shows, from the area’s TXTD.')
+        self.goto_txtd=QPushButton('Go to TXTD in IDX');self.goto_txtd.clicked.connect(self.go_to_txtd)
+        self.goto_txtd.setToolTip('Open this area’s dialogue file in the Indexed View, on this entry.')
+        text_buttons.addWidget(self.pick_text);text_buttons.addWidget(self.goto_txtd)
+        text_layout.addLayout(text_buttons)
+        self.pick_text.setEnabled(False);self.goto_txtd.setEnabled(False)
         self.text_preview=QPlainTextEdit()
         self.text_preview.setPlaceholderText('Select a conversation or message action to see its text.')
         self.text_preview.textChanged.connect(self.edit_text);text_layout.addWidget(self.text_preview,1)
@@ -181,7 +309,8 @@ class EventEditor(QDialog):
         text_layout.addWidget(self.sound_button);self.sound_button.setEnabled(False)
         buttons=QHBoxLayout()
         self.types=QComboBox()
-        for opcode in script.INSERTABLE: self.types.addItem(script.LABELS[opcode],opcode)
+        names={0:'Show text… (pick dialogue)',1:'Show text with animation… (pick dialogue)'}
+        for opcode in script.INSERTABLE: self.types.addItem(names.get(opcode,script.LABELS[opcode]),opcode)
         self.types.setCurrentIndex(self.types.findData(5))
         self.add=QPushButton('Insert before');self.add.clicked.connect(self.insert)
         self.add_after=QPushButton('Insert after');self.add_after.clicked.connect(self.insert_after)
@@ -202,7 +331,8 @@ class EventEditor(QDialog):
         close=QPushButton('Close');close.clicked.connect(self.reject)
         bottom.addWidget(self.save);bottom.addWidget(close);layout.addLayout(bottom)
         self.pages.currentIndexChanged.connect(self.page_changed)
-        self.actions.currentRowChanged.connect(self.select_action)
+        self.actions.currentRowChanged.connect(self.row_chosen)
+        self.viewport=ViewportPreview(self)
         self.shared.toggled.connect(self.update_enabled)
         self.page_changed(0)
 
@@ -390,6 +520,8 @@ class EventEditor(QDialog):
 
     def show_text(self,c):
         self.player.stop();self.linked_entry=None
+        self.pick_text.setEnabled(c.opcode in (0,1) and game_build.current().name=='us-retail')
+        self.goto_txtd.setEnabled(c.opcode in (0,1))
         self.text_choices.blockSignals(True);self.text_choices.clear();self.text_choices.blockSignals(False)
         self.text_preview.blockSignals(True);self.text_preview.clear();self.text_preview.blockSignals(False)
         self.text_preview.setReadOnly(True);self.play_voice.setEnabled(False)
@@ -446,13 +578,88 @@ class EventEditor(QDialog):
         opcode=self.types.currentData()
         return opcode,script.INSERTABLE.get(opcode,(0,0,0))
 
+    def _text_operands(self,opcode,values):
+        """A new Show text: the picked line, with the flags and behaviour of
+        one this NPC already uses, so it presents the way its others do."""
+        template=next((c.operands for nodes in self.drafts.values() for c in nodes if c.opcode==opcode),None)
+        picked=self.pick_dialogue()
+        if picked is None:return None
+        master,entry=picked
+        values=list(template or values)
+        values[0]=(values[0]&~0xfff)|master;values[1]=entry
+        return tuple(values)
+
     def insert(self):
         row=self.selected;opcode,values=self._new_operands()
+        if opcode in (0,1):
+            values=self._text_operands(opcode,values)
+            if values is None:return
         self._edit(lambda:script.insert_before(self.drafts[self.active],row,opcode,values),row)
 
     def insert_after(self):
         row=self.selected;opcode,values=self._new_operands()
+        if opcode in (0,1):
+            values=self._text_operands(opcode,values)
+            if values is None:return
         self._edit(lambda:script.insert_after(self.drafts[self.active],row,opcode,values),(row or 0)+1)
+
+    def pick_dialogue(self,master=None,entry=None):
+        """(master, entry) chosen from the area's TXTD, or None."""
+        try:self.load_bank()
+        except (ValueError,OSError,KeyError) as exc:
+            QMessageBox.warning(self,'No dialogue',str(exc));return None
+        dialog=DialoguePicker(self,self.bank,master,entry)
+        return dialog.chosen() if dialog.exec() else None
+
+    def choose_dialogue(self):
+        if self.selected is None:return
+        self.store_operands();c=self.drafts[self.active][self.selected]
+        picked=self.pick_dialogue(c.operands[0]&0xfff,max(c.operands[1],0))
+        if picked is None:return
+        values=c.operands;values[0]=(values[0]&~0xfff)|picked[0];values[1]=picked[1]
+        c.set_operands(values);row=self.selected;self.selected=None;self.populate(row)
+
+    def go_to_txtd(self):
+        """Show the area's dialogue file in the Indexed View, on this line."""
+        window=self.panel.window()
+        try:self.load_bank()
+        except (ValueError,OSError,KeyError) as exc:
+            self.status.setText(str(exc));return
+        if not hasattr(window,'reveal_address'):
+            self.status.setText('The main window cannot show IDX files here.');return
+        scene=self.panel.scene
+        locations=getattr(window,'address_locations',{}).get(self.bank_address) or []
+        prefer=next((tuple(l) for l in locations if tuple(l)[0]==scene.chunk_index),None)
+        if not window.reveal_address(self.bank_address,prefer):
+            self.status.setText('This dialogue file has no row in the Indexed View.');return
+        c=self.drafts[self.active][self.selected] if self.selected is not None else None
+        if c is not None and c.opcode in (0,1):
+            master,entry=c.operands[0]&0xfff,max(c.operands[1],0)
+            if self.linked_entry is not None and self.text_choices.currentData() is not None:
+                entry=self.text_choices.currentData()
+            viewer=getattr(window,'txtd_viewer',None)
+            if viewer is not None:QTimer.singleShot(0,lambda:viewer.select_entry(master,entry))
+        window.raise_();window.activateWindow()
+
+    # --- previews on selection ---
+
+    def row_chosen(self,row):
+        self.select_action(row)
+        if self.autoplay.isChecked():self.play_selected()
+
+    def play_selected(self,manual=False):
+        """Preview the selected action - once."""
+        if self.selected is None:return
+        self.store_operands()
+        nodes=self.drafts[self.active];c=nodes[self.selected]
+        if self.viewport.play(nodes,self.selected):return
+        if c.opcode in (1,30):self.preview_model_action()
+        elif c.opcode==46:self.play_sound()
+        elif c.opcode==47 or (c.opcode in (0,1) and self.play_voice.isEnabled()):
+            if getattr(self.panel.window(),'current_iso_path',None) or manual:self.decode_voice()
+
+    def stop_preview(self):
+        self.viewport.stop()
 
     def delete(self):
         row=self.selected
@@ -550,8 +757,13 @@ class EventEditor(QDialog):
         self.preview_tabs.setCurrentWidget(self.model_tab)
         if command.opcode not in (1,30):
             self.show_model_parts(None);return
+        key=(command.opcode,tuple(command.operands),self.bindings[self.active].animations)
+        cached=getattr(self,'_animation_cache',{}).get(key)
+        if cached is not None:
+            self.animation_ready(cached);return
         if self.animation_job and self.animation_job.isRunning():return
         self.preview_model_button.setEnabled(False);self.model_note.setText('Initialising the selected entity’s native animation…')
+        self._animation_key=key
         job=AnimationDecode(self.panel.scene,self.instance,command,self.panel,self.bindings[self.active].animations)
         generation=self.preview_generation
         self.animation_job=job;job.decoded.connect(lambda result,g=generation:self.animation_ready(result,g));job.start()
@@ -562,12 +774,18 @@ class EventEditor(QDialog):
         if not self.isVisible():return
         frames,note=result;self.model_note.setText(note)
         if not frames:return
+        key=getattr(self,'_animation_key',None)
+        if key is not None:
+            self._animation_cache=getattr(self,'_animation_cache',{});self._animation_cache[key]=result
         self.animation_frames=frames;self.animation_tick=0
         self.show_model_parts(frames[0],frame=True);self.animation_timer.start()
 
     def advance_animation(self):
         if not self.animation_frames:return
-        self.animation_tick=(self.animation_tick+1)%len(self.animation_frames)
+        # Once, like every other preview; Play runs it again.
+        if self.animation_tick+1>=len(self.animation_frames):
+            self.animation_timer.stop();return
+        self.animation_tick+=1
         self.show_model_parts(self.animation_frames[self.animation_tick],frame=False)
 
     def show_model_parts(self,parts,frame=True):
@@ -615,6 +833,7 @@ class EventEditor(QDialog):
         self.model_viewer.update()
 
     def done(self,result):
+        self.viewport.stop()
         self.preview_generation+=1
         self.animation_timer.stop();self.player.stop();super().done(result)
 

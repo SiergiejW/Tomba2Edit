@@ -80,15 +80,26 @@ class TreeMixin:
         data = row_label_data(item) if item else None
         if not data:
             return
-        address = data[2]
-        target = self.address_item.get(address)
+        self.reveal_address(data[2])
+
+    def reveal_address(self, address, prefer=None):
+        """Select the Indexed View row for a DAT address and open it.
+
+        `prefer` is a (chunk, file) location: one address can be several
+        areas' rows, and a caller standing in one area wants its own.
+        Returns whether a row was found."""
+        target = None
+        if prefer is not None:
+            target = getattr(self, "txtd_item_lookup", {}).get(tuple(prefer))
+        if target is None:
+            target = self.address_item.get(address)
         tree_model = self.tree_view.model()
         if target is None or tree_model is None:
-            return
+            return False
 
         target_index = tree_model.indexFromItem(target)
         if not target_index.isValid():
-            return
+            return False
 
         self.tree_search.clear()      # fires _filter_tree("") - unhides everything
         walked = target_index.parent()
@@ -102,6 +113,7 @@ class TreeMixin:
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows)
         self.tree_view.scrollTo(target_index)
+        return True
 
     def count_items(self, item):
         count = 0

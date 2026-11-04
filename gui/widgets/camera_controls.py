@@ -222,12 +222,11 @@ def depth_pivot(widget):
 
 
 class CameraSettings:
-    """Smooth camera, how quickly it catches up, and mouse sensitivity.
+    """Mouse sensitivity.
 
     One set for every 3D view, kept in the app's settings. Read live by
     each camera, so changing them in one view's Camera menu changes all."""
-    KEYS = (("smooth", True, bool), ("responsiveness", 1.0, float),
-            ("sensitivity", 1.0, float))
+    KEYS = (("sensitivity", 1.0, float),)
 
     def __init__(self):
         from PyQt6.QtCore import QSettings
@@ -245,11 +244,6 @@ class CameraSettings:
         setattr(self, name, value)
         self._store.setValue(f"camera/{name}", value)
 
-    @property
-    def catch_up(self):
-        """Seconds a smoothed move takes to get most of the way there."""
-        return 0.12 / max(self.responsiveness, 0.05)
-
 
 _SETTINGS = None
 
@@ -259,10 +253,6 @@ def camera_settings():
     if _SETTINGS is None:
         _SETTINGS = CameraSettings()
     return _SETTINGS
-
-
-# Below this much left to apply, a smoothed move just finishes.
-SETTLE = 1e-4
 
 
 class CameraControls:
@@ -320,14 +310,6 @@ class CameraControls:
             Qt.Key.Key_Shift: False,
         }
 
-        # What smoothing has still to apply: orbit/look degrees, pan
-        # pixels, zoom notches, and the WASD velocity it eases towards.
-        self._pending = {"orbit": [0.0, 0.0], "look": [0.0, 0.0],
-                         "pan": [0.0, 0.0], "zoom": 0.0}
-        self._pending_pivot = None
-        self._pending_distance = None
-        self._velocity = [0.0, 0.0, 0.0]
-
         # Timer for smooth movement
         self.key_timer = QTimer()
         self.key_timer.timeout.connect(self.handle_key_movement)
@@ -370,8 +352,6 @@ class CameraControls:
 
         `lift` aims that far above the centre, as a fraction of the
         radius - see MODEL_LIFT."""
-        self._clear_pending()
-        self._velocity = [0.0, 0.0, 0.0]
         distance = max(radius * margin * 1.2, 1e-6)
         h, v = math.radians(heading), math.radians(pitch)
         aim_y = centre[1] + radius * lift
@@ -426,7 +406,6 @@ class CameraControls:
     def glide_to(self, centre, radius, margin=2.5, frames=GLIDE_FRAMES):
         """frame() on `centre` without the jump: the camera eases there over
         a few frames, keeping its angles and the scene's size."""
-        self.flush()
         distance = max(radius * margin * 1.2, 1e-6)
         h = math.radians(self.camera_angle_h)
         v = math.radians(self.camera_angle_v)
@@ -532,7 +511,6 @@ class CameraControls:
         as the camera moves."""
         if self.camera_mode:
             return                    # the freecam has the mouse
-        self.flush()
         self.orbit_mode = "pan" if panning else "orbit"
         target = self.orbit_target() if (self.orbit_target and not panning) else None
         if target is not None:
@@ -596,19 +574,9 @@ class CameraControls:
     def settings(self):
         return camera_settings()
 
-    @property
-    def smooth(self):
-        return self.settings.smooth
-
     def orbit(self, dx, dy):
         """Swing around the held pivot by a mouse delta."""
         scale = self.mouse_sensitivity * self.settings.sensitivity
-        if self.smooth:
-            self._pending["orbit"][0] += dx * scale
-            self._pending["orbit"][1] += dy * scale
-            self._pending_pivot = self._orbit_pivot
-            self._pending_distance = self.orbit_distance
-            return
         self._apply_orbit(dx * scale, dy * scale, self._orbit_pivot, self.orbit_distance)
 
     def _apply_orbit(self, dh, dv, pivot, distance):
@@ -621,55 +589,6 @@ class CameraControls:
         self.camera_angle_h += dh
         self.camera_angle_v = max(-89.0, min(89.0, self.camera_angle_v + dv))
 
-    def flush(self):
-        """Finish every smoothed move at once - before something else
-        takes the camera, so the rest of it cannot land afterwards."""
-        pending = self._pending
-        if any(pending["orbit"]):
-            self._apply_orbit(*pending["orbit"], self._pending_pivot, self._pending_distance)
-        if any(pending["look"]):
-            self._apply_look(*pending["look"])
-        if any(pending["pan"]):
-            self._apply_pan(*pending["pan"])
-        if pending["zoom"]:
-            self._apply_zoom(pending["zoom"])
-        self._clear_pending()
-
-    def _clear_pending(self):
-        self._pending = {"orbit": [0.0, 0.0], "look": [0.0, 0.0],
-                         "pan": [0.0, 0.0], "zoom": 0.0}
-
-    def _drain(self, fraction):
-        """Apply `fraction` of each smoothed move; True if anything moved."""
-        moved = False
-        pending = self._pending
-        def take(value):
-            return value if abs(value) < SETTLE else value * fraction
-        orbit = pending["orbit"]
-        if any(orbit):
-            dh, dv = take(orbit[0]), take(orbit[1])
-            orbit[0] -= dh; orbit[1] -= dv
-            self._apply_orbit(dh, dv, self._pending_pivot, self._pending_distance)
-            moved = True
-        look = pending["look"]
-        if any(look):
-            dh, dv = take(look[0]), take(look[1])
-            look[0] -= dh; look[1] -= dv
-            self._apply_look(dh, dv)
-            moved = True
-        pan = pending["pan"]
-        if any(pan):
-            dx, dy = take(pan[0]), take(pan[1])
-            pan[0] -= dx; pan[1] -= dy
-            self._apply_pan(dx, dy)
-            moved = True
-        if pending["zoom"]:
-            step = take(pending["zoom"])
-            pending["zoom"] -= step
-            self._apply_zoom(step)
-            moved = True
-        return moved
-
     def pan(self, dx, dy):
         """Slide the view, and the point it orbits, with the mouse.
 
@@ -678,10 +597,6 @@ class CameraControls:
         2 * distance * tan(fov / 2) of world, so one pixel is that over
         the widget's height. Whatever is under the cursor when the drag
         starts is still under it when it ends, at any zoom."""
-        if self.smooth:
-            self._pending["pan"][0] += dx
-            self._pending["pan"][1] += dy
-            return
         self._apply_pan(dx, dy)
 
     def _apply_pan(self, dx, dy):
@@ -695,20 +610,13 @@ class CameraControls:
         self._orbit_pivot = self.orbit_pivot()
 
     def handle_key_movement(self):
-        """Every tick: ease pending moves in, then WASD."""
-        fraction = 1.0 - math.exp(-0.016 / self.settings.catch_up)
-        moved = self._drain(fraction) if self.smooth else False
-        wanted = self._wasd() if self.camera_mode else (0.0, 0.0, 0.0)
-        if self.smooth:
-            self._velocity = [v + (w - v) * fraction for v, w in zip(self._velocity, wanted)]
-            if not any(wanted) and max(map(abs, self._velocity)) < self.camera_speed * 0.01:
-                self._velocity = [0.0, 0.0, 0.0]
-        else:
-            self._velocity = list(wanted)
-        if any(self._velocity):
-            self.camera_x += self._velocity[0]
-            self.camera_y += self._velocity[1]
-            self.camera_z += self._velocity[2]
+        """WASD, every tick while the right button looks around."""
+        moved = False
+        step = self._wasd() if self.camera_mode else (0.0, 0.0, 0.0)
+        if any(step):
+            self.camera_x += step[0]
+            self.camera_y += step[1]
+            self.camera_z += step[2]
             moved = True
         if moved:
             self.widget.update()
@@ -760,9 +668,6 @@ class CameraControls:
                 min(self.camera_speed_max,
                     self.camera_speed * SPEED_STEP ** notches))
             self.widget.update()
-            return
-        if self.smooth:
-            self._pending["zoom"] += notches
             return
         self._apply_zoom(notches)
 
@@ -896,8 +801,7 @@ class CameraControls:
             dx = pos.x() - self.display_center[0]
             dy = pos.y() - self.display_center[1]
 
-            # Looking is never smoothed: it follows the hand exactly, as
-            # TombaEdit's does. Smoothing is for orbit, pan, zoom and WASD.
+            # Applied at once, at TombaEdit's rate - it follows the hand.
             scale = self.look_sensitivity * self.settings.sensitivity
             self._apply_look(dx * scale, dy * scale)
 
@@ -1016,10 +920,6 @@ def install_camera_tools(viewer, selected_points=None, before=None):
         toolbar.insertAction(before, orbit) if before is not None else toolbar.addAction(orbit)
 
     menu = QMenu(viewer)
-    smooth = menu.addAction("Smooth camera")
-    smooth.setCheckable(True)
-    smooth.setToolTip("Ease orbit, pan, zoom and WASD movement instead of moving instantly. Right-drag looking is always instant.")
-
     def slider(title, name, low, high, tip):
         box = QWidget(menu)
         row = QHBoxLayout(box)
@@ -1046,32 +946,22 @@ def install_camera_tools(viewer, selected_points=None, before=None):
         menu.addAction(action)
         return bar, show
 
-    responsiveness, show_r = slider("Responsiveness", "responsiveness", 25, 400,
-                                    "How quickly the smoothed camera catches up. Higher is snappier.")
     sensitivity, show_s = slider("Mouse sensitivity", "sensitivity", 25, 300,
                                  "How far the camera turns per pixel of mouse movement.")
 
     def sync():
-        smooth.setChecked(settings.smooth)
-        for bar, show, name in ((responsiveness, show_r, "responsiveness"),
-                                (sensitivity, show_s, "sensitivity")):
+        for bar, show, name in ((sensitivity, show_s, "sensitivity"),):
             bar.blockSignals(True)
             bar.setValue(round(getattr(settings, name) * 100))
             bar.blockSignals(False)
             show(bar.value())
-        responsiveness.setEnabled(settings.smooth)
 
-    def toggled(on):
-        viewer.camera_controls.flush()
-        settings.set("smooth", on)
-        responsiveness.setEnabled(on)
-    smooth.toggled.connect(toggled)
     menu.aboutToShow.connect(sync)
     sync()
 
     camera = QAction(viewer.style().standardIcon(QStyle.StandardPixmap.SP_DesktopIcon),
                      "Camera", viewer)
-    camera.setToolTip("Smooth camera, responsiveness and mouse sensitivity - shared by every 3D view.")
+    camera.setToolTip("Mouse sensitivity for orbiting and looking around - shared by every 3D view.")
     camera.setMenu(menu)
     toolbar.insertAction(before, camera) if before is not None else toolbar.addAction(camera)
     button = toolbar.widgetForAction(camera)
