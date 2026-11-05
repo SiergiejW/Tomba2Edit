@@ -7,8 +7,10 @@ from PyQt6.QtMultimedia import QAudioOutput,QMediaPlayer
 from PyQt6.QtCore import QPointF,QRectF
 from PyQt6.QtGui import QColor,QFont,QPainter,QPen,QPolygonF
 from PyQt6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QComboBox,
-    QListWidget,QListWidgetItem,QFormLayout,QSpinBox,QPushButton,QMessageBox,QCheckBox,QWidget,QPlainTextEdit,QSplitter,QTabWidget)
+    QListWidget,QListWidgetItem,QFormLayout,QSpinBox,QPushButton,QMessageBox,QCheckBox,QWidget,QPlainTextEdit,QSplitter,QTabWidget,
+    QTabBar,QGroupBox,QLineEdit,QFrame,QGridLayout,QStyle,QStyledItemDelegate,QMenu)
 from game import event_script as script, game_build
+from gui import theme
 
 class VoiceDecode(QObject):
     decoded=pyqtSignal(object)
@@ -38,7 +40,17 @@ class AnimationDecode(VoiceDecode):
         try:
             from game.event_preview import animation_frames
             self.emit_result(animation_frames(*self.args))
-        except Exception as exc:self.emit_result(([],str(exc)))
+        except Exception as exc:self.emit_result(([],str(exc),None))
+
+class MusicDecode(VoiceDecode):
+    def __init__(self,snd,overlay_name,overlay,cue,parent):
+        QObject.__init__(self,parent);self.args=(snd,overlay_name,overlay,cue);self.worker=None
+    def run(self):
+        try:
+            from game.event_preview import music_cue
+            self.emit_result(music_cue(*self.args))
+        except Exception as exc:self.emit_result((None,str(exc)))
+
 
 class ResidentVoiceDecode(VoiceDecode):
     def __init__(self,exe,image,voice_id,parent):
@@ -53,10 +65,19 @@ class ResidentVoiceDecode(VoiceDecode):
 # Row colours by what an action does.
 CATEGORY = {**{op:'#5aa9ff' for op in (0,1,2,3,13,14,40,46,47)}, **{op:'#e0b24f' for op in (42,43,44)},
     **{op:'#7fd18b' for op in (28,29,30,55,57)}, **{op:'#f08c4a' for op in (17,31,35,36,37,49,52,54,56,58,59)},
-    **{op:'#c08cff' for op in (8,21,22,23,24,25)}, **{op:'#a0a0a0' for op in (4,5,6,7,9,10)}, 62:'#ff6b6b'}
+    **{op:'#c08cff' for op in (8,21,22,23,24,25)}, **{op:'#a0a0a0' for op in (4,5,6,7,9,10)}, 11:'#4fd1c5', 62:'#ff6b6b'}
+# The same, on a light ground: RPG Maker 2003's command colours.
+CATEGORY_LIGHT = {**{op:'#000080' for op in (0,1,2,3,13,14,40)}, **{op:'#008080' for op in (11,46,47)},
+    **{op:'#0000ff' for op in (42,43,44)}, **{op:'#800080' for op in (28,29,30,55,57)},
+    **{op:'#800000' for op in (17,31,35,36,37,49,52,54,56,58,59)},
+    **{op:'#806000' for op in (8,21,22,23,24,25)}, **{op:'#c00040' for op in (4,5,6,7,9,10)}, 62:'#c00000'}
 PATH_TAB_OPS = frozenset((5,17,21,22,23,24,31,35,36,37,49))
-MODEL_TAB_OPS = frozenset((28,29,30,55,57))
-TEXT_TAB_OPS = frozenset((0,1,40,46,47))
+ANIMATION_OPS = frozenset((1,30,57,58))   # an animation on the entity
+TOMBA_OPS = frozenset((55,57,58))         # an animation on Tomba
+CAMERA_OPS = frozenset((21,22,23,24,25))
+TOMBA_PLACE_OPS = frozenset((49,54,56))   # where Tomba stands / faces
+MODEL_TAB_OPS = frozenset((28,29,30,55,57,58))
+TEXT_TAB_OPS = frozenset((0,1,11,40,46,47))
 
 class PathPreview(QWidget):
     """Top-down sketch of where the actions move the entity and camera."""
@@ -111,6 +132,97 @@ class PathPreview(QWidget):
                    f'{self.note}   ● start  ▲ move  ▢ camera focus   known time so far ≈ {total/30:.2f} s ({total} ticks)')
 
 
+ROW_ROLE = Qt.ItemDataRole.UserRole+1
+
+
+def row_colour(opcode):
+    """A command's text colour under the theme in use."""
+    if theme.is_bright():return CATEGORY_LIGHT.get(opcode)
+    return CATEGORY.get(opcode,'#d8d8d8')
+
+
+class RowDelegate(QStyledItemDelegate):
+    """Paints a command as RPG Maker does: "@>" then the command in its
+    colour, on alternating bands. Number and jump notes stay grey."""
+    def _parts(self,index):
+        return index.data(ROW_ROLE)
+    def paint(self,painter,option,index):
+        parts=self._parts(index)
+        if not parts:return super().paint(painter,option,index)
+        number,indent,text,suffix,colour=parts
+        pal=option.palette;r=option.rect
+        selected=bool(option.state&QStyle.StateFlag.State_Selected)
+        if selected:ground=pal.highlight().color()
+        elif index.row()%2:
+            ground=QColor('#e4ecf2') if theme.is_grey() else QColor(theme._mix(pal.base().color().name(),pal.text().color().name(),0.06))
+        else:ground=pal.base().color()
+        painter.save();painter.fillRect(r,ground);painter.setFont(option.font)
+        plain=pal.highlightedText().color() if selected else pal.text().color()
+        dim=plain if selected else QColor('#808080')
+        fm=option.fontMetrics;x=r.left()+3
+        for piece,pen in ((f'{number:02d} ',dim),(indent,dim),('@>',plain),
+                          (text,plain if selected or not colour else QColor(colour)),
+                          ('   '+suffix if suffix else '',dim)):
+            if not piece:continue
+            painter.setPen(pen)
+            painter.drawText(QRectF(x,r.top(),max(0,r.right()-x),r.height()),
+                             Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,piece)
+            x+=fm.horizontalAdvance(piece)
+        if option.state&QStyle.StateFlag.State_HasFocus:
+            from PyQt6.QtWidgets import QStyleOptionFocusRect
+            focus=QStyleOptionFocusRect();focus.rect=r;focus.palette=pal
+            focus.backgroundColor=ground;focus.state=option.state
+            widget=option.widget
+            (widget.style() if widget else self.parent().style()).drawPrimitive(
+                QStyle.PrimitiveElement.PE_FrameFocusRect,focus,painter,widget)
+        painter.restore()
+    def sizeHint(self,option,index):
+        parts=self._parts(index)
+        size=super().sizeHint(option,index)
+        if parts:
+            number,indent,text,suffix,_=parts
+            line=f'{number:02d} {indent}@>{text}'+('   '+suffix if suffix else '')
+            size.setWidth(option.fontMetrics.horizontalAdvance(line)+12)
+        size.setHeight(option.fontMetrics.height()+4)
+        return size
+
+
+class EventCommandDialog(QDialog):
+    """RPG Maker's Event Command window: a tab per kind of command, each a
+    two-column grid of buttons. Clicking one picks it."""
+    GROUPS = (('Message',(0,1,40)),('Sound',(46,47,11,'End conversation music')),
+              ('Wait / Flow',(5,7,8,12)),('Actor',(30,17,35,36,31)),('Camera',(22,23,24)))
+    last_tab = 0
+    def __init__(self,parent,choices,title='Event Command'):
+        super().__init__(parent);self.setWindowTitle(title);self.choice=None
+        layout=QVBoxLayout(self);self.tabs=QTabWidget();layout.addWidget(self.tabs)
+        by_key={}
+        for label,data in choices:
+            by_key.setdefault(label if isinstance(data,tuple) else data,(label,data))
+        used=set()
+        for name,keys in self.GROUPS:
+            picked=[by_key[k] for k in keys if k in by_key]
+            used.update(k for k in keys if k in by_key)
+            if picked:self._page(name,picked)
+        rest=[v for k,v in by_key.items() if k not in used]
+        if rest:self._page('Other',rest)
+        self.tabs.setCurrentIndex(min(EventCommandDialog.last_tab,self.tabs.count()-1))
+        row=QHBoxLayout();row.addStretch()
+        cancel=QPushButton('Cancel');cancel.setFixedWidth(88);cancel.clicked.connect(self.reject)
+        row.addWidget(cancel);layout.addLayout(row)
+    def _page(self,name,picked):
+        page=QWidget();grid=QGridLayout(page);grid.setSpacing(0);grid.setContentsMargins(6,6,6,6)
+        rows=(len(picked)+1)//2
+        for n,(label,data) in enumerate(picked):
+            b=QPushButton(label);b.setMinimumSize(180,24)
+            b.clicked.connect(lambda _=False,d=data:self.pick(d))
+            grid.addWidget(b,n%rows,n//rows)
+        grid.setRowStretch(rows,1)
+        self.tabs.addTab(page,name)
+    def pick(self,data):
+        self.choice=data;EventCommandDialog.last_tab=self.tabs.currentIndex();self.accept()
+
+
 class DialoguePicker(QDialog):
     """Choose a dialogue master and entry from the area's TXTD."""
     def __init__(self,parent,bank,master=None,entry=None):
@@ -146,117 +258,385 @@ class DialoguePicker(QDialog):
         return self.masters.currentData(),self.entries.currentRow()
 
 
+class TombaDecode(VoiceDecode):
+    def __init__(self,scene,animation,parent):
+        QObject.__init__(self,parent);self.args=(scene,animation);self.worker=None
+    def run(self):
+        try:
+            from game.event_preview import tomba_frames
+            self.emit_result(tomba_frames(*self.args))
+        except Exception as exc:self.emit_result(str(exc))
+
+class CameraDecode(VoiceDecode):
+    def __init__(self,scene,nodes,row,tomba,parent):
+        QObject.__init__(self,parent);self.args=(scene,deepcopy(nodes),row,tomba);self.worker=None
+    def run(self):
+        try:
+            from game.event_preview import camera_path
+            self.emit_result(camera_path(*self.args))
+        except Exception as exc:self.emit_result(([],str(exc)))
+
+
+def yaw_toward(source,target):
+    """Game yaw (4096 = 360°) from `source` to `target`, both (x, height,
+    depth): ratan2(source depth - target depth, target x - source x), as
+    f_RunScriptedActorFaceTombaSequence turns an actor."""
+    import math
+    return int(round(math.atan2(source[2]-target[2],target[0]-source[0])*4096/(2*math.pi)))&0xfff
+
+
+import numpy as np
+from game import actor_sim
+
+
 class ViewportPreview(QObject):
-    """Plays a move or camera action once in the level viewport, then puts
-    everything back. Display only: no record is written, nothing is marked
-    as changed, and stop() restores at once (the panel calls it before it
-    applies anything)."""
+    """Shows actions in the level viewport. Display only: no record is
+    written and nothing is marked as changed.
+
+    Single-row mode plays the selected row and puts everything back.
+    Simulation (timeline) mode leaves the entity and camera as the events
+    up to the selected row leave them; reset() puts back what was there
+    before the editor touched anything (on close, and before applying)."""
     FPS = 30
     def __init__(self,editor):
         super().__init__(editor)
         self.editor=editor;self.timer=QTimer(self);self.timer.setInterval(16)
-        self.timer.timeout.connect(self.step);self.saved=None;self.camera=None;self.clock=None;self.track=None
+        self.timer.timeout.connect(self.step);self.track=None;self.clock=None
+        self.base=None;self.base_game=None;self.timeline=False
+        # The stand-in Tomba: drawn as a posed wireframe with the markers.
+        self.tomba=None;self.tomba_timer=QTimer(self);self.tomba_timer.setInterval(33)
+        self.tomba_timer.timeout.connect(self._tomba_tick)
     def viewer(self):
         return getattr(self.editor.panel,'viewer',None)
-    def play(self,nodes,row):
+    def _shown(self):
+        viewer=self.viewer();instance=self.editor.instance
+        return viewer is not None and any(i is instance for i in getattr(viewer,'instances',()))
+    def _save_base(self):
+        """What to put back: the entity and the camera before any preview."""
+        if self.base is not None:return
+        viewer=self.viewer();instance=self.editor.instance
+        c=getattr(viewer,'camera_controls',None)
+        try:self.base_game=tuple(float(v) for v in instance.game_position)
+        except (AttributeError,TypeError):self.base_game=None
+        self.base=((getattr(instance,'x',None),getattr(instance,'y',None),getattr(instance,'z',None),getattr(instance,'angle',None)),
+                   None if c is None else (c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance))
+    def _refresh(self):
+        viewer=self.viewer();instance=self.editor.instance
+        try:viewer.refresh_instance(instance.index)
+        except Exception:pass
+        if hasattr(viewer,'update'):viewer.update()
+    def _place(self,point,yaw=None):
+        instance=self.editor.instance
+        instance.game_position=tuple(float(v) for v in point)
+        if yaw is not None and hasattr(instance,'angle'):instance.angle=yaw*360/4096
+        self._refresh()
+    def _aim(self,eye,focus):
+        """Camera at `eye` looking at `focus`, both in game axes."""
+        import math
+        from gui.level.level_scene import view_point
+        from gui.level.level_viewer import UNIT_SCALE
+        e=[v/UNIT_SCALE for v in view_point(eye)];f=[v/UNIT_SCALE for v in view_point(focus)]
+        d=[b-a for a,b in zip(e,f)];length=math.sqrt(sum(v*v for v in d)) or 1e-6
+        d=[v/length for v in d]
+        c=self.viewer().camera_controls;c.stop_glide()
+        c.camera_x,c.camera_y,c.camera_z=-e[0],-e[1],-e[2]
+        c.camera_angle_v=math.degrees(math.asin(max(-1.0,min(1.0,-d[1]))))
+        c.camera_angle_h=math.degrees(math.atan2(d[0],-d[2]))
+        c.orbit_distance=length
+        self.viewer().update()
+    def _restore_camera(self):
+        if self.base is None or self.base[1] is None:return
+        c=self.viewer().camera_controls;c.stop_glide()
+        (c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance)=self.base[1]
+        self.viewer().update()
+
+    # --- timeline ---
+
+    def set_timeline(self,on):
+        self.timeline=on
+        if not on:self.reset()
+    def show_state(self,position,yaw):
+        """Timeline: stand the entity where the events so far leave it."""
+        if not self._shown() or position is None:return False
+        self._save_base()
+        self._place(position,yaw)
+        return True
+    def show_camera(self,path,animate):
+        """Run a recorded camera path (or jump to its end)."""
+        if getattr(self.viewer(),'camera_controls',None) is None or not path:return False
+        self._save_base()
+        if not animate or len(path)<2:
+            self._aim(*path[-1]);return True
+        self.track=('path',path,not self.timeline)
+        self.clock=None;self._start()
+        return True
+    def restore_camera(self):
+        """Timeline rows before any camera command: the camera as it was."""
+        if self.base is not None:self._restore_camera()
+
+    # --- one row ---
+
+    def play(self,nodes,row,tomba=None):
         """Start the selected row's preview; False if it has none here."""
         from game.event_preview import trace
-        self.stop()
-        viewer=self.viewer();instance=self.editor.instance
+        if self.timeline:self.stop(keep=True)
+        else:self.reset()
+        if not self._shown():return False
         start=self.editor.start_position()
-        if viewer is None or start is None:return False
-        if not any(i is instance for i in getattr(viewer,'instances',())):return False
+        if start is None:return False
+        c=nodes[row]
+        if c.opcode==58 and tomba is not None:
+            before=self.editor.state_at(nodes,row-1)
+            position=before[0] or start
+            target=yaw_toward(position,tomba)
+            self._save_base()
+            self.track=('turn',position,before[1] if before[1] is not None else self.editor.start_yaw(),target)
+            self.editor.status.setText('Previewing: the actor turns to face Tomba (0x100 a tick), as f_RunScriptedActorFaceTombaSequence does.')
+            self._start();return True
         steps=[s for s in trace(nodes,row,start) if s[0]==row]
         if not steps:return False
         _,kind,a,b,ticks=steps[-1]
         import numpy as np
-        if kind in ('move','set'):
-            seconds=0.6 if kind=='set' else min(6.0,max(0.4,(ticks or np.linalg.norm(np.array(b)-np.array(a))/10)/self.FPS))
-            self.saved=(instance,(instance.x,instance.y,instance.z))
-            self.track=('move',np.array(a,dtype=float),np.array(b,dtype=float),seconds,0.8)
-            self.editor.status.setText(f'Previewing in the viewport: {kind} over {seconds:.2f} s, then back. Nothing is written.')
-        elif kind=='camera':
-            c=viewer.camera_controls
-            self.camera=(c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance)
-            self.track=('camera',np.array(b,dtype=float),0.6,1.2)
-            self.editor.status.setText('Previewing the camera focus in the viewport, then back.')
-        else:
-            return False
+        if kind not in ('move','set'):return False
+        seconds=0.6 if kind=='set' else min(6.0,max(0.4,(ticks or np.linalg.norm(np.array(b)-np.array(a))/10)/self.FPS))
+        self._save_base()
+        yaw=self.editor.state_at(nodes,row)[1]
+        self.track=('move',np.array(a,dtype=float),np.array(b,dtype=float),seconds,0.8,yaw)
+        self.editor.status.setText(f'Previewing in the viewport: {kind} over {seconds:.2f} s'
+                                   +('.' if self.timeline else ', then back. Nothing is written.'))
+        self._start();return True
+    def _start(self):
         from PyQt6.QtCore import QElapsedTimer
-        self.clock=QElapsedTimer();self.clock.start();self.started=False;self.timer.start()
-        return True
-    def _place(self,point):
-        instance=self.saved[0]
-        instance.game_position=tuple(float(v) for v in point)
-        self.viewer().refresh_instance(instance.index)
+        self.clock=QElapsedTimer();self.clock.start();self.timer.start()
     def step(self):
         viewer=self.viewer()
         if viewer is None or self.track is None:self.stop();return
         t=self.clock.elapsed()/1000
-        if self.track[0]=='move':
-            _,a,b,seconds,hold=self.track
+        kind=self.track[0]
+        if kind=='move':
+            _,a,b,seconds,hold,yaw=self.track
             f=min(1.0,t/seconds) if seconds else 1.0
-            self._place(a+(b-a)*f)
-            if t>=seconds+hold:self.stop()
-        else:
-            _,point,seconds,hold=self.track
-            c=viewer.camera_controls
-            if not self.started:
-                from gui.level.level_scene import view_point
-                from gui.level.level_viewer import UNIT_SCALE
-                centre=tuple(v/UNIT_SCALE for v in view_point(point))
-                c.glide_to(centre,1.2,frames=max(1,int(seconds*60)))
-                self.started=True
-            if t>=seconds+hold:self.stop()
-    def stop(self):
-        self.timer.stop();viewer=self.viewer()
-        if self.saved is not None:
-            instance,(x,y,z)=self.saved;self.saved=None
-            instance.x,instance.y,instance.z=x,y,z
-            if viewer is not None:
-                try:viewer.refresh_instance(instance.index)
-                except Exception:pass
-        if self.camera is not None and viewer is not None:
-            c=viewer.camera_controls;c.stop_glide()
-            (c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance)=self.camera
-            viewer.update()
-        self.camera=None;self.track=None
+            self._place(a+(b-a)*f,yaw if f>=1.0 else None)
+            if t>=seconds+(0 if self.timeline else hold):self.stop()
+        elif kind=='turn':
+            _,position,yaw,target=self.track
+            turned=min(int(t*self.FPS)*0x100,0x1000)
+            gap=(target-yaw)&0xfff
+            if gap>=0x800:gap-=0x1000
+            now=target if abs(gap)<=turned else (yaw+(turned if gap>0 else -turned))&0xfff
+            self._place(position,now)
+            if now==target and t>=(abs(gap)/0x100)/self.FPS+(0 if self.timeline else 0.8):self.stop()
+        elif kind=='path':
+            _,path,restore=self.track
+            n=min(int(t*self.FPS),len(path)-1)
+            self._aim(*path[n])
+            if n>=len(path)-1 and t>=len(path)/self.FPS+(0.8 if restore else 0):self.stop()
+    def stop(self,keep=False):
+        """End the running preview. Outside the timeline the entity and
+        camera go back at once; in it they stay where the events put them."""
+        self.timer.stop();self.track=None
+        if not self.timeline and not keep:self.reset()
+    def reset(self):
+        """Put back the entity and camera as they were before any preview."""
+        self.timer.stop();self.track=None
+        if self.base is None:return
+        viewer=self.viewer()
+        (x,y,z,angle),_=self.base
+        instance=self.editor.instance
+        if x is not None:instance.x,instance.y,instance.z=x,y,z
+        if angle is not None:instance.angle=angle
+        if viewer is not None:
+            try:viewer.refresh_instance(instance.index)
+            except Exception:pass
+            self._restore_camera()
+        self.base=None;self.base_game=None
+        self.hide_tomba()
+
+    # --- stand-in Tomba ---
+
+    def show_tomba(self,position,yaw,result,lift=0.0):
+        """Tomba, textured, at `position` (game axes) facing `yaw`, playing
+        `result` (event_preview.tomba_frames) and looping where it loops.
+        He is a temporary instance of the level scene - the area's own
+        Tomba model (IDX trail resource 0) - removed again by reset()."""
+        viewer=self.viewer();scene=getattr(viewer,'scene',None)
+        if not self._shown() or position is None or not result or not hasattr(scene,'build'):return False
+        self._save_base()
+        same=self.tomba is not None and self.tomba['result'] is result
+        tick=self.tomba['tick'] if same else 0
+        if self.tomba is None:
+            self.tomba=dict(instance=self._add_tomba(scene,result))
+            self._rebuild(viewer)
+        elif self.tomba['result'] is not result and self.tomba['result']['by_bone']!=result['by_bone']:
+            # Another head or hands: different geometry.
+            self.tomba['instance'].sources=tuple((actor_sim.TRAIL_ID,g) for g in result['by_bone'])
+            self._rebuild(viewer)
+        self.tomba.update(position=position,yaw=yaw,result=result,tick=tick,lift=lift)
+        self._draw_tomba()
+        if len(result['frames'])>1:self.tomba_timer.start()
+        else:self.tomba_timer.stop()
+        return True
+    def _add_tomba(self,scene,result):
+        from copy import copy
+        tomba=copy(self.editor.instance)
+        class Assembly:
+            name='Tomba (event simulation)';note='Event editor stand-in';blends=();riders=();owners=()
+            pieces_now=[]
+            def pose(self,_state):return self.pieces_now
+        tomba.assembly=Assembly();tomba.sources=tuple((actor_sim.TRAIL_ID,g) for g in result['by_bone'])
+        tomba.offsets=();tomba.parts=[];tomba.spans=[];tomba.label='Tomba (event simulation)'
+        tomba.placement=None;tomba.pickup=None;tomba.flip=None;tomba.flip_frames=();tomba.follow=None
+        tomba.index=len(scene.instances)
+        scene.instances.append(tomba)
+        return tomba
+    def _rebuild(self,viewer):
+        """New geometry, same view: selection, hidden rows and camera stay."""
+        viewer.scene.__dict__.pop('_built_model',None)
+        viewer.model_data=viewer.scene.build()
+        viewer.prepare_buffers();viewer.rebuild_markers();viewer._build_selection();viewer.update()
+    def hide_tomba(self):
+        self.tomba_timer.stop()
+        if self.tomba is None:return
+        tomba=self.tomba['instance'];self.tomba=None
+        viewer=self.viewer();scene=getattr(viewer,'scene',None)
+        if scene is not None and tomba in scene.instances:
+            scene.instances.remove(tomba)
+            self._rebuild(viewer)
+    def _draw_tomba(self):
+        from game.event_preview import tomba_pieces
+        t=self.tomba
+        t['instance'].assembly.pieces_now=tomba_pieces(t['result'],t['tick'],t['position'],t['yaw'],t['lift'])
+        self.viewer().refresh_instance(t['instance'].index)
+    def _tomba_tick(self):
+        t=self.tomba
+        if t is None:self.tomba_timer.stop();return
+        frames=len(t['result']['frames']);loop=t['result']['loop']
+        if t['tick']+1<frames:t['tick']+=1
+        elif loop is not None:t['tick']=loop
+        else:self.tomba_timer.stop();return
+        self._draw_tomba()
 
 
 class EventEditor(QDialog):
-    def __init__(self, panel, instance):
+    def __init__(self, panel, instance, handler=None):
         super().__init__(panel)
         self.panel,self.instance=panel,instance
-        self.setWindowTitle('Events — '+instance.label)
+        self.setWindowTitle('Event Editor - '+instance.label)
         self.setModal(False);self.setWindowFlag(Qt.WindowType.Window,True)
         self.resize(1320,840)
         self.exe=Path(panel.exe_path).read_bytes()
         self.overlay=Path(panel.scene.overlay_path).read_bytes()
-        handler=script.handler_for(panel.scene,instance)
+        handler=handler or script.handler_for(panel.scene,instance)
         self.native_handler=handler
         self.bindings=script.discover(self.exe,self.overlay,handler) if handler else []
+        self.bindings+=self._conversation_bindings(self.bindings)
         self.originals={}
         self.drafts={}
         self.active=None;self.selected=None
         self.bank=None;self.bank_address=None;self.linked_entry=None;self.voice_job=None
         self.items=None
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio)
-        outer=QVBoxLayout(self);splitter=QSplitter(Qt.Orientation.Horizontal)
-        outer.addWidget(splitter)
-        left=QWidget();layout=QVBoxLayout(left);splitter.addWidget(left)
-        right=QWidget();preview_layout=QVBoxLayout(right);splitter.addWidget(right)
-        preview_layout.addWidget(QLabel('Preview'))
-        self.preview_tabs=QTabWidget();preview_layout.addWidget(self.preview_tabs,1)
+        # RPG Maker 2003 event editor layout: Name + page buttons, page
+        # tabs, settings on the left, "@>" Contents on the right.
+        style=self.style();icon=QStyle.StandardPixmap
+        outer=QVBoxLayout(self);outer.setContentsMargins(6,6,6,6);outer.setSpacing(4)
+        top=QHBoxLayout();top.setSpacing(6)
+        name_box=QGroupBox('Name');name_layout=QVBoxLayout(name_box);name_layout.setContentsMargins(6,2,6,6)
+        self.name_field=QLineEdit(instance.label);self.name_field.setReadOnly(True);self.name_field.setFixedWidth(240)
+        name_layout.addWidget(self.name_field);top.addWidget(name_box)
+        def big(text,pixmap,tip):
+            b=QPushButton(text);b.setIcon(style.standardIcon(pixmap));b.setMinimumSize(140,30);b.setToolTip(tip)
+            top.addWidget(b,0,Qt.AlignmentFlag.AlignBottom);return b
+        self.add=big('Insert Command…',icon.SP_FileDialogNewFolder,'Insert a command before the selected one (Ins).')
+        self.add.clicked.connect(lambda:self.insert())
+        self.revert=big('Revert Page',icon.SP_BrowserReload,'Put this page back as it was when the editor opened.')
+        self.revert.clicked.connect(self.revert_page)
+        self.split_all=big('Separate All',icon.SP_ArrowRight,'Separate every text + gesture action on this page that can be separated exactly.')
+        self.split_all.clicked.connect(self.split_page)
+        self.undo_button=big('Undo',icon.SP_ArrowBack,'Undo the last event edit (Ctrl+Z).');self.undo_button.clicked.connect(self.undo)
+        self.redo_button=big('Redo',icon.SP_ArrowForward,'Redo (Ctrl+Y or Ctrl+Shift+Z).');self.redo_button.clicked.connect(self.redo)
+        top.addStretch();outer.addLayout(top)
+        # Pages: the native scripts this entity's code loads.
+        self.pages=QTabBar();self.pages.setExpanding(False);self.pages.setDrawBase(False)
+        for n,binding in enumerate(self.bindings):self._add_page_tab(n,binding)
+        if not self.bindings:
+            self.pages.addTab('Handler');self.pages.setTabToolTip(0,'No event script; behaviour is native handler code.')
+        # Tabs flush on a raised pane, as a tab widget draws them.
+        paged=QVBoxLayout();paged.setSpacing(0);paged.addWidget(self.pages)
+        page_frame=QFrame();page_frame.setFrameShape(QFrame.Shape.Panel);page_frame.setFrameShadow(QFrame.Shadow.Raised)
+        page_frame.setLineWidth(2);paged.addWidget(page_frame,1);outer.addLayout(paged,1)
+        body=QHBoxLayout(page_frame);body.setContentsMargins(6,6,6,6);body.setSpacing(6)
+        left_widget=QWidget();left_widget.setFixedWidth(360);left=QVBoxLayout(left_widget);left.setContentsMargins(0,0,0,0)
+        body.addWidget(left_widget)
+        # Page: where the script lives.
+        page_box=QGroupBox('Page');page_form=QFormLayout(page_box)
+        self.page_fields={}
+        for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler')):
+            field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field;page_form.addRow(label,field)
+        left.addWidget(page_box)
+        # Command: the selected row's parameters and preview.
+        command_box=QGroupBox('Command');command=QVBoxLayout(command_box)
+        self.flow=QLabel();self.flow.setWordWrap(True);command.addWidget(self.flow)
+        self.form_widget=QWidget();self.form=QFormLayout(self.form_widget);self.form.setContentsMargins(0,0,0,0)
+        command.addWidget(self.form_widget)
+        self.raw=QCheckBox('Edit raw parameters of undecoded actions')
+        self.raw.toggled.connect(lambda _:self.select_action(self.actions.currentRow()))
+        command.addWidget(self.raw)
+        self.fields=[]
+        play_row=QHBoxLayout()
+        self.play_button=QPushButton('Play');self.play_button.setIcon(style.standardIcon(icon.SP_MediaPlay))
+        self.play_button.setToolTip('Preview the selected action again: moves and camera in the level viewport, text, voice, sound and animation here.')
+        self.play_button.clicked.connect(lambda:self.play_selected(manual=True))
+        self.autoplay=QCheckBox('Autoplay');self.autoplay.setChecked(True)
+        self.autoplay.setToolTip('Preview each action as soon as it is selected.')
+        self.timeline_box=QCheckBox('Simulation preview')
+        self.timeline_box.setToolTip('Timeline: selecting a row leaves the entity and camera as the events up to that row '
+                                     'leave them. Closing the editor puts everything back.')
+        self.timeline_box.toggled.connect(self.timeline_toggled)
+        play_row.addWidget(self.play_button);play_row.addWidget(self.autoplay);play_row.addWidget(self.timeline_box);play_row.addStretch()
+        command.addLayout(play_row)
+        edit_grid=QGridLayout();edit_grid.setSpacing(4)
+        self.add_after=QPushButton('Insert After…');self.add_after.clicked.connect(self.insert_after)
+        self.remove=QPushButton('Delete');self.remove.clicked.connect(self.delete)
+        self.up=QPushButton('Move Up');self.up.clicked.connect(lambda:self.move(-1))
+        self.down=QPushButton('Move Down');self.down.clicked.connect(lambda:self.move(1))
+        for n,b in enumerate((self.add_after,self.remove,self.up,self.down)):edit_grid.addWidget(b,n//2,n%2)
+        command.addLayout(edit_grid)
+        left.addWidget(command_box);left.addStretch()
+        # Contents and the previews that follow the selection.
+        right=QSplitter(Qt.Orientation.Vertical);body.addWidget(right,1)
+        contents_box=QGroupBox('Contents');contents=QVBoxLayout(contents_box);contents.setContentsMargins(4,4,4,4)
+        self.actions=QListWidget()
+        self.actions.setFont(QFont('Verdana',9) if theme.is_grey() else QFont('Consolas',9))
+        self.actions.setItemDelegate(RowDelegate(self.actions))
+        self.actions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.actions.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.actions.customContextMenuRequested.connect(self.row_menu)
+        self.actions.itemDoubleClicked.connect(lambda *_:self.edit_row())
+        contents.addWidget(self.actions);right.addWidget(contents_box)
+        preview_box=QGroupBox('Preview');preview_layout=QVBoxLayout(preview_box);preview_layout.setContentsMargins(4,4,4,4)
+        self.preview_tabs=QTabWidget();preview_layout.addWidget(self.preview_tabs)
+        right.addWidget(preview_box);right.setSizes([430,330])
         text_tab=QWidget();text_layout=QVBoxLayout(text_tab)
         self.preview_tabs.addTab(text_tab,'Dialogue / voice')
         self.model_tab=QWidget();self.model_layout=QVBoxLayout(self.model_tab)
         self.preview_model_button=QPushButton('Preview selected entity / action')
         self.preview_model_button.clicked.connect(self.preview_model_action)
-        self.model_layout.addWidget(self.preview_model_button)
+        self.tomba_button=QPushButton('Play on Tomba');self.tomba_button.clicked.connect(self.preview_tomba_animation)
+        self.tomba_button.setToolTip('Tomba’s animation from this command, on Tomba’s model.')
+        model_buttons=QHBoxLayout();model_buttons.addWidget(self.preview_model_button,1);model_buttons.addWidget(self.tomba_button,1)
+        self.model_layout.addLayout(model_buttons)
         self.model_note=QLabel('Model previews run only when requested.');self.model_note.setWordWrap(True)
         self.model_layout.addWidget(self.model_note)
         self.sprite_preview=QLabel();self.sprite_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.model_layout.addWidget(self.sprite_preview)
+        # Made now, not on the first preview: a GL widget added to a window
+        # already on screen makes Qt recreate the native window, which drops
+        # it back where a new window opens.
+        from formats.models.smst_viewer import SMSTViewer
+        self.model_viewer=SMSTViewer(self.model_tab);self.model_viewer.spread=False
+        self.model_viewer.spread_action.setVisible(False);self._vram_set=False
+        self.model_layout.addWidget(self.model_viewer,1)
         self.preview_tabs.addTab(self.model_tab,'Model / animation')
         self.path_preview=PathPreview()
         self.preview_tabs.addTab(self.path_preview,'Scene path')
@@ -280,33 +660,13 @@ class EventEditor(QDialog):
         self.code_tab=code_tab
         self.preview_tabs.addTab(code_tab,'Native code')
         for b in (self.code_save,self.code_undo,self.code_redo,self.code_discard):b.setEnabled(False)
-        self.model_viewer=None;self.animation_job=None;self.animation_frames=[];self.animation_tick=0
+        self.animation_job=None;self.animation_frames=[];self.animation_tick=0
+        self.animation_loop=None;self.animation_kind='actor';self.tomba_job=None;self.camera_job=None;self._tomba_cache={}
+        self._field_timer=QTimer(self);self._field_timer.setSingleShot(True);self._field_timer.setInterval(300)
+        self._field_timer.timeout.connect(self.refresh_preview)
         self.preview_generation=0
         self.animation_timer=QTimer(self);self.animation_timer.setInterval(33)
         self.animation_timer.timeout.connect(self.advance_animation)
-        splitter.setSizes([560,760]);splitter.setStretchFactor(1,1)
-        hint=QLabel('Event pages are the native scripts this entity’s code loads. Each runs top to bottom; '
-                    'rows with ⟶ jump. Quest selection and handler-side actions stay in native code.')
-        hint.setWordWrap(True);layout.addWidget(hint)
-        self.pages=QComboBox()
-        for n,binding in enumerate(self.bindings):
-            self.pages.addItem(f'Page {n+1} — script 0x{binding.script:08X} (loaded at 0x{binding.caller:08X})',n)
-        layout.addWidget(self.pages)
-        self.actions=QListWidget();self.actions.setFont(QFont('Consolas',9));layout.addWidget(self.actions,1)
-        play_row=QHBoxLayout()
-        self.play_button=QPushButton('▶ Play');self.play_button.setToolTip('Preview the selected action again: moves and camera in the level viewport, text, voice, sound and animation here.')
-        self.play_button.clicked.connect(lambda:self.play_selected(manual=True))
-        self.autoplay=QCheckBox('Autoplay');self.autoplay.setChecked(True)
-        self.autoplay.setToolTip('Preview each action as soon as it is selected.')
-        play_row.addWidget(self.play_button);play_row.addWidget(self.autoplay);play_row.addStretch()
-        layout.addLayout(play_row)
-        self.flow=QLabel();self.flow.setWordWrap(True);layout.addWidget(self.flow)
-        self.form_widget=QWidget();self.form=QFormLayout(self.form_widget)
-        layout.addWidget(self.form_widget)
-        self.raw=QCheckBox('Edit raw parameters of undecoded actions')
-        self.raw.toggled.connect(lambda _:self.select_action(self.actions.currentRow()))
-        layout.addWidget(self.raw)
-        self.fields=[]
         self.text_choices=QComboBox();self.text_choices.currentIndexChanged.connect(self.choose_text)
         text_layout.addWidget(self.text_choices)
         text_buttons=QHBoxLayout()
@@ -314,52 +674,85 @@ class EventEditor(QDialog):
         self.pick_text.setToolTip('Pick the dialogue master and entry this action shows, from the area’s TXTD.')
         self.goto_txtd=QPushButton('Go to TXTD in IDX');self.goto_txtd.clicked.connect(self.go_to_txtd)
         self.goto_txtd.setToolTip('Open this area’s dialogue file in the Indexed View, on this entry.')
-        text_buttons.addWidget(self.pick_text);text_buttons.addWidget(self.goto_txtd)
-        text_layout.addLayout(text_buttons)
+        self.split_text=QPushButton('Separate text and animation')
+        self.split_text.setToolTip('Turn this action into Play animation, Show text and Play animation -1 (back to rest) - the same behaviour as separate blocks.')
+        self.split_text.clicked.connect(self.split_presentation)
+        self.music_button=QPushButton('Play music cue');self.music_button.setIcon(style.standardIcon(icon.SP_MediaPlay))
+        self.music_button.clicked.connect(self.play_music)
+        for b in (self.pick_text,self.goto_txtd,self.split_text,self.music_button):text_buttons.addWidget(b)
+        text_buttons.addStretch();text_layout.addLayout(text_buttons)
         self.pick_text.setEnabled(False);self.goto_txtd.setEnabled(False)
+        self.split_text.setEnabled(False);self.music_button.setEnabled(False)
         self.text_preview=QPlainTextEdit()
         self.text_preview.setPlaceholderText('Select a conversation or message action to see its text.')
         self.text_preview.textChanged.connect(self.edit_text);text_layout.addWidget(self.text_preview,1)
+        voice_row=QHBoxLayout()
         self.play_voice=QPushButton('Play linked voice');self.play_voice.clicked.connect(self.decode_voice)
-        text_layout.addWidget(self.play_voice);self.play_voice.setEnabled(False)
         self.sound_button=QPushButton('Play action sound');self.sound_button.clicked.connect(self.play_sound)
-        text_layout.addWidget(self.sound_button);self.sound_button.setEnabled(False)
-        buttons=QHBoxLayout()
-        self.types=QComboBox()
-        names={0:'Show text… (pick dialogue)',1:'Show text with animation… (pick dialogue)'}
-        for opcode in script.INSERTABLE: self.types.addItem(names.get(opcode,script.LABELS[opcode]),opcode)
-        self.types.setCurrentIndex(self.types.findData(5))
-        self.add=QPushButton('Insert before');self.add.clicked.connect(self.insert)
-        self.add_after=QPushButton('Insert after');self.add_after.clicked.connect(self.insert_after)
-        buttons.addWidget(self.types,1);buttons.addWidget(self.add);buttons.addWidget(self.add_after);layout.addLayout(buttons)
-        edit_row=QHBoxLayout()
-        self.up=QPushButton('Move up');self.up.clicked.connect(lambda:self.move(-1))
-        self.down=QPushButton('Move down');self.down.clicked.connect(lambda:self.move(1))
-        self.remove=QPushButton('Delete');self.remove.clicked.connect(self.delete)
-        self.revert=QPushButton('Revert page');self.revert.clicked.connect(self.revert_page)
-        self.undo_button=QPushButton('Undo');self.undo_button.clicked.connect(self.undo)
-        self.redo_button=QPushButton('Redo');self.redo_button.clicked.connect(self.redo)
-        self.undo_button.setToolTip('Undo the last event edit (Ctrl+Z).');self.redo_button.setToolTip('Redo (Ctrl+Y or Ctrl+Shift+Z).')
-        for b in (self.up,self.down,self.remove,self.revert,self.undo_button,self.redo_button):edit_row.addWidget(b)
+        voice_row.addWidget(self.play_voice);voice_row.addWidget(self.sound_button);voice_row.addStretch()
+        text_layout.addLayout(voice_row)
+        self.play_voice.setEnabled(False);self.sound_button.setEnabled(False)
+        # Event Command choices: what Insert offers, labelled as before.
+        names={0:'Show text…',1:'Show text + gesture…',11:'Start conversation music'}
+        self.command_choices=[(names.get(op,script.LABELS[op]),op) for op in script.INSERTABLE]
+        self.command_choices+=[(label,(op,tuple(values))) for label,op,values in script.INSERT_VARIANTS]
         from PyQt6.QtGui import QKeySequence,QShortcut
         self._undo,self._redo,self._text_session=[],[],None
         for keys,slot in (('Ctrl+Z',self.undo),('Ctrl+Y',self.redo),('Ctrl+Shift+Z',self.redo)):
             shortcut=QShortcut(QKeySequence(keys),self);shortcut.activated.connect(slot)
-        layout.addLayout(edit_row)
+        for keys,slot in (('Ins',lambda:self.insert()),('Del',self.delete_if_allowed),('Space',self.edit_row),
+                          ('Ctrl+Up',lambda:self.move_if_allowed(-1)),('Ctrl+Down',lambda:self.move_if_allowed(1))):
+            shortcut=QShortcut(QKeySequence(keys),self.actions);shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(slot)
+        # Bottom: shared-write switch, status, OK / Cancel / Apply / Help.
+        bottom=QHBoxLayout()
         self.shared=QCheckBox('Apply shared script binding and dialogue-entry changes')
         self.shared.setToolTip('This edits the selected native call site. Other actors that use it receive the same changes.')
-        layout.addWidget(self.shared)
-        self.status=QLabel('');self.status.setWordWrap(True);layout.addWidget(self.status)
-        bottom=QHBoxLayout();bottom.addStretch()
-        self.save=QPushButton('Apply event changes');self.save.clicked.connect(self.apply)
-        close=QPushButton('Close');close.clicked.connect(self.reject)
-        bottom.addWidget(self.save);bottom.addWidget(close);layout.addLayout(bottom)
-        self.pages.currentIndexChanged.connect(self.page_changed)
+        left_bottom=QVBoxLayout();left_bottom.addWidget(self.shared)
+        self.status=QLabel('');self.status.setWordWrap(True);left_bottom.addWidget(self.status)
+        bottom.addLayout(left_bottom,1)
+        self.ok_button=QPushButton('OK');self.ok_button.clicked.connect(self.ok)
+        close=QPushButton('Cancel');close.clicked.connect(self.reject)
+        self.save=QPushButton('Apply');self.save.clicked.connect(lambda:self.apply(close=False))
+        help_button=QPushButton('Help');help_button.clicked.connect(self.show_help)
+        for b in (self.ok_button,close,self.save,help_button):
+            b.setFixedWidth(88);bottom.addWidget(b,0,Qt.AlignmentFlag.AlignBottom)
+        outer.addLayout(bottom)
+        self.pages.currentChanged.connect(self.page_changed)
         self.actions.currentRowChanged.connect(self.row_chosen)
         self.viewport=ViewportPreview(self)
         self.shared.toggled.connect(self.update_enabled)
         self._undo_state()
         self.page_changed(0)
+
+    def _conversation_bindings(self,bindings):
+        """Pages for the conversation scripts these pages request
+        (Request conversation through handler 0 - A00 only)."""
+        read=script.reader(self.exe,self.overlay);pages=[]
+        for b in bindings:
+            try:pages.append(script.read_graph(read,b.script))
+            except ValueError:pass
+        area=getattr(self.panel.scene,'area_index',None)
+        native=[]
+        if self.native_handler==script.AREA_SCRIPT_ACTOR:
+            native=list(range(script.CONVERSATION_COUNT.get(area,0)))
+        elif self.native_handler and area==0:
+            try:native=[r for h,r in script.native_requests(self.exe,self.overlay,self.native_handler) if h==0]
+            except (ValueError,IndexError):pass
+        return script.conversations(self.exe,self.overlay,area,pages,native)
+
+    def _add_page_tab(self,n,binding):
+        if binding.table:
+            self.pages.addTab(f'C{binding.request}')
+            self.pages.setTabToolTip(n,f'Conversation {binding.request}: script 0x{binding.script:08X}, '
+                                     f'from the conversation table slot 0x{binding.caller:08X}. '
+                                     'Request conversation (handler 0) runs it.')
+        else:
+            self.pages.addTab(str(n+1))
+            self.pages.setTabToolTip(n,f'Script 0x{binding.script:08X}, loaded at 0x{binding.caller:08X}')
+
+    def conversation_page(self,request):
+        return next((n for n,b in enumerate(self.bindings) if b.table and b.request==request),None)
 
     def page_changed(self,index):
         if self.active is not None: self.store_operands()
@@ -368,6 +761,11 @@ class EventEditor(QDialog):
         self.active=index if 0<=index<len(self.bindings) else None
         self.actions.clear()
         self.actions.blockSignals(False)
+        binding=self.bindings[self.active] if self.active is not None else None
+        for key,value in (('script',binding and f'0x{binding.script:08X}'),
+                          ('caller',binding and (f'table slot 0x{binding.caller:08X}' if binding.table else f'0x{binding.caller:08X}')),
+                          ('count',None),('handler',self.native_handler and f'0x{self.native_handler:08X}')):
+            self.page_fields[key].setText(value or '—')
         if self.active is None:
             if self.native_handler:
                 from game.event_preview import native_code_at
@@ -385,6 +783,9 @@ class EventEditor(QDialog):
         self.populate()
 
     def start_position(self):
+        """Where the entity stands before any preview moved it."""
+        base=getattr(getattr(self,'viewport',None),'base_game',None)
+        if base is not None:return base
         try:return tuple(float(v) for v in self.instance.game_position)
         except (AttributeError,TypeError):return None
 
@@ -407,11 +808,28 @@ class EventEditor(QDialog):
                 entries=self.bank['entries'][c.operands[0]&0xfff]['entries']
                 line=entries[c.operands[1]]['text'].split('{$')[0].replace('\n',' ').strip()
                 if line:text+=f' — “{line[:48]}{"…" if len(line)>48 else ""}”'
+            elif c.opcode==13 and c.operands[0]&0xff==0:
+                page=self.conversation_page(c.operands[1])
+                if page is not None:
+                    text+=f' — conversation script, tab C{c.operands[1]}'
+                    first=self._first_line(self.bindings[page].script)
+                    if first:text+=f': “{first[:40]}{"…" if len(first)>40 else ""}”'
+                else:text+=' — conversation script not in this area file (set at run time)'
             elif c.opcode==40 and c.operands[0] in (2,3):
                 name=self.item_name(c.operands[1])
                 if name:text+=f' — {name}'
         except (ValueError,OSError,KeyError,IndexError,TypeError):pass
         return text
+
+    def _first_line(self,address):
+        """The first dialogue line a script shows, if it shows one."""
+        try:
+            for c in script.read_graph(script.reader(self.exe,self.overlay),address):
+                if c.opcode in (0,1) and c.operands[1]>=0:
+                    self.load_bank()
+                    return self.bank['entries'][c.operands[0]&0xfff]['entries'][c.operands[1]]['text'].split('{$')[0].replace('\n',' ').strip()
+        except (ValueError,OSError,KeyError,IndexError,TypeError):pass
+        return ''
 
     def item_name(self,item):
         if self.items is None:
@@ -421,7 +839,8 @@ class EventEditor(QDialog):
             except Exception:self.items={}
         return self.items.get(item)
 
-    def row_texts(self,nodes):
+    def row_parts(self,nodes):
+        """(number, indent, command, jump notes, colour) per row."""
         index={c.address:n for n,c in enumerate(nodes)}
         depth=[0]*len(nodes);incoming={}
         for n,c in enumerate(nodes):
@@ -431,25 +850,34 @@ class EventEditor(QDialog):
                 for k in range(n+1,index[t]):depth[k]+=1
         out=[]
         for n,c in enumerate(nodes):
-            line=f'{n+1:02d}  '+'│   '*depth[n]+'◆ '+self.describe(c)
+            notes=[]
             t=c.branch
             if t is not None:
-                if t in index:line+=f'   ⟶ #{index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else '')
-                elif t<script.BASE:line+=f'   ⟶ shared resident script 0x{t:08X}'
-            if c.header&script.END:line+='   ■ end'
-            if n in incoming:line+='   ◁ '+', '.join(f'#{k+1:02d}' for k in incoming[n])
-            out.append(line)
+                if t in index:notes.append(f'⟶ #{index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else ''))
+                elif t<script.BASE:notes.append(f'⟶ shared resident script 0x{t:08X}')
+            if c.header&script.END:notes.append('■ end')
+            if n in incoming:notes.append('◁ '+', '.join(f'#{k+1:02d}' for k in incoming[n]))
+            out.append((n+1,' :  '*depth[n],self.describe(c),'   '.join(notes),row_colour(c.opcode)))
         return out
+
+    def row_texts(self,nodes):
+        return [f'{n:02d} {indent}@>{text}'+(f'   {notes}' if notes else '')
+                for n,indent,text,notes,_ in self.row_parts(nodes)]
+
+    def _fill_row(self,item,parts):
+        n,indent,text,notes,_=parts
+        item.setText(f'{n:02d} {indent}@>{text}'+(f'   {notes}' if notes else ''))
+        item.setData(ROW_ROLE,parts)
 
     def populate(self,selected=0):
         self.actions.blockSignals(True);self.actions.clear()
         nodes=self.drafts.get(self.active,())
-        for c,line in zip(nodes,self.row_texts(nodes)):
-            item=QListWidgetItem(line)
-            item.setForeground(QColor(CATEGORY.get(c.opcode,'#d8d8d8')))
+        for c,parts in zip(nodes,self.row_parts(nodes)):
+            item=QListWidgetItem();self._fill_row(item,parts)
             if c.opcode not in script.LABELS:item.setToolTip('Undecoded native action — its code is in the Native code tab.')
             self.actions.addItem(item)
         self.actions.blockSignals(False)
+        self.page_fields['count'].setText(str(len(nodes)))
         selected=max(0,min(selected,len(nodes)-1))
         self.actions.setCurrentRow(selected)
         self.select_action(selected)
@@ -463,9 +891,9 @@ class EventEditor(QDialog):
                 if values!=nodes[self.selected].operands:
                     self.remember()
                     nodes[self.selected].set_operands(values)
-                    for n,line in enumerate(self.row_texts(nodes)):
+                    for n,parts in enumerate(self.row_parts(nodes)):
                         item=self.actions.item(n)
-                        if item is not None:item.setText(line)
+                        if item is not None:self._fill_row(item,parts)
 
     def select_action(self,row):
         self.animation_timer.stop()
@@ -480,7 +908,8 @@ class EventEditor(QDialog):
         self.selected=row;c=nodes[row]
         self.sound_button.setEnabled(c.opcode==46)
         self.show_code(c)
-        self.preview_model_button.setText('Play on entity model' if c.opcode in (1,30) else 'Show selected entity model')
+        self.preview_model_button.setText('Play on entity model' if c.opcode in ANIMATION_OPS else 'Show selected entity model')
+        self.tomba_button.setEnabled(c.opcode in TOMBA_OPS)
         tab=(0 if c.opcode in TEXT_TAB_OPS else 1 if c.opcode in MODEL_TAB_OPS else
              2 if c.opcode in PATH_TAB_OPS else 3)
         self.preview_tabs.setCurrentIndex(tab)
@@ -490,7 +919,7 @@ class EventEditor(QDialog):
             box=QSpinBox();box.setRange(-32768,32767);box.setValue(value)
             box.setEnabled(editable)
             self.fields.append(box)
-            box.editingFinished.connect(self.refresh_preview)
+            box.valueChanged.connect(lambda _:self._field_timer.start())
             name=labels[n] if n<len(labels) else (f'Parameter {n+1}' if n<3 else f'Extended parameter {n-2}')
             self.form.addRow(name,box)
         targets=', '.join(('Next' if p is None else 'Jump')+f': 0x{a:X}' for a,p in c.edges)
@@ -639,14 +1068,25 @@ class EventEditor(QDialog):
         if self.selected is not None:
             c=self.drafts[self.active][self.selected]
             self.show_text(c);self.update_path(self.selected);self.show_code(c)
+            if self.timeline_box.isChecked():self.apply_timeline(self.selected)
+            elif self.autoplay.isChecked() and c.opcode in ANIMATION_OPS|TOMBA_OPS|CAMERA_OPS:self.play_selected()
 
     def show_text(self,c):
         self.player.stop();self.linked_entry=None
         self.pick_text.setEnabled(c.opcode in (0,1) and game_build.current().name=='us-retail')
         self.goto_txtd.setEnabled(c.opcode in (0,1))
+        self.split_text.setEnabled(c.opcode==1 and game_build.current().name=='us-retail')
+        self.split_all.setEnabled(game_build.current().name=='us-retail' and any(x.opcode==1 for x in self.drafts.get(self.active,())))
+        self.music_button.setEnabled(c.opcode==11 and c.operands[0]!=0)
         self.text_choices.blockSignals(True);self.text_choices.clear();self.text_choices.blockSignals(False)
         self.text_preview.blockSignals(True);self.text_preview.clear();self.text_preview.blockSignals(False)
         self.text_preview.setReadOnly(True);self.play_voice.setEnabled(False)
+        if c.opcode==11:
+            self.text_preview.blockSignals(True)
+            self.text_preview.setPlainText(script.summary(c)+'\n\nStart stops the area track, letterboxes the view and plays this '
+                'sequenced cue. End plays sound 0x7F, lifts the letterbox and restarts the area track.')
+            self.text_preview.blockSignals(False)
+            return
         if c.opcode==40:
             o=c.operands
             self.text_preview.blockSignals(True)
@@ -734,9 +1174,9 @@ class EventEditor(QDialog):
             self.active=active
         self.populate(selected or 0);self._undo_state()
 
-    def _new_operands(self):
-        opcode=self.types.currentData()
-        return opcode,script.INSERTABLE.get(opcode,(0,0,0))
+    def _new_operands(self,data):
+        if isinstance(data,tuple):return data
+        return data,script.INSERTABLE.get(data,(0,0,0))
 
     def _text_operands(self,opcode,values):
         """A new Show text: the picked line, with the flags and behaviour of
@@ -749,19 +1189,75 @@ class EventEditor(QDialog):
         values[0]=(values[0]&~0xfff)|master;values[1]=entry
         return tuple(values)
 
-    def insert(self):
-        row=self.selected;opcode,values=self._new_operands()
+    def insert(self,after=False,data=None):
+        """Insert a command before (or after) the selected row: `data`, or
+        what is picked in the Event Command window."""
+        button=self.add_after if after else self.add
+        if self.selected is None or not button.isEnabled():return
+        if data is None:
+            dialog=EventCommandDialog(self,self.command_choices,'Event Command - insert after' if after else 'Event Command')
+            if not dialog.exec() or dialog.choice is None:return
+            data=dialog.choice
+        row=self.selected;opcode,values=self._new_operands(data)
         if opcode in (0,1):
             values=self._text_operands(opcode,values)
             if values is None:return
-        self._edit(lambda:script.insert_before(self.drafts[self.active],row,opcode,values),row)
+        if after:self._edit(lambda:script.insert_after(self.drafts[self.active],row,opcode,values),row+1)
+        else:self._edit(lambda:script.insert_before(self.drafts[self.active],row,opcode,values),row)
 
-    def insert_after(self):
-        row=self.selected;opcode,values=self._new_operands()
-        if opcode in (0,1):
-            values=self._text_operands(opcode,values)
-            if values is None:return
-        self._edit(lambda:script.insert_after(self.drafts[self.active],row,opcode,values),(row or 0)+1)
+    def insert_after(self):self.insert(after=True)
+
+    def delete_if_allowed(self):
+        if self.remove.isEnabled():self.delete()
+
+    def move_if_allowed(self,delta):
+        if (self.up if delta<0 else self.down).isEnabled():self.move(delta)
+
+    def edit_row(self):
+        """Double-click / Space: edit the command - its dialogue for text,
+        else its first parameter."""
+        if self.selected is None:return
+        c=self.drafts[self.active][self.selected]
+        if c.opcode==13 and c.operands[0]&0xff==0:
+            page=self.conversation_page(c.operands[1])
+            if page is not None:self.pages.setCurrentIndex(page);return
+        if c.opcode in (0,1) and self.pick_text.isEnabled():self.choose_dialogue();return
+        box=next((b for b in self.fields if b.isEnabled()),None)
+        if box is not None:box.setFocus();box.selectAll()
+
+    def row_menu(self,pos):
+        item=self.actions.itemAt(pos)
+        if item is not None:self.actions.setCurrentItem(item)
+        menu=QMenu(self)
+        for text,keys,slot,enabled in (('Insert…','Ins',lambda:self.insert(),self.add.isEnabled()),
+                                       ('Insert After…','',self.insert_after,self.add_after.isEnabled()),
+                                       ('Edit','Space',self.edit_row,self.selected is not None),
+                                       (None,None,None,None),
+                                       ('Delete','Del',self.delete,self.remove.isEnabled()),
+                                       ('Move Up','Ctrl+Up',lambda:self.move(-1),self.up.isEnabled()),
+                                       ('Move Down','Ctrl+Down',lambda:self.move(1),self.down.isEnabled()),
+                                       (None,None,None,None),
+                                       ('Play','',lambda:self.play_selected(manual=True),self.selected is not None),
+                                       (None,None,None,None),
+                                       ('Undo','Ctrl+Z',self.undo,bool(self._undo)),
+                                       ('Redo','Ctrl+Y',self.redo,bool(self._redo))):
+            if text is None:menu.addSeparator();continue
+            action=menu.addAction(text+(f'\t{keys}' if keys else ''));action.setEnabled(enabled)
+            action.triggered.connect(lambda _=False,f=slot:f())
+        menu.exec(self.actions.viewport().mapToGlobal(pos))
+
+    def show_help(self):
+        QMessageBox.information(self,'Event Editor',
+            'Event pages are the native scripts this entity’s code loads. Each runs top to bottom; '
+            'rows with ⟶ jump, ◁ marks where jumps land, ■ ends the script. Quest selection and '
+            'handler-side actions stay in native code.\n\n'
+            'Ins: insert a command (Event Command window)\n'
+            'Space / double-click: edit the command\n'
+            'Del: delete    Ctrl+Up / Ctrl+Down: move\n'
+            'Ctrl+Z / Ctrl+Y: undo / redo\n'
+            'Right-click a row for the same commands.\n\n'
+            'OK applies and closes; Apply writes and keeps the editor open. '
+            'Writing needs “Apply shared script binding…” ticked.')
 
     def pick_dialogue(self,master=None,entry=None):
         """(master, entry) chosen from the area's TXTD, or None."""
@@ -805,21 +1301,235 @@ class EventEditor(QDialog):
 
     def row_chosen(self,row):
         self.select_action(row)
-        if self.autoplay.isChecked():self.play_selected()
+        if self.timeline_box.isChecked():self.apply_timeline(row)
+        elif self.autoplay.isChecked():self.play_selected()
+
+    # --- simulation: where the events so far leave things ---
+
+    def start_yaw(self):
+        from game.actor_assembly import degrees_to_units
+        base=getattr(getattr(self,'viewport',None),'base',None)
+        angle=base[0][3] if base is not None else getattr(self.instance,'angle',0)
+        return degrees_to_units(angle or 0)
+
+    TOMBA_DISTANCE = 250    # assumed stand-off when a page gives no position
+
+    def tomba_state(self,nodes,row):
+        """(position, yaw, animation ID, how found) of Tomba after rows
+        0..row: placed by the page's own commands, facing the entity, in
+        the last Tomba animation the page started (else idle, 0x02)."""
+        position,how=self.tomba_position(nodes,row)
+        if position is None:return None,0,2,how
+        animation=2
+        for c in nodes[:row+1]:
+            o=c.operands
+            if c.opcode==55 and o[1]>=0:animation=o[1]
+            elif c.opcode in (57,58) and o[2]>=0 and not (c.opcode==58 and o[0]&0x7fff==2):animation=o[2]
+        entity=self.state_at(nodes,row)[0] or position
+        return position,yaw_toward(position,entity),animation,how
+
+    def tomba_result(self,animation):
+        """tomba_frames for `animation`, cached; None if it cannot be posed."""
+        if animation not in self._tomba_cache:
+            try:
+                from game.event_preview import tomba_frames
+                self._tomba_cache[animation]=tomba_frames(self.panel.scene,animation)
+            except Exception as exc:
+                self._tomba_cache[animation]=None;self._tomba_error=str(exc)
+        return self._tomba_cache[animation]
+
+    def show_tomba(self,nodes,row):
+        position,yaw,animation,how=self.tomba_state(nodes,row)
+        result=self.tomba_result(animation)
+        if result is None:return ''
+        idle=self.tomba_result(2) or result
+        self.viewport.show_tomba(position,yaw,result,-idle['feet'])
+        return how
+
+    def tomba_position(self,nodes,row):
+        """Where Tomba is taken to stand by row `row`: Set Tomba location
+        if the page has run one, else the entity plus the page's interaction
+        offset (f_UpdateScriptedInteractionApproach keeps the actor at Tomba
+        minus that offset). (position, how it was found)."""
+        start=self.start_position()
+        if start is None:
+            # Area scripts stand nowhere: take where the page puts Tomba,
+            # else the first point its camera is told to look at.
+            for c in nodes[:row+1]:
+                o=c.operands
+                if c.opcode==54:return (float(o[1]),float(o[2]),float(o[3] if c.extended else 0)),'Tomba placed by Set Tomba location.'
+            for c in nodes:
+                o=c.operands
+                if c.opcode==22 and o[2]==0 and c.extended:return (float(o[3]),float(o[4]),float(o[5])),'Tomba assumed at the camera’s focus.'
+            return None,''
+        found=None;offset=None
+        for c in nodes[:row+1]:
+            o=c.operands
+            if c.opcode==54:found=[o[1],o[2],o[3] if c.extended else start[2]]
+            elif c.opcode==49:           # Move Tomba along X or depth
+                found=list(found or self._tomba_default(start))
+                found[0 if o[1]==0 else 2]=o[2]
+        for c in nodes:
+            o=c.operands
+            if c.opcode==16:offset=o[:3];break
+            if c.opcode==13 and o[2]&4 and c.extended:offset=o[3:6];break
+        if found:return tuple(float(v) for v in found),'Tomba placed by Set Tomba location.'
+        if offset:return tuple(s+o for s,o in zip(start,offset)),'Tomba at the entity plus the page’s interaction / conversation offset.'
+        return self._tomba_default(start),(f'No Tomba position on this page: Tomba is assumed {self.TOMBA_DISTANCE} '
+                                           'units in front of the entity.')
+
+    def _tomba_default(self,start):
+        import math
+        a=self.start_yaw()*2*math.pi/4096
+        # Inverse of yaw_toward: yaw = atan2(-d depth, d x).
+        return (start[0]+self.TOMBA_DISTANCE*math.cos(a),start[1],start[2]-self.TOMBA_DISTANCE*math.sin(a))
+
+    def state_at(self,nodes,row):
+        """(position, yaw or None) of the entity after rows 0..row."""
+        from game.event_preview import trace
+        start=self.start_position()
+        if start is None or row<0:return start,None
+        position=start;yaw=None
+        steps={}
+        for s in trace(nodes,row,start):
+            if s[1] in ('move','set'):steps[s[0]]=s[3]
+        for n,c in enumerate(nodes[:row+1]):
+            if n in steps:position=tuple(float(v) for v in steps[n])
+            o=c.operands
+            if c.opcode==31 and not o[0]&0x8000:yaw=o[2]&0xfff
+            elif c.opcode==58 and not o[0]&0x8000:yaw=yaw_toward(position,self.tomba_position(nodes,n)[0])
+        return position,yaw
+
+    def timeline_toggled(self,on):
+        self.viewport.set_timeline(on)
+        if on and self.selected is not None:self.apply_timeline(self.selected)
+        elif not on:self.status.setText('Simulation preview off: the entity and camera are back where they were.')
+
+    def apply_timeline(self,row):
+        """Stand everything as of the row before, then play this row."""
+        nodes=self.drafts.get(self.active,())
+        if not 0<=row<len(nodes):return
+        self.store_operands()
+        position,yaw=self.state_at(nodes,row-1)
+        self.viewport.show_state(position,self.start_yaw() if yaw is None else yaw)
+        tomba,_=self.tomba_position(nodes,row)
+        if not self.viewport.play(nodes,row,tomba):
+            position,yaw=self.state_at(nodes,row)
+            self.viewport.show_state(position,self.start_yaw() if yaw is None else yaw)
+        how=self.show_tomba(nodes,row)
+        if any(c.opcode in CAMERA_OPS for c in nodes[:row+1]):self.run_camera(row)
+        else:self.viewport.restore_camera()
+        c=nodes[row]
+        if self.autoplay.isChecked():
+            if c.opcode in TOMBA_OPS and c.opcode!=57 and c.opcode!=58:self.preview_tomba_animation()
+            elif c.opcode in ANIMATION_OPS:self.preview_model_action()
+        if not self.status.text().startswith('Previewing'):
+            self.status.setText(f'Simulation: as the page stands after row {row+1:02d}. {how} '
+                                'Closing the editor puts everything back.')
+
+    def run_camera(self,row):
+        """The game's own camera code over rows 0..row (background)."""
+        nodes=self.drafts.get(self.active,())
+        tomba,_=self.tomba_position(nodes,row)
+        if tomba is None or getattr(self.viewport.viewer(),'camera_controls',None) is None:return
+        scene=self.panel.scene
+        if not hasattr(scene,'chunk_index'):return
+        job=CameraDecode(scene,nodes,row,tomba,self);job.key=(self.active,row,tuple(c.raw for c in nodes[:row+1]))
+        job.animate=nodes[row].opcode in CAMERA_OPS
+        self.camera_job=job;job.decoded.connect(self._camera_decoded);job.start()
+
+    def _camera_decoded(self,result):
+        job=self.camera_job
+        if job is None or not self.isVisible():return
+        nodes=self.drafts.get(self.active,())
+        if job.key!=(self.active,self.selected,tuple(c.raw for c in nodes[:(self.selected or 0)+1])):return
+        path,note=result
+        if not path:self.status.setText(f'Camera simulation failed: {note}');return
+        self.viewport.show_camera(path,job.animate)
+        if job.animate:self.status.setText('Previewing the camera: '+note+' '+self.tomba_position(nodes,self.selected)[1])
 
     def play_selected(self,manual=False):
         """Preview the selected action - once."""
         if self.selected is None:return
         self.store_operands()
         nodes=self.drafts[self.active];c=nodes[self.selected]
-        if self.viewport.play(nodes,self.selected):return
-        if c.opcode in (1,30):self.preview_model_action()
+        if self.timeline_box.isChecked():self.apply_timeline(self.selected);return
+        tomba,_=self.tomba_position(nodes,self.selected)
+        if c.opcode in CAMERA_OPS:self.run_camera(self.selected);return
+        if self.viewport.play(nodes,self.selected,tomba):
+            if c.opcode==58:self.show_tomba(nodes,self.selected);self.preview_model_action()
+            return
+        if c.opcode in TOMBA_OPS|TOMBA_PLACE_OPS:
+            how=self.show_tomba(nodes,self.selected)
+            if how:self.status.setText('Tomba in the viewport (pink): '+how)
+        if c.opcode==55:self.preview_tomba_animation();return
+        if c.opcode==11:
+            if c.operands[0]:self.play_music()
+            else:self.player.stop();self.status.setText('Conversation music ends here; the area track resumes.')
+        elif c.opcode in ANIMATION_OPS:self.preview_model_action()
         elif c.opcode==46:self.play_sound()
         elif c.opcode==47 or (c.opcode in (0,1) and self.play_voice.isEnabled()):
             if getattr(self.panel.window(),'current_iso_path',None) or manual:self.decode_voice()
 
+    def split_presentation(self):
+        if self.selected is None:return
+        row=self.selected
+        self._edit(lambda:script.split_presentation(self.drafts[self.active],row),row)
+        if self.drafts[self.active][row].opcode==30:
+            self.status.setText('Separated into Play animation, Show text and back-to-rest. In game the text may now appear one tick earlier.')
+
+    def _snd(self):
+        """TOMBA2.SND: edited if the SFX tab has it, else beside TOMBA2.DAT
+        (an opened game folder), else out of the attached disc."""
+        window=self.panel.window();store=getattr(window,'snd_edits',None)
+        if store and store.loaded():return store.rebuild()
+        beside=Path(self.panel.scene.dat_path).with_name('TOMBA2.SND')
+        if beside.is_file():return beside.read_bytes()
+        image=getattr(window,'current_iso_path',None)
+        if not image:raise ValueError('TOMBA2.SND was not found; attach the source disc to preview audio.')
+        from formats.audio.voice import extract_file
+        return extract_file(image,'TOMBA2.SND')
+
+    def split_page(self):
+        nodes=self.drafts.get(self.active)
+        if not nodes:return
+        self.store_operands();self.remember()
+        done=skipped=0;row=0
+        while row<len(nodes):
+            if nodes[row].opcode==1:
+                try:
+                    row+=len(script.split_presentation(nodes,row));done+=1;continue
+                except ValueError:skipped+=1
+            row+=1
+        if not done:self._undo.pop();self._undo_state()
+        keep=self.selected or 0;self.selected=None;self.populate(keep)
+        self.status.setText(f'Separated {done} text + gesture action(s)'+(f'; {skipped} kept together (branch form, mid-line rest or another actor).' if skipped else '.'))
+
+    def play_music(self):
+        if self.selected is None:return
+        self.store_operands();c=self.drafts[self.active][self.selected]
+        if c.opcode!=11 or not c.operands[0]:return
+        if getattr(self,'music_job',None) and self.music_job.isRunning():return
+        try:
+            snd=self._snd()
+        except Exception as exc:
+            self.status.setText(str(exc));return
+        self.status.setText('Rendering the music cue…');self.music_button.setEnabled(False)
+        job=MusicDecode(snd,Path(self.panel.scene.overlay_path).stem,self.overlay,c.operands[1],self)
+        job.key=(self.active,self.selected)
+        self.music_job=job;job.decoded.connect(self._music_decoded);job.start()
+
+    def _music_decoded(self,result):
+        wav,note=result
+        self.music_button.setEnabled(True);self.status.setText(note)
+        if wav is None or getattr(self.music_job,'key',None)!=(self.active,self.selected):return
+        self.audio.setVolume(1.)
+        self.voice_buffer=QBuffer(self);self.voice_buffer.setData(QByteArray(wav))
+        self.voice_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        self.player.setSourceDevice(self.voice_buffer);self.player.play()
+
     def stop_preview(self):
-        self.viewport.stop()
+        self.viewport.reset()
 
     def delete(self):
         row=self.selected
@@ -907,13 +1617,7 @@ class EventEditor(QDialog):
         self.store_operands();c=self.drafts[self.active][self.selected]
         try:
             from game.event_preview import sound_samples
-            window=self.panel.window();store=getattr(window,'snd_edits',None)
-            if store and store.loaded():snd=store.rebuild()
-            else:
-                from formats.audio.voice import extract_file
-                image=getattr(window,'current_iso_path',None)
-                if not image:raise ValueError('Attach the source disc to preview sound effects.')
-                snd=extract_file(image,'TOMBA2.SND')
+            snd=self._snd()
             samples,rate,note=sound_samples(self.exe,self.overlay,snd,self.panel.scene.area_index,c.operands[0],c.operands[1])
             # Respect the command volume offset for a preview; the live
             # SPU envelope/mixer remains outside this waveform player.
@@ -930,7 +1634,7 @@ class EventEditor(QDialog):
             self.show_model_parts(None);return
         self.store_operands();command=self.drafts[self.active][self.selected]
         self.preview_tabs.setCurrentWidget(self.model_tab)
-        if command.opcode not in (1,30):
+        if command.opcode not in ANIMATION_OPS:
             self.show_model_parts(None);return
         key=self._animation_key_of(command)
         cached=getattr(self,'_animation_cache',{}).get(key)
@@ -949,29 +1653,75 @@ class EventEditor(QDialog):
         """Cache every result; play it if its action is (still) selected."""
         job=self.animation_job;key=getattr(job,'key',None)
         self.preview_model_button.setEnabled(True)
-        frames,note=result
+        frames,note=result[:2]
         if frames and key is not None:
             self._animation_cache=getattr(self,'_animation_cache',{});self._animation_cache[key]=result
         nodes=self.drafts.get(self.active,())
         current=nodes[self.selected] if self.selected is not None and self.selected<len(nodes) else None
-        if current is not None and current.opcode in (1,30) and self._animation_key_of(current)==key:
+        if current is not None and current.opcode in ANIMATION_OPS and self._animation_key_of(current)==key:
             self.animation_ready(result)
 
     def animation_ready(self,result,generation=None):
         self.preview_model_button.setEnabled(True)
         if not self.isVisible():return
-        frames,note=result;self.model_note.setText(note)
+        frames,note,loop=(tuple(result)+(None,))[:3];self.model_note.setText(note)
         if not frames:return
-        self.animation_frames=frames;self.animation_tick=0
+        self.animation_frames=frames;self.animation_tick=0;self.animation_loop=loop;self.animation_kind='actor'
         self.show_model_parts(frames[0],frame=True);self.animation_timer.start()
+
+    def preview_tomba_animation(self):
+        """The command's Tomba animation, on Tomba's model."""
+        if self.selected is None:return
+        self.store_operands();c=self.drafts[self.active][self.selected]
+        if c.opcode not in TOMBA_OPS:return
+        self.preview_tabs.setCurrentWidget(self.model_tab)
+        animation=c.operands[1] if c.opcode==55 else c.operands[2]
+        if animation<0:self.model_note.setText('Tomba animation is chosen at runtime.');return
+        cached=self._tomba_cache.get(animation)
+        if cached is not None:self.tomba_ready(cached);return
+        if self.tomba_job and self.tomba_job.isRunning():return
+        self.tomba_button.setEnabled(False);self.model_note.setText('Posing Tomba…')
+        job=TombaDecode(self.panel.scene,animation,self);job.animation=animation
+        self.tomba_job=job;job.decoded.connect(self._tomba_decoded);job.start()
+
+    def _tomba_decoded(self,result):
+        job=self.tomba_job;self.tomba_button.setEnabled(True)
+        if not self.isVisible():return
+        if isinstance(result,str):self.model_note.setText(result);return
+        self._tomba_cache[job.animation]=result
+        c=self.drafts[self.active][self.selected] if self.selected is not None else None
+        if c is not None and c.opcode in TOMBA_OPS and job.animation==(c.operands[1] if c.opcode==55 else c.operands[2]):
+            self.tomba_ready(result)
+
+    def tomba_ready(self,result):
+        self.animation_timer.stop()
+        viewer=self._model_view()
+        viewer.model_data=result['model'];viewer.hidden_groups=set(result['hidden'])
+        viewer.pose_first_group=0;viewer.pose_spares=dict(result['spares'])
+        viewer.pose=None;viewer.prepare_buffers()
+        viewer.set_pose(result['frames'][0],result['pivots']);viewer.frame_model()
+        self.sprite_preview.clear();self.model_note.setText(result['note'])
+        self.animation_frames=result['frames'];self.animation_tick=0;self.animation_loop=result['loop']
+        self.animation_kind='tomba';self._tomba_pivots=result['pivots']
+        self.animation_timer.start()
+
+    def _model_view(self):
+        if not self._vram_set:
+            self.model_viewer.set_vram(self.panel.viewer.vram_raw_bytes,self.panel.viewer.vram_qimage)
+            self._vram_set=True
+        return self.model_viewer
 
     def advance_animation(self):
         if not self.animation_frames:return
-        # Once, like every other preview; Play runs it again.
+        # Once, like every other preview - unless Autoplay is on and the
+        # clip loops, when it plays on from its loop point as in game.
         if self.animation_tick+1>=len(self.animation_frames):
-            self.animation_timer.stop();return
-        self.animation_tick+=1
-        self.show_model_parts(self.animation_frames[self.animation_tick],frame=False)
+            if self.autoplay.isChecked() and self.animation_loop is not None:self.animation_tick=self.animation_loop
+            else:self.animation_timer.stop();return
+        else:self.animation_tick+=1
+        frame=self.animation_frames[self.animation_tick]
+        if self.animation_kind=='tomba':self.model_viewer.set_pose(frame,self._tomba_pivots)
+        else:self.show_model_parts(frame,frame=False)
 
     def show_model_parts(self,parts,frame=True):
         from gui.level.level_scene import LevelScene,Instance
@@ -1007,22 +1757,30 @@ class EventEditor(QDialog):
                         self.model_note.setText('This entity uses native sprite artwork. The first authored frame is shown.');return
             self.model_note.setText('This entity has no resolved model geometry. Its native code remains available.');return
         self.sprite_preview.clear()
-        if self.model_viewer is None:
-            self.model_viewer=SMSTViewer(self.model_tab);self.model_viewer.spread=False
-            self.model_viewer.spread_action.setVisible(False)
-            self.model_viewer.set_vram(self.panel.viewer.vram_raw_bytes,self.panel.viewer.vram_qimage)
-            self.model_layout.addWidget(self.model_viewer,1)
+        self._model_view()
+        if frame:self.animation_kind='actor'
+        self.model_viewer.pose=None;self.model_viewer.pose_spares={}
         self.model_viewer.model_data=model;self.model_viewer.hidden_groups=set()
         self.model_viewer.prepare_buffers()
-        if frame:self.model_viewer.frame_model()
+        if frame:self.model_viewer.frame_model(heading=180.0)
         self.model_viewer.update()
 
     def done(self,result):
-        self.viewport.stop()
+        self.viewport.reset()
         self.preview_generation+=1
         self.animation_timer.stop();self.player.stop();super().done(result)
 
-    def apply(self):
+    def has_changes(self):
+        self.store_operands()
+        return (any(nodes!=self.originals.get(page) for page,nodes in self.drafts.items())
+                or (self.bank is not None and self.bank!=getattr(self,'bank_original',self.bank)))
+
+    def ok(self):
+        if self.save.isEnabled():self.apply(close=True)
+        elif not self.has_changes():self.accept()
+        else:self.status.setText('Tick “Apply shared script binding…” to write these edits, or Cancel to drop them.')
+
+    def apply(self,close=True):
         if not self.shared.isChecked() or game_build.current().name!='us-retail':
             self.status.setText('Shared edits must be enabled, and event writing currently requires US retail.');return
         self.store_operands()
@@ -1059,4 +1817,29 @@ class EventEditor(QDialog):
                 window._set_txtd_tree_item_state(self.bank_address,'edited');window._refresh_edit_status()
         except (ValueError,OSError) as exc:
             QMessageBox.warning(self,'Event changes were not applied',str(exc));return
-        self.accept()
+        if close:self.accept();return
+        self.reload_pages(data)
+
+    def reload_pages(self,data):
+        """After Apply: read the pages back from what was written, so the
+        editor shows (and later writes against) the new area file."""
+        self.viewport.stop()
+        self.overlay=data
+        if self.bank is not None:self.bank_original=deepcopy(self.bank)
+        page=self.active or 0
+        try:
+            bindings=script.discover(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+            bindings+=self._conversation_bindings(bindings)
+        except (ValueError,IndexError) as exc:
+            self.status.setText(f'Applied, but the pages could not be read back ({exc}). Reopen Events.');return
+        self.bindings=bindings;self.drafts.clear();self.originals.clear()
+        self._undo.clear();self._redo.clear();self._undo_state()
+        self.active=None;self.selected=None
+        self.pages.blockSignals(True)
+        while self.pages.count():self.pages.removeTab(0)
+        for n,binding in enumerate(bindings):self._add_page_tab(n,binding)
+        if not bindings:self.pages.addTab('Handler')
+        page=min(page,self.pages.count()-1);self.pages.setCurrentIndex(page)
+        self.pages.blockSignals(False)
+        self.page_changed(page)
+        self.status.setText('Applied. The pages show what was written.')

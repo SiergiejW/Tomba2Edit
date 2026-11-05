@@ -55,6 +55,28 @@ Verified on retail: Windmill (9 pages), Kainen (9), Mining Town miners
 through the retail interpreter in tests. Emulator playthrough of an edited
 conversation is still outstanding.
 
+## Text, gestures and conversation music
+
+**Show text** (0) and **Show text + gesture** (1) are both one command.
+Command 1 starts gesture `o[2]` with the line (blend 4) and returns the
+actor to its rest animation (+0x7B) when the line closes. Flag 0x4000 skips
+that return, 0x2000 returns mid-line once the gesture ends, and 0x8000
+gestures the current script actor. **Separate text and animation** (and
+**Separate all on page**) rewrite a command 1 as Play animation X ->
+Show text -> Play animation -1, which is "back to rest" in
+`f_RunScriptedActorAnimationCommand`. The split is refused for 0x2000,
+0x8000 and branch forms. The text may appear one tick earlier.
+
+**Conversation music** (11): operand 0 = 0 ends it (sound 0x7F, letterbox
+off, area track restarts). Otherwise it starts (letterbox mode = operand
+0) with cue operand 1 -> sound 0x72..0x78 (cue 0 = cue 1; 5 and 6 are both
+0x76) -> SEQ slot 4..7 in TOMBA2.SND, or 10..12 when the area's overlay
+fills them (A05, A0A-A0F, A0K, A0L). The preview renders the SEQ with
+`formats/audio/seq.py`. Many NPCs start their music from native code
+(`f_BeginScriptedInteractionAudio`) and only end it in the script. Area
+background music is not in events: `f_PlayAreaBackgroundTrack` reads
+the normal or purified per-area tables in MAIN.EXE.
+
 ## What the game already supports
 
 `f_RunActorScriptInterpreter` at US address `0x80041098` dispatches the low
@@ -125,3 +147,59 @@ and test the resulting conversation in an emulator. Expand to Charles and
 trolley pages after branch selection and external handler actions are
 represented correctly. A chronological runtime trace supplements this
 analysis; it cannot establish that unobserved quest branches do not exist.
+
+## Commands read from the decomp (2026-11-05)
+
+| Op | Callback | What it does |
+|----|----------|--------------|
+| 10 | f_WaitForTombaScriptedActionCommand | Waits until Tomba finishes his current move and is handed to the cutscene (0x800BF80E, set by his action states while the letterbox is on); gives up after 500 ticks. Bits 0/1 of +0x72 hold his X (+0x74) / height (+0x76) meanwhile. Keep it before anything that moves or animates Tomba. |
+| 40 mode 10 | f_RunScriptedMessageCommand | Shows nothing; waits for the message box already open to close. |
+| 18 / 19 | f_RunStartEventCommand / f_RunUpdateEventCommand | f_StartEvent / f_UpdateEvent on quest event +0x72 (the Events list: AP, notice). Waits for the notice unless +0x74 is non-zero. |
+| 55 | f_RunScriptedTombaAnimationCommand | Tomba animation +0x74 (f_SetTombaAnimation IDs = the verified Tomba bank), blend +0x76; mode 0 waits, 2 uses held state 0x26; extended: sound +0x68 on frame +0x66. |
+| 57 | f_StartSynchronizedActorAndTombaAnimations | Actor animation +0x74 and Tomba animation +0x76, blend 4. |
+| 58 | f_RunScriptedActorFaceTombaSequence | Tomba turns to face the actor; the actor turns toward Tomba 0x100 a tick (yaw = ratan2(actor depth - Tomba depth, Tomba X - actor X)); when Tomba is ready, mode != 2 starts the 57 pair, mode 0 waits for the actor animation. |
+| 22 | f_SetScriptedCameraFocusCommand | +0x72: 0 f_SetCameraMode(+0x74), 1 mode byte only, -1 restore. +0x76: 0 focus at (+0x64, +0x66, +0x68), 1 on Tomba 140 units up. |
+| 23 / 24 | camera angles / focus on Tomba | pitch 0x800E8076, yaw 0x800E8078 (4096 = 360), distance 0x800E8074. |
+
+Camera block 0x800E8008 (mode +0x64, focus +0x38); f_InitializeAreaCameraState 0x80078610,
+f_UpdateCameraController 0x8006EC44; eye/focus each frame at scratchpad 0x1F8000D0 / 0x1F8000DC.
+Tomba's position: 0x800E7EAC (X, height, depth, 16.16), scratchpad copy 0x1F800160.
+The editor's camera preview (event_preview.camera_path) runs those callbacks and the
+camera controller in the emulator; Tomba's position comes from the page (54, 49, the 16
+interaction offset: the actor's anchor is Tomba minus that offset) or is assumed in front.
+
+### Conversations (Request / Run conversation, ops 13 / 14)
+
+f_ConfigureScriptActorConversation(handler, request, flags) (0x80070724; offset form
+0x8007074C) stores the handler on the current script actor (+0xBF), the request in
+0x800BF830, the flags in 0x800BF831. f_UpdateScriptActorConversationState dispatches:
+
+- handler 0 (0x800713F8): loads script `table[request]` through the 0x80040CDC loader with
+  animation table 0x8001B860; `table` is the word at 0x800A4BBC[area byte 0x800BF870] - only
+  A00 has one (0x80149E50, nine slots; slot 1 is filled at run time). The editor shows these
+  as pages `C<request>`; they are written back by relocating the script and rewriting that
+  one table word (event_script._stage_table).
+- handler 1 (0x8007156C): no dialogue - walks the NPC to Tomba's stand point
+  (f_UpdateScriptedInteractionApproach); the page itself shows the text.
+- handler >= 10: area code, `handler - 10` into A00 0x80149E74 or A07 0x80132E78.
+
+Without flag 0x04 the stand point is a fixed default: 0xBE out at one of four angles
+(flags & 3: 0, 0x800, 0xC00, 0x400; +0x200 with 0x20). With it, +0x64/+0x66/+0x68.
+Area trigger code (f_UpdateFishermensTownProgressTriggers) also requests conversations on
+the area script actor f_HandleAreaScriptActor (0x80071A3C), which is not placed: the Level
+Editor's "Area scripts..." opens all of the area's conversation pages on it.
+
+Presentation (op 1) resource bit 0x8000: the gesture plays on src_CurrentScriptActor
+rather than the entity running the page.
+
+### Zippo = the area script actor (2026-11-05, not simulated yet)
+
+f_HandleAreaScriptActor (0x80071A3C) is Zippo: f_InitializeAreaScriptActor builds a 12-part
+model from area file 16 (layout 0x800A4BC8), ANMP file 17 at +0x3C, animation table 0x8001B860,
+scale 0x200, and makes itself src_CurrentScriptActor. Files 16/17 are Zippo in almost every
+area. It is drawn only while a conversation is active (pickup_phase != 0); conversation state
+1 places it beside Tomba (FUN_8007091C/FUN_80070BD0, default offset 0xBE / 0x50 at angle
+flags & 3). So handler-1 conversations bring Zippo to Tomba, and presentation bit 0x8000
+gestures are Zippo's. Each area's spawn table holds the handler (A00 word at 0x80147E20).
+Next: allocate it via ALLOCATE_ACTOR with that handler in actor_sim, run its init, then pose
+it like NPC previews (World._parts) and add it to the simulation preview.

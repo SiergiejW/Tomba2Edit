@@ -10,11 +10,16 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None):
     No level-wide recording or guessed model/animation pairing is used.
     Returned parts can be posed with the level viewer's existing assembly.
     """
-    if command.opcode not in (1,30):raise ValueError('This action has no decoded skeletal animation preview.')
+    if command.opcode not in (1,30,57,58):raise ValueError('This action has no decoded skeletal animation preview.')
     values=command.operands
     if command.opcode==30:
         if values[0]&1:raise ValueError('This action targets the current script actor, which is not resolved to the selected entity.')
         animation,mode=values[1],values[2]
+    elif command.opcode in (57,58):
+        # f_StartSynchronizedActorAndTombaAnimations: actor +0x74, blend 4.
+        if values[0]&0x8000:raise ValueError('This action animates the current script actor, which is not resolved to the selected entity.')
+        if command.opcode==58 and values[0]&0x7fff==2:raise ValueError('Turn-only form: no animation is started.')
+        animation,mode=values[1],4
     else:
         if values[0]&0x8000:raise ValueError('This presentation animates another script actor; its target is unresolved.')
         animation,mode=values[2],4
@@ -66,7 +71,122 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None):
         frames.append(parts)
         world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
     eased=f'; in game it eases in over {mode} ticks from the previous pose' if mode else ''
-    return frames,f'Animation {animation}: {len(frames)} native ticks at 30 Hz'+(' (preview capped)' if clip.duration>max_ticks else '')+eased
+    loop=clip.starts[clip.loop_start] if clip.loop_start is not None and clip.duration<=max_ticks else None
+    looping=f'; loops from tick {loop}' if loop is not None else ''
+    return frames,f'Animation {animation}: {len(frames)} native ticks at 30 Hz'+(' (preview capped)' if clip.duration>max_ticks else '')+looping+eased,loop
+
+TOMBA_BONES = 0x800A3FA8   # 17-bone tree (parent, x, y, z)
+
+def tomba_frames(scene,animation,max_ticks=240):
+    """Tomba's model and one scripted animation, posed from the verified
+    US table (f_SetTombaAnimation's IDs). Returns a dict for SMSTViewer:
+    model (standing), pivots, frames (transforms per tick), hidden groups,
+    spares, loop tick, note."""
+    from game import game_build
+    if game_build.current().name!='us-retail':raise ValueError('Tomba animation previews require the verified US table.')
+    from formats.animation import anmp_parser,sequences,skeleton_tree,game_rest
+    from formats.animation.anmp_skeleton import pose_transforms,SPARES
+    from formats.models.smst_parser import load_smst
+    exe=Path(scene.exe_path).read_bytes();base=struct.unpack_from('<I',exe,24)[0]
+    where=getattr(scene,'resident',{}).get(4)
+    if not where:raise ValueError('Tomba’s animation file (resident 4) is not in this scene.')
+    start,(offset,size)=where
+    anmp=anmp_parser.load_anmp(scene.dat_path,start+offset,size)
+    bank=sequences.tomba_bank([('MAIN.EXE',exe)],anmp,4)
+    if bank is None:raise ValueError('Unverified executable or ANMP; Tomba’s animations are not guessed.')
+    clip=next((c for c in bank.clips if c.id==animation&0x7fff),None)
+    if clip is None:raise ValueError(f'Tomba has no animation {animation&0x7fff}.')
+    idx=getattr(scene,'idx_path',str(Path(scene.dat_path).with_name('TOMBA2.IDX')))
+    trail=actor_sim.World._trail(idx,1)
+    model=load_smst(scene.dat_path,trail[0],trail[1]-trail[0])
+    bones=skeleton_tree.read_table(exe,TOMBA_BONES-base+0x800,17)
+    hierarchy=game_rest.hierarchy(bones)
+    spares=dict(SPARES.get(17,{}))
+    packed=model['vertices']
+    vertices,pivots=game_rest.rest_pose(model,bones,spares)
+    model=dict(model,vertices=vertices.tolist())
+    poses={f.index:f for f in anmp.frames}
+    scales=sequences.scale_states(clip,poses)
+    frames=[]
+    for tick in range(min(clip.duration,max_ticks)):
+        row,nxt,amount=clip.sample(tick)
+        rotations,translation,_=anmp_parser.blend(poses[clip.steps[row].pose],
+            poses[clip.steps[nxt].pose] if nxt is not None else None,amount)
+        frames.append(pose_transforms(rotations,translation,hierarchy,pivots,scales=scales[row]))
+    # Each bone draws one group; the clip picks the alternate head/hands.
+    drawn={clip.parts.get(b,b) for b in range(17)}
+    hidden=set(range(len(model['groups'])))-drawn
+    shown={g:b for g,b in spares.items() if g in drawn}
+    loop=clip.starts[clip.loop_start] if clip.loop_start is not None and clip.duration<=max_ticks else None
+    name=f' ({clip.name})' if clip.name else ''
+    note=(f'Tomba animation 0x{clip.id:02X}{name}: {len(frames)} ticks at 30 Hz'
+          +(' (preview capped)' if clip.duration>max_ticks else '')
+          +(f'; loops from tick {loop}' if loop is not None else '; ends on its last pose'))
+    by_bone=[clip.parts.get(b,b) for b in range(17)]
+    raw=np.array(packed,dtype=np.float64)
+    groups=model['groups']
+    def lowest(pose):
+        return min(float(((raw[g.first_vertex:g.first_vertex+g.vertex_count]@pose[b][0].T)+pose[b][1])[:,1].min())
+                   for b,g in ((b,groups[i]) for b,i in enumerate(by_bone)) if g.vertex_count)
+    return dict(model=model,pivots=pivots,frames=frames,hidden=hidden,spares=shown,loop=loop,note=note,
+                by_bone=by_bone,feet=lowest(frames[0]))
+
+# The camera, run by the game's own code.
+CAMERA_BLOCK = 0x800E8008
+CAMERA_MODE = CAMERA_BLOCK+0x64
+CAMERA_INIT, CAMERA_UPDATE = 0x80078610, 0x8006EC44
+CAMERA_EYE, CAMERA_FOCUS = 0x1F8000D0, 0x1F8000DC
+TOMBA_POS, TOMBA_SCRATCH = actor_sim.PLAYER+0x2C, 0x1F800160
+COMMAND_BLOCK = 0x80150000          # free RAM (0x8014E944..0x80157002)
+CAMERA_OPS = frozenset((21,22,23,24,25))
+
+def _s32(v):return v-(1<<32) if v&0x80000000 else v
+
+def camera_path(scene,commands,upto,tomba,ticks=90):
+    """[(eye, focus), ...] per tick in game axes, from running the game's
+    camera: rows before `upto` that touch the camera run through their own
+    callbacks and settle, then row `upto` runs and is recorded. `tomba` is
+    where Tomba is taken to stand (x, height, depth)."""
+    idx=getattr(scene,'idx_path',str(Path(scene.dat_path).with_name('TOMBA2.IDX')))
+    world=actor_sim.World(scene.exe_path,scene.overlay_path,scene.dat_path,idx,scene.chunk_index,scene.area_index)
+    world.static_edit=True;world.start_workers()
+    mem,cpu=world.mem,world.cpu
+    exe=Path(scene.exe_path).read_bytes();base=struct.unpack_from('<I',exe,24)[0]
+    for k,v in enumerate(tomba):
+        mem.write(TOMBA_POS+4*k,4,(int(v)<<16)&0xffffffff)
+        mem.write(TOMBA_SCRATCH+2*k,2,int(v)&0xffff)
+    for i in range(0,0x98,4):mem.write(CAMERA_BLOCK+i,4,0)
+    cpu.call(CAMERA_INIT,(),sp=actor_sim.STACK)
+    def tick():
+        cpu.call(CAMERA_UPDATE,(),sp=actor_sim.STACK)
+        read=lambda at:tuple(_s32(mem.read(at+4*k,4))/65536 for k in range(3))
+        return read(CAMERA_EYE),read(CAMERA_FOCUS)
+    def run(c):
+        """Call the command's callback the way the script runner does."""
+        for i in range(0,0x100,4):mem.write(COMMAND_BLOCK+i,4,0)
+        for n,b in enumerate(c.raw):mem.write(COMMAND_BLOCK+0xC0+n,1,b)
+        mem.write(COMMAND_BLOCK+0x6C,4,COMMAND_BLOCK+0xC0)
+        o=c.operands
+        for k,v in enumerate(o[:3]):mem.write(COMMAND_BLOCK+0x72+2*k,2,v&0xffff)
+        for k,v in enumerate(o[3:]):mem.write(COMMAND_BLOCK+0x64+2*k,2,v&0xffff)
+        callback=struct.unpack_from('<I',exe,event_script.CALLBACKS-base+0x800+c.opcode*4)[0]
+        cpu.call(callback,(COMMAND_BLOCK,),sp=actor_sim.STACK)
+        if c.opcode==54:      # Tomba moved: keep the scratchpad copy in step
+            for k in range(3):mem.write(TOMBA_SCRATCH+2*k,2,mem.read(TOMBA_POS+4*k+2,2))
+        return cpu.r[2]
+    for _ in range(3):tick()
+    for c in commands[:upto]:
+        if c.opcode in CAMERA_OPS or c.opcode==54:
+            run(c)
+            for _ in range(30):tick()
+    selected=commands[upto]
+    path=[]
+    done=run(selected) if selected.opcode in CAMERA_OPS or selected.opcode==54 else True
+    for n in range(ticks):
+        path.append(tick())
+        if not done and selected.opcode==21:done=run(selected)   # transform: polled until finished
+    mode=mem.read(CAMERA_MODE,1)
+    return path,f'Camera mode {mode&0x3f} after this row; {ticks} ticks of the game’s own camera code.'
 
 def native_code(exe,overlay,command,count=64):
     read=event_script.reader(exe,overlay)
@@ -167,3 +287,51 @@ def trace(commands,upto,start):
             ticks=duration(c)
             if ticks:steps.append((row,'wait',pos.copy(),pos.copy(),ticks))
     return steps
+
+
+def music_cue(snd, overlay_name, overlay, cue):
+    """(wav bytes, note) for a conversation-music cue, as this area plays it.
+
+    The cue picks a sound ID (f_BeginScriptedInteractionAudio); sounds
+    0x72-0x75 open resident SEQ slots 4-7 in TOMBA2.SND, 0x76-0x78 slots
+    10-12, which an area fills with SEQs of its own overlay."""
+    from formats.audio import seq
+    from formats.audio.xa import wav_bytes_raw
+    sound = event_script.music_sound(cue)
+    if sound is None:
+        raise ValueError(f'Cue {cue} is outside the game\'s cue table (1-8).')
+    slot = event_script.music_slot(sound)
+    if slot is not None and slot < 10:
+        at = dict(seq.resident(snd)).get(slot)
+        data, bank, where = snd, seq.MUSIC_BANK, 'TOMBA2.SND'
+    else:
+        at = dict((k, v) for k, v in seq.overlay(overlay_name, overlay) if k is not None).get(slot)
+        data, bank, where = overlay, seq.bank_for(overlay_name), overlay_name
+    if at is None:
+        raise ValueError(f'Sound 0x{sound:02X} opens SEQ slot {slot}, which {overlay_name} does not fill - '
+                         'in this area the cue plays nothing new.')
+    stereo, _used = seq.render(data, at, snd, bank)
+    if not len(stereo):
+        raise ValueError('The SEQ rendered no notes.')
+    return (wav_bytes_raw(seq.pcm(stereo), seq.RATE, 2),
+            f'Cue {cue}: sound 0x{sound:02X}, SEQ slot {slot} from {where} '
+            f'({len(stereo) / seq.RATE:.1f} s, loops played {seq.LOOP_PASSES}x).')
+
+
+
+def tomba_pieces(result, frame, position, yaw, lift=0.0):
+    """Per bone (m, t) in game axes, the way a Posed assembly hands them to
+    LevelScene.positions: Tomba at `position` (game axes) turned to `yaw`
+    (4096 = 360), feet `lift` view units up. A packed group vertex v lands
+    at (v @ R.T + offset) turned and moved - the pose's own convention."""
+    import math
+    angle = math.radians(yaw * 360 / 4096)
+    cos, sin = math.cos(angle), math.sin(angle)
+    turn = np.array([[cos, 0.0, -sin], [0.0, 1.0, 0.0], [sin, 0.0, cos]])
+    axes = np.array([[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])   # VIEW_AXES
+    x, h, d = position
+    at = np.array((d, -h + lift, x))                                        # view_point
+    pieces = []
+    for rotation, offset in result['frames'][frame][:17]:
+        pieces.append((axes @ (turn @ rotation) @ axes, axes @ (turn @ offset + at)))
+    return pieces

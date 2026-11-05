@@ -9,6 +9,9 @@ App-wide visual themes, switchable from Settings > Theme.
   this tool looked like before any theme system existed.
 - "bright": the same native style, with an explicit light palette swapped
   in, otherwise identical to "dark".
+- "grey": Serious Editor classic - Qt's bevelled "Windows" style in the
+  Windows system colours, Microsoft Sans Serif 8pt, flat toolbars, white
+  menu bar, sunken status panes. Default.
 
 The two modern themes take every colour that isn't grey from ACCENT below:
 change it and the tabs, focus rings, selections, ticks and underlines all
@@ -36,16 +39,20 @@ import os
 import tempfile
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPalette, QPen
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPen
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
-THEMES = ("modern", "modern_bright", "modern_pink", "dark", "bright")
-DEFAULT_THEME = "dark"
-LABELS = {"dark": "Classic Dark (default)", "bright": "Classic Bright",
+THEMES = ("grey", "modern", "modern_bright", "modern_pink", "dark", "bright")
+DEFAULT_THEME = "grey"
+LABELS = {"grey": "Grey (default)", "dark": "Classic Dark",
+          "bright": "Classic Bright",
           "modern": "Modern Dark", "modern_bright": "Modern Bright",
           "modern_pink": "Strawberry Custard"}
 
 _native_palette = None
+_native_style = None
+_native_font = None
+_style_in_use = None
 _current_theme = DEFAULT_THEME
 
 # Object names the stylesheets below key on.
@@ -124,6 +131,224 @@ QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
 }
 """
 
+# --- grey (Serious Editor) ------------------------------------------------
+
+# Serious Editor (Croteam's MFC level editor) as it runs today: classic
+# 3D controls in the Windows system colours (COLOR_3DFACE etc.), the MS Sans
+# Serif dialog font, flat toolbars, a white menu bar, sunken status panes.
+# Colours sampled from a screenshot of it.
+_GREY = {
+    "face": "#f0f0f0",      # COLOR_3DFACE
+    "light": "#ffffff",     # COLOR_3DHILIGHT: bevel top-left
+    "midlight": "#e3e3e3",  # COLOR_3DLIGHT
+    "dark": "#a0a0a0",      # COLOR_3DSHADOW: bevel bottom-right, grey text
+    "shadow": "#696969",    # COLOR_3DDKSHADOW
+    "select": "#0078d7",    # COLOR_HIGHLIGHT
+    "tip": "#ffffe1",       # COLOR_INFOBK
+    "menu_hover": "#91c9f7",
+    "bar_hover": "#e5f3ff",
+    "bar_hover_line": "#cce8ff",
+}
+# MS Sans Serif's TrueType cut; what MFC dialogs get on current Windows.
+_GREY_FONT = ("Microsoft Sans Serif", 8)
+_GREY_MENU_FONT = '"Segoe UI"'
+
+_SUNKEN = f"{_GREY['dark']} {_GREY['light']} {_GREY['light']} {_GREY['dark']}"
+_RAISED = f"{_GREY['light']} {_GREY['dark']} {_GREY['dark']} {_GREY['light']}"
+
+# Bevels, tree +/- boxes, tabs and frames come from Qt's "Windows" style;
+# this covers what it can't: menus, flat toolbars, status panes, captions.
+_GREY_QSS = f"""
+QMenuBar {{
+    background-color: #ffffff;
+    font-family: {_GREY_MENU_FONT};
+    font-size: 9pt;
+}}
+QMenuBar::item {{
+    background-color: transparent;
+    border: 1px solid transparent;
+    padding: 2px 6px;
+    margin: 0px;
+}}
+QMenuBar::item:selected {{
+    background-color: {_GREY["bar_hover"]};
+    border-color: {_GREY["bar_hover_line"]};
+}}
+QMenuBar::item:pressed {{
+    background-color: {_GREY["bar_hover_line"]};
+    border-color: #99d1ff;
+}}
+QMenu {{
+    background-color: #f2f2f2;
+    border: 1px solid #cccccc;
+    font-family: {_GREY_MENU_FONT};
+    font-size: 9pt;
+    padding: 2px;
+}}
+QMenu::item {{
+    background: transparent;
+    padding: 3px 24px 3px 26px;
+}}
+QMenu::item:selected {{
+    background-color: {_GREY["menu_hover"]};
+    color: #000000;
+}}
+QMenu::item:disabled {{
+    color: #6d6d6d;
+}}
+QMenu::separator {{
+    height: 1px;
+    background: #d7d7d7;
+    margin: 3px 2px 3px 26px;
+}}
+QToolTip {{
+    background-color: {_GREY["tip"]};
+    color: #000000;
+    border: 1px solid #000000;
+    padding: 1px 2px;
+}}
+
+/* flat MFC toolbars: bare icons, raised on hover, sunken when on */
+QToolBar {{
+    background-color: {_GREY["face"]};
+    border: none;
+    border-bottom: 1px solid {_GREY["dark"]};
+    padding: 1px 2px;
+    spacing: 0px;
+}}
+QToolBar::separator {{
+    width: 2px;
+    margin: 2px 3px;
+    border-left: 1px solid {_GREY["dark"]};
+    border-right: 1px solid {_GREY["light"]};
+}}
+QToolBar QToolButton {{
+    background-color: transparent;
+    color: #000000;
+    border: 1px solid transparent;
+    border-radius: 0px;
+    padding: 2px 3px;
+    margin: 0px;
+}}
+QToolBar QToolButton:hover {{
+    border-color: {_RAISED};
+}}
+QToolBar QToolButton:pressed, QToolBar QToolButton:checked {{
+    background-color: #fafafa;
+    border-color: {_SUNKEN};
+    padding: 3px 2px 1px 4px;
+}}
+QToolBar QToolButton:disabled {{
+    color: {_GREY["dark"]};
+}}
+QToolBar#viewerToolbar {{
+    background-color: {_GREY["face"]};
+    border-bottom: 1px solid {_GREY["dark"]};
+}}
+QLabel#viewerOverlay {{
+    background-color: {_GREY["face"]};
+    color: #000000;
+    border: 1px solid;
+    border-color: {_SUNKEN};
+    padding: 2px 4px;
+}}
+QLabel#panelTitle {{
+    color: #000000;
+    padding: 3px 2px 1px 2px;
+}}
+
+/* status bar: message bare on the left, sunken panes on the right */
+QStatusBar {{
+    background-color: {_GREY["face"]};
+}}
+QStatusBar::item {{
+    border: 1px solid;
+    border-color: {_SUNKEN};
+}}
+QStatusBar QLabel {{
+    padding: 0px 3px;
+}}
+"""
+
+
+def _grey_palette():
+    g = _GREY
+    p = QPalette()
+    R = QPalette.ColorRole
+    for role, colour in ((R.Window, g["face"]), (R.Button, g["face"]),
+                         (R.WindowText, "#000000"), (R.ButtonText, "#000000"),
+                         (R.Text, "#000000"), (R.Base, "#ffffff"),
+                         (R.AlternateBase, "#f7f7f7"),
+                         (R.Light, g["light"]), (R.Midlight, g["midlight"]),
+                         (R.Mid, g["dark"]), (R.Dark, g["dark"]),
+                         (R.Shadow, g["shadow"]),
+                         (R.Highlight, g["select"]), (R.HighlightedText, "#ffffff"),
+                         (R.ToolTipBase, g["tip"]), (R.ToolTipText, "#000000"),
+                         (R.PlaceholderText, "#6d6d6d"),
+                         (R.Link, "#0066cc"), (R.LinkVisited, "#800080")):
+        p.setColor(role, QColor(colour))
+    D = QPalette.ColorGroup.Disabled
+    # Classic disabled text: 3D shadow grey with a white emboss.
+    for role in (R.Text, R.WindowText, R.ButtonText):
+        p.setColor(D, role, QColor(g["dark"]))
+    p.setColor(D, R.Base, QColor(g["face"]))
+    p.setColor(QPalette.ColorGroup.Inactive, R.Highlight, QColor(g["select"]))
+    p.setColor(QPalette.ColorGroup.Inactive, R.HighlightedText, QColor("#ffffff"))
+    return p
+
+
+_classic = None
+
+
+def _classic_style():
+    """Qt's "Windows" style, but a drop-down list's field is white like an
+    edit box (Windows draws CBS_DROPDOWNLIST that way); Qt fills it with the
+    button face. The arrow button keeps the face."""
+    global _classic
+    from PyQt6.QtWidgets import QProxyStyle, QStyle, QStyleOptionComboBox
+
+    class ClassicStyle(QProxyStyle):
+        def drawComplexControl(self, control, option, painter, widget=None):
+            if control == QStyle.ComplexControl.CC_ComboBox and not option.editable:
+                field = QStyleOptionComboBox(option)
+                field.palette = QPalette(option.palette)
+                for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive,
+                              QPalette.ColorGroup.Disabled):
+                    field.palette.setColor(group, QPalette.ColorRole.Button,
+                                           option.palette.color(group, QPalette.ColorRole.Base))
+                field.subControls = option.subControls & ~QStyle.SubControl.SC_ComboBoxArrow
+                super().drawComplexControl(control, field, painter, widget)
+                arrow = QStyleOptionComboBox(option)
+                arrow.subControls = option.subControls & QStyle.SubControl.SC_ComboBoxArrow
+                super().drawComplexControl(control, arrow, painter, widget)
+                return
+            super().drawComplexControl(control, option, painter, widget)
+
+    # Kept here: Qt owns the C++ side, the overrides live on this object.
+    _classic = ClassicStyle(QStyleFactory.create("windows"))
+    return _classic
+
+
+def _grey_toolbars(app, on):
+    """Under grey, text-under-icon toolbars become one compact MFC row:
+    16px icon, caption beside it. Restored when leaving grey."""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtWidgets import QToolBar
+    for bar in app.allWidgets():
+        if not isinstance(bar, QToolBar) or bar.objectName() == VIEWER_TOOLBAR:
+            continue
+        saved = bar.property("_greySaved")
+        if on and saved is None:
+            if bar.toolButtonStyle() != Qt.ToolButtonStyle.ToolButtonTextUnderIcon:
+                continue
+            bar.setProperty("_greySaved", (bar.toolButtonStyle(), QSize(bar.iconSize())))
+            bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            bar.setIconSize(QSize(16, 16))
+        elif not on and saved is not None:
+            bar.setToolButtonStyle(saved[0])
+            bar.setIconSize(saved[1])
+            bar.setProperty("_greySaved", None)
+
 # --- modern ---------------------------------------------------------------
 
 # The greys of each modern theme, by what they are for.
@@ -171,22 +396,39 @@ _GREYS = {
     },
 }
 
+# Not a modern theme (no modern stylesheet), but colours() answers for it
+# so hand-painted widgets - piano roll, waveform - match it.
+_OTHER_COLOURS = {
+    "grey": {
+        "ground": "#f0f0f0",
+        "panel": "#ffffff",
+        "card": "#f0f0f0",
+        "raised": "#f0f0f0",
+        "hover": "#e5f3ff",
+        "line": "#a0a0a0",
+        "line_strong": "#696969",
+        "text": "#000000",
+        "dim": "#6d6d6d",
+        "faint": "#a0a0a0",
+    },
+}
+
 # A theme may have an accent of its own; the rest take ACCENT above.
-_ACCENTS = {"modern_pink": "#e2447d"}
+_ACCENTS = {"modern_pink": "#e2447d", "grey": "#0078d7"}
 # The second colour, where a theme has one worth using - see
 # colours()["accent2"]. Falls back to the accent itself, so anything
 # painting with it works under every theme without asking which.
 _ACCENTS_2 = {"modern_pink": "#f5b31a"}
 
-# A modern 3D view's ground, per theme.
+# A 3D view's ground, per theme.
 _VIEW_GROUND = {"modern": (0.0, 0.0, 0.0), "modern_bright": (0.9, 0.9, 0.92),
-                "modern_pink": (0.94, 0.9, 0.92)}
+                "modern_pink": (0.94, 0.9, 0.92), "grey": (0.3, 0.3, 0.3)}
 
-# Which modern themes put dark text on a light ground. Asked by name
+# Which themes in colours() put dark text on a light ground. Asked by name
 # rather than by measuring, because it also decides which way round the
 # shading goes in things this module does not paint.
 _BRIGHT_MODERN = {"modern": False, "modern_bright": True,
-                  "modern_pink": True}
+                  "modern_pink": True, "grey": True}
 
 
 def _mix(a, b, t):
@@ -208,9 +450,9 @@ def colours(name=None):
     ACCENT implies: a hover shade, a selection tint, and text that reads on
     it. The current theme's by default; "modern"'s under a classic one."""
     name = name or _current_theme
-    if name not in _GREYS:
+    if name not in _GREYS and name not in _OTHER_COLOURS:
         name = "modern"
-    c = dict(_GREYS[name])
+    c = dict(_GREYS.get(name) or _OTHER_COLOURS[name])
     wanted = _ACCENTS.get(name, ACCENT)
     accent = QColor(wanted) if QColor(wanted).isValid() else QColor("#f28c28")
     bright = _BRIGHT_MODERN.get(name, False)
@@ -953,6 +1195,10 @@ def is_bright():
         _current_theme, False)
 
 
+def is_grey():
+    return _current_theme == "grey"
+
+
 def roll_colours():
     """{role: QColor-able string} for the piano roll.
 
@@ -969,7 +1215,8 @@ def roll_colours():
     bright = is_bright()
     # A modern theme paints the roll in its own colours; a classic one
     # borrows the modern theme of the same brightness.
-    c = colours(_current_theme if _current_theme in _GREYS
+    own = _current_theme in _GREYS or _current_theme in _OTHER_COLOURS
+    c = colours(_current_theme if own
                 else ("modern_bright" if bright else "modern"))
     ground = _mix(c["panel"], c["text"], 0.03)
     return {
@@ -1008,12 +1255,27 @@ def apply_theme(app: QApplication, name: str):
     """Switches the app's palette and stylesheet. Call once at startup with
     the saved/default theme, and again whenever the user picks a
     different one from Settings > Theme."""
-    global _native_palette, _current_theme
+    global _native_palette, _native_style, _native_font, _current_theme
+    global _style_in_use
     if _native_palette is None:
         _native_palette = QPalette(app.palette())
+        _native_style = app.style().name() or "windows11"
+        _style_in_use = _native_style
+        _native_font = QFont(app.font())
 
     _current_theme = name if name in THEMES else DEFAULT_THEME
-    if is_modern():
+    # Style before palette: setStyle can reset the palette.
+    # Compared by our own record: under a stylesheet app.style() is the
+    # stylesheet wrapper, whose name() is empty.
+    want_style = "windows" if is_grey() else _native_style
+    if _style_in_use != want_style:
+        _style_in_use = want_style
+        app.setStyle(_classic_style() if is_grey() else QStyleFactory.create(want_style))
+    app.setFont(QFont(*_GREY_FONT) if is_grey() else _native_font)
+    if is_grey():
+        app.setPalette(_grey_palette())
+        app.setStyleSheet(_GREY_QSS)
+    elif is_modern():
         app.setPalette(_modern_palette(_current_theme))
         app.setStyleSheet(_modern_qss(_current_theme))
     elif _current_theme == "bright":
@@ -1022,6 +1284,14 @@ def apply_theme(app: QApplication, name: str):
     else:
         app.setPalette(_native_palette)
         app.setStyleSheet(_BASE_QSS)
+    _grey_toolbars(app, is_grey())
+    if is_grey():
+        # A style switch under a stylesheet stamps a palette onto existing
+        # buttons with white disabled colours. Nothing here sets a widget
+        # palette itself, so drop them and let the app palette through.
+        for widget in app.allWidgets():
+            if widget.testAttribute(Qt.WidgetAttribute.WA_SetPalette):
+                widget.setPalette(QPalette())
     # Glyph buttons are painted in the theme's colours; custom-painted
     # widgets (the level list's dots, the 3D views' grounds) read the theme
     # when they paint - so repaint both.

@@ -19,13 +19,13 @@ EVENT_END = pickup_edit.WINDOW_END
 # Header bits: 0x2000 extended operands, 0x4000 branch pointer, 0x8000 end.
 EXTENDED, BRANCH, END = 0x2000, 0x4000, 0x8000
 LABELS = {
- 0: 'Spawn presentation', 1: 'Animate presentation', 2: 'Skip presentation',
+ 0: 'Show text', 1: 'Show text + gesture', 2: 'Skip presentation',
  3: 'End presentation', 4: 'Set progress and wait', 5: 'Wait (timer)',
  6: 'Wait for progress', 7: 'Wait for animation', 8: 'Wait for camera',
- 9: 'Wait for conversation progress', 10: 'Wait for player action',
- 11: 'Interaction audio', 12: 'Change progress', 13: 'Request conversation',
+ 9: 'Wait for conversation progress', 10: 'Wait for Tomba (cutscene control)',
+ 11: 'Conversation music', 12: 'Change progress', 13: 'Request conversation',
  14: 'Run conversation', 15: 'Script actor mode', 16: 'Interaction offset',
- 17: 'Set position', 18: 'Start event', 19: 'Update event', 20: 'Clear item use',
+ 17: 'Set position', 18: 'Start quest event', 19: 'Complete quest event', 20: 'Clear item use',
  21: 'Camera transform', 22: 'Camera focus', 23: 'Camera angles',
  24: 'Focus camera on Tomba', 25: 'Camera control', 26: 'Mirror orientation',
  27: 'Apply orientation', 28: 'Change model part', 29: 'Model resources',
@@ -52,7 +52,7 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
  22: ('Mode op (0 set, 1 assign, -1 restore)', 'Camera mode', 'Focus (0 point, 1 Tomba)',
       'Focus X', 'Focus height', 'Focus depth', 'Unused'),
  23: ('Camera control 1', 'Camera control 2', 'Camera control 3'),
- 30: ('Actor / wait flags', 'Animation ID (-1 = actor default)', 'Model mode'),
+ 30: ('Actor / wait flags', 'Animation ID (-1 = back to rest)', 'Blend ticks (0 = cut)'),
  31: ('Target mode (0x8000 = script actor)', 'Max step per tick', 'Angle (4096 = 360°)'),
  35: ('Axis (0 X, 1 height, 2 depth)', 'Terrain probe offset', 'Target coordinate',
       'Speed (1/256 unit per tick)', 'Motion sound', 'Sound frame', 'Unused'),
@@ -64,15 +64,51 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
  44: (CONDITION, 'Event index', 'Expected value'),
  47: ('Playback mode', 'Voice ID', 'Countdown'),
  46: ('Sound ID', 'Pitch offset', 'Volume offset'),
+ 11: ('Mode (0 = end, else start + letterbox mode)', 'Cue (1-8)', 'Unused'),
  49: ('Mode (2 = camera-relative)', 'Axis (0 X, else depth)', 'Target coordinate'),
- 62: ('Unused', 'Code address low', 'Code address high')}
+ 62: ('Unused', 'Code address low', 'Code address high'),
+ # Decomp: f_WaitForTombaScriptedActionCommand - waits for Tomba to be handed
+ # to the cutscene (0x800BF80E), at most 500 ticks; bits pin his X / height.
+ 10: ('Hold (bit 0 = X, bit 1 = height)', 'Held X', 'Held height'),
+ 16: ('Offset X', 'Offset height', 'Offset depth'),
+ # f_RunConversationRequestCommand: the NPC's native conversation handler
+ # shows the dialogue; flag 0x04 = explicit offset (actor = Tomba - offset).
+ 13: ('Conversation handler (0x8000 = do not wait)', 'Request ID', 'Flags (0x04 = Tomba offset)',
+      'Tomba offset X', 'Tomba offset height', 'Tomba offset depth', 'Unused'),
+ 18: ('Event ID', 'Do not wait for the notice (1)', 'Unused'),
+ 19: ('Event ID', 'Do not wait for the notice (1)', 'Unused'),
+ # f_SetTombaScriptedLocationAndPosition: +0x74 X, +0x76 height, +0x64 depth.
+ 54: ('Location byte', 'Tomba X', 'Tomba height', 'Tomba depth', 'Unused', 'Unused', 'Unused'),
+ # f_RunScriptedTombaAnimationCommand: mode 0 waits; 2 = held state 0x26.
+ 55: ('Mode (0 wait, 1 continue, 2 continue + hold)', 'Tomba animation ID', 'Blend ticks',
+      'Unused', 'Sound on animation frame', 'Sound ID', 'Unused'),
+ 57: ('Actor (0x8000 = script actor)', 'Actor animation ID', 'Tomba animation ID'),
+ # f_RunScriptedActorFaceTombaSequence: turn 0x100/tick, then both animations.
+ 58: ('Mode (0 wait, 1 continue, 2 turn only; 0x8000 = script actor)', 'Actor animation ID', 'Tomba animation ID')}
 # Actions offered for insertion, and the defaults a new one starts with.
-INSERTABLE = {5: (30, 0, 0), 1: (5, 0, 3), 30: (0, 0, 0), 40: (1, 0, 0),
+INSERTABLE = {0: (0, 0, 0), 5: (30, 0, 0), 1: (5, 0, 3), 11: (1, 1, 0), 30: (0, 0, 0), 40: (1, 0, 0),
               46: (0, 0, 0), 47: (0, 0, 0), 17: (0, 0, 0, 0, 0, 0, 0),
               35: (0, 0, 0, 256, 0, 0, 0), 36: (0, 0, 0, 0x0a00, 0, 0, 0),
               31: (0, 256, 0), 23: (0, 0, 0), 24: (0, 0, 0), 22: (-1, 0, 2),
               7: (0, 0, 0), 8: (0, 0, 0), 12: (0, 0, 0)}
 CONDITIONS = ('always', '==', '<=', '>=', '& any')
+# Extra insert choices that share an opcode: (label, opcode, operands).
+INSERT_VARIANTS = (('End conversation music', 11, (0, 0, 0)),)
+
+# f_BeginScriptedInteractionAudio: cue byte -> sound ID (cue 0 = cue 1).
+MUSIC_SOUNDS = (0x72, 0x73, 0x74, 0x75, 0x76, 0x76, 0x77, 0x78)
+
+
+def music_sound(cue):
+    """The sound ID a conversation-music cue plays, or None if outside the table."""
+    index = ((cue & 0xFF) - 1) & 0xFF if cue & 0xFF else 0
+    return MUSIC_SOUNDS[index] if index < len(MUSIC_SOUNDS) else None
+
+
+def music_slot(sound):
+    """SEQ slot f_PlaySoundEffect opens for a music sound ID."""
+    if 0x70 <= sound <= 0x75: return sound - 0x70 + 2
+    return {0x76: 10, 0x77: 11, 0x78: 12, 0x79: 13}.get(sound)
 
 @dataclass
 class Command:
@@ -120,15 +156,43 @@ def summary(c):
     if op == 5: return f'Wait {o[0]+1} ticks ({(o[0]+1)/TICK_HZ:.2f} s)'
     if op in (0, 1):
         entry = 'runtime-selected entry' if o[1] < 0 else f'entry {o[1]}'
-        return f'{c.label}: dialogue {o[0]&0xfff}, {entry}' + (f', actor animation {o[2]}' if op == 1 else '')
+        # 0x8000: the gesture plays on src_CurrentScriptActor, not this entity.
+        who = 'script actor' if o[0] & 0x8000 else 'actor'
+        return f'{c.label}: dialogue {o[0]&0xfff}, {entry}' + (f', {who} animation {o[2]}' if op == 1 else '')
     if op == 30:
         who = 'script actor' if o[0] & 1 else 'this actor'
-        return f'Play animation {"(default)" if o[1] < 0 else o[1]} on {who}' + (', wait' if o[0] & 2 else '')
+        # -1: the actor's rest animation (+0x7B), f_RunScriptedActorAnimationCommand.
+        if o[1] < 0: return f'Back to rest animation on {who}' + (', wait' if o[0] & 2 else '')
+        return f'Play animation {o[1]} on {who}' + (', wait' if o[0] & 2 else '')
     if op == 40:
+        if o[0] == 10: return 'Wait for the open message to close'
         kind = {0: 'message', 1: 'message', 2: 'item message', 3: 'item message', 4: 'alt message', 5: 'alt message', 10: 'skip'}.get(o[0], f'mode {o[0]}')
         return f'Show {kind} {o[1]}' + (f' (group {o[2]})' if o[0] in (0, 1) else '') + (', wait' if o[0] & 1 else '')
     if op == 46: return f'Play sound 0x{o[0]&255:02X} (pitch {o[1]:+d}, volume {o[2]:+d})'
     if op == 47: return 'Stop voice' if o[1] < 0 else f'Play voice {o[1]} (mode {o[0]})'
+    if op == 10:
+        held = ' and '.join(n for b, n in ((1, f'X {o[1]}'), (2, f'height {o[2]}')) if o[0] & b)
+        return 'Wait for Tomba to take cutscene control' + (f', holding {held}' if held else '')
+    if op in (18, 19):
+        return f'{"Start" if op == 18 else "Complete"} quest event {o[0]}' + ('' if o[1] else ', wait for its notice')
+    if op == 16: return f'Interaction offset ({o[0]}, {o[1]}, {o[2]})'
+    if op == 13:
+        where = f', Tomba at offset ({o[3]}, {o[4]}, {o[5]})' if o[2] & 4 and c.extended else ''
+        return (f'Request conversation {o[1]} from conversation handler {o[0] & 0xff}{where}'
+                + (', no wait' if o[0] & 0x8000 else ''))
+    if op == 14: return 'Run the conversation (its native handler shows the dialogue; waits until it ends)'
+    if op == 54: return f'Set Tomba location {o[0]}: X {o[1]}, height {o[2]}' + (f', depth {o[3]}' if c.extended else '')
+    if op == 55:
+        how = {0: ', wait', 2: ', hold'}.get(o[0], '')
+        return f'Tomba animation {o[1]}' + how
+    if op == 57:
+        who = 'script actor' if o[0] & 0x8000 else 'this actor'
+        return f'Play animation {o[1]} on {who} with Tomba animation {o[2]}'
+    if op == 58:
+        who = 'Script actor' if o[0] & 0x8000 else 'Actor'
+        mode = o[0] & 0x7fff
+        then = '' if mode == 2 else f', then animation {o[1]} with Tomba animation {o[2]}' + (', wait' if mode == 0 else '')
+        return f'{who} and Tomba face each other{then}'
     if op == 17: return f'Set position X {o[0]}, height {o[1]}, depth {o[2]}'
     if op == 35:
         speed = f' at {o[3]/256:.2f}/tick' if c.extended else ''
@@ -152,6 +216,11 @@ def summary(c):
     if op == 12: return f'progress[{o[1]}] {("=", "|=", "&=")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
     if op == 4: return f'progress[{o[0]}] = {o[1]}, wait until {o[2]}'
     if op == 49: return f'Move Tomba along {"X" if o[1] == 0 else "depth"} to {o[2]}'
+    if op == 11:
+        if o[0] == 0: return 'End conversation music (area track resumes)'
+        sound = music_sound(o[1])
+        where = f'sound 0x{sound:02X}, SEQ slot {music_slot(sound)}' if sound else 'cue outside the table'
+        return f'Start conversation music cue {o[1]} ({where})' + (f', letterbox {o[0]}' if o[0] != 1 else '')
     if op == 62: return f'Run native code 0x{code_pointer(c):08X}'
     params = ', '.join(str(v) for v in o)
     return f'{c.label} ({params})'
@@ -219,19 +288,60 @@ def compile_graph(commands, base):
         out.extend(raw)
     return bytes(out)
 
-def _new_command(commands, opcode, operands):
+def _new_command(commands, opcode, operands, flags=0):
     if opcode not in LABELS: raise ValueError('This native action is not supported for insertion.')
     operands = list(operands)
     extended = len(operands) > 3
     operands += [0] * ((7 if extended else 3) - len(operands))
     identity = min([0]+[c.address for c in commands])-1
-    head = opcode | (EXTENDED if extended else 0)
+    head = opcode | (EXTENDED if extended else 0) | flags
     return Command(identity, struct.pack('<H'+'h'*len(operands), head, *operands))
 
 def _redirect(commands, old, new, skip=None):
     for c in commands:
         if c is skip: continue
         c.edges = [(new if a == old else a, p) for a, p in c.edges]
+
+CONTINUE = 0x1000          # header: run the next command in the same tick
+
+
+def split_presentation(commands, selected):
+    """Replace an "Animate presentation" (1) by its three parts:
+    Play animation X, Show text, Play animation -1 (back to rest).
+
+    Exact for the forms the game expresses that way (decomp of
+    f_RunScriptedPresentationAnimationCommand): the gesture starts with the
+    line at blend 4, the line waits until it closes, and "-1" is the same
+    rest animation (+0x7B) the original restores. Refused for flag 0x2000
+    (rest mid-line when the gesture ends), 0x8000 (another actor's rest)
+    and branch forms."""
+    c = commands[selected]
+    if c.opcode != 1: raise ValueError('Only "Animate presentation" actions combine text and animation.')
+    o = c.operands
+    if c.branch is not None or c.fallthrough is None:
+        raise ValueError('This presentation also decides where the script goes; it cannot be split.')
+    if o[0] & 0x8000:
+        raise ValueError("It gestures another actor; that actor's rest animation cannot be named in a script.")
+    if o[0] & 0x2000:
+        raise ValueError('It returns to rest when the gesture ends, mid-line; separate blocks cannot do that.')
+    after = c.fallthrough
+    gesture = _new_command(commands, 30, (0, o[2], 4), CONTINUE)
+    commands.append(gesture)          # so the next identity is unique
+    text = _new_command(commands, 0, (o[0] & 0xFFF, o[1], 3 if o[0] & 0x1000 else 0),
+                        CONTINUE if not o[0] & 0x4000 else c.header & 0x1800)
+    commands.append(text)
+    parts = [gesture, text]
+    if not o[0] & 0x4000:
+        rest = _new_command(commands, 30, (0, -1, 4), c.header & 0x1800)
+        commands.append(rest); parts.append(rest)
+    del commands[-len(parts):]
+    for a, b in zip(parts, parts[1:]):
+        a.edges = [(b.address, None)]
+    parts[-1].edges = [(after, None)]
+    _redirect(commands, c.address, gesture.address, skip=c)
+    commands[selected:selected + 1] = parts
+    return parts
+
 
 def insert_before(commands, selected, opcode, operands=(0,0,0)):
     """Insert a basic native action, redirecting incoming edges to it."""
@@ -294,6 +404,9 @@ class Binding:
     register: int = 5
     # f_InitializeActorScript also attaches the actor's animation table.
     animations: int = None
+    # A data word in a script table (lo_at) rather than a lui/addiu pair.
+    table: bool = False
+    request: int = None
 
 def _dest(i):
     if i.name in ('lui','addiu','addi','ori','andi','xori','slti','sltiu') or i.name in ('lb','lbu','lh','lhu','lw','lwl','lwr'):
@@ -315,7 +428,7 @@ class Flow:
         main = struct.unpack_from('<I', exe, 24)[0]
         self.images = (Image(overlay, BASE), Image(exe[0x800:], main))
         self.overlay_end = BASE + len(overlay)
-        self.preds, self.calls = {}, []
+        self.preds, self.calls, self.conversation_calls = {}, [], []
         seen, work, roots = set(), [start], {start}
         while work and len(seen) < limit:
             at = work.pop()
@@ -330,6 +443,7 @@ class Flow:
                     if i.name == 'jal' or i.name == 'jalr':
                         if i.name == 'jal':
                             if i.target in LOADERS: self.calls.append((at, LOADERS[i.target]))
+                            elif i.target in CONFIGURE_CONVERSATION: self.conversation_calls.append(at)
                             elif BASE <= i.target < self.overlay_end and i.target not in roots:
                                 roots.add(i.target); work.append(i.target)
                         self._edge(slot, at + 8, call=True); at += 8; continue
@@ -386,6 +500,10 @@ class Flow:
         i = image.at(at)
         if _dest(i) != reg: return self.before(reg, at, depth, seen)
         if i.name == 'lui': return [(i.unsigned << 16, at, None)]
+        if i.name in ('addiu', 'ori') and i.rs == 0:          # a constant, not an address
+            return [((i.imm if i.name == 'addiu' else i.unsigned) & 0xffffffff, None, None)]
+        if i.name in ('addu', 'or') and i.rs == 0 and i.rt == 0:
+            return [(0, None, None)]
         if i.name in ('addiu', 'ori') and i.rs != 0:
             out = []
             for v in self.before(i.rs, at, depth+1, seen):
@@ -512,6 +630,8 @@ def stage(exe,overlay,binding,commands):
         if struct.unpack('<I',reader(exe,overlay)(CALLBACKS+opcode*4,4))[0]!=target:
             raise ValueError('The native command table differs from the verified US layout.')
     read=reader(exe,overlay)
+    if binding.table:
+        return _stage_table(read,overlay,binding,commands)
     if struct.unpack('<I',read(binding.hi_at,4))[0]!=binding.hi_word or struct.unpack('<I',read(binding.lo_at,4))[0]!=binding.lo_word:
         raise ValueError('The event binding changed; reopen Events before saving.')
     if binding.hi_at<BASE or binding.lo_at<BASE: raise ValueError('Resident shared bindings are read-only.')
@@ -539,3 +659,87 @@ def stage(exe,overlay,binding,commands):
     struct.pack_into('<I',out,binding.hi_at-BASE,(hi&0xffff0000)|(high&0xffff))
     struct.pack_into('<I',out,binding.lo_at-BASE,(lo&0xffff0000)|(address&0xffff))
     return bytes(out)
+
+
+def _stage_table(read, overlay, binding, commands):
+    """stage() for a script reached through a table word: copy it into the
+    event region and point that one word at the copy."""
+    if binding.lo_at < BASE or struct.unpack('<I', read(binding.lo_at, 4))[0] != binding.script:
+        raise ValueError('The conversation table changed; reopen Events before saving.')
+    size = sum(len(c.raw) for c in commands)
+    try: current_size = sum(len(c.raw) for c in read_graph(read, binding.script))
+    except ValueError: current_size = 0
+    out = bytearray(overlay)
+    if len(out) > EVENT_END-BASE: raise ValueError('The area file extends past the free RAM window.')
+    if len(out) < EVENT_START-BASE: out.extend(bytes(EVENT_START-BASE-len(out)))
+    address = _allocate(out, size, binding.script, current_size, binding.lo_at)
+    payload = compile_graph(commands, address)
+    if address == binding.script:
+        out[address-BASE:address-BASE+current_size] = bytes(current_size)
+    end = address-BASE+len(payload)
+    if len(out) < end: out.extend(bytes(end-len(out)))
+    out[address-BASE:end] = payload
+    struct.pack_into('<I', out, binding.lo_at-BASE, address)
+    return bytes(out)
+
+# Request conversation (13) with handler 0: f_UpdateScriptActorConversationState
+# calls 0x800713F8, which loads script table[request] (table = the word at
+# CONVERSATION_TABLES[area byte 0x800BF870]) through the 0x80040CDC loader with
+# animation table 0x8001B860. Only one area has such a table: A00.
+CONVERSATION_TABLES = 0x800A4BBC
+CONVERSATION_ANIMATIONS = 0x8001B860
+
+# f_ConfigureScriptActorConversation(handler, request, flags) and its
+# explicit-offset form, as NPC code calls them directly.
+CONFIGURE_CONVERSATION = (0x80070724, 0x8007074C)
+# f_HandleAreaScriptActor: the actor every conversation runs on when area
+# code (f_UpdateFishermensTownProgressTriggers) rather than an NPC asks.
+AREA_SCRIPT_ACTOR = 0x80071A3C
+# Requests per area: A00's table (0x80149E50) runs up to its area
+# conversation-handler table (0x80149E74), nine slots.
+CONVERSATION_COUNT = {0: 9}
+
+def native_requests(exe, overlay, handler):
+    """[(conversation handler, request)] a native handler configures with
+    constant arguments (a0, a1) on any path."""
+    flow = Flow(exe, overlay, handler)
+    out = []
+    for call in flow.conversation_calls:
+        handlers = {v[0] & 0xff for v in flow.after(4, call + 4) if v and v[1] is None}
+        requests = {v[0] & 0xff for v in flow.after(5, call + 4) if v and v[1] is None}
+        out.extend((h, r) for h in sorted(handlers) for r in sorted(requests))
+    return sorted(set(out))
+
+def conversations(exe, overlay, area, pages, requests=()):
+    """Bindings for the conversation scripts that `pages` (lists of
+    Commands) request through handler 0, or `requests` (request IDs native
+    code asks handler 0 for), in order, deduplicated."""
+    if area != 0:
+        return []
+    read = reader(exe, overlay)
+    try: table = struct.unpack('<I', read(CONVERSATION_TABLES, 4))[0]
+    except ValueError: return []
+    out, seen = [], set()
+    pending = [r for r in requests] + [c for nodes in pages for c in nodes]
+    while pending:
+        c = pending.pop(0)
+        if isinstance(c, int):
+            request = c
+        else:
+            o = c.operands
+            if c.opcode != 13 or o[0] & 0xff != 0: continue
+            request = o[1]
+        if not 0 <= request < 0x80 or request in seen:
+            continue
+        seen.add(request)
+        slot = table + request * 4
+        try:
+            target = struct.unpack('<I', read(slot, 4))[0]
+            if not BASE <= target < BASE + len(overlay): continue
+            nodes = read_graph(read, target)
+        except ValueError:
+            continue
+        out.append(Binding(target, slot, slot, 0, target, slot, register=-1,
+                           animations=CONVERSATION_ANIMATIONS, table=True, request=request))
+        pending.extend(nodes)            # a conversation may request another
+    return out

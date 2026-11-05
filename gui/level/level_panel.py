@@ -220,6 +220,14 @@ class LevelEditorPanel(QWidget):
         self.events_button.setEnabled(False)
         self.events_button.clicked.connect(self._open_events)
         edit_layout.addWidget(self.events_button)
+        # Scripts that belong to the area rather than to anything placed:
+        # the conversations area code starts (f_HandleAreaScriptActor).
+        self.area_scripts_button = QPushButton('Area scripts…', self)
+        self.area_scripts_button.setEnabled(False)
+        self.area_scripts_button.setToolTip('Event pages the area itself runs - conversations and cutscenes its own '
+                                            'code starts, on the area script actor, which is not placed in the level.')
+        self.area_scripts_button.clicked.connect(self._open_area_scripts)
+        edit_layout.addWidget(self.area_scripts_button)
 
         self.pickup_options = QGroupBox("Pickup", self)
         pickup_form = QFormLayout(self.pickup_options)
@@ -584,6 +592,7 @@ class LevelEditorPanel(QWidget):
         scene = LevelScene()
         scene.__dict__.update(state)
         self.scene = scene
+        self._update_area_scripts()
         # Textured VRAM colours what this stage saw drawn.
         from psx import vram_preview
         vram_preview.publish_level(self.chunk, vram_preview.scene_regions(scene))
@@ -1096,6 +1105,7 @@ class LevelEditorPanel(QWidget):
         self.events_button.setEnabled(instance is not None and bool(self.exe_path)
                                       and bool(self.scene and self.scene.overlay_path)
                                       and not getattr(self, '_loading', False))
+        self._update_area_scripts()
         self._print_selection(instance)
         if instance is None:
             self.details.setText("Click something in the view, or pick a row.")
@@ -1163,6 +1173,34 @@ class LevelEditorPanel(QWidget):
         self._close_events()
         try:
             editor = EventEditor(self, instance)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, 'Could not read native events', str(exc))
+            return
+        editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        editor.destroyed.connect(lambda *_: setattr(self, '_event_editor', None))
+        self._event_editor = editor
+        editor.show()
+
+    def _update_area_scripts(self):
+        from game import event_script
+        scene = self.scene
+        self.area_scripts_button.setEnabled(
+            bool(self.exe_path) and bool(scene and getattr(scene, 'overlay_path', None))
+            and getattr(scene, 'area_index', None) in event_script.CONVERSATION_COUNT
+            and not getattr(self, '_loading', False))
+
+    def _open_area_scripts(self):
+        """The Event Editor on the area script actor."""
+        if self.scene is None or not self.apply_changes():
+            return
+        from types import SimpleNamespace
+        from game import event_script
+        from gui.level.event_editor import EventEditor
+        self._close_events()
+        area = SimpleNamespace(label=f"Area scripts - AREA_{self.chunk:02X}", placement=None,
+                               pickup=None, index=-1, scene=None, angle=0.0)
+        try:
+            editor = EventEditor(self, area, handler=event_script.AREA_SCRIPT_ACTOR)
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, 'Could not read native events', str(exc))
             return
