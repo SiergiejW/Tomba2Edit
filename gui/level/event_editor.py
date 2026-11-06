@@ -223,6 +223,23 @@ class EventCommandDialog(QDialog):
         self.choice=data;EventCommandDialog.last_tab=self.tabs.currentIndex();self.accept()
 
 
+class CommandDialog(QDialog):
+    """Editing one command: its parameters, then only the panes it needs
+    (the line and its voice, the model and its animation, the path, the
+    native code). OK keeps the edits, Cancel puts the command back."""
+    def __init__(self,editor):
+        super().__init__(editor);self.setWindowTitle('Edit Command');self.resize(980,700)
+        layout=QVBoxLayout(self)
+        self.title=QLabel();self.title.setWordWrap(True)
+        font=self.title.font();font.setBold(True);self.title.setFont(font)
+        layout.addWidget(self.title)
+        self.body=QVBoxLayout();layout.addLayout(self.body,1)
+        row=QHBoxLayout();row.addStretch()
+        ok=QPushButton('OK');ok.setFixedWidth(88);ok.setDefault(True);ok.clicked.connect(self.accept)
+        cancel=QPushButton('Cancel');cancel.setFixedWidth(88);cancel.clicked.connect(self.reject)
+        row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
+
+
 class ShowTextDialog(QDialog):
     """RPG Maker's Show Text window: the line itself, edited in place.
     'Choose line…' picks another entry of the area's TXTD."""
@@ -784,7 +801,9 @@ class EventEditor(QDialog):
         self.remove=QPushButton('Delete');self.remove.clicked.connect(self.delete)
         self.up=QPushButton('Move Up');self.up.clicked.connect(lambda:self.move(-1))
         self.down=QPushButton('Move Down');self.down.clicked.connect(lambda:self.move(1))
-        for n,b in enumerate((self.add_after,self.remove,self.up,self.down)):edit_grid.addWidget(b,n//2,n%2)
+        self.edit_button=QPushButton('Edit…');self.edit_button.clicked.connect(self.edit_row)
+        self.edit_button.setToolTip('Edit the command: its parameters and previews (double-click or Space).')
+        for n,b in enumerate((self.edit_button,self.add_after,self.remove,self.up,self.down)):edit_grid.addWidget(b,n//2,n%2)
         command.addLayout(edit_grid)
         left.addWidget(command_box);left.addStretch()
         # Contents and the previews that follow the selection.
@@ -800,7 +819,12 @@ class EventEditor(QDialog):
         contents.addWidget(self.actions);right.addWidget(contents_box)
         preview_box=QGroupBox('Preview');preview_layout=QVBoxLayout(preview_box);preview_layout.setContentsMargins(4,4,4,4)
         self.preview_tabs=QTabWidget();preview_layout.addWidget(self.preview_tabs)
-        right.addWidget(preview_box);right.setSizes([430,330])
+        # Editing happens in a popup (CommandDialog): the parameters and
+        # previews live there, made now so the GL views are never re-hosted.
+        self.command_dialog=CommandDialog(self)
+        self.command_dialog.body.addWidget(preview_box,1)
+        self.command_dialog.body.insertWidget(0,self.form_widget)
+        self.command_dialog.body.insertWidget(1,self.raw)
         text_tab=QWidget();text_layout=QVBoxLayout(text_tab)
         self.preview_tabs.addTab(text_tab,'Dialogue / voice')
         self.model_tab=QWidget();self.model_layout=QVBoxLayout(self.model_tab)
@@ -854,7 +878,7 @@ class EventEditor(QDialog):
         self.text_choices=QComboBox();self.text_choices.currentIndexChanged.connect(self.choose_text)
         text_layout.addWidget(self.text_choices)
         text_buttons=QHBoxLayout()
-        self.pick_text=QPushButton('Choose dialogue…');self.pick_text.clicked.connect(self.choose_dialogue)
+        self.pick_text=QPushButton('Choose dialogue…');self.pick_text.clicked.connect(self.choose_for_row)
         self.pick_text.setToolTip('Pick the dialogue master and entry this action shows, from the area’s TXTD.')
         self.goto_txtd=QPushButton('Go to TXTD in IDX');self.goto_txtd.clicked.connect(self.go_to_txtd)
         self.goto_txtd.setToolTip('Open this area’s dialogue file in the Indexed View, on this entry.')
@@ -870,7 +894,7 @@ class EventEditor(QDialog):
         self.text_preview=QPlainTextEdit()
         self.text_preview.setPlaceholderText('Select a conversation or message action to see its text.')
         self.text_preview.setReadOnly(True)
-        self.text_preview.setToolTip('Double-click the row (or Space) to edit the line in the Show Text window.')
+        self.text_preview.setToolTip('The line this command shows. Edit it here; OK writes it.')
         text_layout.addWidget(self.text_preview,1)
         voice_row=QHBoxLayout()
         self.play_voice=QPushButton('Play linked voice');self.play_voice.clicked.connect(self.decode_voice)
@@ -1479,10 +1503,49 @@ class EventEditor(QDialog):
         if c.opcode==13 and c.operands[0]&0xff==0:
             page=self.conversation_page(c.operands[1])
             if page is not None:self.pages.setCurrentIndex(page);return
-        if c.opcode in (0,1) and self.pick_text.isEnabled():self.edit_text_popup();return
-        if c.opcode==40 and c.operands[0] in (0,1):self.choose_message();return
-        box=next((b for b in self.fields if b.isEnabled()),None)
-        if box is not None:box.setFocus();box.selectAll()
+        self.open_command()
+
+    def choose_for_row(self):
+        c=self.drafts[self.active][self.selected] if self.selected is not None else None
+        if c is not None and c.opcode==40:self.choose_message()
+        else:self.choose_dialogue()
+
+    def open_command(self):
+        """The command popup: parameters plus the panes this command uses."""
+        if self.selected is None:return
+        nodes=self.drafts[self.active];row=self.selected;c=nodes[row]
+        before=(self._snapshot(),len(self._undo),list(self._redo))
+        self.select_action(row)
+        tabs=self.preview_tabs
+        wanted={0:c.opcode in TEXT_TAB_OPS,1:c.opcode in MODEL_TAB_OPS or c.opcode in ANIMATION_OPS,
+                2:c.opcode in PATH_TAB_OPS,3:True}
+        for index,shown in wanted.items():tabs.setTabVisible(index,shown)
+        tabs.setCurrentIndex(next(i for i in (0,1,2,3) if wanted[i]))
+        if c.opcode==40 and c.operands[0] in (0,1):self.pick_text.setText('Choose message…');self.pick_text.setEnabled(True)
+        else:self.pick_text.setText('Choose dialogue…')
+        # The line is edited right here; OK writes it.
+        editable=c.opcode in (0,1) and self.linked_entry is not None
+        original=self.text_preview.toPlainText() if editable else None
+        self.text_preview.setReadOnly(not editable)
+        self.command_dialog.title.setText(f'{row+1:02d}  {self.describe(c)}')
+        self.command_dialog.setWindowTitle(f'Edit Command - {c.label}')
+        if c.opcode in ANIMATION_OPS and self.autoplay.isChecked():self.preview_model_action()
+        kept=self.command_dialog.exec()
+        self.text_preview.setReadOnly(True)
+        if not kept:
+            snapshot,undo_length,redo=before
+            drafts,bank,active,selected=snapshot
+            self.fields=[]
+            self.drafts=drafts
+            if bank is not None and self.bank is not None:self.bank.clear();self.bank.update(bank)
+            del self._undo[undo_length:];self._redo[:]=redo;self._undo_state()
+            self.selected=None;self.populate(row);return
+        self.store_operands()
+        c=self.drafts[self.active][self.selected if self.selected is not None else row]
+        if editable and self.text_preview.toPlainText()!=original and self.linked_entry is not None:
+            entry=self.text_choices.currentData()
+            if entry is not None:self.apply_text(c,self.linked_master,entry,self.text_preview.toPlainText());return
+        keep=self.selected if self.selected is not None else row;self.selected=None;self.populate(keep)
 
     def row_menu(self,pos):
         item=self.actions.itemAt(pos)
