@@ -223,6 +223,33 @@ class EventCommandDialog(QDialog):
         self.choice=data;EventCommandDialog.last_tab=self.tabs.currentIndex();self.accept()
 
 
+class DragSpinBox(QSpinBox):
+    """A number field you can also drag: press in it and move the mouse up
+    (more) or down (less), a step per few pixels - Shift for ten. A click
+    without moving edits as usual."""
+    PIXELS = 4
+    def __init__(self,*args):
+        super().__init__(*args);self._drag=None
+        self.lineEdit().installEventFilter(self)
+        self.setToolTip('Drag up or down to change it (Shift: x10), or type a value.')
+    def eventFilter(self,watched,event):
+        from PyQt6.QtCore import QEvent
+        kind=event.type()
+        if kind==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton and self.isEnabled():
+            self._drag=(event.globalPosition().y(),self.value(),False)
+        elif kind==QEvent.Type.MouseMove and self._drag is not None:
+            y,start,moved=self._drag
+            delta=int((y-event.globalPosition().y())/self.PIXELS)
+            if delta or moved:
+                step=10 if event.modifiers()&Qt.KeyboardModifier.ShiftModifier else 1
+                self._drag=(y,start,True);self.lineEdit().setCursor(Qt.CursorShape.SizeVerCursor)
+                self.setValue(start+delta*step);return True
+        elif kind==QEvent.Type.MouseButtonRelease and self._drag is not None:
+            moved=self._drag[2];self._drag=None;self.lineEdit().unsetCursor()
+            if moved:return True
+        return super().eventFilter(watched,event)
+
+
 class CommandDialog(QDialog):
     """Editing one command: its parameters, then only the panes it needs
     (the line and its voice, the model and its animation, the path, the
@@ -349,6 +376,19 @@ class CameraDecode(VoiceDecode):
         except Exception as exc:self.emit_result(([],str(exc)))
 
 
+def baked_facing(assembly):
+    """(pose yaw, facing) in game units for a simulated actor's pose, or None.
+    Its parts were read turned the way the game turned it: the root part's
+    matrix angle is the actor's +0x56 yaw (checked on A00/A01/A06 actors),
+    while the pose itself is anchored at `yaw` (0 for scene-spawned NPCs)."""
+    import math
+    pieces=getattr(assembly,'pieces',None)
+    if not pieces:return None
+    m=pieces[0].matrix
+    facing=int(round(math.degrees(math.atan2(m[0][2],m[0][0]))*4096/360))&0xfff
+    return getattr(assembly,'yaw',0),facing
+
+
 def yaw_toward(source,target):
     """Game yaw (4096 = 360°) from `source` to `target`, both (x, height,
     depth): ratan2(source depth - target depth, target x - source x), as
@@ -402,9 +442,16 @@ class ViewportPreview(QObject):
         except Exception:pass
         if hasattr(viewer,'update'):viewer.update()
     def _place(self,point,yaw=None):
+        """Stand the entity at `point` facing game yaw `yaw`. A simulated
+        pose already carries the actor's own facing, so the instance turns
+        by the difference, not by the whole yaw - else it faced away."""
         instance=self.editor.instance
         instance.game_position=tuple(float(v) for v in point)
-        if yaw is not None and hasattr(instance,'angle'):instance.angle=yaw*360/4096
+        if yaw is not None and hasattr(instance,'angle'):
+            found=baked_facing(getattr(instance,'assembly',None))
+            if found is not None:
+                pose_yaw,facing=found;yaw=pose_yaw+yaw-facing
+            instance.angle=(yaw&0xfff)*360/4096
         self._refresh()
     def _aim(self,eye,focus):
         """Camera at `eye` looking at `focus`, both in game axes."""
@@ -846,6 +893,14 @@ class EventEditor(QDialog):
         self.model_viewer.spread_action.setVisible(False);self._vram_set=False
         self.model_layout.addWidget(self.model_viewer,1)
         self.preview_tabs.addTab(self.model_tab,'Model / animation')
+        # Animation on the left, the line and its voice on the right.
+        self.preview_tabs.removeTab(self.preview_tabs.indexOf(self.model_tab))
+        self.preview_tabs.removeTab(self.preview_tabs.indexOf(text_tab))
+        self.both_tab=QSplitter(Qt.Orientation.Horizontal)
+        self.both_tab.addWidget(self.model_tab);self.both_tab.addWidget(text_tab);self.both_tab.setSizes([520,460])
+        # A page taken out of a tab widget stays hidden; show both in the splitter.
+        self.model_tab.show();text_tab.show()
+        self.preview_tabs.addTab(self.both_tab,'Model and dialogue')
         self.path_preview=PathPreview()
         self.preview_tabs.addTab(self.path_preview,'Scene path')
         code_tab=QWidget();code_layout=QVBoxLayout(code_tab);code_layout.setContentsMargins(0,0,0,0)
@@ -861,10 +916,18 @@ class EventEditor(QDialog):
         self.code_preview=QPlainTextEdit();self.code_preview.setReadOnly(True)
         self.code_preview.setFont(QFont('Consolas',9))
         self.code_preview.setUndoRedoEnabled(True)
-        self.code_undo.clicked.connect(self.code_preview.undo);self.code_redo.clicked.connect(self.code_preview.redo)
-        self.code_preview.undoAvailable.connect(lambda on:self.code_undo.setEnabled(on and self.code_edit.isChecked()))
-        self.code_preview.redoAvailable.connect(lambda on:self.code_redo.setEnabled(on and self.code_edit.isChecked()))
+        self.code_undo.clicked.connect(self.code_undo_step);self.code_redo.clicked.connect(self.code_redo_step)
         code_layout.addWidget(self.code_preview,1)
+        # Editing: a table where only each instruction's number can change.
+        from PyQt6.QtWidgets import QTableWidget,QHeaderView,QAbstractItemView
+        self.code_table=QTableWidget(0,3);self.code_table.setHorizontalHeaderLabels(['Address','Instruction','Value'])
+        self.code_table.setFont(QFont('Consolas',9));self.code_table.verticalHeader().setVisible(False)
+        self.code_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        self.code_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked|QAbstractItemView.EditTrigger.EditKeyPressed
+                                        |QAbstractItemView.EditTrigger.AnyKeyPressed)
+        self.code_table.itemChanged.connect(self._code_cell_changed)
+        self.code_table.hide();code_layout.addWidget(self.code_table,1)
+        self._code_rows=[];self._code_done=[];self._code_undone=[];self._code_replaying=False;self._code_last={}
         self.code_tab=code_tab
         self.preview_tabs.addTab(code_tab,'Native code')
         for b in (self.code_save,self.code_undo,self.code_redo,self.code_discard):b.setEnabled(False)
@@ -953,7 +1016,25 @@ class EventEditor(QDialog):
         elif self.native_handler and area==0:
             try:native=[r for h,r in script.native_requests(self.exe,self.overlay,self.native_handler) if h==0]
             except (ValueError,IndexError):pass
-        return script.conversations(self.exe,self.overlay,area,pages,native)
+        found=script.conversations(self.exe,self.overlay,area,pages,native)
+        if self.native_handler==script.AREA_SCRIPT_ACTOR:return found
+        return [b for b in found if self._conversation_is_near(b,read)]
+
+    NEAR_CONVERSATION=4000
+
+    def _conversation_is_near(self,binding,read):
+        """Actors sharing one handler (a town fisherman and the one in his
+        house) all request the same conversations; one belongs to the actor
+        whose spot its camera looks at. Kept when it names no place."""
+        import math
+        at=getattr(self.instance,'game_position',None)
+        if at is None:return True
+        try:nodes=script.read_graph(read,binding.script)
+        except ValueError:return True
+        spots=[(c.operands[3],c.operands[5]) for c in nodes
+               if c.opcode==22 and c.extended and c.operands[2]==0]
+        if not spots:return True
+        return any(math.hypot(x-at[0],z-at[2])<=self.NEAR_CONVERSATION for x,z in spots)
 
     def _add_page_tab(self,n,binding):
         if binding.table:
@@ -1013,14 +1094,17 @@ class EventEditor(QDialog):
         if not found:self.conditions.addItem('No test on the way to this page: it runs whenever its code is reached.')
         for line in found:self.conditions.addItem('◆ '+line)
 
+    AVATAR_HEADING = 0.0     # with the facing undone, 0 shows every actor's front
+
     def show_avatar(self):
-        """The entity's model in the Graphic box, as it stands."""
-        model=self._entity_model(None)
+        """The entity's model in the Graphic box, turned to face the viewer
+        whatever way the game turned it (its baked facing undone)."""
+        model=self._entity_model(None,face_front=True)
         if model is None:return
         if not getattr(self,'_avatar_vram',False):
             self.avatar.set_vram(self.panel.viewer.vram_raw_bytes,self.panel.viewer.vram_qimage);self._avatar_vram=True
         self.avatar.model_data=model;self.avatar.hidden_groups=set();self.avatar.prepare_buffers()
-        self.avatar.frame_model(heading=200.0);self.avatar.update()
+        self.avatar.frame_model(heading=self.AVATAR_HEADING);self.avatar.update()
 
     def start_position(self):
         """Where the entity stands before any preview moved it."""
@@ -1176,13 +1260,13 @@ class EventEditor(QDialog):
         self.show_code(c)
         self.preview_model_button.setText('Play on entity model' if c.opcode in ANIMATION_OPS else 'Show selected entity model')
         self.tomba_button.setEnabled(c.opcode in TOMBA_OPS)
-        tab=(0 if c.opcode in TEXT_TAB_OPS else 1 if c.opcode in MODEL_TAB_OPS else
-             2 if c.opcode in PATH_TAB_OPS else 3)
+        tab=(0 if c.opcode in TEXT_TAB_OPS or c.opcode in MODEL_TAB_OPS else
+             1 if c.opcode in PATH_TAB_OPS else 2)
         self.preview_tabs.setCurrentIndex(tab)
         labels=script.FIELDS.get(c.opcode,())
         editable=(c.opcode in script.FIELDS and c.opcode!=62) or self.raw.isChecked()
         for n,value in enumerate(c.operands):
-            box=QSpinBox();box.setRange(-32768,32767);box.setValue(value)
+            box=DragSpinBox();box.setRange(-32768,32767);box.setValue(value)
             box.setEnabled(editable)
             self.fields.append(box)
             box.valueChanged.connect(lambda _:self._field_timer.start())
@@ -1230,38 +1314,85 @@ class EventEditor(QDialog):
             if m:out[int(m.group(1),16)]=(int(m.group(2),16),' '.join(m.group(3).split()))
         return out
 
+    # An instruction's one editable number: an immediate, offset, shift or
+    # target - never part of the mnemonic or a register name (a0, s1, t9...).
+    CODE_NUMBER=r'(?<![A-Za-z0-9_$.])(-?(?:0x[0-9A-Fa-f]+|\d+))(?![A-Za-z0-9_])'
+
+    def _code_template(self,text):
+        """(text with its number as {}, the number) or (None, '')."""
+        import re
+        mnemonic=text.split(' ',1)[0]
+        if mnemonic.startswith('.'):return None,''      # raw data words stay as they are
+        m=re.search(self.CODE_NUMBER,text[len(mnemonic):])
+        if not m:return None,''
+        at=len(mnemonic)+m.start(1);end=len(mnemonic)+m.end(1)
+        return text[:at]+'{}'+text[end:],m.group(1)
+
     def edit_code(self,on):
+        from PyQt6.QtWidgets import QTableWidgetItem
         if on:
-            self._code_original=self.code_preview.toPlainText()
-            if not self._code_lines(self._code_original):
+            lines=self._code_lines(self.code_preview.toPlainText())
+            if not lines:
                 self.code_edit.setChecked(False);self.status.setText('There are no instructions here to edit.');return
-            self.code_preview.setReadOnly(False);self.code_preview.document().clearUndoRedoStacks()
-            self.code_save.setEnabled(True);self.code_discard.setEnabled(True)
-            self.status.setText('Editing native code: change an instruction or its word; addresses stay where they are. Save writes the area file (or MAIN.EXE).')
+            self._code_rows=[];self._code_done=[];self._code_undone=[];self._code_last={}
+            self._code_replaying=True
+            table=self.code_table;table.setRowCount(len(lines))
+            for row,(address,(word,text)) in enumerate(sorted(lines.items())):
+                template,value=self._code_template(text)
+                self._code_rows.append((address,word,text,template,value))
+                cells=(QTableWidgetItem(f'{address:08X}'),QTableWidgetItem(text if template is None else template.replace('{}','#')),
+                       QTableWidgetItem(value))
+                for column,item in enumerate(cells):
+                    flags=Qt.ItemFlag.ItemIsSelectable|Qt.ItemFlag.ItemIsEnabled
+                    if column==2 and template is not None:flags|=Qt.ItemFlag.ItemIsEditable
+                    item.setFlags(flags);table.setItem(row,column,item)
+            table.resizeColumnToContents(0);table.resizeColumnToContents(2)
+            self._code_replaying=False
+            self.code_preview.hide();table.show()
+            self.code_save.setEnabled(True);self.code_discard.setEnabled(True);self._code_buttons()
+            self.status.setText('Editing native code: only the numbers can change (immediates, offsets, shifts, targets). '
+                                'Instructions keep their place; Save assembles and writes them.')
         else:
-            original=getattr(self,'_code_original',None)
-            self.code_preview.setReadOnly(True)
-            if original is not None and self.code_preview.toPlainText()!=original:
-                self.code_preview.setPlainText(original)
-            self._code_original=None
+            self.code_table.hide();self.code_preview.show()
+            self._code_rows=[];self._code_done=[];self._code_undone=[]
             for b in (self.code_save,self.code_undo,self.code_redo,self.code_discard):b.setEnabled(False)
 
+    def _code_cell_changed(self,item):
+        if self._code_replaying or item.column()!=2:return
+        row=item.row();before=self._code_last.get(row,self._code_rows[row][4])
+        self._code_done.append((row,before,item.text()));self._code_undone.clear()
+        self._code_last[row]=item.text();self._code_buttons()
+
+    def _code_set(self,row,text):
+        item=self.code_table.item(row,2)
+        self._code_replaying=True;item.setText(text);self._code_last[row]=text;self._code_replaying=False
+
+    def code_undo_step(self):
+        if not self._code_done:return
+        row,before,after=self._code_done.pop();self._code_set(row,before)
+        self._code_undone.append((row,before,after));self._code_buttons()
+
+    def code_redo_step(self):
+        if not self._code_undone:return
+        row,before,after=self._code_undone.pop();self._code_set(row,after)
+        self._code_done.append((row,before,after));self._code_buttons()
+
+    def _code_buttons(self):
+        editing=self.code_edit.isChecked()
+        self.code_undo.setEnabled(editing and bool(self._code_done))
+        self.code_redo.setEnabled(editing and bool(self._code_undone))
+
     def code_changes(self):
-        """{address: new word} from the edited text, or raise ValueError."""
-        from psx.mips import assemble,AssemblyError,Instruction
-        before=self._code_lines(self._code_original or '')
-        after=self._code_lines(self.code_preview.toPlainText())
+        """{address: new word} from the changed numbers, or raise ValueError."""
+        from psx.mips import assemble,AssemblyError
         changes={}
-        for address,(word,text) in after.items():
-            if address not in before:
-                raise ValueError(f'0x{address:08X} was not in the code shown; only existing instructions can be changed, in place.')
-            old_word,old_text=before[address]
-            if word==old_word and text==old_text:continue
-            if text==old_text:new=word            # the word itself was edited
-            else:
-                try:new=assemble(text,address)
-                except AssemblyError as exc:raise ValueError(f'0x{address:08X}: {exc}') from None
-            if new!=old_word:changes[address]=new
+        for row,(address,word,text,template,value) in enumerate(self._code_rows):
+            item=self.code_table.item(row,2)
+            if template is None or item is None or item.text().strip()==value:continue
+            try:new=assemble(template.format(item.text().strip()),address)
+            except (AssemblyError,ValueError,IndexError) as exc:
+                raise ValueError(f'0x{address:08X} {template.replace("{}","#")}: {exc}') from None
+            if new!=word:changes[address]=new
         return changes
 
     def save_code(self):
@@ -1304,14 +1435,14 @@ class EventEditor(QDialog):
         if bytes(overlay)!=self.overlay:panel.scene.overlay_data=bytes(overlay)
         self.overlay,self.exe=bytes(overlay),bytes(exe)
         panel._scene_memory_cache.clear()
-        self._code_original=None;self.code_edit.setChecked(False)
+        self.code_edit.setChecked(False)
         c=self.drafts[self.active][self.selected] if self.active is not None and self.selected is not None else None
         if c is not None:self.show_code(c)
         self.status.setText(f'Wrote {len(changes)} instruction(s).')
 
     def show_code(self,c):
         if self.code_edit.isChecked():
-            if self.code_preview.toPlainText()!=(self._code_original or ''):
+            if self._code_done:
                 if QMessageBox.question(self,'Unsaved code','Discard the code edit?')!=QMessageBox.StandardButton.Yes:
                     return
             self.code_edit.setChecked(False)
@@ -1341,6 +1472,13 @@ class EventEditor(QDialog):
         self.path_preview.set(steps,row,start,self.others(),f'Page {self.active+1}, through #{row+1:02d}')
 
     def refresh_preview(self):
+        self._refresh_fields()
+        c=self.drafts[self.active][self.selected] if self.active is not None and self.selected is not None else None
+        if c is None:return
+        # The popup's model follows a changed animation number as you drag.
+        if c.opcode in ANIMATION_OPS and self.command_dialog.isVisible():self.preview_model_action()
+
+    def _refresh_fields(self):
         self.store_operands()
         if self.selected is not None:
             c=self.drafts[self.active][self.selected]
@@ -1517,10 +1655,10 @@ class EventEditor(QDialog):
         before=(self._snapshot(),len(self._undo),list(self._redo))
         self.select_action(row)
         tabs=self.preview_tabs
-        wanted={0:c.opcode in TEXT_TAB_OPS,1:c.opcode in MODEL_TAB_OPS or c.opcode in ANIMATION_OPS,
-                2:c.opcode in PATH_TAB_OPS,3:True}
+        wanted={0:c.opcode in TEXT_TAB_OPS or c.opcode in MODEL_TAB_OPS or c.opcode in ANIMATION_OPS,
+                1:c.opcode in PATH_TAB_OPS,2:True}
         for index,shown in wanted.items():tabs.setTabVisible(index,shown)
-        tabs.setCurrentIndex(next(i for i in (0,1,2,3) if wanted[i]))
+        tabs.setCurrentIndex(next(i for i in (0,1,2) if wanted[i]))
         if c.opcode==40 and c.operands[0] in (0,1):self.pick_text.setText('Choose message…');self.pick_text.setEnabled(True)
         else:self.pick_text.setText('Choose dialogue…')
         # The line is edited right here; OK writes it.
@@ -1677,9 +1815,15 @@ class EventEditor(QDialog):
     # --- simulation: where the events so far leave things ---
 
     def start_yaw(self):
+        """The entity's own facing before any preview, in game units."""
         from game.actor_assembly import degrees_to_units
+        saved=getattr(getattr(self,'viewport',None),'entity',None)
+        found=baked_facing(saved['assembly'] if saved else getattr(self.instance,'assembly',None))
         base=getattr(getattr(self,'viewport',None),'base',None)
         angle=base[0][3] if base is not None else getattr(self.instance,'angle',0)
+        if found is not None:
+            pose_yaw,facing=found
+            return (facing+degrees_to_units(angle or 0)-pose_yaw)&0xfff
         return degrees_to_units(angle or 0)
 
     TOMBA_DISTANCE = 250    # assumed stand-off when a page gives no position
@@ -1886,7 +2030,17 @@ class EventEditor(QDialog):
         facing=yaw_toward(place,tomba)
         self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]))
 
-    def _with_frames(self,who,animation,show):
+    def zippo_animation_of(self,c):
+        """The animation a command plays on Zippo, or None if it plays on
+        the entity (or none). Conversation pages run on Zippo."""
+        o=c.operands;talking=self.is_conversation()
+        if c.opcode==30 and (o[0]&1 or talking):return o[1] if o[1]>=0 else None
+        if c.opcode==1 and (o[0]&0x8000 or talking):return o[2] if o[2]>=0 else None
+        if c.opcode in (57,58) and (o[0]&0x8000 or talking) and not (c.opcode==58 and o[0]&0x7fff==2):
+            return o[1] if o[1]>=0 else None
+        return None
+
+    def _with_frames(self,who,animation,show,viewport=True):
         """Run `show((frames, loop))` with the frames, decoding them first
         (in the background, once per animation)."""
         cache=self._zippo_frames if who=='zippo' else self._entity_frames
@@ -1896,6 +2050,7 @@ class EventEditor(QDialog):
         animations=self.bindings[self.active].animations if self.active is not None else None
         job=FramesDecode(self.panel.scene,self.instance,animation,who,animations,self)
         job.who,job.animation,job.show,job.row=who,animation,show,(self.active,self.selected)
+        job.viewport=viewport
         self.frames_jobs.append(job);job.decoded.connect(self._frames_decoded);job.start()
 
     def _frames_decoded(self,result):
@@ -1906,7 +2061,7 @@ class EventEditor(QDialog):
         entry=(frames,loop,origin if origin is not None else (0.0,0.0,0.0),yaw or 0)
         (self._zippo_frames if job.who=='zippo' else self._entity_frames)[job.animation]=entry
         if error:self.status.setText(f'{"Zippo" if job.who=="zippo" else "Animation"} not simulated: {error}')
-        if frames and job.row==(self.active,self.selected) and self.timeline_box.isChecked():job.show(entry)
+        if frames and job.row==(self.active,self.selected) and (self.timeline_box.isChecked() or not job.viewport):job.show(entry)
 
     def run_camera(self,row):
         """The game's own camera code over rows 0..row (background)."""
@@ -2112,12 +2267,20 @@ class EventEditor(QDialog):
 
     def preview_model_action(self):
         if self.selected is None:
-            self.preview_tabs.setCurrentWidget(self.model_tab)
+            self.preview_tabs.setCurrentWidget(self.both_tab)
             self.show_model_parts(None);return
         self.store_operands();command=self.drafts[self.active][self.selected]
-        self.preview_tabs.setCurrentWidget(self.model_tab)
+        self.preview_tabs.setCurrentWidget(self.both_tab)
         if command.opcode not in ANIMATION_OPS:
             self.show_model_parts(None);return
+        zippo=self.zippo_animation_of(command)
+        if zippo is not None:
+            # Zippo's animation, on Zippo's own model (area file 16).
+            self.model_note.setText(f'Initialising Zippo’s animation {zippo}…')
+            note=f'Zippo animation {zippo} (area file 16, conversation table 0x8001B860)'
+            self._with_frames('zippo',zippo,lambda r:self.animation_ready((r[0],f'{note}: {len(r[0])} ticks at 30 Hz',r[1])),
+                              viewport=False)
+            return
         key=self._animation_key_of(command)
         cached=getattr(self,'_animation_cache',{}).get(key)
         if cached is not None:
@@ -2156,7 +2319,7 @@ class EventEditor(QDialog):
         if self.selected is None:return
         self.store_operands();c=self.drafts[self.active][self.selected]
         if c.opcode not in TOMBA_OPS:return
-        self.preview_tabs.setCurrentWidget(self.model_tab)
+        self.preview_tabs.setCurrentWidget(self.both_tab)
         animation=c.operands[1] if c.opcode==55 else c.operands[2]
         if animation<0:self.model_note.setText('Tomba animation is chosen at runtime.');return
         cached=self._tomba_cache.get(animation)
@@ -2205,8 +2368,9 @@ class EventEditor(QDialog):
         if self.animation_kind=='tomba':self.model_viewer.set_pose(frame,self._tomba_pivots)
         else:self.show_model_parts(frame,frame=False)
 
-    def _entity_model(self,parts):
-        """The entity alone as a model (posed by `parts` if given), or None."""
+    def _entity_model(self,parts,face_front=False):
+        """The entity alone as a model (posed by `parts` if given), or None.
+        `face_front` turns it to game yaw 0 whatever way it was facing."""
         from gui.level.level_scene import LevelScene
         from game.actor_sim import Posed
         from copy import copy
@@ -2217,6 +2381,9 @@ class EventEditor(QDialog):
             from game.actor_assembly import degrees_to_units
             posed=Posed(self.instance.label,'Native animation preview',parts,[],np.array(self.instance.game_position),degrees_to_units(self.instance.angle))
             selected.assembly=posed;selected.sources=posed.sources
+        if face_front:
+            found=baked_facing(getattr(selected,'assembly',None))
+            if found is not None:selected.angle=((found[0]-found[1])&0xfff)*360/4096
         selected.index=0
         try:
             scene=LevelScene();scene.__dict__.update(self.panel.scene.__dict__)
@@ -2237,6 +2404,12 @@ class EventEditor(QDialog):
             from game.actor_assembly import degrees_to_units
             posed=Posed(self.instance.label,'Native animation preview',parts,[],np.array(self.instance.game_position),degrees_to_units(self.instance.angle))
             selected.assembly=posed;selected.sources=posed.sources
+        # Seen from the front: the facing the game baked in is undone, once
+        # per clip (from its first frame) so a turning root does not jitter.
+        found=baked_facing(getattr(selected,'assembly',None))
+        if frame or getattr(self,'_model_face',None) is None:
+            self._model_face=None if found is None else (found[0]-found[1])&0xfff
+        if self._model_face is not None and found is not None:selected.angle=self._model_face*360/4096
         selected.index=0
         scene=LevelScene();scene.__dict__.update(self.panel.scene.__dict__)
         scene.instances=[selected];scene.__dict__.pop('_built_model',None)
@@ -2264,7 +2437,7 @@ class EventEditor(QDialog):
         self.model_viewer.pose=None;self.model_viewer.pose_spares={}
         self.model_viewer.model_data=model;self.model_viewer.hidden_groups=set()
         self.model_viewer.prepare_buffers()
-        if frame:self.model_viewer.frame_model(heading=180.0)
+        if frame:self.model_viewer.frame_model(heading=self.AVATAR_HEADING)
         self.model_viewer.update()
 
     def done(self,result):

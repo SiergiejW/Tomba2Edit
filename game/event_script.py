@@ -65,6 +65,8 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
  47: ('Playback mode', 'Voice ID', 'Countdown'),
  46: ('Sound ID', 'Pitch offset', 'Volume offset'),
  11: ('Mode (0 = end, else start + letterbox mode)', 'Cue (1-8)', 'Unused'),
+ 18: ('Event (-1 = none, only wait)', 'Do not wait for the banner (0 = wait)', 'Unused'),
+ 19: ('Event', 'Do not wait for the banner (0 = wait)', 'Unused'),
  49: ('Mode (2 = camera-relative)', 'Axis (0 X, else depth)', 'Target coordinate'),
  62: ('Unused', 'Code address low', 'Code address high'),
  # Decomp: f_WaitForTombaScriptedActionCommand - waits for Tomba to be handed
@@ -258,7 +260,12 @@ def summary(c):
         held = ' and '.join(n for b, n in ((1, f'X {o[1]}'), (2, f'height {o[2]}')) if o[0] & b)
         return 'Wait for Tomba to take cutscene control' + (f', holding {held}' if held else '')
     if op in (18, 19):
-        return f'{"Start" if op == 18 else "Complete"} quest {event_label(o[0])}' + ('' if o[1] else ', wait for its notice')
+        # f_RunStartEventCommand / f_RunUpdateEventCommand: waiting for the
+        # event banner to finish is the default, so only not waiting is said.
+        if op == 18 and o[0] < 0: return 'Wait for the event banners to finish'
+        verb = 'Start' if op == 18 else 'Complete'
+        label = event_label(o[0])
+        return f'{verb} {label[0].upper()}{label[1:]}' + (' (goes on while its banner shows)' if o[1] else '')
     if op == 41: return f'Spawn {item_label(o[0])} at Tomba'
     if op == 38: return f'Spawn pickup ({o[0]}, {o[1]}, {o[2]})'
     if op == 16: return f'Interaction offset ({o[0]}, {o[1]}, {o[2]})'

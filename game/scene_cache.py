@@ -80,8 +80,8 @@ def read(name):
     try:
         with open(path, "rb") as f:
             return pickle.load(f)
-    except (OSError, pickle.PickleError, AttributeError, EOFError, ValueError):
-        return None
+    except (OSError, pickle.PickleError, AttributeError, EOFError, ValueError, ImportError):
+        return None        # ImportError: kept by another numpy version
 
 
 def write(name, state):
