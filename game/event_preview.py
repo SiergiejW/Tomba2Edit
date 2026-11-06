@@ -335,3 +335,77 @@ def tomba_pieces(result, frame, position, yaw, lift=0.0):
     for rotation, offset in result['frames'][frame][:17]:
         pieces.append((axes @ (turn @ rotation) @ axes, axes @ (turn @ offset + at)))
     return pieces
+
+
+ZIPPO_HANDLER = 0x80071A3C       # f_HandleAreaScriptActor (src_CurrentScriptActor)
+ZIPPO_PARTS = 12                 # f_InitializeMultiPartActorModel(actor, 0xC, area slot 16, ...)
+_zippo_worlds = {}
+
+
+def _zippo_actor(scene):
+    """The area's Zippo, stood up by its own initialiser in an emulated
+    world of this area (cached per area): (world, actor)."""
+    key = (scene.dat_path, scene.chunk_index, scene.overlay_path)
+    if key in _zippo_worlds:
+        return _zippo_worlds[key]
+    idx = getattr(scene, 'idx_path', str(Path(scene.dat_path).with_name('TOMBA2.IDX')))
+    world = actor_sim.World(scene.exe_path, scene.overlay_path, scene.dat_path, idx,
+                            scene.chunk_index, scene.area_index)
+    world.static_edit = True; world.start_workers()
+    address = world._alloc(actor_sim.ACTOR_SIZE + actor_sim.MAX_PARTS * 4)
+    world.mem.load(address, bytes(actor_sim.ACTOR_SIZE + actor_sim.MAX_PARTS * 4))
+    world.mem.write(address + actor_sim.CALLBACK, 4, ZIPPO_HANDLER)
+    actor = actor_sim.Actor(address, ZIPPO_HANDLER)
+    world.actors.append(actor); world.by_address[address] = actor
+    world.run(4, only=lambda a: a is actor, workers=False)
+    if not actor.parts:
+        raise ValueError("Zippo's model (area file 16) did not initialise in this area.")
+    _zippo_worlds[key] = (world, actor)
+    return world, actor
+
+
+def zippo_frames(scene, animation, max_ticks=180):
+    """(frames, loop tick, origin, yaw) of Zippo playing `animation` from
+    the conversation animation table (0x8001B860), as actor_sim Parts."""
+    world, actor = _zippo_actor(scene)
+    base = world.snapshot()
+    try:
+        table = world.mem.read(actor.address + 0x7C, 4)
+        if not actor_sim._in_ram(table): raise ValueError("Zippo has no animation table.")
+        pointer = world.mem.read(table + (animation & 0xFF) * 4, 4)
+        from formats.animation.sequences import read_clip
+        clip = read_clip(bytes(world.mem.ram), actor_sim.RAM_BASE, pointer, actor_sim._ANY_POSE)
+        transform = world._transform_of(ZIPPO_HANDLER) or 0
+        world.cpu.call(0x80041718, (actor.address, animation & 0xFF, 0), sp=actor_sim.STACK)
+        models, _ = world._maps(); frames = []
+        for _tick in range(min(max(1, clip.duration), max_ticks)):
+            if transform:
+                world.cpu.call(transform, (actor.address,), budget=200000, sp=actor_sim.STACK)
+            else:
+                world.run(1, only=lambda a: a is actor, workers=False)
+            parts = world._parts(actor, models)
+            if not parts: raise ValueError("Zippo's animation produced no model parts.")
+            frames.append(parts)
+            world.cpu.call(actor_sim.ADVANCE_SKELETAL, (actor.address,), budget=200000, sp=actor_sim.STACK)
+        loop = clip.starts[clip.loop_start] if clip.loop_start is not None and clip.duration <= max_ticks else None
+        return frames, loop, np.array(actor.position if actor.position is not None else (0, 0, 0), dtype=float), 0
+    finally:
+        world.restore(base)
+
+
+def zippo_position(tomba, tomba_yaw, flags=0, offset=None):
+    """Where f_UpdateScriptActorConversationState / FUN_8007091c settle
+    Zippo for a conversation: at Tomba plus 190 (or the request's own
+    offsets) round Tomba's facing, 80 + 70 above. `flags` are the request
+    flags (Request conversation, operand 2): bits 0-1 pick the side, 0x20
+    turns 45 degrees more, 4 uses `offset` (x, height, angle) instead."""
+    import math
+    if flags & 4 and offset is not None:
+        radius, height, turn = offset
+    else:
+        radius, height = 0xBE, 0x50
+        turn = (0, 0x800, 0xC00, 0x400)[flags & 3] + (0x200 if flags & 0x20 else 0)
+    a = ((tomba_yaw + turn) & 0xFFF) * 2 * math.pi / 4096
+    x, h, d = tomba
+    return (x + radius * math.cos(a), h - height - 0x46, d - radius * math.sin(a))
+

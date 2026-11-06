@@ -2935,31 +2935,38 @@ class LevelScene:
         self._place_followers()
         verts = np.array(scene["vertices"], dtype=np.float32)
         for instance in self.instances:
-            if (not instance.vertex_count or instance.role == "room"
-                    or instance.authored):
-                continue
-            if instance.assembly is not None and instance.spans:
-                pieces = instance.assembly.pose(game_state(instance))
-                for span, (m, t) in zip(instance.spans, pieces):
-                    if span is None:
-                        continue
-                    first, count = span
-                    block = verts[first:first + count].astype(np.float64)
-                    moved = (block @ (VIEW_AXES @ m @ VIEW_AXES).T
-                             + VIEW_AXES @ t)
-                    verts[first:first + count] = moved.astype(np.float32)
-                continue
-            at = instance.first_vertex
-            block = verts[at:at + instance.vertex_count].astype(np.float64)
-            # A part that hangs off the origin is moved there first, so
-            # the instance's own turn carries it round with the rest.
-            for first, count, shift in instance.parts or ():
-                start = first - at
-                block[start:start + count] += shift
-            moved = block @ instance.matrix().T
-            moved += (instance.x, instance.y, instance.z)
-            verts[at:at + instance.vertex_count] = moved.astype(np.float32)
+            self.place_instance(instance, verts, verts)
         return verts
+
+    def place_instance(self, instance, source, out, scale=1.0):
+        """Write one instance's vertices, transformed, from `source` (the
+        scene's rest vertices) into `out`, divided by `scale`. What
+        positions() does per instance - so one animating instance can be
+        moved without recomputing the whole level."""
+        if (not instance.vertex_count or instance.role == "room"
+                or instance.authored):
+            return
+        if instance.assembly is not None and instance.spans:
+            pieces = instance.assembly.pose(game_state(instance))
+            for span, (m, t) in zip(instance.spans, pieces):
+                if span is None:
+                    continue
+                first, count = span
+                block = np.asarray(source[first:first + count], dtype=np.float64)
+                moved = (block @ (VIEW_AXES @ m @ VIEW_AXES).T
+                         + VIEW_AXES @ t)
+                out[first:first + count] = (moved / scale).astype(np.float32)
+            return
+        at = instance.first_vertex
+        block = np.array(source[at:at + instance.vertex_count], dtype=np.float64)
+        # A part that hangs off the origin is moved there first, so
+        # the instance's own turn carries it round with the rest.
+        for first, count, shift in instance.parts or ():
+            start = first - at
+            block[start:start + count] += shift
+        moved = block @ instance.matrix().T
+        moved += (instance.x, instance.y, instance.z)
+        out[at:at + instance.vertex_count] = (moved / scale).astype(np.float32)
 
     def _place_followers(self):
         """Put every riding pickup back where its parent now holds it."""

@@ -149,6 +149,52 @@ def move_speed(c):
     value = value - 256 if value > 127 else value
     return value or 10
 
+# State banks the conditions read (base 0x800BF870 + 0x44 / + 0x144).
+EVENT_STATES = 0x800BF8B4
+AREA_PROGRESS = 0x800BF9B4
+_OPS = {-1: 'always', 0: '==', 1: '<=', 2: '>=', 3: '& any'}
+_NOT = {-1: 'never', 0: '!=', 1: '>', 2: '<', 3: '& none of'}
+
+
+def event_value(value):
+    value &= 0xFF
+    return {0: 'not started', 255: 'cleared'}.get(value, f'step {value}')
+
+
+def condition_text(op, mode, index, value, negate=False):
+    """f_EvaluateScriptByteCondition, read out: 43 tests area progress,
+    44 an event state, 42 the dialogue selector."""
+    if op == 42:
+        return f'dialogue selector {"!=" if negate else "=="} {mode}'
+    what = f'event {index}' if op == 44 else f'progress {index}'
+    if mode == -1:
+        return 'never' if negate else 'always'
+    rel = (_NOT if negate else _OPS).get(mode, f'mode {mode}')
+    shown = f'{value} ({event_value(value)})' if op == 44 and mode in (0, 1, 2) else f'0x{value & 0xFF:02X}' if mode == 3 else str(value)
+    return f'{what} {rel} {shown}'
+
+
+def insert_branch(commands, selected, opcode, operands, target):
+    """Insert a conditional before row `selected`: when it holds, jump to
+    row `target` (an index into `commands` before insertion); otherwise
+    run on into the selected row. Branch form 0x4000, pointer at +12."""
+    if opcode not in CONDITION_OPS: raise ValueError('Only If commands branch.')
+    if not 0 <= target < len(commands): raise ValueError('Choose the row the If jumps to.')
+    here, there = commands[selected].address, commands[target].address
+    identity = min([0] + [c.address for c in commands]) - 1
+    operands = list(operands) + [0] * (3 - len(operands))
+    raw = struct.pack('<Hhhh', opcode | BRANCH, *operands[:3]) + bytes(4) + bytes(4)
+    _redirect(commands, here, identity)
+    command = Command(identity, raw, [(here, None), (there, 12)])
+    commands.insert(selected, command)
+    return command
+
+
+def set_branch_target(command, target_address):
+    if command.branch is None: raise ValueError('This command does not jump.')
+    command.edges = [(target_address if p is not None else a, p) for a, p in command.edges]
+
+
 def summary(c):
     """One readable line per action, RPG-Maker style."""
     o = c.operands; op = c.opcode
@@ -157,10 +203,10 @@ def summary(c):
     if op in (0, 1):
         entry = 'runtime-selected entry' if o[1] < 0 else f'entry {o[1]}'
         # 0x8000: the gesture plays on src_CurrentScriptActor, not this entity.
-        who = 'script actor' if o[0] & 0x8000 else 'actor'
+        who = 'Zippo' if o[0] & 0x8000 else 'actor'
         return f'{c.label}: dialogue {o[0]&0xfff}, {entry}' + (f', {who} animation {o[2]}' if op == 1 else '')
     if op == 30:
-        who = 'script actor' if o[0] & 1 else 'this actor'
+        who = 'Zippo' if o[0] & 1 else 'this actor'
         # -1: the actor's rest animation (+0x7B), f_RunScriptedActorAnimationCommand.
         if o[1] < 0: return f'Back to rest animation on {who}' + (', wait' if o[0] & 2 else '')
         return f'Play animation {o[1]} on {who}' + (', wait' if o[0] & 2 else '')
@@ -186,10 +232,10 @@ def summary(c):
         how = {0: ', wait', 2: ', hold'}.get(o[0], '')
         return f'Tomba animation {o[1]}' + how
     if op == 57:
-        who = 'script actor' if o[0] & 0x8000 else 'this actor'
+        who = 'Zippo' if o[0] & 0x8000 else 'this actor'
         return f'Play animation {o[1]} on {who} with Tomba animation {o[2]}'
     if op == 58:
-        who = 'Script actor' if o[0] & 0x8000 else 'Actor'
+        who = 'Zippo' if o[0] & 0x8000 else 'Actor'
         mode = o[0] & 0x7fff
         then = '' if mode == 2 else f', then animation {o[1]} with Tomba animation {o[2]}' + (', wait' if mode == 0 else '')
         return f'{who} and Tomba face each other{then}'
@@ -200,7 +246,7 @@ def summary(c):
     if op == 36:
         speed = f'{move_speed(c)}/tick' if c.extended else 'carried-over speed'
         return f'Move to X {o[0]}, height {o[1]}, depth {o[2]} at {speed}'
-    if op == 31: return f'Turn {"script actor" if o[0] & 0x8000 else "actor"} (mode {o[0]&0x7fff}) to {o[2]*360/4096:.0f}°, step {o[1]}'
+    if op == 31: return f'Turn {"Zippo" if o[0] & 0x8000 else "actor"} (mode {o[0]&0x7fff}) to {o[2]*360/4096:.0f}°, step {o[1]}'
     if op == 23: return f'Camera angles {o[0]}, {o[1]}, {o[2]}'
     if op == 22:
         mode = {0: f'set mode {o[1]}', 1: f'assign mode {o[1]}', -1: 'restore mode'}.get(o[0], f'op {o[0]}')
@@ -208,8 +254,7 @@ def summary(c):
         return f'Camera focus: {mode}{focus}'
     if op == 21: return f'Camera transform 0x{code_pointer(c):08X}' + (f' over {o[4]} ticks' if c.extended else '')
     if op in (43, 44):
-        what = 'progress' if op == 43 else 'event'
-        return f'If {what}[{o[1]}] {cond(o[0])} {o[2]}'
+        return 'If ' + condition_text(op, o[0], o[1], o[2]) + ' -> jump'
     if op == 6: return f'Wait until progress[{o[1]}] {("==", "& any", "& none")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
     if op == 9: return f'Wait until conversation progress == {o[0]}'
     if op == 42: return f'If dialogue selector == {o[0]}'
@@ -743,3 +788,165 @@ def conversations(exe, overlay, area, pages, requests=()):
                            animations=CONVERSATION_ANIMATIONS, table=True, request=request))
         pending.extend(nodes)            # a conversation may request another
     return out
+
+
+# --- why a page runs: the native branches that lead to its loader call ---
+
+# Handler-held actor bytes worth naming (the actor is a0 / s-registers).
+ACTOR_FIELDS = {0x03: 'control', 0x04: 'state', 0x05: 'phase', 0x06: 'step',
+                0x2B: 'variant (scene record)', 0x7A: 'dialogue selector', 0xBF: 'conversation handler'}
+GLOBALS = {0x800BF870: 'area', 0x800BF817: 'interior', 0x800BF816: 'weaponless interior',
+           0x800BF80E: 'Tomba cutscene control', 0x800BF830: 'conversation request',
+           0x800BF831: 'conversation flags'}
+_COND = {'beq': ('==', '!='), 'bne': ('!=', '=='), 'blez': ('<= 0', '> 0'), 'bgtz': ('> 0', '<= 0'),
+         'bltz': ('< 0', '>= 0'), 'bgez': ('>= 0', '< 0')}
+_symbols = None
+
+
+def _symbol(address):
+    global _symbols
+    if _symbols is None:
+        _symbols = {}
+        try:
+            import json
+            from pathlib import Path as _P
+            path = _P(__file__).resolve().parents[1] / 'decomp' / 'symbols_us.json'
+            for name, value in json.loads(path.read_text(encoding='utf-8')).items():
+                if isinstance(value, list) and len(value) == 2: _symbols[value[1]] = name
+        except (OSError, ValueError): pass
+    return _symbols.get(address, f'0x{address:08X}')
+
+
+def _global(address):
+    if EVENT_STATES <= address < EVENT_STATES + 0x100: return f'event {address - EVENT_STATES}'
+    if AREA_PROGRESS <= address < AREA_PROGRESS + 0x100: return f'progress {address - AREA_PROGRESS}'
+    return GLOBALS.get(address, f'[0x{address:08X}]')
+
+
+def _describe(flow, image, reg, at, depth=0):
+    """What register `reg` holds just before `at`: a constant, a named
+    actor byte or global, a call's result - read back along straight code."""
+    if reg == 0: return 0
+    if depth > 3: return '?'
+    lui = None
+    for back in range(1, 16):
+        a = at - back * 4
+        if a not in image: break
+        i = image.at(a)
+        if i.name in ('j', 'jr') and back > 1: break
+        if i.name == 'jal' and reg in CALLER_SAVED:
+            return f'{_symbol(i.target)}()' if reg == 2 else '?'
+        if _dest(i) != reg: continue
+        if i.name in ('addiu', 'ori') and i.rs == 0: return i.imm if i.name == 'addiu' else i.unsigned
+        if i.name == 'lui': return i.unsigned << 16
+        if i.name in ('addu', 'or') and 0 in (i.rs, i.rt):
+            return _describe(flow, image, i.rt if i.rs == 0 else i.rs, a, depth + 1)
+        if i.name in ('lb', 'lbu', 'lh', 'lhu', 'lw'):
+            base = _describe(flow, image, i.rs, a, depth + 1)
+            if isinstance(base, int) and base & 0x80000000:
+                return _global((base + i.imm) & 0xFFFFFFFF)
+            if i.rs in (4, 16, 17, 18, 19):
+                return f'actor {ACTOR_FIELDS.get(i.imm, f"+0x{i.imm:X}")}'
+            return '?'
+        if i.name == 'addiu':
+            base = _describe(flow, image, i.rs, a, depth + 1)
+            return (base + i.imm) & 0xFFFFFFFF if isinstance(base, int) else '?'
+        if i.name == 'andi':
+            return f'({_describe(flow, image, i.rs, a, depth + 1)} & 0x{i.unsigned:X})'
+        if i.name in ('slti', 'sltiu'):
+            return f'({_describe(flow, image, i.rs, a, depth + 1)} < {i.imm})'
+        return '?'
+    return '?'
+
+
+def _shown(value):
+    return f'{value}' if isinstance(value, int) and -256 <= value <= 255 else (
+        f'0x{value & 0xFFFFFFFF:X}' if isinstance(value, int) else value)
+
+
+def _branch_text(flow, image, b, taken):
+    yes, no = _COND[b.name]
+    rel = yes if taken else no
+    left = _describe(flow, image, b.rs, b.address)
+    if b.name in ('beq', 'bne'):
+        right = _describe(flow, image, b.rt, b.address)
+        if right == 0 and isinstance(left, str) and left.startswith('(') and left.endswith(')'):
+            inner = left[1:-1]
+            return inner if rel == '!=' else f'not {inner}'
+        if right == 0 and isinstance(left, str) and left.endswith('()'):
+            return f'{left} {"returns non-zero" if rel == "!=" else "returns 0"}'
+        if isinstance(left, str) and left.startswith('event ') and isinstance(right, int) and rel in ('==', '!='):
+            state = event_value(right)
+            return f'{left} {"is" if rel == "==" else "is not"} {state}'
+        return f'{_shown(left)} {rel} {_shown(right)}'
+    return f'{_shown(left)} {rel}'
+
+
+def page_conditions(exe, overlay, handler, caller, merges=48):
+    """The native tests that hold whenever a page's loader call is reached,
+    nearest first: each conditional branch and jump-table case crossed on
+    the way back from the call. Where paths merge, only the tests every
+    incoming path makes are kept; a path through a loop adds nothing."""
+    flow = Flow(exe, overlay, handler)
+    memo = {}
+
+    def step(p, at):
+        image = flow.image(p)
+        if image is None or p - 4 not in image: return None
+        b = image.at(p - 4)
+        if b.name in _COND and b.target is not None:
+            return _branch_text(flow, image, b, at == b.target)
+        if b.name == 'jr' and b.rs != 31:
+            targets = flow._table(image, b.address, b.rs)
+            cases = [k for k, t in enumerate(targets) if t == at]
+            bound = next((image.at(b.address - n * 4) for n in range(1, 16)
+                          if image.at(b.address - n * 4).name == 'sltiu'), None)
+            index = _describe(flow, image, bound.rs, bound.address) if bound else '?'
+            if cases:
+                return f'{_shown(index)} == {cases[0]}' if len(cases) == 1 else f'{_shown(index)} in {cases}'
+        return None
+
+    def back(at, budget, visiting):
+        """Tests on every path into `at` (a list, nearest first)."""
+        if at in memo: return memo[at]
+        if budget <= 0 or at in visiting: return None      # loop / too deep: no claim
+        visiting = visiting | {at}
+        found = []
+        while True:
+            preds = flow.preds.get(at, ())
+            if not preds: break                            # the handler's entry
+            if len(preds) == 1:
+                p = preds[0][0]
+                if p in visiting: return None
+                t = step(p, at)
+                if t: found.append(t)
+                at = p; visiting = visiting | {at}
+                continue
+            paths = []
+            for p, _call in preds:
+                t = step(p, at)
+                rest = back(p, budget - 1, visiting)
+                if rest is None: continue                   # a loop edge: ignore it
+                paths.append(([t] if t else []) + rest)
+            if paths:
+                common = [t for t in paths[0] if all(t in other for other in paths[1:])]
+                found.extend(dict.fromkeys(common))
+            break
+        memo[at] = found
+        return found
+
+    return _tidy(back(caller, merges, frozenset()) or [])
+
+
+def _tidy(conditions):
+    """Readable: 'not x < 2' as 'x >= 2', and a jump table's bound check
+    ('x < 5') dropped where its exact case ('x == 3') is already there."""
+    import re
+    out = []
+    for c in conditions:
+        m = re.fullmatch(r'not (.+) < (-?\d+)', c)
+        out.append(f'{m.group(1)} >= {m.group(2)}' if m else c)
+    exact = {re.match(r'(.+) (==|in) ', c).group(1) for c in out if re.match(r'(.+) (==|in) ', c)}
+    return [c for c in out if not (re.fullmatch(r'(.+) < -?\d+', c)
+                                   and re.fullmatch(r'(.+) < -?\d+', c).group(1) in exact)]
+

@@ -751,9 +751,32 @@ class LevelViewer(SMSTViewer):
             return np.zeros((0, 3), dtype=np.float32)
         return self.scene.positions(self.model_data) / UNIT_SCALE
 
+    def refresh_moving(self, indices):
+        """Just these instances' vertices, for playback: the rest of the
+        level keeps the positions it already has. Picking and the
+        selection box catch up on the next refresh_instance()."""
+        model = self.model_data
+        if self.scene is None or not model or self._arrays is None:
+            return
+        rest = getattr(self, "_rest_vertices", None)
+        cache = getattr(self, "_moving_positions", None)
+        if (cache is None or rest is None or len(cache) != len(model["vertices"])
+                or getattr(self, "_moving_model", None) is not model["vertices"]):
+            rest = self._rest_vertices = np.asarray(model["vertices"], dtype=np.float32)
+            cache = self._moving_positions = self._positions().astype(np.float32)
+            self._moving_model = model["vertices"]
+        for index in indices:
+            if 0 <= index < len(self.scene.instances):
+                self.scene.place_instance(self.scene.instances[index], rest, cache, UNIT_SCALE)
+        positions, colors, tex_coords, indices_, windows, levels = self._arrays
+        self._arrays = (cache.flatten(), colors, tex_coords, indices_, windows, levels)
+        self._positions_dirty = True
+        self.update()
+
     def refresh_instance(self, index=None):
         """Rebuild after an instance has been moved - the cheap path, the
         same one a pose takes in the SMST viewer: same mesh, moved."""
+        self._moving_positions = None
         self.refresh_positions()
         self.rebuild_markers()
         self._build_selection()
