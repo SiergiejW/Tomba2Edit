@@ -152,6 +152,44 @@ def move_speed(c):
 # State banks the conditions read (base 0x800BF870 + 0x44 / + 0x144).
 EVENT_STATES = 0x800BF8B4
 AREA_PROGRESS = 0x800BF9B4
+INVENTORY = 0x800BFAB4          # one quantity byte per item ID (f_AddInventoryQuantity)
+EVENT_NAMES = 0x800A33E4        # US: event 1's 12-byte record; word 0 = its title
+EVENT_COUNT = 0x8A
+_names = {'events': {}, 'items': {}}
+
+
+def load_names(exe, exe_path=None):
+    """Event titles (MAIN.EXE's event table, as the pause menu's log shows
+    them) and item names, for labelling rows and conditions. US retail
+    only; elsewhere the numbers stand alone."""
+    events = {}
+    if game_build.current().name == 'us-retail':
+        base = struct.unpack_from('<I', exe, 24)[0]
+        for n in range(1, EVENT_COUNT + 1):
+            at = EVENT_NAMES + (n - 1) * 12 - base + 0x800
+            pointer = struct.unpack_from('<I', exe, at)[0] - base + 0x800
+            if 0x800 <= pointer < len(exe):
+                end = exe.find(b'\0', pointer, pointer + 96)
+                if end > pointer: events[n] = exe[pointer:end].decode('latin-1').replace('\n', ' ')
+    items = {}
+    if exe_path:
+        try:
+            from formats.sprites.pickup_art import item_names
+            items = item_names(exe_path)
+        except Exception: pass
+    _names.update(events=events, items=items)
+
+
+def event_label(n):
+    name = _names['events'].get(n)
+    return f'event {n} “{name}”' if name else f'event {n}'
+
+
+def item_label(n):
+    name = _names['items'].get(n)
+    return f'item {n} “{name}”' if name else f'item {n}'
+
+
 _OPS = {-1: 'always', 0: '==', 1: '<=', 2: '>=', 3: '& any'}
 _NOT = {-1: 'never', 0: '!=', 1: '>', 2: '<', 3: '& none of'}
 
@@ -166,7 +204,7 @@ def condition_text(op, mode, index, value, negate=False):
     44 an event state, 42 the dialogue selector."""
     if op == 42:
         return f'dialogue selector {"!=" if negate else "=="} {mode}'
-    what = f'event {index}' if op == 44 else f'progress {index}'
+    what = event_label(index) if op == 44 else f'progress {index}'
     if mode == -1:
         return 'never' if negate else 'always'
     rel = (_NOT if negate else _OPS).get(mode, f'mode {mode}')
@@ -220,7 +258,9 @@ def summary(c):
         held = ' and '.join(n for b, n in ((1, f'X {o[1]}'), (2, f'height {o[2]}')) if o[0] & b)
         return 'Wait for Tomba to take cutscene control' + (f', holding {held}' if held else '')
     if op in (18, 19):
-        return f'{"Start" if op == 18 else "Complete"} quest event {o[0]}' + ('' if o[1] else ', wait for its notice')
+        return f'{"Start" if op == 18 else "Complete"} quest {event_label(o[0])}' + ('' if o[1] else ', wait for its notice')
+    if op == 41: return f'Spawn {item_label(o[0])} at Tomba'
+    if op == 38: return f'Spawn pickup ({o[0]}, {o[1]}, {o[2]})'
     if op == 16: return f'Interaction offset ({o[0]}, {o[1]}, {o[2]})'
     if op == 13:
         where = f', Tomba at offset ({o[3]}, {o[4]}, {o[5]})' if o[2] & 4 and c.extended else ''
@@ -818,7 +858,8 @@ def _symbol(address):
 
 
 def _global(address):
-    if EVENT_STATES <= address < EVENT_STATES + 0x100: return f'event {address - EVENT_STATES}'
+    if EVENT_STATES <= address < EVENT_STATES + 0x100: return event_label(address - EVENT_STATES)
+    if INVENTORY <= address < INVENTORY + 0x100: return f'count of {item_label(address - INVENTORY)}'
     if AREA_PROGRESS <= address < AREA_PROGRESS + 0x100: return f'progress {address - AREA_PROGRESS}'
     return GLOBALS.get(address, f'[0x{address:08X}]')
 
@@ -875,6 +916,8 @@ def _branch_text(flow, image, b, taken):
             return inner if rel == '!=' else f'not {inner}'
         if right == 0 and isinstance(left, str) and left.endswith('()'):
             return f'{left} {"returns non-zero" if rel == "!=" else "returns 0"}'
+        if isinstance(left, str) and left.startswith('count of ') and right == 0 and rel in ('==', '!='):
+            return f'Tomba {"has no" if rel == "==" else "has"} {left[9:]}'
         if isinstance(left, str) and left.startswith('event ') and isinstance(right, int) and rel in ('==', '!='):
             state = event_value(right)
             return f'{left} {"is" if rel == "==" else "is not"} {state}'

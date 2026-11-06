@@ -344,6 +344,10 @@ import numpy as np
 from game import actor_sim
 
 
+# The stand-in Tomba's model id in the level scene: past any real trail id.
+TOMBA_MODEL = actor_sim.TRAIL_ID + 0xFFF0
+
+
 class ViewportPreview(QObject):
     """Shows actions in the level viewport. Display only: no record is
     written and nothing is marked as changed.
@@ -619,13 +623,25 @@ class ViewportPreview(QObject):
             self._rebuild(viewer)
         elif self.tomba['result'] is not result and self.tomba['result']['by_bone']!=result['by_bone']:
             # Another head or hands: different geometry.
-            self.tomba['instance'].sources=tuple((actor_sim.TRAIL_ID,g) for g in result['by_bone'])
+            self.tomba['instance'].sources=tuple((TOMBA_MODEL,g) for g in result['by_bone'])
             self._rebuild(viewer)
         self.tomba.update(position=position,yaw=yaw,result=result,tick=tick,lift=lift)
         self._draw_tomba()
         if len(result['frames'])>1:self.tomba_timer.start()
         else:self.tomba_timer.stop()
         return True
+    def _register_tomba(self,scene):
+        """Tomba's own SMST (System chunk trail resource 0, as tomba_frames
+        poses it) under TOMBA_MODEL - not the area's trail 0, which in most
+        areas is some NPC or nothing."""
+        if scene.models.get(TOMBA_MODEL) is not None:return
+        from formats.models.smst_parser import parse_smst
+        idx=getattr(scene,'idx_path',str(Path(scene.dat_path).with_name('TOMBA2.IDX')))
+        trail=actor_sim.World._trail(idx,1)
+        with open(scene.dat_path,'rb') as source:
+            source.seek(trail[0]);raw=source.read(trail[1]-trail[0])
+        scene.models[TOMBA_MODEL]=parse_smst(raw,address=trail[0])
+
     def _add_tomba(self,scene,result):
         from copy import copy
         tomba=copy(self.editor.instance)
@@ -633,7 +649,8 @@ class ViewportPreview(QObject):
             name='Tomba (event simulation)';note='Event editor stand-in';blends=();riders=();owners=()
             pieces_now=[]
             def pose(self,_state):return self.pieces_now
-        tomba.assembly=Assembly();tomba.sources=tuple((actor_sim.TRAIL_ID,g) for g in result['by_bone'])
+        self._register_tomba(scene)
+        tomba.assembly=Assembly();tomba.sources=tuple((TOMBA_MODEL,g) for g in result['by_bone'])
         tomba.offsets=();tomba.parts=[];tomba.spans=[];tomba.label='Tomba (event simulation)'
         tomba.placement=None;tomba.pickup=None;tomba.flip=None;tomba.flip_frames=();tomba.follow=None
         tomba.index=len(scene.instances)
@@ -678,6 +695,7 @@ class EventEditor(QDialog):
         self.resize(1320,840)
         self.exe=Path(panel.exe_path).read_bytes()
         self.overlay=Path(panel.scene.overlay_path).read_bytes()
+        script.load_names(self.exe,panel.exe_path)
         handler=handler or script.handler_for(panel.scene,instance)
         self.native_handler=handler
         self.bindings=script.discover(self.exe,self.overlay,handler) if handler else []

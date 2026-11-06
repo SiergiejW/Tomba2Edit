@@ -55,6 +55,48 @@ Verified on retail: Windmill (9 pages), Kainen (9), Mining Town miners
 through the retail interpreter in tests. Emulator playthrough of an edited
 conversation is still outstanding.
 
+## Why an NPC has many pages, and which one runs
+
+A page is any script the entity's handler can start; the handler's native
+code picks one. A shared handler serves every actor of its kind, every
+state and every quest stage, so A06's Donglin inhabitants show 47 pages.
+The **Conditions** box reads the branches and jump-table cases on the way
+to each page's loader call (`event_script.page_conditions`), e.g. page 33
+"event 33 is cleared AND actor step == 3". These are typically:
+- which actor it is: actor +0x2B, its scene record's variant byte;
+- the handler's state machine: actor +0x04 / +0x05 / +0x06;
+- quest state: event states at 0x800BF8B4, area progress at 0x800BF9B4
+  (event 0 = not started, 255 = cleared);
+- Tomba's interaction: `f_TryPrepareTombaForInteraction()`.
+Where code paths merge, only the tests every path makes are kept. "?" is
+a value set on another path.
+
+## Zippo, Tomba and the simulation
+
+`src_CurrentScriptActor` is only ever Zippo (`f_InitializeAreaScriptActor`:
+area file 16, 12 parts, animations at 0x8001B860). So every "script actor"
+flag (0x8000, or bit 1 of Play animation) means Zippo, and conversation
+pages (C tabs) run on him. A conversation request (13) settles him at
+Tomba + 190 round Tomba's facing (+0/180/270/90 degrees by request flags
+0-1, +45 for 0x20; flag 4 uses explicit offsets), 150 up, scale 0xC00,
+facing Tomba (FUN_8007091c).
+
+Simulation preview (on by default) leaves the viewport as the events up
+to the selected row leave it. The entity loops its current animation, and
+Zippo stands by Tomba and loops his. The camera moves only for camera rows,
+or when skipping to a point with a different event camera; a manual pan
+stays. When a page gives no Tomba position, he stands 250 units from the
+entity on the side the viewport looks from. Closing the editor removes the
+stand-ins and restores the entity; the camera stays.
+
+## Messages and Ifs
+
+Command 40 modes 0/1 show entry N of the resident System message table
+(System chunk file 3: offsets at +16, text at +16 + 2 * first u16).
+Rows read If <condition>: with the guarded block indented. The block runs
+while the test fails; the If jumps to its end when it holds. Insert If
+asks for the jump target; "Jump to row" re-points any branch.
+
 ## Text, gestures and conversation music
 
 **Show text** (0) and **Show text + gesture** (1) are both one command.

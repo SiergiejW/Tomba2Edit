@@ -339,6 +339,7 @@ def tomba_pieces(result, frame, position, yaw, lift=0.0):
 
 ZIPPO_HANDLER = 0x80071A3C       # f_HandleAreaScriptActor (src_CurrentScriptActor)
 ZIPPO_PARTS = 12                 # f_InitializeMultiPartActorModel(actor, 0xC, area slot 16, ...)
+ZIPPO_SCALE = 0xC00              # his scale once settled in a conversation
 _zippo_worlds = {}
 
 
@@ -370,6 +371,9 @@ def zippo_frames(scene, animation, max_ticks=180):
     world, actor = _zippo_actor(scene)
     base = world.snapshot()
     try:
+        # FUN_8007091c grows him from 0x200 to 0xC00 as he settles by Tomba.
+        for field in (0xB8, 0xBA, 0xBC):
+            world.mem.write(actor.address + field, 2, ZIPPO_SCALE)
         table = world.mem.read(actor.address + 0x7C, 4)
         if not actor_sim._in_ram(table): raise ValueError("Zippo has no animation table.")
         pointer = world.mem.read(table + (animation & 0xFF) * 4, 4)
