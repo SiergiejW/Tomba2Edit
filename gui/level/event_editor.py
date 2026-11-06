@@ -1674,36 +1674,60 @@ class EventEditor(QDialog):
             o=c.operands
             if c.opcode==54:found=[o[1],o[2],o[3] if c.extended else start[2]]
             elif c.opcode==49:           # Move Tomba along X or depth
-                found=list(found or self._tomba_default(start))
+                found=list(found or self._tomba_default(start)[0])
                 found[0 if o[1]==0 else 2]=o[2]
         for c in nodes:
             o=c.operands
             if c.opcode==16:offset=o[:3];break
             if c.opcode==13 and o[2]&4 and c.extended:offset=o[3:6];break
-        if found:return tuple(float(v) for v in found),'Tomba placed by Set Tomba location.'
-        if offset:return tuple(s+o for s,o in zip(start,offset)),'Tomba at the entity plus the page’s interaction / conversation offset.'
-        return self._tomba_default(start),(f'No Tomba position on this page: Tomba is assumed {self.TOMBA_DISTANCE} '
-                                           'units from the entity, on the side the viewport looks from.')
+        if found:return self._settled(tuple(float(v) for v in found)),'Tomba placed by Set Tomba location.'
+        if offset:return self._settled(tuple(s+o for s,o in zip(start,offset))),'Tomba at the entity plus the page’s interaction / conversation offset.'
+        spot,grounded=self._tomba_default(start)
+        return spot,(f'No Tomba position on this page: Tomba is assumed about {self.TOMBA_DISTANCE} units from the entity, '
+                     +('standing on the nearest collision floor.' if grounded else 'on the side the viewport looks from (no collision floor found near it).'))
+
+    def _ground(self,point,reach=400,rise=320):
+        """`point` (game axes) moved onto the nearest collision cell and down
+        (or up) to its floor - LevelScene.pickup_position, as a dropped
+        chest is - or None when no floor is within `reach` / `rise`."""
+        import math
+        from gui.level.level_scene import view_point
+        scene=self.panel.scene
+        if not hasattr(scene,'pickup_position'):return None
+        try:view,_plane=scene.pickup_position(view_point(point),snap_ground=True,view=getattr(self.instance,'scene',None))
+        except Exception:return None
+        ground=(view[2],-view[1],view[0])                     # view -> game axes
+        if math.hypot(ground[0]-point[0],ground[2]-point[2])>reach or abs(ground[1]-point[1])>rise:return None
+        return ground
+
+    def _settled(self,point):
+        """A position the page gives: kept, its height put on a floor right there."""
+        ground=self._ground(point,reach=64,rise=160)
+        return (point[0],ground[1],point[2]) if ground else point
 
     def _tomba_default(self,start):
         """No position on the page: Tomba stands TOMBA_DISTANCE from the
-        entity on the side the viewport looks from (fixed when first asked),
-        so he and Zippo are in view rather than in a wall behind it."""
+        entity, on the first spot round it - from the side the viewport looks
+        from - that lands on a collision floor near the entity's height.
+        (position, grounded). Fixed once found, so it does not jump."""
         import math
-        if getattr(self,'_tomba_side',None) is None:
-            side=None
-            c=getattr(getattr(self.panel,'viewer',None),'camera_controls',None)
-            if c is not None:
-                from gui.level.level_viewer import UNIT_SCALE
-                e=c._eye();eye=(e[2]*UNIT_SCALE,-e[1]*UNIT_SCALE,e[0]*UNIT_SCALE)   # view -> game axes
-                dx,dd=eye[0]-start[0],eye[2]-start[2];length=math.hypot(dx,dd)
-                if length>1:side=(dx/length,dd/length)
-            if side is None:
-                a=self.start_yaw()*2*math.pi/4096
-                side=(math.cos(a),-math.sin(a))     # inverse of yaw_toward
-            self._tomba_side=side
-        dx,dd=self._tomba_side
-        return (start[0]+self.TOMBA_DISTANCE*dx,start[1],start[2]+self.TOMBA_DISTANCE*dd)
+        if getattr(self,'_tomba_spot',None) is not None:return self._tomba_spot
+        side=None
+        c=getattr(getattr(self.panel,'viewer',None),'camera_controls',None)
+        if c is not None:
+            from gui.level.level_viewer import UNIT_SCALE
+            e=c._eye();eye=(e[2]*UNIT_SCALE,-e[1]*UNIT_SCALE,e[0]*UNIT_SCALE)   # view -> game axes
+            dx,dd=eye[0]-start[0],eye[2]-start[2]
+            if math.hypot(dx,dd)>1:side=math.atan2(dd,dx)
+        if side is None:side=-self.start_yaw()*2*math.pi/4096              # inverse of yaw_toward
+        for turn in (0,30,-30,60,-60,90,-90,120,-120,150,-150,180):
+            a=side+math.radians(turn)
+            for distance in (self.TOMBA_DISTANCE,self.TOMBA_DISTANCE*0.6,self.TOMBA_DISTANCE*1.4):
+                ground=self._ground((start[0]+distance*math.cos(a),start[1],start[2]+distance*math.sin(a)),reach=96,rise=200)
+                if ground is not None:
+                    self._tomba_spot=(ground,True);return self._tomba_spot
+        self._tomba_spot=((start[0]+self.TOMBA_DISTANCE*math.cos(side),start[1],start[2]+self.TOMBA_DISTANCE*math.sin(side)),False)
+        return self._tomba_spot
 
     def state_at(self,nodes,row):
         """(position, yaw or None) of the entity after rows 0..row."""
