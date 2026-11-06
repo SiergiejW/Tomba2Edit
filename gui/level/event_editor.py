@@ -1665,13 +1665,27 @@ class EventEditor(QDialog):
         if found:return tuple(float(v) for v in found),'Tomba placed by Set Tomba location.'
         if offset:return tuple(s+o for s,o in zip(start,offset)),'Tomba at the entity plus the page’s interaction / conversation offset.'
         return self._tomba_default(start),(f'No Tomba position on this page: Tomba is assumed {self.TOMBA_DISTANCE} '
-                                           'units in front of the entity.')
+                                           'units from the entity, on the side the viewport looks from.')
 
     def _tomba_default(self,start):
+        """No position on the page: Tomba stands TOMBA_DISTANCE from the
+        entity on the side the viewport looks from (fixed when first asked),
+        so he and Zippo are in view rather than in a wall behind it."""
         import math
-        a=self.start_yaw()*2*math.pi/4096
-        # Inverse of yaw_toward: yaw = atan2(-d depth, d x).
-        return (start[0]+self.TOMBA_DISTANCE*math.cos(a),start[1],start[2]-self.TOMBA_DISTANCE*math.sin(a))
+        if getattr(self,'_tomba_side',None) is None:
+            side=None
+            c=getattr(getattr(self.panel,'viewer',None),'camera_controls',None)
+            if c is not None:
+                from gui.level.level_viewer import UNIT_SCALE
+                e=c._eye();eye=(e[2]*UNIT_SCALE,-e[1]*UNIT_SCALE,e[0]*UNIT_SCALE)   # view -> game axes
+                dx,dd=eye[0]-start[0],eye[2]-start[2];length=math.hypot(dx,dd)
+                if length>1:side=(dx/length,dd/length)
+            if side is None:
+                a=self.start_yaw()*2*math.pi/4096
+                side=(math.cos(a),-math.sin(a))     # inverse of yaw_toward
+            self._tomba_side=side
+        dx,dd=self._tomba_side
+        return (start[0]+self.TOMBA_DISTANCE*dx,start[1],start[2]+self.TOMBA_DISTANCE*dd)
 
     def state_at(self,nodes,row):
         """(position, yaw or None) of the entity after rows 0..row."""
