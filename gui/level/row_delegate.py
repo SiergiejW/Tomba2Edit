@@ -86,7 +86,8 @@ class RowDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         self._guides(painter, rect, index, guide)
         self._arrow(painter, rect, index, ink)
-        self._eye(painter, self._eye_rect(rect, index), ink if shown else dim, shown)
+        if index.data(Qt.ItemDataRole.CheckStateRole) is not None:
+            self._eye(painter, self._eye_rect(rect, index), ink if shown else dim, shown)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(_color(index.data(DOT_COLOR)))
         painter.drawEllipse(QRectF(self._dot_rect(rect, index)))
@@ -174,7 +175,8 @@ class RowDelegate(QStyledItemDelegate):
         eye = self._eye_rect(option.rect, index).adjusted(-4, -6, 4, 6)
         arrow = self._arrow_rect(option.rect, index)
         on_arrow = bool(index.data(HAS_CHILDREN)) and arrow.contains(point)
-        if not (eye.contains(point) or on_arrow):
+        has_eye = index.data(Qt.ItemDataRole.CheckStateRole) is not None
+        if not ((has_eye and eye.contains(point)) or on_arrow):
             return False
         # Swallow the press and double-click so the row is not selected or
         # framed; act on release.

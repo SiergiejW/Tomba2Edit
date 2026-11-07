@@ -75,6 +75,31 @@ ROLE = Qt.ItemDataRole.UserRole
 NEST_MAX_SIZE = 4000.0
 NEST_SLACK = 150.0
 
+# A part of an instance gets a row of its own under it: a door in the
+# interior it is built into. Its key is negative, so it never collides
+# with an instance index.
+PART_STRIDE = 4096
+
+
+class PartRow:
+    """One source of a multi-part instance, listed beneath it."""
+    flip = None
+    role = "part"
+
+    def __init__(self, instance, part, label):
+        self.instance, self.part, self.label = instance, part, label
+        self.index = -(1 + instance.index * PART_STRIDE + part)
+
+
+def part_key(instance_index, part):
+    return -(1 + instance_index * PART_STRIDE + part)
+
+
+def part_of_key(key):
+    """(instance index, part number) of a part row's key."""
+    n = -key - 1
+    return n // PART_STRIDE, n % PART_STRIDE
+
 # How many frames of a moving background to render at most. Each one is
 # the whole map cut tile by tile, so this is a bound on how long opening
 # an area can take rather than anything the data asks for.
@@ -634,6 +659,8 @@ class LevelEditorPanel(QWidget):
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             instance = self._instance(item.data(ROLE))
+            if instance is None:
+                continue
             key = self._stage_key(instance)
             if key in hidden:
                 item.setCheckState(Qt.CheckState.Unchecked)
@@ -905,6 +932,23 @@ class LevelEditorPanel(QWidget):
                 parents[instance.index] = best[0]
         return parents
 
+    def _part_rows(self, instance):
+        """Rows for the parts an instance is built from - none unless it has
+        several, each with its own span of vertices."""
+        spans = instance.spans or ()
+        if (instance.role == "room" or len(instance.sources) < 2
+                or len(spans) != len(instance.sources)):
+            return []
+        owners = getattr(instance.assembly, "owners", None) or ()
+        rows = []
+        for part, span in enumerate(spans):
+            if not span or part >= PART_STRIDE:
+                continue
+            who = f"{owners[part][1]}: " if part < len(owners) else ""
+            rows.append(PartRow(instance, part,
+                                f"part {part} - {who}{self._source_text(instance.sources[part])}"))
+        return rows if len(rows) > 1 else []
+
     def _nest(self, instances):
         """The rows in tree order - each parent followed by what is under it
         - and how deep each one sits."""
@@ -913,6 +957,15 @@ class LevelEditorPanel(QWidget):
         for index, parent in parents.items():
             children.setdefault(parent, []).append(index)
         by_index = {i.index: i for i in instances}
+        # An instance's parts come first under it, before what rests on it.
+        for instance in instances:
+            rows = self._part_rows(instance)
+            for row in rows:
+                by_index[row.index] = row
+                parents[row.index] = instance.index
+            if rows:
+                children[instance.index] = ([r.index for r in rows]
+                                            + children.get(instance.index, []))
         self._parents, self._children = parents, children
         ordered, depth, seen = [], {}, set()
 
@@ -973,6 +1026,7 @@ class LevelEditorPanel(QWidget):
             index = item.data(ROLE)
             instance = self._instance(index)
             self.table.setRowHidden(row, index in self._view_hidden
+                                    or (index < 0 and self._parents.get(index) in self._view_hidden)
                                     or self._folded_away(index)
                                     or (instance is not None and instance.flip is not None))
 
@@ -1035,6 +1089,14 @@ class LevelEditorPanel(QWidget):
         try:
             self.table.setRowCount(len(instances))
             for row, instance in enumerate(instances):
+                if isinstance(instance, PartRow):
+                    name = QTableWidgetItem(instance.label)
+                    self._set_tree_data(name, instance)
+                    name.setData(ROLE, instance.index)
+                    name.setData(DOT_COLOR, instance_color(instance.instance))
+                    self.table.setItem(row, 0, name)
+                    self._fill_part_row(row, instance)
+                    continue
                 name = QTableWidgetItem(instance.label)
                 self._set_tree_data(name, instance)
                 name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -1122,7 +1184,8 @@ class LevelEditorPanel(QWidget):
             item = self.table.item(row, 0)
             if item is None:
                 continue
-            if item.checkState() != Qt.CheckState.Checked:
+            if (item.data(Qt.ItemDataRole.CheckStateRole) is not None
+                    and item.checkState() != Qt.CheckState.Checked):
                 unchecked.add(item.data(ROLE))
         # A recorded effect's later frames have no row of their own.
         self._view_hidden = filtered
@@ -1134,10 +1197,30 @@ class LevelEditorPanel(QWidget):
         if frame and view not in (None, "all"):
             self.viewer.frame_visible()
 
+    def _sync_part_row(self, index, part):
+        """Highlight the row of the part picked in the view."""
+        if self._filling or index is None:
+            return
+        key = index if part is None else part_key(index, part)
+        if self._row_of(key) is None:
+            key = index
+        row = self._row_of(key)
+        if row is None:
+            return
+        self._filling = True
+        try:
+            self._reveal(key)
+            self.table.clearSelection()
+            self.table.selectRow(row)
+            self.table.scrollToItem(self.table.item(row, 0))
+        finally:
+            self._filling = False
+
     def _on_part_selected(self, index, part):
         instance = self._instance(index)
         if instance is None:
             return
+        self._sync_part_row(index, part)
         self._show_details(index)
         if part is None or not 0 <= part < len(instance.sources):
             return
@@ -1158,6 +1241,15 @@ class LevelEditorPanel(QWidget):
         self.details.setText(text + "<br>" + self.details.text())
         print(f"selected part: '{instance.label}' part {part} = id {file_id} "
               f"group {group}" + (f" '{named}'" if named else ""))
+
+    def _fill_part_row(self, row, part_row):
+        instance, part = part_row.instance, part_row.part
+        owners = getattr(instance.assembly, "owners", None) or ()
+        where = (tuple(f"{v:.0f}" for v in owners[part][2])
+                 if part < len(owners) else ("", "", ""))
+        for column, text in ((1, self._source_text(instance.sources[part])),
+                             (2, where[0]), (3, where[1]), (4, where[2]), (5, "")):
+            self.table.setItem(row, column, QTableWidgetItem(text))
 
     def _fill_row(self, row, instance):
         if instance.assembly is not None and len(instance.sources) > 1:
@@ -1196,6 +1288,17 @@ class LevelEditorPanel(QWidget):
             return
         rows = self.table.selectionModel().selectedRows()
         index = (self.table.item(rows[0].row(), 0).data(ROLE) if rows else None)
+        if index is not None and index < 0:
+            # A part row: its instance, then exactly that part.
+            owner, part = part_of_key(index)
+            self._filling = True
+            try:
+                if self.viewer.selected != owner:
+                    self.viewer.select(owner)
+                self.viewer.select_part(part, exact=True)
+            finally:
+                self._filling = False
+            return
         self.viewer.select(index)
 
     def _on_row_double_clicked(self, item):
@@ -1203,7 +1306,10 @@ class LevelEditorPanel(QWidget):
         index = self.table.item(item.row(), 0).data(ROLE)
         if index is None:
             return
-        self.viewer.select(index)
+        if index < 0:
+            self._on_row_selected()
+        else:
+            self.viewer.select(index)
         self.viewer.frame_selection()
 
     def _on_view_selection(self, index):
@@ -1489,7 +1595,8 @@ class LevelEditorPanel(QWidget):
         unchecked = set()
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item is not None and item.checkState() != Qt.CheckState.Checked:
+            if (item is not None and item.data(Qt.ItemDataRole.CheckStateRole) is not None
+                    and item.checkState() != Qt.CheckState.Checked):
                 unchecked.add(item.data(ROLE))
         self._keep_view = self.view_box.currentData()
         self.viewer.load_scene(self.scene, frame=frame)
@@ -1497,7 +1604,8 @@ class LevelEditorPanel(QWidget):
         self._filling = True
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item.data(ROLE) in unchecked:
+            if (item.data(ROLE) in unchecked
+                    and item.data(Qt.ItemDataRole.CheckStateRole) is not None):
                 item.setCheckState(Qt.CheckState.Unchecked)
         self._filling = False
         self._apply_view(frame=False)

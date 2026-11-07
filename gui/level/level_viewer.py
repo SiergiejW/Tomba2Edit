@@ -817,6 +817,7 @@ class LevelViewer(SMSTViewer):
             index = None
         self.selected = index
         self.selected_part = None
+        self._part_exact = False
         self._build_selection()
         self.update()
         self.selection_changed.emit(index)
@@ -1000,7 +1001,8 @@ class LevelViewer(SMSTViewer):
             return None
         positions = self._positions()
         pieces = [positions[spans[n][0]:spans[n][0] + spans[n][1]]
-                  for n in self.sub_object(instance, part)
+                  for n in ([part] if getattr(self, "_part_exact", False)
+                            else self.sub_object(instance, part))
                   if 0 <= n < len(spans) and spans[n]]
         verts = np.concatenate(pieces) * UNIT_SCALE if pieces else np.zeros((0, 3))
         if not len(verts):
@@ -1009,7 +1011,11 @@ class LevelViewer(SMSTViewer):
         return (low[0] - PART_PAD, high[0] + PART_PAD, low[1] - PART_PAD,
                 high[1] + PART_PAD, low[2] - PART_PAD, high[2] + PART_PAD)
 
-    def select_part(self, part):
+    def select_part(self, part, exact=False):
+        """Pick one source of the selected instance. `exact` boxes just that
+        source rather than the actor that drew it - for a door built into
+        an interior's own actor."""
+        self._part_exact = exact and part is not None
         self.selected_part = part
         self._build_selection()
         self.update()
