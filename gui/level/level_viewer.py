@@ -57,7 +57,7 @@ SELECTION_WIDTH = 2.0
 # An object with geometry is outlined instead, like an Unreal selection: its
 # silhouette is masked into the stencil buffer, then redrawn in the class
 # colour shifted OUTLINE_WIDTH pixels each way, outside the mask only.
-OUTLINE_WIDTH = 3.0
+OUTLINE_WIDTH = 2.0
 OUTLINE_STEPS = 16
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
@@ -830,8 +830,11 @@ class LevelViewer(SMSTViewer):
                     if self.selected is not None
                     and self.selected < len(self.instances) else None)
         if instance is not None:
-            box = (None if self._outline_ranges(instance)
-                   else self._instance_box(instance))
+            outlined = (self._outline_ranges(instance)
+                        or self._outline_sprites(instance)
+                        or any(q.index == instance.index
+                               for q in self._sprite_quads))
+            box = None if outlined else self._instance_box(instance)
             if box is not None:
                 from gui.level.level_scene import instance_color
                 self._box_lines(box, instance_color(instance), positions, colors)
@@ -843,38 +846,102 @@ class LevelViewer(SMSTViewer):
             np.array(colors, dtype=np.float32))
 
     def _outline_ranges(self, instance):
-        """The (offset, count) index ranges of an instance's faces - what
-        its outline is drawn from. Empty for a room or a bare marker."""
+        """The draw ranges (group, clut, offset, count) of an instance's
+        faces - what its outline is cut from. Empty for a room or a bare
+        marker."""
         if instance.role == "room":
             return []
-        return [(r[2], r[3]) for r in self.draw_ranges
+        return [(r[0], r[1], r[2], r[3]) for r in self.draw_ranges
                 if r[0] == instance.index and r[3]]
+
+    def _outline_sprites(self, instance):
+        """The (first row, count) runs of an instance's billboards - a
+        crystal, an apple - that are being drawn."""
+        return list((getattr(self, "_sprite_spans", None) or {})
+                    .get(instance.index, ()))
 
     def _draw_selection_outline(self):
         """The selected object's silhouette ringed in its class colour, over
-        everything. Needs the shader bound with the view's matrix set."""
+        everything: faces (cut-out texels left out) and billboards alike are
+        masked into the stencil, then redrawn shifted every way outside it.
+        Needs the mesh shader bound with the view's matrix set."""
         if self.selected is None or self.selected >= len(self.instances):
             return
         instance = self.instances[self.selected]
         ranges = self._outline_ranges(instance)
-        if not ranges or instance.index in self.hidden_groups:
+        sprites = self._outline_sprites(instance)
+        if not (ranges or sprites) or instance.index in self.hidden_groups:
             return
         from gui.level.level_scene import instance_color
-        program = self.shader_program
+        mesh, billboard = self.shader_program, self.sprite_program
         width, height = max(self.width(), 1), max(self.height(), 1)
+        textured = (self.texture_mode_enabled and bool(self.vram_raw_bytes)
+                    and self.index_texture is not None)
+        colour = QVector3D(*instance_color(instance))
+        camera = self._camera_axes()
 
-        def draw():
-            for offset, count in ranges:
+        def draw_mesh(offset):
+            if not ranges or not mesh.bind():
+                return
+            mesh.setUniformValue("useFlat", True)
+            mesh.setUniformValue("useTextures", textured)
+            mesh.setUniformValue("texelClass", 0)
+            mesh.setUniformValue("clipOffset", offset)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture or 0)
+            self.vao.bind()
+            bound = shifted = None
+            for group, clut, first, count in ranges:
+                uv = self.uv_offset_for(group, clut)
+                if uv != shifted:
+                    mesh.setUniformValue("uvOffset", QVector2D(*uv))
+                    shifted = uv
+                tex_id = self.clut_map.get(clut)
+                if tex_id and tex_id != bound:
+                    GL.glActiveTexture(GL.GL_TEXTURE1)
+                    GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+                    bound = tex_id
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT,
-                                  ctypes.c_void_p(offset))
+                                  ctypes.c_void_p(first))
+            self.vao.release()
+            mesh.setUniformValue("useFlat", False)
+            mesh.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
+            mesh.release()
 
+        def draw_billboards(offset):
+            if (not sprites or self.sprite_texture is None
+                    or not billboard.bind()):
+                return
+            right, up = camera
+            billboard.setUniformValue("modelViewProjection",
+                                      self._model_view_projection())
+            billboard.setUniformValue("right", QVector3D(*right))
+            billboard.setUniformValue("up", QVector3D(*up))
+            billboard.setUniformValue("atlas", 0)
+            billboard.setUniformValue("useFlat", True)
+            billboard.setUniformValue("flatColor", colour)
+            billboard.setUniformValue("clipOffset", offset)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
+            self.sprite_vao.bind()
+            for first, count in sprites:
+                GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
+            self.sprite_vao.release()
+            billboard.setUniformValue("useFlat", False)
+            billboard.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
+            billboard.release()
+
+        def draw(offset):
+            draw_mesh(offset)
+            draw_billboards(offset)
+
+        mesh.setUniformValue("flatColor", colour)
         depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
         cull = GL.glIsEnabled(GL.GL_CULL_FACE)
+        blend = GL.glIsEnabled(GL.GL_BLEND)
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_CULL_FACE)
-        program.setUniformValue("useFlat", True)
-        program.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
-        self.vao.bind()
+        GL.glDisable(GL.GL_BLEND)
         GL.glClearStencil(0)
         GL.glClear(GL.GL_STENCIL_BUFFER_BIT)
         GL.glEnable(GL.GL_STENCIL_TEST)
@@ -883,28 +950,25 @@ class LevelViewer(SMSTViewer):
         GL.glStencilFunc(GL.GL_ALWAYS, 1, 0xFF)
         GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_REPLACE)
         GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
-        program.setUniformValue("flatColor", QVector3D(0.0, 0.0, 0.0))
-        draw()
+        draw(QVector2D(0.0, 0.0))
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
-        # The same faces shifted every way, where the silhouette is not.
+        # The same shapes shifted every way, where the silhouette is not.
         GL.glStencilFunc(GL.GL_NOTEQUAL, 1, 0xFF)
         GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_KEEP)
-        program.setUniformValue("flatColor", QVector3D(*instance_color(instance)))
         for ring in (OUTLINE_WIDTH * 0.5, OUTLINE_WIDTH):
             for step in range(OUTLINE_STEPS):
                 angle = step * 2 * math.pi / OUTLINE_STEPS
-                program.setUniformValue("clipOffset", QVector2D(
-                    math.cos(angle) * ring * 2 / width,
-                    math.sin(angle) * ring * 2 / height))
-                draw()
-        self.vao.release()
+                draw(QVector2D(math.cos(angle) * ring * 2 / width,
+                               math.sin(angle) * ring * 2 / height))
         GL.glDisable(GL.GL_STENCIL_TEST)
-        program.setUniformValue("useFlat", False)
-        program.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
         if depth:
             GL.glEnable(GL.GL_DEPTH_TEST)
         if cull:
             GL.glEnable(GL.GL_CULL_FACE)
+        if blend:
+            GL.glEnable(GL.GL_BLEND)
+        # The caller finishes with the mesh shader bound.
+        mesh.bind()
 
     @staticmethod
     def _box_lines(box, color, positions, colors):
@@ -962,13 +1026,14 @@ class LevelViewer(SMSTViewer):
                 return number
         return None
 
-    def _instance_box(self, instance):
+    def _instance_box(self, instance, positions=None):
         """(x0, x1, y0, y1, z0, z1) round an instance in world units, or
-        None. An object with no geometry gets a box round its marker."""
+        None. An object with no geometry gets a box round its marker.
+        `positions` is _positions() when a caller boxes many instances."""
         if instance.role == "room":
             return None
         if instance.vertex_count:
-            verts = self._positions()[
+            verts = (self._positions() if positions is None else positions)[
                 instance.first_vertex:
                 instance.first_vertex + instance.vertex_count] * UNIT_SCALE
             low, high = verts.min(axis=0), verts.max(axis=0)
@@ -1843,10 +1908,13 @@ class LevelViewer(SMSTViewer):
             // turned to face it without a matrix per sprite.
             uniform vec3 right;
             uniform vec3 up;
+            // A shift in NDC units: the selection outline's rings.
+            uniform vec2 clipOffset;
             void main() {
                 uv = corner;
                 vec3 at = centre + right * offset.x + up * offset.y;
                 gl_Position = modelViewProjection * vec4(at, 1.0);
+                gl_Position.xy += clipOffset * gl_Position.w;
             }
             """)
         self.sprite_program.addShaderFromSourceCode(
@@ -1860,8 +1928,15 @@ class LevelViewer(SMSTViewer):
             // 0 every texel; 1 only those without the STP bit, opaque;
             // 2 only those with it, blended (psx_vram.STP_ALPHA).
             uniform int stpPass;
+            uniform bool useFlat;
+            uniform vec3 flatColor;
             void main() {
                 vec4 texel = texture(atlas, uv);
+                if (useFlat) {
+                    if (texel.a < 0.5) discard;
+                    outColor = vec4(flatColor, 1.0);
+                    return;
+                }
                 // A sprite is a cutout, not a blend: the PSX draws these
                 // with the transparent index simply not written, so a
                 // hard test keeps the edges crisp and lets the depth
@@ -1916,7 +1991,14 @@ class LevelViewer(SMSTViewer):
         instances = self.instances
         atlas_height, atlas_width = (self._sprite_atlas.shape[:2]
                                      if self._sprite_atlas is not None else (1, 1))
+        # Which rows of by_blend each instance's sprites took, for the
+        # selection outline.
+        taken, current = [], None
         for quad in self._sprite_quads:
+            if current is not None:
+                taken.append((current[0], current[1], current[2],
+                              len(by_blend[current[1]]) - current[2]))
+            current = (quad.index, quad.blend, len(by_blend[quad.blend]))
             if (quad.index in self.hidden_groups
                     or (quad.pickup and not self.show_pickups)):
                 continue
@@ -1968,12 +2050,21 @@ class LevelViewer(SMSTViewer):
                                  (right, bottom, placed.u1, placed.v1),
                                  (right, top, placed.u1, placed.v0)):
                 by_blend[quad.blend].append((x, y, z, ox, oy, u, v))
+        if current is not None:
+            taken.append((current[0], current[1], current[2],
+                          len(by_blend[current[1]]) - current[2]))
         rows, ranges = [], []
         for blend in (None, 0, 1, 2, 3):
             group = by_blend[blend]
             if group:
                 ranges.append((blend, len(rows), len(group)))
                 rows.extend(group)
+        firsts = {blend: first for blend, first, _count in ranges}
+        self._sprite_spans = {}
+        for index, blend, start, count in taken:
+            if count:
+                self._sprite_spans.setdefault(index, []).append(
+                    (firsts[blend] + start, count))
         if not rows:
             self.sprite_count = 0
             self._sprite_ranges = []

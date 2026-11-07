@@ -1281,6 +1281,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
                 void main() {
                     if (useFlat) {
+                        // Cut-out texels stay out of the silhouette.
+                        if (useTextures) {
+                            float i = floor(texture(indexTexture, windowUv(fragTexCoord + uvOffset)).r * 15.0 + 0.5);
+                            if (texture(clutTexture, (i + 0.5) / 16.0).a < 0.01)
+                                discard;
+                        }
                         outColor = vec4(flatColor, 1.0);
                         return;
                     }

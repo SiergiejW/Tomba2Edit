@@ -19,6 +19,7 @@ from math import gcd
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -66,6 +67,12 @@ def room_row_name(instance):
 
 
 ROLE = Qt.ItemDataRole.UserRole
+
+# A chest nests under the moving thing it stands in or on: the thing is no
+# bigger than this across (so a room never is one), and the chest may sit
+# this far above or below its box.
+NEST_MAX_SIZE = 4000.0
+NEST_SLACK = 150.0
 
 # How many frames of a moving background to render at most. Each one is
 # the whole map cut tile by tile, so this is a bound on how long opening
@@ -176,6 +183,14 @@ class LevelEditorPanel(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
+        self._collapsed, self._view_hidden = set(), set()
+        self._parents, self._children, self._depth = {}, {}, {}
+        self.table.cellClicked.connect(self._on_cell_clicked)
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        for key, fold in (("Left", True), ("Right", False)):
+            fold_key = QShortcut(QKeySequence(key), self.table)
+            fold_key.setContext(Qt.ShortcutContext.WidgetShortcut)
+            fold_key.activated.connect(lambda f=fold: self._step_fold(f))
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.setItemDelegateForColumn(0, DotDelegate(self.table))
@@ -839,9 +854,168 @@ class LevelEditorPanel(QWidget):
 
     # --- the list -----------------------------------------------------
 
+    # --- nesting ------------------------------------------------------
+
+    def _parent_map(self, instances):
+        """{index: parent index} for what rides, spawns or rests on another
+        row: a pickup or sprite its spawner carries (follow), a chest's
+        contents (pickup_parent), and a chest standing on a moving thing -
+        a platform - judged by where it is. The smallest thing it is
+        inside wins, so a chest on a lift nests under the lift rather than
+        under the room round both."""
+        by_index = {i.index: i for i in instances}
+        parents = {}
+        for instance in instances:
+            link = (instance.follow[0] if instance.follow
+                    else instance.pickup_parent)
+            if link in by_index and link != instance.index:
+                parents[instance.index] = link
+        carriers = []
+        positions = self.viewer._positions()
+        for candidate in instances:
+            if (candidate.role == "room" or candidate.assembly is None
+                    or not candidate.vertex_count or candidate.index in parents):
+                continue
+            box = self.viewer._instance_box(candidate, positions)
+            if box is None:
+                continue
+            x0, x1, y0, y1, z0, z1 = box
+            if max(x1 - x0, y1 - y0, z1 - z0) > NEST_MAX_SIZE:
+                continue
+            carriers.append((candidate, box, (x1 - x0) * (y1 - y0) * (z1 - z0)))
+        for instance in instances:
+            if (instance.index in parents or instance.role == "room"
+                    or not (instance.pickup is not None
+                            or "chest" in instance.label.lower())):
+                continue
+            best = None
+            for candidate, box, volume in carriers:
+                x0, x1, y0, y1, z0, z1 = box
+                if (candidate.index == instance.index
+                        or candidate.scene != instance.scene
+                        or not x0 <= instance.x <= x1
+                        or not z0 <= instance.z <= z1
+                        or not y0 - NEST_SLACK <= instance.y <= y1 + NEST_SLACK):
+                    continue
+                if best is None or volume < best[1]:
+                    best = (candidate.index, volume)
+            if best is not None:
+                parents[instance.index] = best[0]
+        return parents
+
+    def _nest(self, instances):
+        """The rows in tree order - each parent followed by what is under it
+        - and how deep each one sits."""
+        parents = self._parent_map(instances)
+        children = {}
+        for index, parent in parents.items():
+            children.setdefault(parent, []).append(index)
+        by_index = {i.index: i for i in instances}
+        self._parents, self._children = parents, children
+        ordered, depth, seen = [], {}, set()
+
+        def visit(instance, level):
+            if instance.index in seen:
+                return
+            seen.add(instance.index)
+            ordered.append(instance)
+            depth[instance.index] = level
+            for child in children.get(instance.index, ()):
+                visit(by_index[child], level + 1)
+
+        for instance in instances:
+            if instance.index not in parents:
+                visit(instance, 0)
+        for instance in instances:       # a cycle would leave rows out
+            visit(instance, 0)
+        return ordered, depth
+
+    def _row_text(self, instance):
+        children = self._children.get(instance.index)
+        glyph = ("▸ " if instance.index in self._collapsed else "▾ ") if children else "   "
+        return "    " * self._depth.get(instance.index, 0) + glyph + instance.label
+
+    def _folded_away(self, index):
+        """Whether an ancestor of this row is folded."""
+        seen = set()
+        parent = self._parents.get(index)
+        while parent is not None and parent not in seen:
+            if parent in self._collapsed:
+                return True
+            seen.add(parent)
+            parent = self._parents.get(parent)
+        return False
+
+    def _apply_folds(self):
+        """Hide the rows the chosen view or a folded parent takes out."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            index = item.data(ROLE)
+            instance = self._instance(index)
+            self.table.setRowHidden(row, index in self._view_hidden
+                                    or self._folded_away(index)
+                                    or (instance is not None and instance.flip is not None))
+
+    def _set_folded(self, index, folded):
+        if not self._children.get(index) or (index in self._collapsed) == folded:
+            return
+        (self._collapsed.add if folded else self._collapsed.discard)(index)
+        row = self._row_of(index)
+        if row is not None:
+            before, self._filling = self._filling, True
+            try:
+                self.table.item(row, 0).setText(self._row_text(self._instance(index)))
+            finally:
+                self._filling = before
+        self._apply_folds()
+
+    def _reveal(self, index):
+        """Unfold whatever hides this row."""
+        parent = self._parents.get(index)
+        seen = set()
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            self._set_folded(parent, False)
+            parent = self._parents.get(parent)
+
+    def _on_cell_clicked(self, row, column):
+        """A click on a parent's arrow folds or unfolds it."""
+        item = self.table.item(row, 0)
+        if column != 0 or item is None:
+            return
+        index = item.data(ROLE)
+        if not self._children.get(index):
+            return
+        x = self.table.viewport().mapFromGlobal(QCursor.pos()).x()
+        left = self.table.visualItemRect(item).left() + 24
+        indent = self.table.fontMetrics().horizontalAdvance(
+            "    " * self._depth.get(index, 0) + "▾ ")
+        if left <= x <= left + indent + 4:
+            self._set_folded(index, index not in self._collapsed)
+
+    def _step_fold(self, fold):
+        """Left folds the selected row, or steps to its parent; Right unfolds."""
+        index = self.viewer.selected
+        if index is None:
+            return
+        if fold:
+            if self._children.get(index) and index not in self._collapsed:
+                self._set_folded(index, True)
+            elif self._parents.get(index) is not None:
+                self.viewer.select(self._parents[index])
+        else:
+            self._set_folded(index, False)
+
     def _populate(self):
         self._filling = True
         instances = [i for i in self.scene.instances if i.flip is None] if self.scene else []
+        self._collapsed = set()
+        self._view_hidden = set()
+        self._parents, self._children, self._depth = {}, {}, {}
+        if instances:
+            instances, self._depth = self._nest(instances)
         # A ResizeToContents column re-measures every row on each setItem:
         # 2.3s of a stalled window for AREA_0A's 329 rows. Measure once.
         header = self.table.horizontalHeader()
@@ -853,7 +1027,7 @@ class LevelEditorPanel(QWidget):
         try:
             self.table.setRowCount(len(instances))
             for row, instance in enumerate(instances):
-                name = QTableWidgetItem(instance.label)
+                name = QTableWidgetItem(self._row_text(instance))
                 name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 name.setCheckState(Qt.CheckState.Checked)
                 name.setData(ROLE, instance.index)
@@ -941,10 +1115,9 @@ class LevelEditorPanel(QWidget):
                 continue
             if item.checkState() != Qt.CheckState.Checked:
                 unchecked.add(item.data(ROLE))
-            # A recorded effect's later frames have no row of their own.
-            instance = self._instance(item.data(ROLE))
-            self.table.setRowHidden(row, item.data(ROLE) in filtered or (
-                instance is not None and instance.flip is not None))
+        # A recorded effect's later frames have no row of their own.
+        self._view_hidden = filtered
+        self._apply_folds()
         self.viewer.set_view(view)
         self.viewer.set_hidden_groups(filtered | unchecked)
         # Only an interior is framed: it is somewhere else entirely. The area,
@@ -1031,6 +1204,8 @@ class LevelEditorPanel(QWidget):
         self._filling = True
         try:
             self.table.clearSelection()
+            if index is not None:
+                self._reveal(index)
             row = self._row_of(index) if index is not None else None
             if row is not None:
                 self.table.selectRow(row)
