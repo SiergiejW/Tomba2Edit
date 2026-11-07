@@ -1187,12 +1187,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 // psx/draw_order.py; DEPTH_TIE is its step.
                 layout(location = 4) in float level;
                 uniform mat4 modelViewProjection;
+                // A shift in NDC units, for a selection outline drawn as
+                // the silhouette moved a few pixels each way.
+                uniform vec2 clipOffset;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
                 flat out int fragFlags;
                 const float DEPTH_TIE = 4.76837158e-7;
                 void main() {
                     gl_Position = modelViewProjection * vec4(position, 1.0);
+                    gl_Position.xy += clipOffset * gl_Position.w;
                     gl_Position.z -= level * DEPTH_TIE * gl_Position.w;
                     fragColor = color;
                     fragTexCoord = texCoord;
@@ -1270,7 +1274,16 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                     return (page + local + 0.5) / size;
                 }
 
+                // One flat colour over everything drawn: the selection
+                // outline and the mask it is cut from.
+                uniform bool useFlat;
+                uniform vec3 flatColor;
+
                 void main() {
+                    if (useFlat) {
+                        outColor = vec4(flatColor, 1.0);
+                        return;
+                    }
                     if (useTextures) {
                         // The atlas holds each 4-bit index as index * 17
                         // over 255, so this comes back a whisker either

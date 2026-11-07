@@ -16,6 +16,7 @@ things a level has that a model does not:
 See gui/level/level_scene.py for how the scene is put together, and
 game/placement.py for where the objects' positions come from.
 """
+import ctypes
 import math
 
 import numpy as np
@@ -52,6 +53,12 @@ SELECTION_WIDTH = 2.0
 # A selection box is drawn in its instance's colour - the dot in the list,
 # the marker in the view (level_scene.instance_color) - and the box round one
 # part of it in white.
+#
+# An object with geometry is outlined instead, like an Unreal selection: its
+# silhouette is masked into the stencil buffer, then redrawn in the class
+# colour shifted OUTLINE_WIDTH pixels each way, outside the mask only.
+OUTLINE_WIDTH = 3.0
+OUTLINE_STEPS = 16
 PART_COLOR = (1.0, 1.0, 1.0)
 PART_PAD = 6.0
 # Half the width a stretched sprite quad gets when its corners meet in a
@@ -823,7 +830,8 @@ class LevelViewer(SMSTViewer):
                     if self.selected is not None
                     and self.selected < len(self.instances) else None)
         if instance is not None:
-            box = self._instance_box(instance)
+            box = (None if self._outline_ranges(instance)
+                   else self._instance_box(instance))
             if box is not None:
                 from gui.level.level_scene import instance_color
                 self._box_lines(box, instance_color(instance), positions, colors)
@@ -833,6 +841,70 @@ class LevelViewer(SMSTViewer):
         self._selection_arrays = (
             np.array(positions, dtype=np.float32) / UNIT_SCALE,
             np.array(colors, dtype=np.float32))
+
+    def _outline_ranges(self, instance):
+        """The (offset, count) index ranges of an instance's faces - what
+        its outline is drawn from. Empty for a room or a bare marker."""
+        if instance.role == "room":
+            return []
+        return [(r[2], r[3]) for r in self.draw_ranges
+                if r[0] == instance.index and r[3]]
+
+    def _draw_selection_outline(self):
+        """The selected object's silhouette ringed in its class colour, over
+        everything. Needs the shader bound with the view's matrix set."""
+        if self.selected is None or self.selected >= len(self.instances):
+            return
+        instance = self.instances[self.selected]
+        ranges = self._outline_ranges(instance)
+        if not ranges or instance.index in self.hidden_groups:
+            return
+        from gui.level.level_scene import instance_color
+        program = self.shader_program
+        width, height = max(self.width(), 1), max(self.height(), 1)
+
+        def draw():
+            for offset, count in ranges:
+                GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT,
+                                  ctypes.c_void_p(offset))
+
+        depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
+        cull = GL.glIsEnabled(GL.GL_CULL_FACE)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDisable(GL.GL_CULL_FACE)
+        program.setUniformValue("useFlat", True)
+        program.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
+        self.vao.bind()
+        GL.glClearStencil(0)
+        GL.glClear(GL.GL_STENCIL_BUFFER_BIT)
+        GL.glEnable(GL.GL_STENCIL_TEST)
+        GL.glStencilMask(0xFF)
+        # The silhouette, into the stencil only.
+        GL.glStencilFunc(GL.GL_ALWAYS, 1, 0xFF)
+        GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_REPLACE)
+        GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+        program.setUniformValue("flatColor", QVector3D(0.0, 0.0, 0.0))
+        draw()
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        # The same faces shifted every way, where the silhouette is not.
+        GL.glStencilFunc(GL.GL_NOTEQUAL, 1, 0xFF)
+        GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_KEEP)
+        program.setUniformValue("flatColor", QVector3D(*instance_color(instance)))
+        for ring in (OUTLINE_WIDTH * 0.5, OUTLINE_WIDTH):
+            for step in range(OUTLINE_STEPS):
+                angle = step * 2 * math.pi / OUTLINE_STEPS
+                program.setUniformValue("clipOffset", QVector2D(
+                    math.cos(angle) * ring * 2 / width,
+                    math.sin(angle) * ring * 2 / height))
+                draw()
+        self.vao.release()
+        GL.glDisable(GL.GL_STENCIL_TEST)
+        program.setUniformValue("useFlat", False)
+        program.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
+        if depth:
+            GL.glEnable(GL.GL_DEPTH_TEST)
+        if cull:
+            GL.glEnable(GL.GL_CULL_FACE)
 
     @staticmethod
     def _box_lines(box, color, positions, colors):
@@ -2246,7 +2318,9 @@ class LevelViewer(SMSTViewer):
             self.draw_sprites()
         collision = self.show_collision and self.collision.has_lines()
         lines = self.show_lines and (self.code_line_count or self.code_blend_count)
-        if not (self.marker_count or self.selection_count or collision or lines):
+        outlined = self.selected is not None and self.model_data
+        if not (self.marker_count or self.selection_count or collision or lines
+                or outlined):
             return
         if not self.shader_program.bind():
             return
@@ -2289,6 +2363,7 @@ class LevelViewer(SMSTViewer):
             GL.glDrawArrays(GL.GL_LINES, 0, self.selection_count)
             self.selection_vao.release()
             GL.glEnable(GL.GL_DEPTH_TEST)
+        self._draw_selection_outline()
         gl_profile.set_line_width(1.0)
         self.shader_program.release()
 
