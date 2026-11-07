@@ -19,7 +19,6 @@ from math import gcd
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -36,7 +35,9 @@ from gui.level import level_scene
 from gui.level.level_scene import (
     BOTH, EVENTS_DONE, FRESH, LevelScene,
     area_files, instance_color, instance_key, room_entries)
-from gui.widgets.dot_delegate import DOT_COLOR, DotDelegate
+from gui.widgets.dot_delegate import DOT_COLOR
+from gui.level import row_delegate
+from gui.level.row_delegate import ROW_HEIGHT, RowDelegate
 from gui.level import pickup_sprites
 from gui.level.level_viewer import LevelViewer
 from gui.widgets.panel_title import make_panel_title
@@ -185,7 +186,6 @@ class LevelEditorPanel(QWidget):
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         self._collapsed, self._view_hidden = set(), set()
         self._parents, self._children, self._depth = {}, {}, {}
-        self.table.cellClicked.connect(self._on_cell_clicked)
         from PyQt6.QtGui import QKeySequence, QShortcut
         for key, fold in (("Left", True), ("Right", False)):
             fold_key = QShortcut(QKeySequence(key), self.table)
@@ -193,7 +193,9 @@ class LevelEditorPanel(QWidget):
             fold_key.activated.connect(lambda f=fold: self._step_fold(f))
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.table.setItemDelegateForColumn(0, DotDelegate(self.table))
+        self.table.setItemDelegateForColumn(0, RowDelegate(
+            self.table, on_fold=lambda index: self._toggle_fold(index.data(ROLE))))
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table.setShowGrid(False)
         self.table.setMouseTracking(True)
 
@@ -930,10 +932,26 @@ class LevelEditorPanel(QWidget):
             visit(instance, 0)
         return ordered, depth
 
-    def _row_text(self, instance):
-        children = self._children.get(instance.index)
-        glyph = ("▸ " if instance.index in self._collapsed else "▾ ") if children else "   "
-        return "    " * self._depth.get(instance.index, 0) + glyph + instance.label
+    def _tree_data(self, instance):
+        """What the row delegate draws the tree from."""
+        index = instance.index
+        parent = self._parents.get(index)
+        siblings = self._children.get(parent, ())
+        # Per ancestor below the top: does its line go on past this row.
+        goes_on, above = [], parent
+        while above is not None and self._parents.get(above) is not None:
+            up = self._parents[above]
+            goes_on.append(self._children[up][-1] != above)
+            above = up
+        return {row_delegate.DEPTH: self._depth.get(index, 0),
+                row_delegate.HAS_CHILDREN: bool(self._children.get(index)),
+                row_delegate.FOLDED: index in self._collapsed,
+                row_delegate.LAST: bool(siblings) and siblings[-1] == index,
+                row_delegate.CONTINUES: tuple(reversed(goes_on))}
+
+    def _set_tree_data(self, item, instance):
+        for role, value in self._tree_data(instance).items():
+            item.setData(role, value)
 
     def _folded_away(self, index):
         """Whether an ancestor of this row is folded."""
@@ -966,7 +984,7 @@ class LevelEditorPanel(QWidget):
         if row is not None:
             before, self._filling = self._filling, True
             try:
-                self.table.item(row, 0).setText(self._row_text(self._instance(index)))
+                self._set_tree_data(self.table.item(row, 0), self._instance(index))
             finally:
                 self._filling = before
         self._apply_folds()
@@ -980,20 +998,8 @@ class LevelEditorPanel(QWidget):
             self._set_folded(parent, False)
             parent = self._parents.get(parent)
 
-    def _on_cell_clicked(self, row, column):
-        """A click on a parent's arrow folds or unfolds it."""
-        item = self.table.item(row, 0)
-        if column != 0 or item is None:
-            return
-        index = item.data(ROLE)
-        if not self._children.get(index):
-            return
-        x = self.table.viewport().mapFromGlobal(QCursor.pos()).x()
-        left = self.table.visualItemRect(item).left() + 24
-        indent = self.table.fontMetrics().horizontalAdvance(
-            "    " * self._depth.get(index, 0) + "▾ ")
-        if left <= x <= left + indent + 4:
-            self._set_folded(index, index not in self._collapsed)
+    def _toggle_fold(self, index):
+        self._set_folded(index, index not in self._collapsed)
 
     def _step_fold(self, fold):
         """Left folds the selected row, or steps to its parent; Right unfolds."""
@@ -1016,6 +1022,8 @@ class LevelEditorPanel(QWidget):
         self._parents, self._children, self._depth = {}, {}, {}
         if instances:
             instances, self._depth = self._nest(instances)
+            # Everything with something under it opens folded.
+            self._collapsed = set(self._children)
         # A ResizeToContents column re-measures every row on each setItem:
         # 2.3s of a stalled window for AREA_0A's 329 rows. Measure once.
         header = self.table.horizontalHeader()
@@ -1027,7 +1035,8 @@ class LevelEditorPanel(QWidget):
         try:
             self.table.setRowCount(len(instances))
             for row, instance in enumerate(instances):
-                name = QTableWidgetItem(self._row_text(instance))
+                name = QTableWidgetItem(instance.label)
+                self._set_tree_data(name, instance)
                 name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 name.setCheckState(Qt.CheckState.Checked)
                 name.setData(ROLE, instance.index)
