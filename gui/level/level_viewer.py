@@ -60,6 +60,8 @@ SELECTION_WIDTH = 2.0
 OUTLINE_WIDTH = 2.0
 OUTLINE_STEPS = 16
 PART_COLOR = (1.0, 1.0, 1.0)
+# The object's own ring while one of its parts is picked.
+PARENT_OUTLINE = (0.55, 0.55, 0.55)
 PART_PAD = 6.0
 # Half the width a stretched sprite quad gets when its corners meet in a
 # line - kind 0x14's other branch writes them 4 either side.
@@ -562,6 +564,33 @@ class LevelViewer(SMSTViewer):
         self.rebuild_markers()
         self.rebuild_code_lines()
 
+    def set_hidden_parts(self, parts):
+        """{(instance index, part number)} to leave out of the drawing."""
+        self._hidden_parts = set(parts)
+        self.update()
+
+    def _upload_part_masks(self):
+        """Tell the mesh shader which vertex runs are hidden, and that no
+        part is being singled out."""
+        spans = []
+        for index, part in getattr(self, "_hidden_parts", ()):
+            if 0 <= index < len(self.instances):
+                run = (self.instances[index].spans or ())
+                if 0 <= part < len(run) and run[part]:
+                    spans.append(run[part])
+        if not self.shader_program.bind():
+            return
+        self._set_spans("hidden", spans)
+        self._set_spans("keep", [])
+        self.shader_program.release()
+
+    def _set_spans(self, name, spans):
+        spans = spans[:16]
+        self.shader_program.setUniformValue(f"{name}Count", len(spans))
+        for number, (first, count) in enumerate(spans):
+            self.shader_program.setUniformValue(f"{name}Spans[{number}]",
+                                                QVector2D(float(first), float(count)))
+
     def set_group_hidden(self, index, hidden):
         super().set_group_hidden(index, hidden)
         self._sprite_dirty = True
@@ -840,7 +869,7 @@ class LevelViewer(SMSTViewer):
                 from gui.level.level_scene import instance_color
                 self._box_lines(box, instance_color(instance), positions, colors)
             part = self._part_box(instance, self.selected_part)
-            if part is not None:
+            if part is not None and not self._outline_ranges(instance):
                 self._box_lines(part, PART_COLOR, positions, colors)
         self._selection_arrays = (
             np.array(positions, dtype=np.float32) / UNIT_SCALE,
@@ -861,11 +890,24 @@ class LevelViewer(SMSTViewer):
         return list((getattr(self, "_sprite_spans", None) or {})
                     .get(instance.index, ()))
 
+    def _selected_part_spans(self, instance):
+        """The vertex runs of the picked part - or of the actor's pieces
+        when it was picked in the view - or [] with none picked."""
+        part = self.selected_part
+        spans = instance.spans or ()
+        if part is None or not 0 <= part < len(spans):
+            return []
+        members = ([part] if getattr(self, "_part_exact", False)
+                   else self.sub_object(instance, part))
+        return [tuple(spans[n]) for n in members
+                if 0 <= n < len(spans) and spans[n]]
+
     def _draw_selection_outline(self):
         """The selected object's silhouette ringed in its class colour, over
         everything: faces (cut-out texels left out) and billboards alike are
         masked into the stencil, then redrawn shifted every way outside it.
-        Needs the mesh shader bound with the view's matrix set."""
+        With a part picked the object is ringed in grey and the part in
+        its colour. Needs the mesh shader bound with the matrix set."""
         if self.selected is None or self.selected >= len(self.instances):
             return
         instance = self.instances[self.selected]
@@ -878,16 +920,19 @@ class LevelViewer(SMSTViewer):
         width, height = max(self.width(), 1), max(self.height(), 1)
         textured = (self.texture_mode_enabled and bool(self.vram_raw_bytes)
                     and self.index_texture is not None)
-        colour = QVector3D(*instance_color(instance))
         camera = self._camera_axes()
+        part_spans = self._selected_part_spans(instance) if ranges else []
+        state = {"colour": QVector3D(*instance_color(instance)), "keep": []}
 
         def draw_mesh(offset):
             if not ranges or not mesh.bind():
                 return
             mesh.setUniformValue("useFlat", True)
+            mesh.setUniformValue("flatColor", state["colour"])
             mesh.setUniformValue("useTextures", textured)
             mesh.setUniformValue("texelClass", 0)
             mesh.setUniformValue("clipOffset", offset)
+            self._set_spans("keep", state["keep"])
             GL.glActiveTexture(GL.GL_TEXTURE0)
             GL.glBindTexture(GL.GL_TEXTURE_2D, self.index_texture or 0)
             self.vao.bind()
@@ -905,12 +950,13 @@ class LevelViewer(SMSTViewer):
                 GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT,
                                   ctypes.c_void_p(first))
             self.vao.release()
+            self._set_spans("keep", [])
             mesh.setUniformValue("useFlat", False)
             mesh.setUniformValue("clipOffset", QVector2D(0.0, 0.0))
             mesh.release()
 
         def draw_billboards(offset):
-            if (not sprites or self.sprite_texture is None
+            if (not sprites or part_spans or self.sprite_texture is None
                     or not billboard.bind()):
                 return
             right, up = camera
@@ -920,7 +966,7 @@ class LevelViewer(SMSTViewer):
             billboard.setUniformValue("up", QVector3D(*up))
             billboard.setUniformValue("atlas", 0)
             billboard.setUniformValue("useFlat", True)
-            billboard.setUniformValue("flatColor", colour)
+            billboard.setUniformValue("flatColor", state["colour"])
             billboard.setUniformValue("clipOffset", offset)
             GL.glActiveTexture(GL.GL_TEXTURE0)
             GL.glBindTexture(GL.GL_TEXTURE_2D, self.sprite_texture)
@@ -936,7 +982,24 @@ class LevelViewer(SMSTViewer):
             draw_mesh(offset)
             draw_billboards(offset)
 
-        mesh.setUniformValue("flatColor", colour)
+        def ring(colour, keep):
+            """One silhouette, masked then ringed."""
+            state["colour"], state["keep"] = colour, keep
+            GL.glClear(GL.GL_STENCIL_BUFFER_BIT)
+            GL.glStencilFunc(GL.GL_ALWAYS, 1, 0xFF)
+            GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_REPLACE)
+            GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+            draw(QVector2D(0.0, 0.0))
+            GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+            # The same shapes shifted every way, where the silhouette is not.
+            GL.glStencilFunc(GL.GL_NOTEQUAL, 1, 0xFF)
+            GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_KEEP)
+            for distance in (OUTLINE_WIDTH * 0.5, OUTLINE_WIDTH):
+                for step in range(OUTLINE_STEPS):
+                    angle = step * 2 * math.pi / OUTLINE_STEPS
+                    draw(QVector2D(math.cos(angle) * distance * 2 / width,
+                                   math.sin(angle) * distance * 2 / height))
+
         depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
         cull = GL.glIsEnabled(GL.GL_CULL_FACE)
         blend = GL.glIsEnabled(GL.GL_BLEND)
@@ -944,23 +1007,13 @@ class LevelViewer(SMSTViewer):
         GL.glDisable(GL.GL_CULL_FACE)
         GL.glDisable(GL.GL_BLEND)
         GL.glClearStencil(0)
-        GL.glClear(GL.GL_STENCIL_BUFFER_BIT)
         GL.glEnable(GL.GL_STENCIL_TEST)
         GL.glStencilMask(0xFF)
-        # The silhouette, into the stencil only.
-        GL.glStencilFunc(GL.GL_ALWAYS, 1, 0xFF)
-        GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_REPLACE)
-        GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
-        draw(QVector2D(0.0, 0.0))
-        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
-        # The same shapes shifted every way, where the silhouette is not.
-        GL.glStencilFunc(GL.GL_NOTEQUAL, 1, 0xFF)
-        GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_KEEP)
-        for ring in (OUTLINE_WIDTH * 0.5, OUTLINE_WIDTH):
-            for step in range(OUTLINE_STEPS):
-                angle = step * 2 * math.pi / OUTLINE_STEPS
-                draw(QVector2D(math.cos(angle) * ring * 2 / width,
-                               math.sin(angle) * ring * 2 / height))
+        if part_spans:
+            ring(QVector3D(*PARENT_OUTLINE), [])
+            ring(QVector3D(*instance_color(instance)), part_spans)
+        else:
+            ring(QVector3D(*instance_color(instance)), [])
         GL.glDisable(GL.GL_STENCIL_TEST)
         if depth:
             GL.glEnable(GL.GL_DEPTH_TEST)
@@ -2409,6 +2462,7 @@ class LevelViewer(SMSTViewer):
 
     def _paint_level(self):
         self._sync_lines()
+        self._upload_part_masks()
         super().paintGL()
         if not (self.model_data and self.draw_ranges):
             # Nothing was drawn, so the mid-pass hook never ran.

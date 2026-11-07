@@ -930,6 +930,15 @@ class LevelEditorPanel(QWidget):
                     best = (candidate.index, volume)
             if best is not None:
                 parents[instance.index] = best[0]
+        # Follow links can loop (A follows B follows A): cut each loop open.
+        for start in list(parents):
+            seen, at = {start}, parents.get(start)
+            while at is not None and at in parents:
+                if at in seen:
+                    del parents[start]
+                    break
+                seen.add(at)
+                at = parents[at]
         return parents
 
     def _part_rows(self, instance):
@@ -991,8 +1000,9 @@ class LevelEditorPanel(QWidget):
         parent = self._parents.get(index)
         siblings = self._children.get(parent, ())
         # Per ancestor below the top: does its line go on past this row.
-        goes_on, above = [], parent
-        while above is not None and self._parents.get(above) is not None:
+        goes_on, above, seen = [], parent, {index}
+        while above is not None and above not in seen and self._parents.get(above) is not None:
+            seen.add(above)
             up = self._parents[above]
             goes_on.append(self._children[up][-1] != above)
             above = up
@@ -1092,6 +1102,8 @@ class LevelEditorPanel(QWidget):
                 if isinstance(instance, PartRow):
                     name = QTableWidgetItem(instance.label)
                     self._set_tree_data(name, instance)
+                    name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    name.setCheckState(Qt.CheckState.Checked)
                     name.setData(ROLE, instance.index)
                     name.setData(DOT_COLOR, instance_color(instance.instance))
                     self.table.setItem(row, 0, name)
@@ -1185,6 +1197,7 @@ class LevelEditorPanel(QWidget):
             if item is None:
                 continue
             if (item.data(Qt.ItemDataRole.CheckStateRole) is not None
+                    and item.data(ROLE) >= 0
                     and item.checkState() != Qt.CheckState.Checked):
                 unchecked.add(item.data(ROLE))
         # A recorded effect's later frames have no row of their own.
@@ -1192,6 +1205,7 @@ class LevelEditorPanel(QWidget):
         self._apply_folds()
         self.viewer.set_view(view)
         self.viewer.set_hidden_groups(filtered | unchecked)
+        self._sync_hidden_parts()
         # Only an interior is framed: it is somewhere else entirely. The area,
         # alone or with its rooms, keeps the shot the user had.
         if frame and view not in (None, "all"):
@@ -1277,8 +1291,22 @@ class LevelEditorPanel(QWidget):
                 return row
         return None
 
+    def _sync_hidden_parts(self):
+        """Hand the viewer the parts whose eye is closed."""
+        parts = set()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            key = item.data(ROLE) if item is not None else None
+            if (key is not None and key < 0
+                    and item.checkState() != Qt.CheckState.Checked):
+                parts.add(part_of_key(key))
+        self.viewer.set_hidden_parts(parts)
+
     def _on_item_changed(self, item):
         if self._filling or item.column() != 0:
+            return
+        if item.data(ROLE) < 0:
+            self._sync_hidden_parts()
             return
         self.viewer.set_group_hidden(item.data(ROLE),
                                      item.checkState() != Qt.CheckState.Checked)

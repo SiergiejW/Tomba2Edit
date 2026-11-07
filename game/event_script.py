@@ -271,7 +271,11 @@ def summary(c):
     if op == 16: return f'Interaction offset ({o[0]}, {o[1]}, {o[2]})'
     if op == 13:
         where = f', Tomba at offset ({o[3]}, {o[4]}, {o[5]})' if o[2] & 4 and c.extended else ''
-        return (f'Request conversation {o[1]} from conversation handler {o[0] & 0xff}{where}'
+        handler = o[0] & 0xff
+        what = ('runs conversation script ' + str(o[1]) if handler == 0 else
+                'actor walks to Tomba’s side; the page shows the text' if handler == 1 else
+                'area code runs the conversation')
+        return (f'Start conversation {o[1]} (handler {handler}: {what}; Zippo joins){where}'
                 + (', no wait' if o[0] & 0x8000 else ''))
     if op == 14: return 'Run the conversation (its native handler shows the dialogue; waits until it ends)'
     if op == 54: return f'Set Tomba location {o[0]}: X {o[1]}, height {o[2]}' + (f', depth {o[3]}' if c.extended else '')

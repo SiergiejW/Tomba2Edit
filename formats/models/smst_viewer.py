@@ -1190,6 +1190,12 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 // A shift in NDC units, for a selection outline drawn as
                 // the silhouette moved a few pixels each way.
                 uniform vec2 clipOffset;
+                // Vertex runs (first, count) left out, or the only ones kept
+                // (when keepCount > 0): a hidden part, or one part's silhouette.
+                uniform vec2 hiddenSpans[16];
+                uniform int hiddenCount;
+                uniform vec2 keepSpans[16];
+                uniform int keepCount;
                 out vec3 fragColor;
                 out vec2 fragTexCoord;
                 flat out int fragFlags;
@@ -1201,6 +1207,20 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                     fragColor = color;
                     fragTexCoord = texCoord;
                     fragFlags = int(flags + 0.5);
+                    float vid = float(gl_VertexID);
+                    bool drop = false;
+                    for (int i = 0; i < hiddenCount; i++)
+                        if (vid >= hiddenSpans[i].x && vid < hiddenSpans[i].x + hiddenSpans[i].y)
+                            drop = true;
+                    if (keepCount > 0) {
+                        bool inside = false;
+                        for (int i = 0; i < keepCount; i++)
+                            if (vid >= keepSpans[i].x && vid < keepSpans[i].x + keepSpans[i].y)
+                                inside = true;
+                        drop = drop || !inside;
+                    }
+                    // Off the screen: a triangle of three such vertices is clipped.
+                    if (drop) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
                 }
                 """):
             print("Vertex shader compilation failed:", self.shader_program.log())

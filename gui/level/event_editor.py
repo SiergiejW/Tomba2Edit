@@ -165,8 +165,14 @@ class RowDelegate(QStyledItemDelegate):
                           ('   '+suffix if suffix else '',dim)):
             if not piece:continue
             painter.setPen(pen)
+            room=r.right()-x-4
+            if room<=0:break
+            shown=fm.elidedText(piece,Qt.TextElideMode.ElideRight,room) if fm.horizontalAdvance(piece)>room else piece
+            if shown!=piece and not shown.endswith('…'):shown+='…'
+            if shown!=piece:shown=shown[:-1].rstrip()+'...'      # cut by the window: three dots
             painter.drawText(QRectF(x,r.top(),max(0,r.right()-x),r.height()),
-                             Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,piece)
+                             Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,shown)
+            if shown!=piece:break
             x+=fm.horizontalAdvance(piece)
         if option.state&QStyle.StateFlag.State_HasFocus:
             from PyQt6.QtWidgets import QStyleOptionFocusRect
@@ -180,9 +186,7 @@ class RowDelegate(QStyledItemDelegate):
         parts=self._parts(index)
         size=super().sizeHint(option,index)
         if parts:
-            number,indent,text,suffix,_=parts
-            line=f'{number:02d} {indent}@>{text}'+('   '+suffix if suffix else '')
-            size.setWidth(option.fontMetrics.horizontalAdvance(line)+12)
+            size.setWidth(10)          # rows take the list's width; paint() shortens what does not fit
         size.setHeight(option.fontMetrics.height()+4)
         return size
 
@@ -296,7 +300,7 @@ class MessagePicker(QDialog):
     def __init__(self,parent,messages,current=0):
         super().__init__(parent);self.setWindowTitle('Choose system message');self.resize(560,460)
         layout=QVBoxLayout(self);self.list=QListWidget();layout.addWidget(self.list,1)
-        for n,text in enumerate(messages):self.list.addItem(f'{n:3d}  '+text.replace('{$END}','').replace('\n',' ')[:80])
+        for n,text in enumerate(messages):self.list.addItem(f'{n:3d}  '+plain_line(text))
         if 0<=current<len(messages):self.list.setCurrentRow(current)
         self.list.itemDoubleClicked.connect(lambda *_:self.accept())
         row=QHBoxLayout();row.addStretch()
@@ -311,7 +315,7 @@ class DialoguePicker(QDialog):
         self.bank=bank;layout=QVBoxLayout(self)
         self.masters=QComboBox()
         for n,m in enumerate(bank['entries']):
-            first=next((' '.join(e['text'].split('{$')[0].split()) for e in m['entries'] if e['text'].strip()),'')
+            first=next((plain_line(e['text']) for e in m['entries'] if plain_line(e['text'])),'')
             self.masters.addItem(f'Dialogue {n} ({len(m["entries"])} entries) — {first[:50]}',n)
         layout.addWidget(self.masters)
         self.entries=QListWidget();layout.addWidget(self.entries,1)
@@ -328,7 +332,7 @@ class DialoguePicker(QDialog):
     def fill(self,index):
         self.entries.clear()
         for n,e in enumerate(self.bank['entries'][index]['entries'] if index>=0 else ()):
-            self.entries.addItem(f'{n:3d}  '+e['text'].split('{$')[0].replace('\n',' ').strip()[:90])
+            self.entries.addItem(f'{n:3d}  '+plain_line(e['text']))
         self.entries.setCurrentRow(0)
     def show_line(self,row):
         m=self.masters.currentIndex()
@@ -350,17 +354,18 @@ class TombaDecode(VoiceDecode):
 
 class FramesDecode(VoiceDecode):
     """Frames for the viewport: the entity's animation N or Zippo's."""
-    def __init__(self,scene,instance,animation,who,animations,parent):
-        QObject.__init__(self,parent);self.args=(scene,instance,animation,who,animations);self.worker=None
+    def __init__(self,scene,instance,animation,who,animations,parent,previous=None,blend=0):
+        QObject.__init__(self,parent);self.args=(scene,instance,animation,who,animations,previous,blend);self.worker=None
     def run(self):
-        scene,instance,animation,who,animations=self.args
+        scene,instance,animation,who,animations,previous,blend=self.args
         try:
             from game import event_preview
             if who=='zippo':
-                frames,loop,origin,yaw=event_preview.zippo_frames(scene,animation)
+                frames,loop,origin,yaw=event_preview.zippo_frames(scene,animation,previous=previous,blend=blend)
             else:
                 command=script.Command(0,__import__('struct').pack('<Hhhh',30,0,animation,0))
-                frames,_note,loop=event_preview.animation_frames(scene,instance,command,animations=animations)
+                frames,_note,loop=event_preview.animation_frames(scene,instance,command,animations=animations,
+                                                                 previous=previous,blend=blend)
                 origin=yaw=None
             self.emit_result((frames,loop,'',origin,yaw))
         except Exception as exc:self.emit_result(([],None,str(exc),None,None))
@@ -374,6 +379,13 @@ class CameraDecode(VoiceDecode):
             from game.event_preview import camera_path
             self.emit_result(camera_path(*self.args))
         except Exception as exc:self.emit_result(([],str(exc)))
+
+
+def plain_line(text):
+    """A dialogue entry on one line: control codes ({$...}) and line breaks
+    become spaces, so the text after a break is kept, not dropped."""
+    import re
+    return ' '.join(re.sub(r'\{\$[^}]*\}',' ',text.replace('\n',' ')).split())
 
 
 def baked_facing(assembly):
@@ -859,7 +871,7 @@ class EventEditor(QDialog):
         self.actions=QListWidget()
         self.actions.setFont(QFont('Verdana',9) if theme.is_grey() else QFont('Consolas',9))
         self.actions.setItemDelegate(RowDelegate(self.actions))
-        self.actions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.actions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.actions.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.actions.customContextMenuRequested.connect(self.row_menu)
         self.actions.itemDoubleClicked.connect(lambda *_:self.edit_row())
@@ -1130,21 +1142,21 @@ class EventEditor(QDialog):
             if c.opcode in (0,1) and c.operands[1]>=0:
                 self.load_bank()
                 entries=self.bank['entries'][c.operands[0]&0xfff]['entries']
-                line=entries[c.operands[1]]['text'].split('{$')[0].replace('\n',' ').strip()
-                if line:text+=f' — “{line[:48]}{"…" if len(line)>48 else ""}”'
+                line=plain_line(entries[c.operands[1]]['text'])
+                if line:text+=f' — “{line}”'
             elif c.opcode==13 and c.operands[0]&0xff==0:
                 page=self.conversation_page(c.operands[1])
                 if page is not None:
                     text+=f' — conversation script, tab C{c.operands[1]}'
                     first=self._first_line(self.bindings[page].script)
-                    if first:text+=f': “{first[:40]}{"…" if len(first)>40 else ""}”'
+                    if first:text+=f': “{first}”'
                 else:text+=' — conversation script not in this area file (set at run time)'
             elif c.opcode==40 and c.operands[0] in (2,3):
                 name=self.item_name(c.operands[1])
                 if name:text+=f' — {name}'
             elif c.opcode==40 and c.operands[0] in (0,1):
                 line=self.system_message(c.operands[1])
-                if line:text+=f' — “{line[:48]}{"…" if len(line)>48 else ""}”'
+                if line:text+=f' — “{line}”'
         except (ValueError,OSError,KeyError,IndexError,TypeError):pass
         return text
 
@@ -1154,7 +1166,7 @@ class EventEditor(QDialog):
             for c in script.read_graph(script.reader(self.exe,self.overlay),address):
                 if c.opcode in (0,1) and c.operands[1]>=0:
                     self.load_bank()
-                    return self.bank['entries'][c.operands[0]&0xfff]['entries'][c.operands[1]]['text'].split('{$')[0].replace('\n',' ').strip()
+                    return self.bank['entries'][c.operands[0]&0xfff]['entries'][c.operands[1]]['text'] and plain_line(self.bank['entries'][c.operands[0]&0xfff]['entries'][c.operands[1]]['text'])
         except (ValueError,OSError,KeyError,IndexError,TypeError):pass
         return ''
 
@@ -1168,7 +1180,7 @@ class EventEditor(QDialog):
                 self._messages=system_messages.load(scene.dat_path,idx)
             except Exception:self._messages=[]
         if not 0<=number<len(self._messages):return ''
-        return self._messages[number].replace('{$END}','').replace('\n',' ').strip()
+        return plain_line(self._messages[number])
 
     def item_name(self,item):
         if self.items is None:
@@ -1527,7 +1539,7 @@ class EventEditor(QDialog):
             self.text_choices.blockSignals(True)
             if entry<0:
                 self.text_choices.addItem('Runtime-selected dialogue — browse candidates',None)
-                for index,value in enumerate(entries):self.text_choices.addItem(f'Candidate {index}: '+value['text'].split('{$')[0][:60],index)
+                for index,value in enumerate(entries):self.text_choices.addItem(f'Candidate {index}: '+plain_line(value['text']),index)
             elif entry<len(entries):self.text_choices.addItem(f'Dialogue entry {entry}',entry)
             else:raise ValueError('The dialogue entry is outside this master.')
             self.text_choices.blockSignals(False);self.choose_text(self.text_choices.currentIndex())
@@ -1992,7 +2004,7 @@ class EventEditor(QDialog):
         None, Zippo shown?) after rows 0..row. Bit 0x8000 / bit 1 commands
         animate Zippo (src_CurrentScriptActor); on a conversation page the
         script runs on Zippo, so every animation is his."""
-        entity=None;zippo=None;talking=self.is_conversation()
+        entity=None;zippo=None;talking=self.is_conversation();self._blend={'zippo':4,'self':4}
         for n,c in enumerate(nodes[:row+1]):
             o=c.operands;op=c.opcode
             if op==13:talking=True
@@ -2007,6 +2019,7 @@ class EventEditor(QDialog):
             if self.is_conversation():target='zippo'
             if target=='zippo':talking=True      # a row that moves or speaks for Zippo brings him on
             value=None if anim is None or anim<0 else anim
+            self._blend[target]=o[2] if op==30 else 4      # ticks it eases in (op 30 gives them)
             if target=='zippo':zippo=value
             else:entity=value
         return entity,zippo,talking
@@ -2014,10 +2027,13 @@ class EventEditor(QDialog):
     def simulate_actors(self,nodes,row):
         """Loop the entity's animation of the moment in the viewport, and
         stand Zippo by Tomba while a conversation runs."""
+        before=self.animations_at(nodes,row-1) if row>0 else (None,None,False)
         entity,zippo,talking=self.animations_at(nodes,row)
+        blend=dict(self._blend)
         if self.is_conversation():entity=None
         if entity is None:self.viewport.stop_entity_animation()
-        else:self._with_frames('self',entity,lambda r:self.viewport.show_entity_animation(r[0],r[1]))
+        else:self._with_frames('self',entity,lambda r:self.viewport.show_entity_animation(r[0],r[1]),
+                               previous=before[0],blend=blend['self'])
         if not talking:self.viewport.hide_zippo();return
         tomba,tomba_yaw,_anim,_how=self.tomba_state(nodes,row)
         if tomba is None:self.viewport.hide_zippo();return
@@ -2029,7 +2045,8 @@ class EventEditor(QDialog):
         from game.event_preview import zippo_position
         place=zippo_position(tomba,tomba_yaw,flags,offset)
         facing=yaw_toward(place,tomba)
-        self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]))
+        self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]),
+                          previous=before[1],blend=blend['zippo'])
 
     def zippo_animation_of(self,c):
         """The animation a command plays on Zippo, or None if it plays on
@@ -2041,16 +2058,18 @@ class EventEditor(QDialog):
             return o[1] if o[1]>=0 else None
         return None
 
-    def _with_frames(self,who,animation,show,viewport=True):
+    def _with_frames(self,who,animation,show,viewport=True,previous=None,blend=4):
         """Run `show((frames, loop))` with the frames, decoding them first
-        (in the background, once per animation)."""
+        (in the background, once per animation and the one it follows)."""
         cache=self._zippo_frames if who=='zippo' else self._entity_frames
-        if animation in cache:
-            if cache[animation][0]:show(cache[animation])
+        key=(animation,previous if previous!=animation else None,blend)
+        if key[1] is None:key=(animation,None,0)
+        if key in cache:
+            if cache[key][0]:show(cache[key])
             return
         animations=self.bindings[self.active].animations if self.active is not None else None
-        job=FramesDecode(self.panel.scene,self.instance,animation,who,animations,self)
-        job.who,job.animation,job.show,job.row=who,animation,show,(self.active,self.selected)
+        job=FramesDecode(self.panel.scene,self.instance,animation,who,animations,self,previous=key[1],blend=key[2])
+        job.who,job.animation,job.key,job.show,job.row=who,animation,key,show,(self.active,self.selected)
         job.viewport=viewport
         self.frames_jobs.append(job);job.decoded.connect(self._frames_decoded);job.start()
 
@@ -2060,7 +2079,7 @@ class EventEditor(QDialog):
         if job is None:return
         frames,loop,error,origin,yaw=result
         entry=(frames,loop,origin if origin is not None else (0.0,0.0,0.0),yaw or 0)
-        (self._zippo_frames if job.who=='zippo' else self._entity_frames)[job.animation]=entry
+        (self._zippo_frames if job.who=='zippo' else self._entity_frames)[job.key]=entry
         if error:self.status.setText(f'{"Zippo" if job.who=="zippo" else "Animation"} not simulated: {error}')
         if frames and job.row==(self.active,self.selected) and (self.timeline_box.isChecked() or not job.viewport):job.show(entry)
 

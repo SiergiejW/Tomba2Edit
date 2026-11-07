@@ -4,7 +4,20 @@ from pathlib import Path
 import numpy as np
 from game import actor_sim, actor_assembly, event_script
 
-def animation_frames(scene,instance,command,max_ticks=120,animations=None):
+def _hold(world,actor,table,animation,step,max_ticks=120):
+    """Play `animation` unblended on the emulated actor to its end, so the
+    actor holds the pose it would have when the next one starts (the game
+    eases out of whatever the skeleton currently is)."""
+    from formats.animation.sequences import read_clip
+    pointer=world.mem.read(table+(animation&0xFF)*4,4)
+    if not actor_sim._in_ram(pointer):return
+    clip=read_clip(bytes(world.mem.ram),actor_sim.RAM_BASE,pointer,actor_sim._ANY_POSE)
+    world.cpu.call(0x80041718,(actor.address,animation&0xFF,0),sp=actor_sim.STACK)
+    for _ in range(min(max(1,clip.duration),max_ticks)):
+        step()
+        world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
+
+def animation_frames(scene,instance,command,max_ticks=120,animations=None,previous=None,blend=None):
     """Initialise just the selected scene and sample one requested animation.
 
     No level-wide recording or guessed model/animation pairing is used.
@@ -62,16 +75,23 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None):
     # Unblended (mode 0): a non-zero mode is f_StartActorSkeletalAnimationBlend,
     # which eases over that many ticks out of whatever pose the actor holds -
     # here an arbitrary idle tick, so those first frames were noise.
-    world.cpu.call(0x80041718,(actor.address,animation,0),sp=actor_sim.STACK)
+    # With the animation that was playing before (`previous`), start from its
+    # end pose and ease in over `blend` ticks as the game does.
+    ease=0
+    if previous is not None and previous!=animation and previous>=0:
+        _hold(world,actor,table,previous,lambda:world.cpu.call(transform,(actor.address,),budget=200000,sp=actor_sim.STACK),max_ticks)
+        ease=mode if blend is None else blend
+    world.cpu.call(0x80041718,(actor.address,animation,ease),sp=actor_sim.STACK)
     models,_=world._maps();frames=[]
-    for tick in range(min(max(1,clip.duration),max_ticks)):
+    # The ease uses up `ease` ticks of the clip's time: the clip itself then plays on, that much later.
+    for tick in range(min(max(1,clip.duration),max_ticks)+ease):
         world.cpu.call(transform,(actor.address,),budget=200000,sp=actor_sim.STACK)
         parts=world._parts(actor,models)
         if not parts:raise ValueError('The native animation produced no model parts.')
         frames.append(parts)
         world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
     eased=f'; in game it eases in over {mode} ticks from the previous pose' if mode else ''
-    loop=clip.starts[clip.loop_start] if clip.loop_start is not None and clip.duration<=max_ticks else None
+    loop=clip.starts[clip.loop_start]+ease if clip.loop_start is not None and clip.duration<=max_ticks else None
     looping=f'; loops from tick {loop}' if loop is not None else ''
     return frames,f'Animation {animation}: {len(frames)} native ticks at 30 Hz'+(' (preview capped)' if clip.duration>max_ticks else '')+looping+eased,loop
 
@@ -186,6 +206,11 @@ def camera_path(scene,commands,upto,tomba,ticks=90):
         path.append(tick())
         if not done and selected.opcode==21:done=run(selected)   # transform: polled until finished
     mode=mem.read(CAMERA_MODE,1)
+    if path and not any(path[-1][1]) and any(tomba):
+        # The camera chased a target the simulation never set (an actor it
+        # does not run), so it ended on the world origin: not a view to show.
+        return [],(f'camera mode {mode&0x3f} follows a target this simulation does not have, '
+                   'so the viewport keeps its own camera.')
     return path,f'Camera mode {mode&0x3f} after this row; {ticks} ticks of the game’s own camera code.'
 
 def native_code(exe,overlay,command,count=64):
@@ -365,9 +390,11 @@ def _zippo_actor(scene):
     return world, actor
 
 
-def zippo_frames(scene, animation, max_ticks=180):
+def zippo_frames(scene, animation, max_ticks=180, previous=None, blend=4):
     """(frames, loop tick, origin, yaw) of Zippo playing `animation` from
-    the conversation animation table (0x8001B860), as actor_sim Parts."""
+    the conversation animation table (0x8001B860), as actor_sim Parts. With
+    `previous` he starts from that animation's end pose and eases in over
+    `blend` ticks, as the game does."""
     world, actor = _zippo_actor(scene)
     base = world.snapshot()
     try:
@@ -380,9 +407,18 @@ def zippo_frames(scene, animation, max_ticks=180):
         from formats.animation.sequences import read_clip
         clip = read_clip(bytes(world.mem.ram), actor_sim.RAM_BASE, pointer, actor_sim._ANY_POSE)
         transform = world._transform_of(ZIPPO_HANDLER) or 0
-        world.cpu.call(0x80041718, (actor.address, animation & 0xFF, 0), sp=actor_sim.STACK)
+        def one():
+            if transform:
+                world.cpu.call(transform, (actor.address,), budget=200000, sp=actor_sim.STACK)
+            else:
+                world.run(1, only=lambda a: a is actor, workers=False)
+        ease = 0
+        if previous is not None and previous >= 0 and previous != animation:
+            _hold(world, actor, table, previous, one)
+            ease = blend
+        world.cpu.call(0x80041718, (actor.address, animation & 0xFF, ease), sp=actor_sim.STACK)
         models, _ = world._maps(); frames = []
-        for _tick in range(min(max(1, clip.duration), max_ticks)):
+        for _tick in range(min(max(1, clip.duration), max_ticks) + ease):
             if transform:
                 world.cpu.call(transform, (actor.address,), budget=200000, sp=actor_sim.STACK)
             else:
@@ -391,7 +427,7 @@ def zippo_frames(scene, animation, max_ticks=180):
             if not parts: raise ValueError("Zippo's animation produced no model parts.")
             frames.append(parts)
             world.cpu.call(actor_sim.ADVANCE_SKELETAL, (actor.address,), budget=200000, sp=actor_sim.STACK)
-        loop = clip.starts[clip.loop_start] if clip.loop_start is not None and clip.duration <= max_ticks else None
+        loop = clip.starts[clip.loop_start] + ease if clip.loop_start is not None and clip.duration <= max_ticks else None
         return frames, loop, np.array(actor.position if actor.position is not None else (0, 0, 0), dtype=float), 0
     finally:
         world.restore(base)
