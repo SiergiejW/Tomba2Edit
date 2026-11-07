@@ -2005,6 +2005,7 @@ class EventEditor(QDialog):
             elif op in (57,58) and not (op==58 and o[0]&0x7fff==2):target,anim=('zippo' if o[0]&0x8000 else 'self'),o[1]
             if target is None:continue
             if self.is_conversation():target='zippo'
+            if target=='zippo':talking=True      # a row that moves or speaks for Zippo brings him on
             value=None if anim is None or anim<0 else anim
             if target=='zippo':zippo=value
             else:entity=value
