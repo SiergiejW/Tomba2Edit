@@ -1,15 +1,16 @@
 """Screen-sized native-axis translation handles, painted outside OpenGL."""
 import numpy as np
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor,QPainter,QPen,QVector4D,QRegion
 from PyQt6.QtWidgets import QWidget
 
+LOCKED = '#9aa0a6'
 AXES = (('X',(0.,0.,1.),'#ef6262'),('Y',(0.,-1.,0.),'#6fcf78'),('Z',(1.,0.,0.),'#64a7ff'))
 
 class TranslationGizmo(QWidget):
     def __init__(self,viewer):
         super().__init__(viewer)
-        self.viewer=viewer;self.lines=[];self.drag=None
+        self.viewer=viewer;self.lines=[];self.drag=None;self.locked=False;self.origin=None
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setMouseTracking(True)
         self.hide()
@@ -23,18 +24,24 @@ class TranslationGizmo(QWidget):
     def sync(self):
         v=self.viewer
         instance=next((i for i in v.instances if i.index==v.selected),None)
-        if (instance is None or not instance.movable or instance.authored
-                or not (instance.pickup is not None or instance.placement is not None
-                        or instance.native_scene_offset is not None)
-                or not v.edit_mode or getattr(v,'loading',False)):
+        if instance is None or instance.role=='room' or getattr(v,'loading',False):
             self.hide();return
+        editable=(instance.movable and not instance.authored
+                  and (instance.pickup is not None or instance.placement is not None
+                       or instance.native_scene_offset is not None)
+                  and v.edit_mode)
+        # Something the game's code places is shown, not draggable: the same
+        # axes, greyed and dashed, with a padlock; clicks go through to the view.
+        self.locked=not editable
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,self.locked)
         self.setGeometry(v.rect())
         self.setToolTip('Drag X, Y or Z to move the authored position. Esc cancels. Native actions may move the entity after it spawns.')
         matrix=v._model_view_projection();anchor=np.array((instance.x,instance.y,instance.z))
-        start=self.project(anchor,matrix)
+        start=self.project(anchor,matrix);self.origin=start
         if start is None:self.hide();return
         lines=[];mask=QRegion()
         for name,axis,color in AXES:
+            if self.locked:color=LOCKED
             unit=self.project(anchor+np.array(axis)*100,matrix)
             if unit is None:continue
             delta=unit-start;length=np.linalg.norm(delta)
@@ -48,17 +55,31 @@ class TranslationGizmo(QWidget):
                 pos=start+(end-start)*step
                 mask=mask.united(QRegion(round(pos[0])-7,round(pos[1])-7,14,14))
         self.lines=lines
+        if self.locked:
+            mask=mask.united(QRegion(round(start[0])+4,round(start[1])-2,64,24))
         self.setMask(mask);self.setVisible(bool(lines));self.raise_();self.update()
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing)
         for name,axis,color,start,end,scale in self.lines:
             p.setPen(QPen(QColor('#161616'),6));p.drawLine(QPointF(*start),QPointF(*end))
-            p.setPen(QPen(QColor(color),3));p.drawLine(QPointF(*start),QPointF(*end))
+            pen=QPen(QColor(color),3)
+            if self.locked:pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen);p.drawLine(QPointF(*start),QPointF(*end))
+            p.setPen(QPen(QColor(color),3))
             direction=(end-start)/np.linalg.norm(end-start);side=np.array((-direction[1],direction[0]))
             for sign in (-1,1):
                 p.drawLine(QPointF(*end),QPointF(*(end-direction*11+side*sign*5)))
             p.drawText(QPointF(*(end+side*10)),name)
+        if self.locked and self.lines and self.origin is not None:
+            x,y=self.origin[0]+8,self.origin[1]+8
+            p.setPen(QPen(QColor('#161616'),4));p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(x+2,y-6,8,10),0,180*16);p.setBrush(QColor('#161616'))
+            p.drawRoundedRect(QRectF(x,y+1,12,9),2,2)
+            p.setPen(QPen(QColor(LOCKED),1.6));p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(x+2,y-6,8,10),0,180*16);p.setBrush(QColor(LOCKED))
+            p.drawRoundedRect(QRectF(x,y+1,12,9),2,2)
+            p.setPen(QColor(LOCKED));p.drawText(QPointF(x+17,y+10),'locked')
 
     def mousePressEvent(self,event):
         if event.button()==Qt.MouseButton.RightButton and self.drag is not None:
