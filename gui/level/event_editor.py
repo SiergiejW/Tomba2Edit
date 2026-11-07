@@ -817,7 +817,7 @@ class EventEditor(QDialog):
         # Page: where the script lives.
         page_box=QGroupBox('Page');page_form=QFormLayout(page_box)
         self.page_fields={}
-        for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler')):
+        for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler'),('music','Music')):
             field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field;page_form.addRow(label,field)
         left.addWidget(page_box)
         # RPG Maker's Graphic and Conditions, side by side as there.
@@ -1061,6 +1061,21 @@ class EventEditor(QDialog):
     def conversation_page(self,request):
         return next((n for n,b in enumerate(self.bindings) if b.table and b.request==request),None)
 
+    def native_music_text(self):
+        """The conversation music this NPC's native code starts, if it does."""
+        if not self.native_handler:return None
+        cached=getattr(self,'_music_text',False)
+        if cached is not False:return cached
+        try:cues=script.native_music(self.exe,self.overlay,self.native_handler)
+        except (ValueError,IndexError):cues=[]
+        parts=[]
+        for cue in cues:
+            sound=script.music_sound(cue)
+            slot=script.music_slot(sound) if sound is not None else None
+            parts.append(f'cue {cue}'+(f' (sound 0x{sound:02X}, SEQ slot {slot})' if slot is not None else ''))
+        self._music_text='Started by native code: '+', '.join(parts) if parts else None
+        return self._music_text
+
     def page_changed(self,index):
         if self.active is not None: self.store_operands()
         self.selected=None
@@ -1071,7 +1086,7 @@ class EventEditor(QDialog):
         binding=self.bindings[self.active] if self.active is not None else None
         for key,value in (('script',binding and f'0x{binding.script:08X}'),
                           ('caller',binding and (f'table slot 0x{binding.caller:08X}' if binding.table else f'0x{binding.caller:08X}')),
-                          ('count',None),('handler',self.native_handler and f'0x{self.native_handler:08X}')):
+                          ('count',None),('handler',self.native_handler and f'0x{self.native_handler:08X}'),('music',self.native_music_text())):
             self.page_fields[key].setText(value or '—')
         if self.active is None:
             if self.native_handler:

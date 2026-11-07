@@ -524,7 +524,7 @@ class Flow:
         main = struct.unpack_from('<I', exe, 24)[0]
         self.images = (Image(overlay, BASE), Image(exe[0x800:], main))
         self.overlay_end = BASE + len(overlay)
-        self.preds, self.calls, self.conversation_calls = {}, [], []
+        self.preds, self.calls, self.conversation_calls, self.music_calls = {}, [], [], []
         seen, work, roots = set(), [start], {start}
         while work and len(seen) < limit:
             at = work.pop()
@@ -540,6 +540,7 @@ class Flow:
                         if i.name == 'jal':
                             if i.target in LOADERS: self.calls.append((at, LOADERS[i.target]))
                             elif i.target in CONFIGURE_CONVERSATION: self.conversation_calls.append(at)
+                            elif i.target == BEGIN_INTERACTION_AUDIO: self.music_calls.append(at)
                             elif BASE <= i.target < self.overlay_end and i.target not in roots:
                                 roots.add(i.target); work.append(i.target)
                         self._edge(slot, at + 8, call=True); at += 8; continue
@@ -788,6 +789,7 @@ CONVERSATION_ANIMATIONS = 0x8001B860
 # f_ConfigureScriptActorConversation(handler, request, flags) and its
 # explicit-offset form, as NPC code calls them directly.
 CONFIGURE_CONVERSATION = (0x80070724, 0x8007074C)
+BEGIN_INTERACTION_AUDIO = 0x80042354      # f_BeginScriptedInteractionAudio(mode, cue)
 # f_HandleAreaScriptActor: the actor every conversation runs on when area
 # code (f_UpdateFishermensTownProgressTriggers) rather than an NPC asks.
 AREA_SCRIPT_ACTOR = 0x80071A3C
@@ -805,6 +807,17 @@ def native_requests(exe, overlay, handler):
         requests = {v[0] & 0xff for v in flow.after(5, call + 4) if v and v[1] is None}
         out.extend((h, r) for h in sorted(handlers) for r in sorted(requests))
     return sorted(set(out))
+
+def native_music(exe, overlay, handler):
+    """Conversation-music cues this handler's native code starts
+    (f_BeginScriptedInteractionAudio with a constant cue), sorted."""
+    flow = Flow(exe, overlay, handler)
+    cues = set()
+    for call in flow.music_calls:
+        for v in flow.after(5, call + 4):
+            if v and v[1] is None: cues.add(v[0] & 0xff)
+    return sorted(cues)
+
 
 def conversations(exe, overlay, area, pages, requests=()):
     """Bindings for the conversation scripts that `pages` (lists of
