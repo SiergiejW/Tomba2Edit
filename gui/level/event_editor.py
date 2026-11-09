@@ -1254,6 +1254,10 @@ class EventEditor(QDialog):
             elif c.opcode==40 and c.operands[0] in (2,3):
                 name=self.item_name(c.operands[1])
                 if name:text+=f' — {name}'
+            elif c.opcode==62:
+                from game.event_preview import native_plain
+                said=native_plain(self.exe,self.overlay,script.code_pointer(c))
+                if said:text+=' — '+'; '.join(said)
             elif c.opcode==40 and c.operands[0] in (0,1):
                 line=self.system_message(c.operands[1])
                 if line:text+=f' — “{line}”'

@@ -243,11 +243,11 @@ def native_code(exe,overlay,command,count=64):
     callback=struct.unpack('<I',read(event_script.CALLBACKS+command.opcode*4,4))[0]
     return f'Command bytes: {command.raw.hex(" ")}\n'+native_code_at(exe,overlay,callback,count)
 
-def native_gist(exe,overlay,callback,count=200):
+def native_steps(exe,overlay,callback,count=200):
     """What a straight-line native routine visibly does: the functions it
     calls with their constant arguments and the fixed memory it writes.
     Branches are not followed (the first path through is read), so this is a
-    sketch, not a proof."""
+    sketch, not a proof. [('set', label, value) | ('call', name, [args])]"""
     from psx.mips import Image
     data,base=(overlay,event_script.BASE) if callback>=event_script.BASE else (exe[0x800:],struct.unpack_from('<I',exe,24)[0])
     image=Image(data,base)
@@ -265,16 +265,72 @@ def native_gist(exe,overlay,callback,count=200):
             regs[ins.rt]=((const(ins.rs)+ins.imm) if n=='addiu' else (const(ins.rs)|ins.unsigned))&0xffffffff
         elif n in ('addu','or') and ins.rt==0 and const(ins.rs) is not None:regs[ins.rd]=const(ins.rs)
         elif n in widths and const(ins.rs) is not None and const(ins.rt) is not None and const(ins.rs)>=0x80000000:
-            lines.append(f'sets {event_script._global((const(ins.rs)+ins.imm)&0xffffffff)} = {const(ins.rt)&widths[n]}')
+            lines.append(('set',event_script._global((const(ins.rs)+ins.imm)&0xffffffff),const(ins.rt)&widths[n]))
         elif n=='jal':pending=ins.target;continue
         elif n=='jr' and ins.rs==31:leaving=True;continue
         if pending is not None:
-            shown=', '.join('?' if v is None else (f'0x{v:X}' if v>=0x8000 else str(v)) for v in (const(r) for r in (4,5,6,7)))
-            lines.append(f'calls {event_script._symbol(pending)}({shown})')
+            lines.append(('call',event_script._symbol(pending),[const(r) for r in (4,5,6,7)]))
             for r in range(2,26):regs.pop(r,None)
             pending=None
         if leaving:break
     return lines
+
+def native_gist(exe,overlay,callback,count=200):
+    """native_steps as short technical lines."""
+    out=[]
+    for step in native_steps(exe,overlay,callback,count):
+        if step[0]=='set':out.append(f'sets {step[1]} = {step[2]}')
+        else:
+            shown=', '.join('?' if v is None else (f'0x{v:X}' if v>=0x8000 else str(v)) for v in step[2])
+            out.append(f'calls {step[1]}({shown})')
+    return out
+
+def _signed(v):
+    return v-0x100000000 if v is not None and v>=0x80000000 else v
+
+# Known game routines in plain words: name -> (arguments) -> phrase.
+PLAIN={
+ 'f_AddItemWithMessage':lambda a:f'give {event_script.item_label(a[0])} (with its message)' if a[0] is not None else 'give an item (with its message)',
+ 'f_AddItemWithoutMessage':lambda a:f'give {event_script.item_label(a[0])}' if a[0] is not None else 'give an item',
+ 'f_RemoveItemWithMessage':lambda a:f'take {event_script.item_label(a[0])} (with its message)' if a[0] is not None else 'take an item',
+ 'f_RemoveItemWithoutMessage':lambda a:f'take {event_script.item_label(a[0])}' if a[0] is not None else 'take an item',
+ 'f_RemoveItemWithAltMessage':lambda a:f'take {event_script.item_label(a[0])} (other message)' if a[0] is not None else 'take an item',
+ 'f_PlaySoundEffect':lambda a:f'play sound 0x{a[0]:02X}' if a[0] is not None else 'play a sound',
+ 'f_PlaySoundEffectWithPitchOffset':lambda a:f'play sound 0x{a[0]:02X}' if a[0] is not None else 'play a sound',
+ 'f_SpawnTransientEffectAtFixedPosition':lambda a:f'spawn effect {a[0]} at a fixed spot' if a[0] is not None else 'spawn an effect',
+ 'f_SpawnFlaggedTransientEffectAtFixedPosition':lambda a:f'spawn effect {a[0]} at a fixed spot' if a[0] is not None else 'spawn an effect',
+ 'f_AllocateActor':lambda a:'create a helper actor',
+ 'f_SetCameraMode':lambda a:'set the camera mode',
+ 'f_ApproachFixedPosition3D':lambda a:'move toward a fixed point',
+ 'f_ApproachCameraPositionAndRebuildView':lambda a:'move the camera',
+ 'f_StartEvent':lambda a:f'start {event_script.event_label(_signed(a[0]))}' if a[0] is not None else 'start an event',
+ 'f_UpdateEvent':lambda a:f'complete {event_script.event_label(_signed(a[0]))}' if a[0] is not None else 'complete an event',
+ 'f_QueueResourceMessage':lambda a:f'show system message {a[0]}' if a[0] is not None else 'show a system message',
+ 'f_QueueItemMessage':lambda a:f'show the message for {event_script.item_label(a[0])}' if a[0] is not None else 'show an item message',
+ 'f_QueuePopupMessage':lambda a:'show a popup message',
+ 'f_SetTombaAnimationIfChanged':lambda a:f'Tomba animation {a[0]}' if a[0] is not None else 'change Tomba’s animation',
+ 'f_SetActorAnimationIfChanged':lambda a:f'play animation {a[1]} on the actor' if a[1] is not None else 'change the actor’s animation',
+ 'f_SpawnGoldFishhookPickup':lambda a:'spawn the gold fishhook pickup',
+ 'f_SetCameraFocusPosition':lambda a:'set where the camera looks',
+ 'f_StartCameraTransformInterpolation':lambda a:'start a camera move',
+ 'f_UpdateCameraTransformInterpolation':lambda a:'continue the camera move',
+ 'f_RestorePreviousCameraMode':lambda a:'restore the previous camera mode',
+ 'f_CalculateYawFromPositionToPoint':lambda a:'work out which way to face',
+ 'f_StepActorYawTowardAngle':lambda a:'turn the actor toward an angle',
+}
+
+def native_plain(exe,overlay,callback):
+    """The routine in plain words where its calls are known routines;
+    [] when it calls nothing recognisable. Unknown calls are named as the
+    game's own code names them (FUN_… when it has no name)."""
+    out=[]
+    for step in native_steps(exe,overlay,callback):
+        if step[0]=='set':out.append(f'set {step[1]} to {step[2]}')
+        elif step[1] in PLAIN:
+            try:out.append(PLAIN[step[1]](step[2]))
+            except Exception:out.append(step[1])
+        else:out.append(f'run {step[1]}')
+    return out
 
 def native_code_at(exe,overlay,callback,count=64):
     from psx.mips import Image
@@ -287,8 +343,8 @@ def native_code_at(exe,overlay,callback,count=64):
         if ins.name=='jr' and ins.rs==31:
             if ins.address+4 in image:lines.extend(image.text(ins.address+4,1))
             break
-    gist=native_gist(exe,overlay,callback)
-    head=('Looks like (first path only): '+'; '.join(gist)+'\n\n') if gist else ''
+    gist=native_gist(exe,overlay,callback);plain=native_plain(exe,overlay,callback)
+    head=(('In plain words (first path only): '+'; '.join(plain)+'.\n') if plain else '')+(('Calls and writes: '+'; '.join(gist)+'\n\n') if gist else '')
     return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 
 def sound_samples(exe,overlay,snd,area,sound_id,pitch_offset=0):
