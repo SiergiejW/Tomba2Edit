@@ -17,27 +17,8 @@ def _hold(world,actor,table,animation,step,max_ticks=120):
         step()
         world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
 
-def animation_frames(scene,instance,command,max_ticks=120,animations=None,previous=None,blend=None):
-    """Initialise just the selected scene and sample one requested animation.
-
-    No level-wide recording or guessed model/animation pairing is used.
-    Returned parts can be posed with the level viewer's existing assembly.
-    """
-    if command.opcode not in (1,30,57,58):raise ValueError('This action has no decoded skeletal animation preview.')
-    values=command.operands
-    if command.opcode==30:
-        if values[0]&1:raise ValueError('This action targets the current script actor, which is not resolved to the selected entity.')
-        animation,mode=values[1],values[2]
-    elif command.opcode in (57,58):
-        # f_StartSynchronizedActorAndTombaAnimations: actor +0x74, blend 4.
-        if values[0]&0x8000:raise ValueError('This action animates the current script actor, which is not resolved to the selected entity.')
-        if command.opcode==58 and values[0]&0x7fff==2:raise ValueError('Turn-only form: no animation is started.')
-        animation,mode=values[1],4
-    else:
-        if values[0]&0x8000:raise ValueError('This presentation animates another script actor; its target is unresolved.')
-        animation,mode=values[2],4
-    if animation<0:raise ValueError('The animation is selected by NPC code at runtime.')
-    if animation>255:raise ValueError('Animation ID is outside the native actor range.')
+def _entity_actor(scene,instance,animations=None):
+    """(world, actor, animation table) of the selected entity, initialised by its own code."""
     handler=event_script.handler_for(scene,instance)
     if not handler:raise ValueError('No verified native handler is associated with this entity.')
     idx=getattr(scene,'idx_path',str(Path(scene.dat_path).with_name('TOMBA2.IDX')))
@@ -67,6 +48,50 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None,previo
         # Attached when the page starts (f_InitializeActorScript's literal).
         table=animations;world.mem.write(actor.address+0x7c,4,table)
     if not actor_sim._in_ram(table):raise ValueError('This entity has no native skeletal animation table.')
+    return world,actor,table
+
+
+def animation_catalogue(scene,instance=None,animations=None,who='self'):
+    """[(id, ticks, loops)] for every animation in the table of the entity
+    (or Zippo, who='zippo'), read from the emulated actor's own table."""
+    from formats.animation.sequences import read_clip
+    if who=='zippo':
+        world,actor=_zippo_actor(scene);table=world.mem.read(actor.address+0x7C,4)
+    else:
+        world,actor,table=_entity_actor(scene,instance,animations)
+    if not actor_sim._in_ram(table):raise ValueError('No animation table.')
+    ram=bytes(world.mem.ram);out=[]
+    for n in range(256):
+        pointer=world.mem.read(table+n*4,4)
+        if not actor_sim._in_ram(pointer):break
+        try:clip=read_clip(ram,actor_sim.RAM_BASE,pointer,actor_sim._ANY_POSE)
+        except Exception:break
+        out.append((n,clip.duration,clip.loop_start is not None))
+    return out
+
+
+def animation_frames(scene,instance,command,max_ticks=120,animations=None,previous=None,blend=None):
+    """Initialise just the selected scene and sample one requested animation.
+
+    No level-wide recording or guessed model/animation pairing is used.
+    Returned parts can be posed with the level viewer's existing assembly.
+    """
+    if command.opcode not in (1,30,57,58):raise ValueError('This action has no decoded skeletal animation preview.')
+    values=command.operands
+    if command.opcode==30:
+        if values[0]&1:raise ValueError('This action targets the current script actor, which is not resolved to the selected entity.')
+        animation,mode=values[1],values[2]
+    elif command.opcode in (57,58):
+        # f_StartSynchronizedActorAndTombaAnimations: actor +0x74, blend 4.
+        if values[0]&0x8000:raise ValueError('This action animates the current script actor, which is not resolved to the selected entity.')
+        if command.opcode==58 and values[0]&0x7fff==2:raise ValueError('Turn-only form: no animation is started.')
+        animation,mode=values[1],4
+    else:
+        if values[0]&0x8000:raise ValueError('This presentation animates another script actor; its target is unresolved.')
+        animation,mode=values[2],4
+    if animation<0:raise ValueError('The animation is selected by NPC code at runtime.')
+    if animation>255:raise ValueError('Animation ID is outside the native actor range.')
+    world,actor,table=_entity_actor(scene,instance,animations)
     pointer=world.mem.read(table+animation*4,4)
     from formats.animation.sequences import read_clip
     clip=read_clip(bytes(world.mem.ram),actor_sim.RAM_BASE,pointer,actor_sim._ANY_POSE)

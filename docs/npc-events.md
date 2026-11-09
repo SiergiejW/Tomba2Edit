@@ -221,8 +221,11 @@ f_ConfigureScriptActorConversation(handler, request, flags) (0x80070724; offset 
   A00 has one (0x80149E50, nine slots; slot 1 is filled at run time). The editor shows these
   as pages `C<request>`; they are written back by relocating the script and rewriting that
   one table word (event_script._stage_table).
-- handler 1 (0x8007156C): no dialogue - walks the NPC to Tomba's stand point
-  (f_UpdateScriptedInteractionApproach); the page itself shows the text.
+- handler 1 (0x8007156C): no dialogue. It runs on the dispatcher's actor - the area script
+  actor, i.e. Zippo, not the NPC and not Tomba - and eases that actor toward the configured
+  stand point with f_UpdateScriptedInteractionApproach (mode 1, walk/idle animation); the
+  page itself shows the text. (Disassembled; the later states are not traced.)
+  FUN_8007091c, run first, places the same actor round Tomba and grows it to scale 0xC00.
 - handler >= 10: area code, `handler - 10` into A00 0x80149E74 or A07 0x80132E78.
 
 Without flag 0x04 the stand point is a fixed default: 0xBE out at one of four angles
@@ -245,3 +248,10 @@ flags & 3). So handler-1 conversations bring Zippo to Tomba, and presentation bi
 gestures are Zippo's. Each area's spawn table holds the handler (A00 word at 0x80147E20).
 Next: allocate it via ALLOCATE_ACTOR with that handler in actor_sim, run its init, then pose
 it like NPC previews (World._parts) and add it to the simulation preview.
+
+## Editor aids (2026-11-09)
+
+- Waits are labelled "Wait: ..."; command 18 with event -1 waits for every pending quest banner/popup (global counters), it names no event.
+- "Runtime-selected entry": the handler stores constants into the actor dialogue selector (+0x7A); `native_selectors` lists them with their conditions.
+- Progress rows (4, 6, 12, 43): `progress_writers` lists the script rows in the area that set the same byte (native writers are not covered).
+- Animation lists come from the emulated actor table (`animation_catalogue`); a switch blends over the command ticks and the clip then plays that many ticks late.

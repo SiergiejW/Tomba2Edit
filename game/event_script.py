@@ -20,9 +20,9 @@ EVENT_END = pickup_edit.WINDOW_END
 EXTENDED, BRANCH, END = 0x2000, 0x4000, 0x8000
 LABELS = {
  0: 'Show text', 1: 'Show text + gesture', 2: 'Skip presentation',
- 3: 'End presentation', 4: 'Set progress and wait', 5: 'Wait (timer)',
- 6: 'Wait for progress', 7: 'Wait for animation', 8: 'Wait for camera',
- 9: 'Wait for conversation progress', 10: 'Wait for Tomba (cutscene control)',
+ 3: 'End presentation', 4: 'Set progress and wait', 5: 'Wait: timer',
+ 6: 'Wait: area progress', 7: 'Wait: animation to finish', 8: 'Wait: camera to arrive',
+ 9: 'Wait: conversation progress', 10: 'Wait: Tomba under script control',
  11: 'Conversation music', 12: 'Change progress', 13: 'Request conversation',
  14: 'Run conversation', 15: 'Script actor mode', 16: 'Interaction offset',
  17: 'Set position', 18: 'Start quest event', 19: 'Complete quest event', 20: 'Clear item use',
@@ -36,9 +36,9 @@ LABELS = {
  43: 'If area progress', 44: 'If event state', 45: 'Controller vibration',
  46: 'Play sound', 47: 'Play voice', 48: 'Shared control flag',
  49: 'Move Tomba to coordinate', 50: 'Enter weaponless interior',
- 51: 'Exit weaponless interior', 52: 'Tomba facing', 53: 'Sync location from Tomba',
+ 51: 'Exit weaponless interior', 52: 'Turn Tomba', 53: 'Sync location from Tomba',
  54: 'Set Tomba location', 55: 'Play Tomba animation', 56: 'Turn Tomba toward actor',
- 57: 'Actor + Tomba animation', 58: 'Actor faces Tomba', 59: 'Turn actor (sequence)',
+ 57: 'Actor + Tomba animation', 58: 'Actor faces Tomba', 59: 'Turn actor and Tomba toward a point',
  60: 'Item-use sequence', 61: 'Linked pickup sequence', 62: 'Run native code',
 }
 CONDITION = 'Condition (-1 always, 0 =, 1 <=, 2 >=, 3 any bit)'
@@ -53,7 +53,13 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
       'Focus X', 'Focus height', 'Focus depth', 'Unused'),
  23: ('Camera control 1', 'Camera control 2', 'Camera control 3'),
  30: ('Actor / wait flags', 'Animation ID (-1 = back to rest)', 'Blend ticks (0 = cut)'),
- 31: ('Target mode (0x8000 = script actor)', 'Max step per tick', 'Angle (4096 = 360°)'),
+ # f_RunScriptedActorYawCommand: mode 0 = to the angle; 1 = face Tomba, 2 = face away, 3 = face this
+ # NPC (angle = offset added); 10 = face the point (X, depth) at 0x100 a tick. 0x8000 = Zippo.
+ 31: ('Mode (0 angle, 1 face Tomba, 2 face away, 3 face this NPC, 10 point; 0x8000 = Zippo)',
+      'Step per tick (mode 10: point X)', 'Angle (4096 = 360°; modes 1-3 offset; mode 10: point depth)'),
+ # f_RunScriptedActorTurnCommand: the actor (0x8000 = Zippo) and Tomba both turn to face the point;
+ # low bits = step per tick, 0 = face this NPC at 0x100.
+ 59: ('Step per tick (0 = face this NPC); 0x8000 = Zippo', 'Point X', 'Point depth'),
  35: ('Axis (0 X, 1 height, 2 depth)', 'Terrain probe offset', 'Target coordinate',
       'Speed (1/256 unit per tick)', 'Motion sound', 'Sound frame', 'Unused'),
  36: ('Target X', 'Target height', 'Target depth',
@@ -80,6 +86,10 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
  18: ('Event ID', 'Do not wait for the notice (1)', 'Unused'),
  19: ('Event ID', 'Do not wait for the notice (1)', 'Unused'),
  # f_SetTombaScriptedLocationAndPosition: +0x74 X, +0x76 height, +0x64 depth.
+ # Callback 0x80043EDC: mode (low 4 bits) 0 = Tomba's yaw := operand 1; 1 = faces the actor;
+ # 2 = faces away (yaw - 0x800). Operand 2 picks his action state (0 -> 30, else 35).
+ # 0x8000 = then wait until he has finished turning.
+ 52: ('Mode (0 angle, 1 face the actor, 2 face away; 0x8000 = wait for the turn)', 'Angle (mode 0; 4096 = 360°)', 'Pose (0 or 1)'),
  54: ('Location byte', 'Tomba X', 'Tomba height', 'Tomba depth', 'Unused', 'Unused', 'Unused'),
  # f_RunScriptedTombaAnimationCommand: mode 0 waits; 2 = held state 0x26.
  55: ('Mode (0 wait, 1 continue, 2 continue + hold)', 'Tomba animation ID', 'Blend ticks',
@@ -92,10 +102,21 @@ INSERTABLE = {0: (0, 0, 0), 5: (30, 0, 0), 1: (5, 0, 3), 11: (1, 1, 0), 30: (0, 
               46: (0, 0, 0), 47: (0, 0, 0), 17: (0, 0, 0, 0, 0, 0, 0),
               35: (0, 0, 0, 256, 0, 0, 0), 36: (0, 0, 0, 0x0a00, 0, 0, 0),
               31: (0, 256, 0), 23: (0, 0, 0), 24: (0, 0, 0), 22: (-1, 0, 2),
-              7: (0, 0, 0), 8: (0, 0, 0), 12: (0, 0, 0)}
+              6: (0, 0, 1), 7: (0, 0, 0), 8: (0, 0, 0), 9: (0, 0, 0), 10: (0, 0, 0), 12: (0, 0, 0)}
 CONDITIONS = ('always', '==', '<=', '>=', '& any')
 # Extra insert choices that share an opcode: (label, opcode, operands).
-INSERT_VARIANTS = (('End conversation music', 11, (0, 0, 0)),)
+INSERT_VARIANTS = (('End conversation music', 11, (0, 0, 0)),
+                   ('Wait: message to close', 40, (10, 0, 0)),
+                   ('Wait: quest display to finish', 18, (-1, 0, 0)),
+                   # Who moves / turns: this actor, Zippo (script actor) or Tomba.
+                   ('Zippo: turn to an angle', 31, (-32768, 256, 0)),
+                   ('This actor: face Tomba (turn only)', 58, (2, 0, 0)),
+                   ('Zippo: face Tomba (turn only)', 58, (-32766, 0, 0)),
+                   ('Tomba: move along X or depth', 49, (0, 0, 0)),
+                   ('Tomba: set location', 54, (0, 0, 0, 0, 0, 0, 0)),
+                   ('Tomba: turn to an angle', 52, (0, 0, 0)),
+                   ('Tomba: face the actor', 52, (1, 0, 0)),
+                   ('Tomba: face away from the actor', 52, (2, 0, 0)))
 
 # f_BeginScriptedInteractionAudio: cue byte -> sound ID (cue 0 = cue 1).
 MUSIC_SOUNDS = (0x72, 0x73, 0x74, 0x75, 0x76, 0x76, 0x77, 0x78)
@@ -239,7 +260,7 @@ def summary(c):
     """One readable line per action, RPG-Maker style."""
     o = c.operands; op = c.opcode
     def cond(mode): return CONDITIONS[mode+1] if -1 <= mode <= 3 else f'mode {mode}'
-    if op == 5: return f'Wait {o[0]+1} ticks ({(o[0]+1)/TICK_HZ:.2f} s)'
+    if op == 5: return f'Wait: {o[0]+1} ticks ({(o[0]+1)/TICK_HZ:.2f} s)'
     if op in (0, 1):
         entry = 'runtime-selected entry' if o[1] < 0 else f'entry {o[1]}'
         # 0x8000: the gesture plays on src_CurrentScriptActor, not this entity.
@@ -251,18 +272,18 @@ def summary(c):
         if o[1] < 0: return f'Back to rest animation on {who}' + (', wait' if o[0] & 2 else '')
         return f'Play animation {o[1]} on {who}' + (', wait' if o[0] & 2 else '')
     if op == 40:
-        if o[0] == 10: return 'Wait for the open message to close'
+        if o[0] == 10: return 'Wait: the open message to close'
         kind = {0: 'message', 1: 'message', 2: 'item message', 3: 'item message', 4: 'alt message', 5: 'alt message', 10: 'skip'}.get(o[0], f'mode {o[0]}')
         return f'Show {kind} {o[1]}' + (f' (group {o[2]})' if o[0] in (0, 1) else '') + (', wait' if o[0] & 1 else '')
     if op == 46: return f'Play sound 0x{o[0]&255:02X} (pitch {o[1]:+d}, volume {o[2]:+d})'
     if op == 47: return 'Stop voice' if o[1] < 0 else f'Play voice {o[1]} (mode {o[0]})'
     if op == 10:
         held = ' and '.join(n for b, n in ((1, f'X {o[1]}'), (2, f'height {o[2]}')) if o[0] & b)
-        return 'Wait for Tomba to take cutscene control' + (f', holding {held}' if held else '')
+        return 'Wait: Tomba to take cutscene control' + (f', holding {held}' if held else '')
     if op in (18, 19):
         # f_RunStartEventCommand / f_RunUpdateEventCommand: waiting for the
         # event banner to finish is the default, so only not waiting is said.
-        if op == 18 and o[0] < 0: return 'Wait for the event banners to finish'
+        if op == 18 and o[0] < 0: return 'Wait: quest display to finish'
         verb = 'Start' if op == 18 else 'Complete'
         label = event_label(o[0])
         return f'{verb} {label[0].upper()}{label[1:]}' + (' (goes on while its banner shows)' if o[1] else '')
@@ -273,12 +294,18 @@ def summary(c):
         where = f', Tomba at offset ({o[3]}, {o[4]}, {o[5]})' if o[2] & 4 and c.extended else ''
         handler = o[0] & 0xff
         what = ('runs conversation script ' + str(o[1]) if handler == 0 else
-                'actor walks to Tomba’s side; the page shows the text' if handler == 1 else
+                'no script of its own, Zippo moves to his spot by Tomba; this page shows the text' if handler == 1 else
                 'area code runs the conversation')
-        return (f'Start conversation {o[1]} (handler {handler}: {what}; Zippo joins){where}'
+        return (f'Start conversation {o[1]} (handler {handler}: {what}){where}'
                 + (', no wait' if o[0] & 0x8000 else ''))
     if op == 14: return 'Run the conversation (its native handler shows the dialogue; waits until it ends)'
     if op == 54: return f'Set Tomba location {o[0]}: X {o[1]}, height {o[2]}' + (f', depth {o[3]}' if c.extended else '')
+    if op == 52:
+        mode = o[0] & 0xF
+        what = (f'Turn Tomba to {o[1] * 360 / 4096:.0f}°' if mode == 0 else
+                'Turn Tomba to face the actor' if mode == 1 else
+                'Turn Tomba away from the actor' if mode == 2 else f'Turn Tomba (mode {mode})')
+        return what + (' and wait for the turn' if o[0] & 0x8000 else '')
     if op == 55:
         how = {0: ', wait', 2: ', hold'}.get(o[0], '')
         return f'Tomba animation {o[1]}' + how
@@ -297,7 +324,20 @@ def summary(c):
     if op == 36:
         speed = f'{move_speed(c)}/tick' if c.extended else 'carried-over speed'
         return f'Move to X {o[0]}, height {o[1]}, depth {o[2]} at {speed}'
-    if op == 31: return f'Turn {"Zippo" if o[0] & 0x8000 else "actor"} (mode {o[0]&0x7fff}) to {o[2]*360/4096:.0f}°, step {o[1]}'
+    if op == 31:
+        who, mode = 'Zippo' if o[0] & 0x8000 else 'actor', o[0] & 0x7fff
+        if mode == 0:
+            return f'Turn {who} to {o[2]*360/4096:.0f}°' + (f', {o[1]} units a tick' if o[1] > 0 else ', at once')
+        offset = f' (plus {o[2]*360/4096:.0f}°)' if o[2] and mode in (1, 2, 3) else ''
+        if mode == 1: return f'Turn {who} to face Tomba' + offset
+        if mode == 2: return f'Turn {who} away from Tomba' + offset
+        if mode == 3: return f'Turn {who} to face this NPC' + offset
+        if mode == 10: return f'Turn {who} toward the point X {o[1]}, depth {o[2]}'
+        return f'Turn {who} (mode {mode}) to {o[2]*360/4096:.0f}°, step {o[1]}'
+    if op == 59:
+        who, step = 'Zippo' if o[0] & 0x8000 else 'Actor', o[0] & 0x7fff
+        point = 'this NPC' if step == 0 else f'the point X {o[1]}, depth {o[2]}'
+        return f'{who} and Tomba turn to face {point}' + (f', {step} units a tick' if step else '')
     if op == 23: return f'Camera angles {o[0]}, {o[1]}, {o[2]}'
     if op == 22:
         mode = {0: f'set mode {o[1]}', 1: f'assign mode {o[1]}', -1: 'restore mode'}.get(o[0], f'op {o[0]}')
@@ -306,11 +346,11 @@ def summary(c):
     if op == 21: return f'Camera transform 0x{code_pointer(c):08X}' + (f' over {o[4]} ticks' if c.extended else '')
     if op in (43, 44):
         return 'If ' + condition_text(op, o[0], o[1], o[2]) + ' -> jump'
-    if op == 6: return f'Wait until progress[{o[1]}] {("==", "& any", "& none")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
-    if op == 9: return f'Wait until conversation progress == {o[0]}'
+    if op == 6: return f'Wait: area progress[{o[1]}] {("==", "& any", "& none")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
+    if op == 9: return f'Wait: conversation progress == {o[0]}'
     if op == 42: return f'If dialogue selector == {o[0]}'
-    if op == 12: return f'progress[{o[1]}] {("=", "|=", "&=")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
-    if op == 4: return f'progress[{o[0]}] = {o[1]}, wait until {o[2]}'
+    if op == 12: return f'area progress[{o[1]}] {("=", "|=", "&=")[o[0]] if 0 <= o[0] <= 2 else "?"} {o[2]}'
+    if op == 4: return f'area progress[{o[0]}] = {o[1]}, wait until {o[2]}'
     if op == 49: return f'Move Tomba along {"X" if o[1] == 0 else "depth"} to {o[2]}'
     if op == 11:
         if o[0] == 0: return 'End conversation music (area track resumes)'
@@ -525,6 +565,7 @@ class Flow:
         self.images = (Image(overlay, BASE), Image(exe[0x800:], main))
         self.overlay_end = BASE + len(overlay)
         self.preds, self.calls, self.conversation_calls, self.music_calls = {}, [], [], []
+        self.message_calls = []
         seen, work, roots = set(), [start], {start}
         while work and len(seen) < limit:
             at = work.pop()
@@ -541,6 +582,7 @@ class Flow:
                             if i.target in LOADERS: self.calls.append((at, LOADERS[i.target]))
                             elif i.target in CONFIGURE_CONVERSATION: self.conversation_calls.append(at)
                             elif i.target == BEGIN_INTERACTION_AUDIO: self.music_calls.append(at)
+                            elif i.target in QUEUE_MESSAGES: self.message_calls.append((at, QUEUE_MESSAGES[i.target]))
                             elif BASE <= i.target < self.overlay_end and i.target not in roots:
                                 roots.add(i.target); work.append(i.target)
                         self._edge(slot, at + 8, call=True); at += 8; continue
@@ -789,6 +831,7 @@ CONVERSATION_ANIMATIONS = 0x8001B860
 # f_ConfigureScriptActorConversation(handler, request, flags) and its
 # explicit-offset form, as NPC code calls them directly.
 CONFIGURE_CONVERSATION = (0x80070724, 0x8007074C)
+QUEUE_MESSAGES = {0x8004EA94: 'system', 0x8004EA0C: 'item', 0x8004F738: 'popup'}   # f_Queue{Resource,Item,Popup}Message
 BEGIN_INTERACTION_AUDIO = 0x80042354      # f_BeginScriptedInteractionAudio(mode, cue)
 # f_HandleAreaScriptActor: the actor every conversation runs on when area
 # code (f_UpdateFishermensTownProgressTriggers) rather than an NPC asks.
@@ -1003,6 +1046,101 @@ def page_conditions(exe, overlay, handler, caller, merges=48):
         return found
 
     return _tidy(back(caller, merges, frozenset()) or [])
+
+
+def progress_writers(scene, exe, overlay):
+    """{progress index: [(entity, page, row, text)]}: every script row in the
+    area that sets an area-progress byte (commands 4 and 12). Native handler
+    code that writes progress itself is not covered."""
+    read = reader(exe, overlay)
+    done, out = {}, {}
+    for inst in scene.instances:
+        try: handler = handler_for(scene, inst)
+        except Exception: handler = None
+        if not handler or handler in done: continue
+        done[handler] = inst.label
+        try: bindings = discover(exe, overlay, handler)
+        except Exception: continue
+        for page, b in enumerate(bindings, 1):
+            try: nodes = read_graph(read, b.script)
+            except ValueError: continue
+            for row, c in enumerate(nodes, 1):
+                if c.opcode == 12: index = c.operands[1]
+                elif c.opcode == 4: index = c.operands[0]
+                else: continue
+                out.setdefault(index, []).append((inst.label, page, row, summary(c)))
+    return out
+
+
+def facing(source, target):
+    """Game yaw (4096 = 360) from `source` to `target`, both (x, height,
+    depth): ratan2(source depth - target depth, target x - source x)."""
+    import math
+    return int(round(math.atan2(source[2] - target[2], target[0] - source[0]) * 4096 / (2 * math.pi))) & 0xfff
+
+
+def turn_plan(c, positions):
+    """What a turn command (31, 59) turns, as the game's own routines work
+    it out: [(who, target yaw, step per tick)], who being 'self', 'zippo' or
+    'tomba'. `positions` maps those names to (x, height, depth) or None; a
+    turn that needs a position that is not known is left out. A step below 1
+    turns at once."""
+    o = c.operands
+    who = 'zippo' if o[0] & 0x8000 else 'self'
+    here = positions.get(who)
+    if c.opcode == 31:
+        mode, step = o[0] & 0x7fff, o[1]
+        if mode == 0:
+            target = o[2] & 0xfff
+        elif mode in (1, 2, 3):
+            ref = positions.get('tomba' if mode in (1, 2) else 'self')
+            if here is None or ref is None: return []
+            target = (facing(here, ref) - (0x800 if mode == 2 else 0) + o[2]) & 0xfff
+        elif mode == 10:
+            if here is None: return []
+            target, step = facing(here, (o[1], 0, o[2])), 0x100
+        else:
+            return []
+        return [(who, target, step)]
+    if c.opcode == 59:
+        step = o[0] & 0x7fff
+        point = positions.get('self') if step == 0 else (o[1], 0, o[2])
+        step = step or 0x100
+        if point is None: return []
+        out = []
+        if here is not None: out.append((who, facing(here, point), step))
+        if positions.get('tomba') is not None: out.append(('tomba', facing(positions['tomba'], point), step))
+        return out
+    return []
+
+
+def native_messages(exe, overlay, handler):
+    """[(kind, number)] of the messages this handler's code queues with a
+    constant number ('system' = the resident System table, 'item' = an item
+    message, 'popup'), sorted."""
+    flow = Flow(exe, overlay, handler)
+    out = set()
+    for call, kind in flow.message_calls:
+        for v in flow.after(4, call + 4):
+            if v and v[1] is None: out.add((kind, v[0] & 0xffff))
+    return sorted(out)
+
+
+def native_selectors(exe, overlay, handler):
+    """[(value, address, conditions)]: every constant the handler's code
+    stores into the actor's dialogue selector (+0x7A) - the entry a
+    'runtime-selected' Show text uses - with the tests that hold there."""
+    flow = Flow(exe, overlay, handler)
+    out = []
+    for at in sorted(flow.seen):
+        image = flow.image(at)
+        i = image.at(at) if image is not None else None
+        if i is None or i.name not in ('sb', 'sh') or i.imm != 0x7A: continue
+        values = [(0, None, None)] if i.rt == 0 else flow.before(i.rt, at, 0, set())
+        for v in values:
+            if v and v[1] is None and v[2] is None:
+                out.append((v[0] & 0xff, at, page_conditions(exe, overlay, handler, at)))
+    return sorted(set((v, a, tuple(c)) for v, a, c in out))
 
 
 def _tidy(conditions):

@@ -195,7 +195,11 @@ class EventCommandDialog(QDialog):
     """RPG Maker's Event Command window: a tab per kind of command, each a
     two-column grid of buttons. Clicking one picks it."""
     GROUPS = (('Message',(0,1,40)),('Sound',(46,47,11,'End conversation music')),
-              ('Wait / Flow',(5,7,8,12,'If event state…','If area progress…')),('Actor',(30,17,35,36,31)),('Camera',(22,23,24)))
+              ('Wait',(5,6,7,8,9,10,'Wait: message to close','Wait: quest display to finish')),
+              ('Flow / Progress',(12,'If event state…','If area progress…')),('Animation',(30,)),
+              ('Move / Turn',(36,35,17,31,'Zippo: turn to an angle','This actor: face Tomba (turn only)','Zippo: face Tomba (turn only)',
+                              'Tomba: move along X or depth','Tomba: set location','Tomba: turn to an angle',
+                              'Tomba: face the actor','Tomba: face away from the actor')),('Camera',(22,23,24)))
     last_tab = 0
     def __init__(self,parent,choices,title='Event Command'):
         super().__init__(parent);self.setWindowTitle(title);self.choice=None
@@ -369,6 +373,27 @@ class FramesDecode(VoiceDecode):
                 origin=yaw=None
             self.emit_result((frames,loop,'',origin,yaw))
         except Exception as exc:self.emit_result(([],None,str(exc),None,None))
+
+
+class CatalogueDecode(VoiceDecode):
+    """The animations an actor's table holds: [(id, ticks, loops)]."""
+    def __init__(self,scene,instance,animations,who,parent):
+        QObject.__init__(self,parent);self.args=(scene,instance,animations,who);self.worker=None
+    def run(self):
+        scene,instance,animations,who=self.args
+        try:
+            from game.event_preview import animation_catalogue
+            self.emit_result((who,animation_catalogue(scene,instance,animations,who),''))
+        except Exception as exc:self.emit_result((who,[],str(exc)))
+
+
+class ProgressDecode(VoiceDecode):
+    """Which rows of the area set which area-progress byte."""
+    def __init__(self,scene,exe,overlay,parent):
+        QObject.__init__(self,parent);self.args=(scene,exe,overlay);self.worker=None
+    def run(self):
+        try:self.emit_result((script.progress_writers(*self.args),''))
+        except Exception as exc:self.emit_result(({},str(exc)))
 
 
 class CameraDecode(VoiceDecode):
@@ -620,6 +645,13 @@ class ViewportPreview(QObject):
             self.track=('turn',position,before[1] if before[1] is not None else self.editor.start_yaw(),target)
             self.editor.status.setText('Previewing: the actor turns to face Tomba (0x100 a tick), as f_RunScriptedActorFaceTombaSequence does.')
             self._start();return True
+        if c.opcode in (31,59):
+            entries=self.editor.turn_entries(nodes,row)
+            if entries:
+                # Whoever turns does so by the command's step each tick, as the game turns them.
+                self._save_base();self.track=('turns',entries)
+                self.editor.status.setText('Previewing: '+script.summary(c)+' - a step a tick, as in the game.')
+                self._start();return True
         steps=[s for s in trace(nodes,row,start) if s[0]==row]
         if not steps:return False
         _,kind,a,b,ticks=steps[-1]
@@ -646,18 +678,38 @@ class ViewportPreview(QObject):
             self._place(a+(b-a)*f,yaw if f>=1.0 else None)
             if t>=seconds+(0 if self.timeline else hold):self.stop()
         elif kind=='turn':
-            _,position,yaw,target=self.track
-            turned=min(int(t*self.FPS)*0x100,0x1000)
+            position,yaw,target=self.track[1:4];per_tick=self.track[4] if len(self.track)>4 else 0x100
+            turned=min(int(t*self.FPS)*per_tick,0x1000)
             gap=(target-yaw)&0xfff
             if gap>=0x800:gap-=0x1000
             now=target if abs(gap)<=turned else (yaw+(turned if gap>0 else -turned))&0xfff
             self._place(position,now)
-            if now==target and t>=(abs(gap)/0x100)/self.FPS+(0 if self.timeline else 0.8):self.stop()
+            if now==target and t>=(abs(gap)/per_tick)/self.FPS+(0 if self.timeline else 0.8):self.stop()
+        elif kind=='turns':
+            tick=int(t*self.FPS);done=True;longest=0
+            for who,start,target,step,position in self.track[1]:
+                gap=(target-start)&0xfff
+                if gap>=0x800:gap-=0x1000
+                if step<1 or abs(gap)<=step*tick:now=target
+                else:now=(start+(step*tick if gap>0 else -step*tick))&0xfff;done=False
+                self._apply_yaw(who,now,position)
+                longest=max(longest,0 if step<1 else abs(gap)/step)
+            if done and t>=longest/self.FPS+(0 if self.timeline else 0.8):self.stop()
         elif kind=='path':
             _,path,restore=self.track
             n=min(int(t*self.FPS),len(path)-1)
             self._aim(*path[n])
             if n>=len(path)-1 and t>=len(path)/self.FPS+(0.8 if restore else 0):self.stop()
+    def _apply_yaw(self,who,yaw,position):
+        """Turn the entity, Zippo or Tomba stand-in to game yaw `yaw`."""
+        if who=='self':
+            if position is not None:self._place(position,yaw)
+        elif who=='tomba':
+            if self.tomba is not None:self.tomba['yaw']=yaw;self._draw_tomba()
+        elif who=='zippo':
+            z=getattr(self,'zippo',None);viewer=self.viewer()
+            if z is not None and viewer is not None:
+                z['instance'].angle=yaw*360/4096;viewer.refresh_instance(z['instance'].index)
     def stop(self,keep=False):
         """End the running preview. Outside the timeline the entity and
         camera go back at once; in it they stay where the events put them."""
@@ -978,7 +1030,9 @@ class EventEditor(QDialog):
         text_layout.addLayout(voice_row)
         self.play_voice.setEnabled(False);self.sound_button.setEnabled(False)
         # Event Command choices: what Insert offers, labelled as before.
-        names={0:'Show text…',1:'Show text + gesture…',11:'Start conversation music'}
+        names={0:'Show text…',1:'Show text + gesture…',11:'Start conversation music',
+               36:'This actor: move to a position',35:'This actor: move along an axis',17:'This actor: set position',
+               31:'This actor: turn to an angle'}
         self.command_choices=[(names.get(op,script.LABELS[op]),op) for op in script.INSERTABLE]
         self.command_choices+=[(label,(op,tuple(values))) for label,op,values in script.INSERT_VARIANTS]
         self.command_choices+=[('If event state…','If event state…'),('If area progress…','If area progress…')]
@@ -1272,6 +1326,85 @@ class EventEditor(QDialog):
                         item=self.actions.item(n)
                         if item is not None:self._fill_row(item,parts)
 
+    # --- plain-language controls over the raw operands ---
+
+    FRIENDLY_WHO={30:(1,1),1:(0x8000,2),57:(0x8000,1),58:(0x8000,1)}   # op: (Zippo bit, animation operand)
+
+    def _friendly_fields(self,c):
+        """Who plays it and which animation, as a choice and a list, over the
+        flag and animation operands (which stay in step and stay editable
+        under "Edit raw parameters")."""
+        self._anim_combo=None
+        if c.opcode not in self.FRIENDLY_WHO or len(self.fields)<3 or self.raw.isChecked():return
+        zbit,which=self.FRIENDLY_WHO[c.opcode];flags=self.fields[0];anim=self.fields[which]
+        def signed(v):return v-65536 if v>=32768 else v
+        who=QComboBox();who.addItems(['This actor','Zippo'])
+        who.setCurrentIndex(1 if flags.value()&zbit else 0)
+        def set_who(i):
+            v=(flags.value()&0xffff&~zbit)|(zbit if i else 0);flags.setValue(signed(v))
+            self._fill_animations(i==1)
+        who.currentIndexChanged.connect(set_who)
+        self.form.insertRow(0,'Plays on',who)
+        row=1
+        if c.opcode==30:
+            wait=QCheckBox('Wait until it has finished')
+            wait.setChecked(bool(flags.value()&2))
+            wait.toggled.connect(lambda on:flags.setValue(signed((flags.value()&0xffff&~2)|(2 if on else 0))))
+            self.form.insertRow(row,'',wait);row+=1
+        combo=QComboBox();combo.setMaxVisibleItems(24);combo.setMinimumWidth(260)
+        self._anim_combo=(combo,anim,who)
+        self.form.insertRow(row,'Animation',combo)
+        def chosen(i):
+            value=combo.itemData(i)
+            if value is not None and anim.value()!=value:anim.setValue(value)
+        combo.activated.connect(chosen)
+        anim.valueChanged.connect(lambda _:self._sync_animation_combo())
+        for box in (flags,):                       # the raw flag operand is now shown by the choices above
+            self.form.setRowVisible(box,False)
+        self._fill_animations(who.currentIndex()==1)
+
+    def _sync_animation_combo(self):
+        pack=getattr(self,'_anim_combo',None)
+        if not pack:return
+        combo,anim,_who=pack
+        try:
+            i=combo.findData(anim.value())
+            combo.blockSignals(True)
+            if i>=0:combo.setCurrentIndex(i)
+            else:combo.setEditText(str(anim.value())) if combo.isEditable() else None
+            combo.blockSignals(False)
+        except RuntimeError:self._anim_combo=None
+
+    def _fill_animations(self,zippo):
+        pack=getattr(self,'_anim_combo',None)
+        if not pack:return
+        combo,anim,_who=pack
+        key='zippo' if zippo else 'self'
+        cache=getattr(self,'_catalogues',None)
+        if cache is None:cache=self._catalogues={}
+        if key in cache:
+            try:
+                combo.blockSignals(True);combo.clear()
+                if not cache[key]:combo.addItem('(animations unavailable here)',None)
+                for n,ticks,loops in cache[key]:
+                    combo.addItem(f'{n} — {ticks} ticks'+(', loops' if loops else ''),n)
+                if anim.value()<0:combo.insertItem(0,'−1 — back to rest',-1)
+                combo.blockSignals(False);self._sync_animation_combo()
+            except RuntimeError:self._anim_combo=None
+            return
+        combo.clear();combo.addItem('Loading animations…',None)
+        job=CatalogueDecode(self.panel.scene,self.instance,self.bindings[self.active].animations if self.active is not None else None,key,self)
+        self.frames_jobs.append(job);job.decoded.connect(self._catalogue_ready);job.start()
+
+    def _catalogue_ready(self,result):
+        job=self.sender()
+        if job in self.frames_jobs:self.frames_jobs.remove(job)
+        who,items,error=result
+        if not hasattr(self,'_catalogues'):self._catalogues={}
+        self._catalogues[who]=items
+        pack=getattr(self,'_anim_combo',None)
+        if pack:self._fill_animations(pack[2].currentIndex()==1)
+
     def select_action(self,row):
         self.animation_timer.stop()
         self.preview_generation+=1
@@ -1299,6 +1432,7 @@ class EventEditor(QDialog):
             box.valueChanged.connect(lambda _:self._field_timer.start())
             name=labels[n] if n<len(labels) else (f'Parameter {n+1}' if n<3 else f'Extended parameter {n-2}')
             self.form.addRow(name,box)
+        self._friendly_fields(c)
         index={x.address:n for n,x in enumerate(nodes)}
         if c.branch in index and game_build.current().name=='us-retail':
             jump=QSpinBox();jump.setRange(1,len(nodes));jump.setValue(index[c.branch]+1)
@@ -1320,6 +1454,8 @@ class EventEditor(QDialog):
             self.status.setText('Dialogue resolved from the native presentation. A negative entry is chosen by NPC code at runtime; browsing candidates does not change that.')
         elif c.opcode in (13,14,47):
             self.status.setText('Voice and conversation parameters are native selectors; resident voice IDs play from their XA descriptors.')
+        elif c.opcode in self.PROGRESS_OPS:
+            self.status.setText(self.progress_note(c))
         elif c.opcode==62:
             self.status.setText('This action calls native code. Its disassembly is in the Native code tab; it is kept verbatim.')
         elif c.opcode in PATH_TAB_OPS:
@@ -1532,7 +1668,9 @@ class EventEditor(QDialog):
         if c.opcode==40:
             o=c.operands
             self.text_preview.blockSignals(True)
-            if o[0] in (2,3):
+            if o[0]==10:
+                self.text_preview.setPlainText(self.open_message_note())
+            elif o[0] in (2,3):
                 name=self.item_name(o[1])
                 self.text_preview.setPlainText(f'Item message for item {o[1]}'+(f': {name}' if name else '')+
                     ('\nWaits until the message closes.' if o[0]&1 else ''))
@@ -1558,9 +1696,80 @@ class EventEditor(QDialog):
             elif entry<len(entries):self.text_choices.addItem(f'Dialogue entry {entry}',entry)
             else:raise ValueError('The dialogue entry is outside this master.')
             self.text_choices.blockSignals(False);self.choose_text(self.text_choices.currentIndex())
+            if entry<0:
+                self.text_preview.blockSignals(True);self.text_preview.setPlainText(self.selector_note(entries));self.text_preview.blockSignals(False)
         except (ValueError,OSError,KeyError,IndexError) as exc:
             self.text_choices.blockSignals(False)
             self.text_preview.setPlainText(str(exc))
+
+    def open_message_note(self):
+        """What 'wait for the open message to close' waits on: a message
+        already on screen, opened before this page's rows run - by the NPC's
+        native code or by the page before."""
+        head=('This row shows nothing itself. It waits for a message box that is already open to close. That box was '
+              'opened before these rows run - by this NPC’s native code, or by an earlier page.\n\n')
+        cache=getattr(self,'_messages',None)
+        if cache is None:cache=self._messages={}
+        if self.native_handler not in cache:
+            try:cache[self.native_handler]=script.native_messages(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+            except Exception:cache[self.native_handler]=[]
+        found=cache[self.native_handler]
+        if not found:
+            return head+'The NPC’s code opens no message with a fixed number that could be found, so which one it is cannot be named here.'
+        lines=[]
+        for kind,number in found:
+            if kind=='system':
+                line=self.system_message(number)
+                lines.append(f'• system message {number}'+(f': “{line}”' if line else ''))
+            elif kind=='item':
+                name=self.item_name(number);lines.append(f'• item message for item {number}'+(f' ({name})' if name else ''))
+            else:lines.append(f'• popup message {number}')
+        return head+'Messages this NPC’s code can open:\n'+'\n'.join(lines)
+
+    def selector_note(self,entries):
+        """What picks a runtime-selected entry: the NPC's own code stores it
+        into the actor's dialogue selector (+0x7A); the constants it stores,
+        the tests that hold there and the line each is."""
+        head=('This line is chosen while the game runs: the NPC’s native code stores the entry number into the actor '
+              '(dialogue selector, +0x7A) before the page reads it.\n\n')
+        cache=getattr(self,'_selectors',None)
+        if cache is None:cache=self._selectors={}
+        if self.native_handler not in cache:
+            try:cache[self.native_handler]=script.native_selectors(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+            except Exception:cache[self.native_handler]=[]
+        found=cache[self.native_handler]
+        if not found:
+            return head+'No constant is stored there that could be found (the number is computed), so the entry cannot be named here.'
+        lines=[]
+        for value,_at,conditions in found:
+            text=plain_line(entries[value]['text']) if 0<=value<len(entries) else '(outside this dialogue)'
+            when=('  when '+'; '.join(conditions[:3])) if conditions else ''
+            lines.append(f'• entry {value}: “{text}”{when}')
+        return head+'Entries it can pick:\n'+'\n'.join(lines)
+
+    PROGRESS_OPS={4:0,6:1,12:1,43:1}      # op: the operand holding the progress index
+
+    def progress_note(self,c):
+        """Who else sets the area-progress byte this row uses."""
+        index=c.operands[self.PROGRESS_OPS[c.opcode]]
+        writers=getattr(self,'_writers',None)
+        if writers is None:
+            if not getattr(self,'_writers_job',None):
+                self._writers_job=job=ProgressDecode(self.panel.scene,self.exe,self.overlay,self)
+                job.decoded.connect(self._writers_ready);job.start()
+            return f'Area progress[{index}] is one of the game’s story bytes for this area. Looking up which rows set it…'
+        rows=writers.get(index,[])
+        head=f'Area progress[{index}] is one of the game’s story bytes for this area (it has no name in the game).'
+        if not rows:return head+' No script row in this area sets it; native code sets it.'
+        return head+' Set by: '+'; '.join(f'{label} page {page} row {row} ({text})' for label,page,row,text in rows[:8])+(' …' if len(rows)>8 else '')
+
+    def _writers_ready(self,result):
+        self._writers,_error=result
+        self._writers_job=None
+        if self.selected is not None and self.active in self.drafts:
+            nodes=self.drafts[self.active]
+            if self.selected<len(nodes) and nodes[self.selected].opcode in self.PROGRESS_OPS:
+                self.status.setText(self.progress_note(nodes[self.selected]))
 
     def update_enabled(self):
         enabled=self.active is not None and game_build.current().name=='us-retail'
@@ -1855,7 +2064,7 @@ class EventEditor(QDialog):
 
     TOMBA_DISTANCE = 250    # assumed stand-off when a page gives no position
 
-    def tomba_state(self,nodes,row):
+    def tomba_state(self,nodes,row,yaw_row=None):
         """(position, yaw, animation ID, how found) of Tomba after rows
         0..row: placed by the page's own commands, facing the entity, in
         the last Tomba animation the page started (else idle, 0x02)."""
@@ -1867,7 +2076,10 @@ class EventEditor(QDialog):
             if c.opcode==55 and o[1]>=0:animation=o[1]
             elif c.opcode in (57,58) and o[2]>=0 and not (c.opcode==58 and o[0]&0x7fff==2):animation=o[2]
         entity=self.state_at(nodes,row)[0] or position
-        return position,yaw_toward(position,entity),animation,how
+        yaw=yaw_toward(position,entity)
+        if self.state_at(nodes,row)[0] is not None:
+            yaw=self.yaws_at(nodes,row if yaw_row is None else yaw_row)[0]['tomba']
+        return position,yaw,animation,how
 
     def tomba_result(self,animation):
         """tomba_frames for `animation`, cached; None if it cannot be posed."""
@@ -1879,8 +2091,8 @@ class EventEditor(QDialog):
                 self._tomba_cache[animation]=None;self._tomba_error=str(exc)
         return self._tomba_cache[animation]
 
-    def show_tomba(self,nodes,row):
-        position,yaw,animation,how=self.tomba_state(nodes,row)
+    def show_tomba(self,nodes,row,yaw_row=None):
+        position,yaw,animation,how=self.tomba_state(nodes,row,yaw_row)
         result=self.tomba_result(animation)
         if result is None:return ''
         idle=self.tomba_result(2) or result
@@ -1968,16 +2180,64 @@ class EventEditor(QDialog):
         from game.event_preview import trace
         start=self.start_position()
         if start is None or row<0:return start,None
-        position=start;yaw=None
+        position=start;yaw=None;turns=False
         steps={}
         for s in trace(nodes,row,start):
             if s[1] in ('move','set'):steps[s[0]]=s[3]
         for n,c in enumerate(nodes[:row+1]):
             if n in steps:position=tuple(float(v) for v in steps[n])
             o=c.operands
-            if c.opcode==31 and not o[0]&0x8000:yaw=o[2]&0xfff
-            elif c.opcode==58 and not o[0]&0x8000:yaw=yaw_toward(position,self.tomba_position(nodes,n)[0])
+            if c.opcode in (31,58,59):turns=True
+        if turns:
+            tomba=self.tomba_position(nodes,row)[0]
+            yaw=self._yaws(nodes,row,{'self':position,'tomba':tomba,'zippo':None})['self']
         return position,yaw
+
+    def _yaws(self,nodes,row,positions):
+        """Where the entity, Zippo and Tomba face after rows 0..row (game
+        units): from their usual defaults, turned by the page's own turn rows."""
+        entity,tomba,zippo=positions.get('self'),positions.get('tomba'),positions.get('zippo')
+        yaws={'self':self.start_yaw(),
+              'tomba':yaw_toward(tomba,entity) if tomba and entity else 0,
+              'zippo':yaw_toward(zippo,tomba) if zippo and tomba else 0}
+        for c in nodes[:row+1]:
+            o=c.operands
+            if c.opcode in (31,59):
+                for who,target,_step in script.turn_plan(c,positions):yaws[who]=target
+            elif c.opcode==58 and entity and tomba:
+                if o[0]&0x8000:
+                    if zippo:yaws['zippo']=yaw_toward(zippo,tomba)
+                else:yaws['self']=yaw_toward(entity,tomba)
+            elif c.opcode in (52,56) and entity and tomba:
+                mode=o[0]&0xF if c.opcode==52 else 1
+                if mode==0:yaws['tomba']=o[1]&0xfff
+                elif mode in (1,2):yaws['tomba']=(yaw_toward(tomba,entity)-(0x800 if mode==2 else 0))&0xfff
+        return yaws
+
+    def yaws_at(self,nodes,row):
+        """(yaws, positions) of the entity, Zippo and Tomba after rows 0..row."""
+        position=self.state_at(nodes,row)[0]
+        tomba=self.tomba_position(nodes,row)[0]
+        positions={'self':position,'tomba':tomba,'zippo':None}
+        if position is not None and tomba is not None:
+            first=self._yaws(nodes,row,positions)
+            flags=0;offset=None
+            for c in nodes[:row+1]:
+                if c.opcode==13:
+                    flags=c.operands[2]
+                    if flags&4 and c.extended:offset=tuple(c.operands[3:6])
+            from game.event_preview import zippo_position
+            positions['zippo']=zippo_position(tomba,first['tomba'],flags,offset)
+        return self._yaws(nodes,row,positions),positions
+
+    def turn_entries(self,nodes,row):
+        """[(who, yaw before, yaw after, step, position)] for a turn row."""
+        c=nodes[row]
+        if c.opcode not in (31,59):return []
+        after,positions=self.yaws_at(nodes,row)
+        before,_=self.yaws_at(nodes,row-1)
+        return [(who,before[who],after[who],step,positions.get(who))
+                for who,_target,step in script.turn_plan(c,positions) if positions.get(who) is not None]
 
     def timeline_toggled(self,on):
         self.viewport.set_timeline(on)
@@ -1995,11 +2255,12 @@ class EventEditor(QDialog):
         if not self.viewport.play(nodes,row,tomba):
             position,yaw=self.state_at(nodes,row)
             self.viewport.show_state(position,self.start_yaw() if yaw is None else yaw)
-        how=self.show_tomba(nodes,row)
+        turning=nodes[row].opcode in (31,59)       # these animate from where the row before left them
+        how=self.show_tomba(nodes,row,row-1 if turning else None)
         key=tuple(x.raw for x in nodes[:row+1] if x.opcode in CAMERA_OPS or x.opcode==54)
         if nodes[row].opcode in CAMERA_OPS or (key and key!=self._camera_key):
             self._camera_key=key;self.run_camera(row)
-        self.simulate_actors(nodes,row)
+        self.simulate_actors(nodes,row,row-1 if turning else None)
         c=nodes[row]
         if self.autoplay.isChecked():
             if c.opcode in TOMBA_OPS and c.opcode!=57 and c.opcode!=58:self.preview_tomba_animation()
@@ -2039,7 +2300,7 @@ class EventEditor(QDialog):
             else:entity=value
         return entity,zippo,talking
 
-    def simulate_actors(self,nodes,row):
+    def simulate_actors(self,nodes,row,yaw_row=None):
         """Loop the entity's animation of the moment in the viewport, and
         stand Zippo by Tomba while a conversation runs."""
         before=self.animations_at(nodes,row-1) if row>0 else (None,None,False)
@@ -2060,6 +2321,8 @@ class EventEditor(QDialog):
         from game.event_preview import zippo_position
         place=zippo_position(tomba,tomba_yaw,flags,offset)
         facing=yaw_toward(place,tomba)
+        if self.state_at(nodes,row)[0] is not None:
+            facing=self.yaws_at(nodes,row if yaw_row is None else yaw_row)[0]['zippo']
         self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]),
                           previous=before[1],blend=blend['zippo'])
 
