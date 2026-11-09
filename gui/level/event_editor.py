@@ -197,9 +197,7 @@ class EventCommandDialog(QDialog):
     GROUPS = (('Message',(0,1,40)),('Sound',(46,47,11,'End conversation music')),
               ('Wait',(5,6,7,8,9,10,'Wait: message to close','Wait: quest display to finish')),
               ('Flow / Progress',(12,'If event state…','If area progress…')),('Animation',(30,)),
-              ('Move / Turn',(36,35,17,31,'Zippo: turn to an angle','This actor: face Tomba (turn only)','Zippo: face Tomba (turn only)',
-                              'Tomba: move along X or depth','Tomba: set location','Tomba: turn to an angle',
-                              'Tomba: face the actor','Tomba: face away from the actor')),('Camera',(22,23,24)))
+              ('Move / Turn',('Move / Turn…',)),('Camera',(22,23,24)))
     last_tab = 0
     def __init__(self,parent,choices,title='Event Command'):
         super().__init__(parent);self.setWindowTitle(title);self.choice=None
@@ -229,6 +227,35 @@ class EventCommandDialog(QDialog):
         self.tabs.addTab(page,name)
     def pick(self,data):
         self.choice=data;EventCommandDialog.last_tab=self.tabs.currentIndex();self.accept()
+
+
+class MoveTurnDialog(QDialog):
+    """The Move / Turn action: who moves or turns, then how."""
+    def __init__(self,parent,command=None):
+        super().__init__(parent);self.setWindowTitle('Move / Turn');self.choice=None
+        layout=QVBoxLayout(self);form=QFormLayout();layout.addLayout(form)
+        self.who=QComboBox();self.what=QComboBox()
+        for who in dict.fromkeys(w for w,_a,_o,_v in script.MOVE_TURN):self.who.addItem(who)
+        form.addRow('Who',self.who);form.addRow('What',self.what)
+        self.who.currentIndexChanged.connect(self.fill)
+        key=script.move_turn_key(command) if command is not None else None
+        if key:self.who.setCurrentText(key[0])
+        self.fill()
+        if key:self.what.setCurrentText(key[1])
+        note=QLabel('Only combinations the game has a command for are offered. Positions and angles are set afterwards in the '
+                    'command’s parameters.');note.setWordWrap(True);layout.addWidget(note)
+        row=QHBoxLayout();row.addStretch()
+        ok=QPushButton('OK');ok.setDefault(True);ok.clicked.connect(self.accept)
+        cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject)
+        row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
+    def fill(self):
+        self.what.clear()
+        for who,what,_op,_values in script.MOVE_TURN:
+            if who==self.who.currentText():self.what.addItem(what)
+    def accept(self):
+        for who,what,op,values in script.MOVE_TURN:
+            if who==self.who.currentText() and what==self.what.currentText():self.choice=(op,tuple(values));break
+        super().accept()
 
 
 class DragSpinBox(QSpinBox):
@@ -1033,8 +1060,9 @@ class EventEditor(QDialog):
         names={0:'Show text…',1:'Show text + gesture…',11:'Start conversation music',
                36:'This actor: move to a position',35:'This actor: move along an axis',17:'This actor: set position',
                31:'This actor: turn to an angle'}
-        self.command_choices=[(names.get(op,script.LABELS[op]),op) for op in script.INSERTABLE]
-        self.command_choices+=[(label,(op,tuple(values))) for label,op,values in script.INSERT_VARIANTS]
+        self.command_choices=[(names.get(op,script.LABELS[op]),op) for op in script.INSERTABLE if op not in script.MOVE_TURN_OPS]
+        self.command_choices+=[(label,(op,tuple(values))) for label,op,values in script.INSERT_VARIANTS if op not in script.MOVE_TURN_OPS]
+        self.command_choices+=[('Move / Turn…','Move / Turn…')]
         self.command_choices+=[('If event state…','If event state…'),('If area progress…','If area progress…')]
         from PyQt6.QtGui import QKeySequence,QShortcut
         self._undo,self._redo,self._text_session=[],[],None
@@ -1335,6 +1363,11 @@ class EventEditor(QDialog):
         flag and animation operands (which stay in step and stay editable
         under "Edit raw parameters")."""
         self._anim_combo=None
+        if c.opcode in script.MOVE_TURN_OPS and (c.opcode!=58 or script.move_turn_key(c)):
+            key=script.move_turn_key(c)
+            button=QPushButton((f'{key[0]}: {key[1]}' if key else 'Move / Turn')+'   — change who / what…')
+            button.clicked.connect(self.change_move_turn)
+            self.form.insertRow(0,'Move / Turn',button)
         if c.opcode not in self.FRIENDLY_WHO or len(self.fields)<3 or self.raw.isChecked():return
         zbit,which=self.FRIENDLY_WHO[c.opcode];flags=self.fields[0];anim=self.fields[which]
         def signed(v):return v-65536 if v>=32768 else v
@@ -1362,6 +1395,22 @@ class EventEditor(QDialog):
         for box in (flags,):                       # the raw flag operand is now shown by the choices above
             self.form.setRowVisible(box,False)
         self._fill_animations(who.currentIndex()==1)
+
+    def change_move_turn(self):
+        """Change who a move / turn row acts on, or what it does, in place."""
+        if self.selected is None:return
+        row=self.selected;c=self.drafts[self.active][row]
+        dialog=MoveTurnDialog(self,c)
+        if not dialog.exec() or dialog.choice is None:return
+        opcode,values=dialog.choice
+        self.store_operands();self.remember()
+        old=c.operands
+        # The same kind of turn keeps its numbers; only who / how changes.
+        if opcode==c.opcode and opcode in (31,52,58,59):values=(values[0],)+tuple(old[1:3])
+        try:script.retype(self.drafts[self.active],row,opcode,values)
+        except ValueError as exc:self.status.setText(str(exc));return
+        self.selected=None;self.populate(row)
+        self.command_dialog.title.setText(f'{row+1:02d}  {self.describe(self.drafts[self.active][row])}')
 
     def _sync_animation_combo(self):
         pack=getattr(self,'_anim_combo',None)
@@ -1854,6 +1903,10 @@ class EventEditor(QDialog):
             data=dialog.choice
         if data in ('If event state…','If area progress…'):
             self.insert_if(44 if data=='If event state…' else 43,self.selected);return
+        if data=='Move / Turn…':
+            dialog=MoveTurnDialog(self)
+            if not dialog.exec() or dialog.choice is None:return
+            data=dialog.choice
         row=self.selected;opcode,values=self._new_operands(data)
         if opcode in (0,1):
             values=self._text_operands(opcode,values)
@@ -2283,7 +2336,8 @@ class EventEditor(QDialog):
         entity=None;zippo=None;talking=self.is_conversation();self._blend={'zippo':4,'self':4}
         for n,c in enumerate(nodes[:row+1]):
             o=c.operands;op=c.opcode
-            if op==13:talking=True
+            if op in (9,13):talking=True      # a conversation is under way
+            if op in (31,59) and o[0]&0x8000:talking=True
             target=None;anim=None
             if op==30:target,anim=('zippo' if o[0]&1 else 'self'),o[1]
             elif op==1:

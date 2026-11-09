@@ -479,6 +479,62 @@ def split_presentation(commands, selected):
     return parts
 
 
+# The "Move / Turn" action: who moves or turns, and how. (who, what, opcode, operands)
+MOVE_TURN = (
+    ('This actor', 'Move to a position', 36, (0, 0, 0, 0x0a00, 0, 0, 0)),
+    ('This actor', 'Move along an axis', 35, (0, 0, 0, 256, 0, 0, 0)),
+    ('This actor', 'Set position', 17, (0, 0, 0, 0, 0, 0, 0)),
+    ('This actor', 'Turn to an angle', 31, (0, 256, 0)),
+    ('This actor', 'Face Tomba', 31, (1, 256, 0)),
+    ('This actor', 'Face away from Tomba', 31, (2, 256, 0)),
+    ('This actor', 'Face a point', 31, (10, 0, 0)),
+    ('This actor', 'Face Tomba, Tomba faces it (no animation)', 58, (2, 0, 0)),
+    ('Zippo', 'Turn to an angle', 31, (-32768, 256, 0)),
+    ('Zippo', 'Face Tomba', 31, (-32767, 256, 0)),
+    ('Zippo', 'Face away from Tomba', 31, (-32766, 256, 0)),
+    ('Zippo', 'Face this NPC', 31, (-32765, 256, 0)),
+    ('Zippo', 'Face a point', 31, (-32758, 0, 0)),
+    ('Zippo', 'Face Tomba, Tomba faces Zippo (no animation)', 58, (-32766, 0, 0)),
+    ('Tomba', 'Move along X or depth', 49, (0, 0, 0)),
+    ('Tomba', 'Set location', 54, (0, 0, 0, 0, 0, 0, 0)),
+    ('Tomba', 'Turn to an angle', 52, (0, 0, 0)),
+    ('Tomba', 'Face the actor', 52, (1, 0, 0)),
+    ('Tomba', 'Face away from the actor', 52, (2, 0, 0)),
+    ('This actor and Tomba', 'Turn to face a point', 59, (0x100, 0, 0)),
+    ('This actor and Tomba', 'Turn to face this NPC', 59, (0, 0, 0)),
+    ('Zippo and Tomba', 'Turn to face a point', 59, (-32512, 0, 0)),
+    ('Zippo and Tomba', 'Turn to face this NPC', 59, (-32768, 0, 0)),
+)
+MOVE_TURN_OPS = frozenset(op for _w, _a, op, _v in MOVE_TURN)
+
+
+def move_turn_key(c):
+    """(who, what) of a move / turn command, or None if it is not one of the
+    forms in MOVE_TURN."""
+    o = c.operands
+    for who, what, op, vals in MOVE_TURN:
+        if op != c.opcode: continue
+        v0 = vals[0] & 0xffff
+        if op in (31, 58) and ((v0 & 0x8000) != (o[0] & 0x8000) or (v0 & 0x7fff) != (o[0] & 0x7fff)):
+            continue
+        if op == 52 and (o[0] & 0xF) != (v0 & 0xF): continue
+        if op == 59 and ((o[0] & 0x8000) != (v0 & 0x8000) or bool(o[0] & 0x7fff) != bool(v0 & 0x7fff)): continue
+        return who, what
+    return None
+
+
+def retype(commands, selected, opcode, operands):
+    """Turn the command at `selected` into another one in place: same place
+    in the script, same run flags and end, new action and parameters."""
+    c = commands[selected]
+    if c.branch is not None:
+        raise ValueError('This command also jumps somewhere; it cannot be changed into another kind.')
+    new = _new_command(commands, opcode, operands, c.header & 0x9800)
+    new.address, new.edges = c.address, list(c.edges)
+    commands[selected] = new
+    return new
+
+
 def insert_before(commands, selected, opcode, operands=(0,0,0)):
     """Insert a basic native action, redirecting incoming edges to it."""
     target = commands[selected].address
