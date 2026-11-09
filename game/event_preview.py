@@ -243,6 +243,39 @@ def native_code(exe,overlay,command,count=64):
     callback=struct.unpack('<I',read(event_script.CALLBACKS+command.opcode*4,4))[0]
     return f'Command bytes: {command.raw.hex(" ")}\n'+native_code_at(exe,overlay,callback,count)
 
+def native_gist(exe,overlay,callback,count=200):
+    """What a straight-line native routine visibly does: the functions it
+    calls with their constant arguments and the fixed memory it writes.
+    Branches are not followed (the first path through is read), so this is a
+    sketch, not a proof."""
+    from psx.mips import Image
+    data,base=(overlay,event_script.BASE) if callback>=event_script.BASE else (exe[0x800:],struct.unpack_from('<I',exe,24)[0])
+    image=Image(data,base)
+    if callback not in image:return []
+    regs={0:0};lines=[]
+    def const(r):return regs.get(r)
+    widths={'sb':0xff,'sh':0xffff,'sw':0xffffffff}
+    pending=None;leaving=False
+    for ins in image.walk(callback,count):
+        n=ins.name
+        if pending is not None or leaving:      # the delay slot: it runs before the call / return takes effect
+            pass
+        if n=='lui':regs[ins.rt]=(ins.unsigned<<16)&0xffffffff
+        elif n in ('addiu','ori') and const(ins.rs) is not None:
+            regs[ins.rt]=((const(ins.rs)+ins.imm) if n=='addiu' else (const(ins.rs)|ins.unsigned))&0xffffffff
+        elif n in ('addu','or') and ins.rt==0 and const(ins.rs) is not None:regs[ins.rd]=const(ins.rs)
+        elif n in widths and const(ins.rs) is not None and const(ins.rt) is not None and const(ins.rs)>=0x80000000:
+            lines.append(f'sets {event_script._global((const(ins.rs)+ins.imm)&0xffffffff)} = {const(ins.rt)&widths[n]}')
+        elif n=='jal':pending=ins.target;continue
+        elif n=='jr' and ins.rs==31:leaving=True;continue
+        if pending is not None:
+            shown=', '.join('?' if v is None else (f'0x{v:X}' if v>=0x8000 else str(v)) for v in (const(r) for r in (4,5,6,7)))
+            lines.append(f'calls {event_script._symbol(pending)}({shown})')
+            for r in range(2,26):regs.pop(r,None)
+            pending=None
+        if leaving:break
+    return lines
+
 def native_code_at(exe,overlay,callback,count=64):
     from psx.mips import Image
     data,base=(overlay,event_script.BASE) if callback>=event_script.BASE else (exe[0x800:],struct.unpack_from('<I',exe,24)[0])
@@ -254,7 +287,9 @@ def native_code_at(exe,overlay,callback,count=64):
         if ins.name=='jr' and ins.rs==31:
             if ins.address+4 in image:lines.extend(image.text(ins.address+4,1))
             break
-    return f'Callback 0x{callback:08X}\n\n'+'\n'.join(lines)
+    gist=native_gist(exe,overlay,callback)
+    head=('Looks like (first path only): '+'; '.join(gist)+'\n\n') if gist else ''
+    return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 
 def sound_samples(exe,overlay,snd,area,sound_id,pitch_offset=0):
     from game import game_build

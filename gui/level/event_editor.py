@@ -898,6 +898,9 @@ class EventEditor(QDialog):
         self.page_fields={}
         for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler'),('music','Music')):
             field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field;page_form.addRow(label,field)
+        self.music_change=QPushButton('Change music…');self.music_change.clicked.connect(self.change_music)
+        self.music_change.setToolTip('Pick the conversation-music cue this NPC’s code starts. Shared by NPCs with the same handler.')
+        page_form.addRow('',self.music_change)
         left.addWidget(page_box)
         # RPG Maker's Graphic and Conditions, side by side as there.
         looks=QHBoxLayout();looks.setSpacing(6)
@@ -1406,7 +1409,11 @@ class EventEditor(QDialog):
         self.store_operands();self.remember()
         old=c.operands
         # The same kind of turn keeps its numbers; only who / how changes.
-        if opcode==c.opcode and opcode in (31,52,58,59):values=(values[0],)+tuple(old[1:3])
+        if opcode==c.opcode and opcode in (31,52,58,59):
+            same_angle=(old[0]&0x7fff)==0 and (values[0]&0x7fff)==0      # an angle stays an angle
+            if opcode==31:values=(values[0],old[1],old[2] if same_angle else 0)
+            elif opcode==52:values=(values[0],old[1] if (old[0]&0xF)==0 and (values[0]&0xF)==0 else 0,values[2] if len(values)>2 else 0)
+            else:values=(values[0],)+tuple(old[1:3])
         try:script.retype(self.drafts[self.active],row,opcode,values)
         except ValueError as exc:self.status.setText(str(exc));return
         self.selected=None;self.populate(row)
@@ -1620,17 +1627,27 @@ class EventEditor(QDialog):
         warn='\n\nMAIN.EXE is shared by every area.' if resident else ''
         if QMessageBox.question(self,'Save native code',f'Write {len(changes)} instruction(s)?\n\n{listing}{warn}')!=QMessageBox.StandardButton.Yes:
             return
+        if not self._apply_code(changes):return
+        self.code_edit.setChecked(False)
+        c=self.drafts[self.active][self.selected] if self.active is not None and self.selected is not None else None
+        if c is not None:self.show_code(c)
+        self.status.setText(f'Wrote {len(changes)} instruction(s).')
+
+    def _apply_code(self,changes):
+        """Write changed instruction words ({address: word}) into the area file
+        or MAIN.EXE through the Level Editor's project files. True on success."""
+        import struct
         panel=self.panel;files={}
         main=struct.unpack_from('<I',self.exe,24)[0]
         overlay=bytearray(self.overlay);exe=bytearray(self.exe)
         for address,word in changes.items():
             if address>=script.BASE:
                 at=address-script.BASE
-                if at+4>len(overlay):QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is past the area file.');return
+                if at+4>len(overlay):QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is past the area file.');return False
                 struct.pack_into('<I',overlay,at,word)
             else:
                 at=address-main+0x800
-                if not 0x800<=at<=len(exe)-4:QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is outside MAIN.EXE.');return
+                if not 0x800<=at<=len(exe)-4:QMessageBox.warning(self,'Code not saved',f'0x{address:08X} is outside MAIN.EXE.');return False
                 struct.pack_into('<I',exe,at,word)
         try:
             if bytes(overlay)!=self.overlay:
@@ -1642,15 +1659,44 @@ class EventEditor(QDialog):
                 files[panel.exe_path]=bytes(exe)
             panel._write_placement_files(files)
         except (ValueError,OSError) as exc:
-            QMessageBox.warning(self,'Code not saved',str(exc));return
+            QMessageBox.warning(self,'Code not saved',str(exc));return False
         for path,data in files.items():panel._placement_files[Path(path).name]=data
         if bytes(overlay)!=self.overlay:panel.scene.overlay_data=bytes(overlay)
         self.overlay,self.exe=bytes(overlay),bytes(exe)
         panel._scene_memory_cache.clear()
-        self.code_edit.setChecked(False)
-        c=self.drafts[self.active][self.selected] if self.active is not None and self.selected is not None else None
-        if c is not None:self.show_code(c)
-        self.status.setText(f'Wrote {len(changes)} instruction(s).')
+        return True
+
+    def change_music(self):
+        """Pick another conversation-music cue for this NPC: rewrites the cue
+        number its native code passes to f_BeginScriptedInteractionAudio."""
+        from PyQt6.QtWidgets import QInputDialog
+        try:sites=script.native_music_sites(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+        except Exception:sites=[]
+        if not sites:
+            QMessageBox.information(self,'Conversation music','This NPC’s code starts no music with a fixed cue that can be changed here. '
+                'To add music, insert “Start conversation music” in the Sound tab; it plays from that row on.');return
+        current=sites[0][1]
+        names=[]
+        for cue in range(1,9):
+            sound=script.music_sound(cue);slot=script.music_slot(sound) if sound is not None else None
+            names.append(f'{cue}  (sound 0x{sound:02X}, SEQ slot {slot})' if slot is not None else str(cue))
+        chosen,ok=QInputDialog.getItem(self,'Conversation music',
+            f'Cue played when this NPC starts talking. It is shared by every NPC that uses this handler (0x{self.native_handler:08X}).',
+            names,max(0,min(7,current-1)),False)
+        if not ok:return
+        cue=int(chosen.split()[0])
+        if cue==current:return
+        import struct
+        changes={}
+        for address,_old in sites:
+            changes[address]=0x24050000|cue          # addiu a1, zero, cue
+        if not changes:return
+        if QMessageBox.question(self,'Conversation music',f'Change cue {current} to {cue} for every NPC using handler 0x{self.native_handler:08X}? '
+                                f'({len(changes)} instruction(s) in the area file.)')!=QMessageBox.StandardButton.Yes:return
+        if not self._apply_code(changes):return
+        self._music_text=False
+        self.page_fields['music'].setText(self.native_music_text() or '—')
+        self.status.setText(f'Conversation music cue is now {cue}.')
 
     def show_code(self,c):
         if self.code_edit.isChecked():
@@ -2360,10 +2406,14 @@ class EventEditor(QDialog):
         before=self.animations_at(nodes,row-1) if row>0 else (None,None,False)
         entity,zippo,talking=self.animations_at(nodes,row)
         blend=dict(self._blend)
+        # Ease out of the animation on screen - whichever way the timeline was stepped.
+        shown=getattr(self,'_on_screen',None) or {}
+        came_from={'self':shown.get('self',before[0]),'zippo':shown.get('zippo',before[1])}
         if self.is_conversation():entity=None
+        self._on_screen={'self':entity,'zippo':zippo}
         if entity is None:self.viewport.stop_entity_animation()
         else:self._with_frames('self',entity,lambda r:self.viewport.show_entity_animation(r[0],r[1]),
-                               previous=before[0],blend=blend['self'])
+                               previous=came_from['self'],blend=blend['self'])
         if not talking:self.viewport.hide_zippo();return
         tomba,tomba_yaw,_anim,_how=self.tomba_state(nodes,row)
         if tomba is None:self.viewport.hide_zippo();return
@@ -2378,7 +2428,7 @@ class EventEditor(QDialog):
         if self.state_at(nodes,row)[0] is not None:
             facing=self.yaws_at(nodes,row if yaw_row is None else yaw_row)[0]['zippo']
         self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]),
-                          previous=before[1],blend=blend['zippo'])
+                          previous=came_from['zippo'],blend=blend['zippo'])
 
     def zippo_animation_of(self,c):
         """The animation a command plays on Zippo, or None if it plays on

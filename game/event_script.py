@@ -1170,6 +1170,27 @@ def turn_plan(c, positions):
     return []
 
 
+def native_music_sites(exe, overlay, handler):
+    """[(address, cue)]: the instruction that sets the conversation-music cue
+    (register a1) before each call of f_BeginScriptedInteractionAudio in this
+    handler's code - where the cue can be changed in place. It may load the
+    number itself or copy it from the mode register; either is rewritten as
+    `addiu a1, zero, cue`, the same size."""
+    flow = Flow(exe, overlay, handler)
+    out = []
+    for call in flow.music_calls:
+        image = flow.image(call)
+        values = [v for v in flow.after(5, call + 4) if v and v[1] is None and v[2] is None]
+        if len(values) != 1: continue
+        for back in range(0, 9):
+            at = call + 4 - back * 4
+            if at not in image: break
+            if _dest(image.at(at)) == 5:
+                out.append((at, values[0][0] & 0xff)); break
+            if image.at(at).name in ('jal', 'jr', 'j') and at != call: break
+    return sorted(set(out))
+
+
 def native_messages(exe, overlay, handler):
     """[(kind, number)] of the messages this handler's code queues with a
     constant number ('system' = the resident System table, 'item' = an item
