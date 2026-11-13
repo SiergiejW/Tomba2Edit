@@ -2,7 +2,7 @@
 
 **A modding, translation and asset-extraction toolkit for _Tomba! 2: The Evil Swine Return_ (PlayStation).**
 
-Tomba2Edit opens a disc image of the game and shows you what is inside it:
+Tomba2Edit opens a disc image of the game and shows:
 levels, collision, 3D models, animations, sprites, textures, dialogue,
 music, sound effects and movies - each in a viewer that understands the
 format, and most of them editable. Changes are staged, repacked and
