@@ -119,6 +119,17 @@ def _runs_text(numbers, limit=6):
     return ", ".join(text) or "-"
 
 
+def grey_palette(array):
+    """A palette the way the game greys it while time is stopped: each colour's
+    5-bit luminance, (77 R + 150 G + 29 B) >> 8, in all three channels (matches
+    99.7% of the 4,349 palette words that changed between two DuckStation states)."""
+    out = array.copy()
+    luma = ((77 * (out[:, 0] >> 3).astype(int) + 150 * (out[:, 1] >> 3).astype(int)
+             + 29 * (out[:, 2] >> 3).astype(int)) >> 8).astype(np.uint8) << 3
+    out[:, 0] = out[:, 1] = out[:, 2] = luma
+    return out
+
+
 class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
     # (group index, polygon index), either of which may be None, so a
     # list beside the view can follow a pick in it.
@@ -768,8 +779,22 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
             # colour is therefore shown directly, including its blend bit.
             alpha = 128 if transparent else 255
             return np.full((16, 4), (255, 255, 255, alpha), dtype=np.uint8)
-        return self._clut_from_bytes(
-            bytes(self.vram_raw_bytes[address:address + 32]), transparent)
+        return self._filtered(self._clut_from_bytes(
+            bytes(self.vram_raw_bytes[address:address + 32]), transparent))
+
+    palette_filter = None               # e.g. grey_palette: the time-stopped look
+
+    def _filtered(self, array):
+        return self.palette_filter(array) if self.palette_filter else array
+
+    def set_palette_filter(self, function):
+        """Show every palette through `function` (RGBA 16x4 -> RGBA 16x4), or as it is."""
+        if function is self.palette_filter: return
+        self.palette_filter = function
+        for address in list(self._clut_arrays):
+            self._clut_arrays[address] = self._clut_from_vram(address, self._clut_transparency.get(address, False))
+            self._cluts_dirty.add(address)
+        self.update()
 
     @staticmethod
     def _clut_from_bytes(raw, transparent=False):
@@ -842,7 +867,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 continue
             transparent = self._clut_transparency.get(address, False)
             self._clut_arrays[address] = (
-                self._clut_from_bytes(raw, transparent) if raw is not None
+                self._filtered(self._clut_from_bytes(raw, transparent)) if raw is not None
                 else self._clut_from_vram(address, transparent))
             self._cluts_dirty.add(address)
         self.update()

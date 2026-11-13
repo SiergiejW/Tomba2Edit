@@ -33,7 +33,7 @@ from formats.background.bgmp_parser import PALETTE_STRIDE, load_bgmp
 from formats.animation.clut_animation import TICK_HZ
 from gui.level import level_scene
 from gui.level.level_scene import (
-    BOTH, EVENTS_DONE, FRESH, LevelScene,
+    BOTH, EVENTS_DONE, FRESH, TIME_STOPPED, LevelScene,
     area_files, instance_color, instance_key, room_entries)
 from gui.widgets.dot_delegate import DOT_COLOR
 from gui.level import row_delegate
@@ -182,7 +182,7 @@ class LevelEditorPanel(QWidget):
         self.progress_box.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for label, value in (("Both", BOTH), ("Fresh game", FRESH),
-                             ("Events done", EVENTS_DONE)):
+                             ("Events done", EVENTS_DONE), ("Time stopped", TIME_STOPPED)):
             self.progress_box.addItem(label, value)
         self.progress_box.setToolTip(
             "What the area's actors are run from.\n\n"
@@ -190,7 +190,10 @@ class LevelEditorPanel(QWidget):
             "Events done: every save byte the area's code reads set to 0xFF, "
             "the way the game marks a finished event.\n"
             "Both: the fresh game, plus whatever only stands once events are "
-            "done, marked ⧖. Runs the area twice.")
+            "done, marked ⧖. Runs the area twice.\n"
+            "Time stopped: the area run with the game's time-stopped flag - its "
+            "palettes grey, black behind it, chests gone, objects that only exist "
+            "while time runs left out.")
         self.progress_box.currentIndexChanged.connect(self._on_progress_changed)
 
         self.summary = QLabel("Open a disc to pick an area.", self)
@@ -206,8 +209,15 @@ class LevelEditorPanel(QWidget):
         # fills its pane.
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        # The name and model columns are the user's to size: drag a header edge (a double-click
+        # fits it to the text); the pane scrolls sideways when they are wider than it.
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        header.resizeSection(0, 280)
+        header.resizeSection(1, 130)
+        header.setMinimumSectionSize(40)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         self._collapsed, self._view_hidden = set(), set()
         self._parents, self._children, self._depth = {}, {}, {}
@@ -534,7 +544,8 @@ class LevelEditorPanel(QWidget):
         self._stage_keep_camera = keep_camera
         self._stage_overlay = self.overlay_for_area(chunk)
         self._stage_fast = self.viewer.edit_mode
-        self._stage_progress = FRESH if self._stage_fast else self.progress_box.currentData()
+        chosen = self.progress_box.currentData()
+        self._stage_progress = chosen if chosen == TIME_STOPPED or not self._stage_fast else FRESH
         self._stage_started = time.perf_counter()
         generation = self._load_generation
         self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")
@@ -653,7 +664,10 @@ class LevelEditorPanel(QWidget):
         marks.append(("scene", time.perf_counter()))
         self.viewer.load_animations(self._stage_overlay, prepared=prepared[4])
         self._phases, self._phase = phases, 0
-        self.viewer.set_background(phases[0][0] if phases else None)
+        stopped = getattr(scene, "progress", None) == TIME_STOPPED
+        from formats.models.smst_viewer import grey_palette
+        self.viewer.set_palette_filter(grey_palette if stopped else None)
+        self.viewer.set_background(None if stopped else (phases[0][0] if phases else None))
         self.viewer.set_sprites(*sprites)
         marks.append(("animations+sprites", time.perf_counter()))
         self._loading = not complete
@@ -1106,6 +1120,7 @@ class LevelEditorPanel(QWidget):
             for row, instance in enumerate(instances):
                 if isinstance(instance, PartRow):
                     name = QTableWidgetItem(instance.label)
+                    name.setToolTip(instance.label)
                     self._set_tree_data(name, instance)
                     name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     name.setCheckState(Qt.CheckState.Checked)
@@ -1115,6 +1130,7 @@ class LevelEditorPanel(QWidget):
                     self._fill_part_row(row, instance)
                     continue
                 name = QTableWidgetItem(instance.label)
+                name.setToolTip(instance.label)
                 self._set_tree_data(name, instance)
                 name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 name.setCheckState(Qt.CheckState.Checked)

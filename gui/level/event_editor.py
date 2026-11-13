@@ -786,15 +786,7 @@ class ViewportPreview(QObject):
         start=self.editor.start_position()
         if start is None:return False
         c=nodes[row]
-        if c.opcode==58 and tomba is not None:
-            before=self.editor.state_at(nodes,row-1)
-            position=before[0] or start
-            target=yaw_toward(position,tomba)
-            self._save_base()
-            self.track=('turn',position,before[1] if before[1] is not None else self.editor.start_yaw(),target)
-            self.editor.status.setText('Previewing: the actor turns to face Tomba (0x100 a tick), as f_RunScriptedActorFaceTombaSequence does.')
-            self._start();return True
-        if c.opcode in (31,59):
+        if c.opcode in (31,58,59):
             entries=self.editor.turn_entries(nodes,row)
             if entries:
                 # Whoever turns does so by the command's step each tick, as the game turns them.
@@ -2656,12 +2648,8 @@ class EventEditor(QDialog):
               'zippo':yaw_toward(zippo,tomba) if zippo and tomba else 0}
         for c in nodes[:row+1]:
             o=c.operands
-            if c.opcode in (31,59):
+            if c.opcode in (31,58,59):
                 for who,target,_step in script.turn_plan(c,positions):yaws[who]=target
-            elif c.opcode==58 and entity and tomba:
-                if o[0]&0x8000:
-                    if zippo:yaws['zippo']=yaw_toward(zippo,tomba)
-                else:yaws['self']=yaw_toward(entity,tomba)
             elif c.opcode in (52,56) and entity and tomba:
                 mode=o[0]&0xF if c.opcode==52 else 1
                 if mode==0:yaws['tomba']=o[1]&0xfff
@@ -2687,7 +2675,7 @@ class EventEditor(QDialog):
     def turn_entries(self,nodes,row):
         """[(who, yaw before, yaw after, step, position)] for a turn row."""
         c=nodes[row]
-        if c.opcode not in (31,59):return []
+        if c.opcode not in (31,58,59):return []
         after,positions=self.yaws_at(nodes,row)
         before,_=self.yaws_at(nodes,row-1)
         return [(who,before[who],after[who],step,positions.get(who))
@@ -2709,7 +2697,7 @@ class EventEditor(QDialog):
         if not self.viewport.play(nodes,row,tomba):
             position,yaw=self.state_at(nodes,row)
             self.viewport.show_state(position,self.start_yaw() if yaw is None else yaw)
-        turning=nodes[row].opcode in (31,59)       # these animate from where the row before left them
+        turning=nodes[row].opcode in (31,58,59)    # these animate from where the row before left them
         how=self.show_tomba(nodes,row,row-1 if turning else None)
         key=tuple(x.raw for x in nodes[:row+1] if x.opcode in CAMERA_OPS or x.opcode==54)
         if nodes[row].opcode in CAMERA_OPS or (key and key!=self._camera_key):
@@ -2781,7 +2769,10 @@ class EventEditor(QDialog):
         place=zippo_position(tomba,tomba_yaw,flags,offset)
         facing=yaw_toward(place,tomba)
         if self.state_at(nodes,row)[0] is not None:
-            facing=self.yaws_at(nodes,row if yaw_row is None else yaw_row)[0]['zippo']
+            # The same Zippo position the turns were worked out against, so "face each other" lines up.
+            yaws,positions=self.yaws_at(nodes,row if yaw_row is None else yaw_row)
+            facing=yaws['zippo']
+            if positions.get('zippo') is not None:place=positions['zippo']
         self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]),
                           previous=came_from['zippo'],blend=blend['zippo'])
 

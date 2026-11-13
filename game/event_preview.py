@@ -37,6 +37,12 @@ def _entity_actor(scene,instance,animations=None,need_table=True):
         world.enter_scene(spawner,scene.area_index,0)
     world.run(12,workers=False)
     actors=[a for a in world.actors if a.handler==handler and a.parts and not a.dead]
+    if not actors:
+        # A controller that spawns the real body (a boss): the model is the nearest actor that has parts.
+        here=np.array(instance.game_position,dtype=float)
+        near=[a for a in world.actors if a.parts and not a.dead and a.position is not None
+              and float(np.linalg.norm(np.asarray(a.position,dtype=float)-here))<=800]
+        if len(near)==1:actors=near
     if not actors:raise ValueError('The selected entity did not initialise a model for preview.')
     actors.sort(key=lambda a:float(np.linalg.norm(a.position-np.array(instance.game_position))))
     if (len(actors)>1 and abs(np.linalg.norm(actors[0].position-instance.game_position)-np.linalg.norm(actors[1].position-instance.game_position))<1

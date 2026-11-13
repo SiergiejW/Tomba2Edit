@@ -158,6 +158,8 @@ FLIGHT_GAP = 45
 # What the actors run from: a fresh game, every event done
 # (actor_sim.progress_bytes), or the first with the second's differences.
 FRESH, EVENTS_DONE, BOTH = "fresh", "done", "both"
+# The area run with the game's "time is stopped" flag (src_CurrentArea byte 3): its palettes go grey.
+TIME_STOPPED = "stopped"
 AFTER_EVENTS = ("⧖ only with every event done - each save byte this area's "
                 "code reads set to 0xFF (actor_sim.progress_bytes)")
 # actor_sim World.spawn_events; its UNPLACED.
@@ -982,7 +984,7 @@ class LevelScene:
         `fast` initialises native actors and interiors without recording
         effects or animation loops. Only the fresh game is read."""
         self.__init__()
-        if fast:
+        if fast and progress != TIME_STOPPED:
             progress = FRESH
         self.dat_path = dat_path
         self.chunk_index = chunk_index
@@ -1257,6 +1259,7 @@ class LevelScene:
                 self.chunk_index, number, self.placements,
                 actor_assembly.degrees_to_units, frames=SIM_FRAMES,
                 spawner=spawner, purified=self.chunk_index in PURIFIED_CHUNKS,
+                time_stopped=self.progress == TIME_STOPPED,
                 chests=[p for p in self.pickups if p.chest],
                 finished=(actor_sim.progress_bytes(self.overlay_data)
                           if self.progress == EVENTS_DONE and self.overlay_data else ()),
@@ -2771,6 +2774,23 @@ class LevelScene:
                 index=len(instances), role="scenery",
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
+        # Where Tomba arrives in this area: the game's warp-spawn table (resident areas only).
+        try:
+            from game import warps
+            if self.exe_path and game_build.current().name == "us-retail" and 0 <= self.area_index < warps.AREAS:
+                with open(self.exe_path, "rb") as f:
+                    exe_bytes = f.read()
+                for k, x, h, d, flags, section in warps.spawns(exe_bytes, self.area_index):
+                    vx, vy, vz = view_point((x, h, d))
+                    instances.append(Instance(
+                        index=len(instances), role="spawned", marker=True,
+                        label=f"⌖ Tomba arrives #{k}: {section}", name=f"warp spawn {k}",
+                        x=vx, y=vy, z=vz,
+                        note=(f"The game puts Tomba here when he enters this area at spawn {k} "
+                              f"(src_CurrentArea byte 1): game position ({x}, {h}, {d}), section "
+                              f"“{section}”, flags 0x{flags:04X}. From MAIN.EXE's warp table.")))
+        except (OSError, ValueError, IndexError, TypeError):
+            pass
         self.instances = instances
         # The worker serialises scenes without their emulated RAM. Retain
         # explicit native handler identities for the Events inspector.

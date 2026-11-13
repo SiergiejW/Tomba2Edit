@@ -528,7 +528,7 @@ class World:
 
     def __init__(self, exe_path, overlay_path, dat_path, idx_path, chunk,
                  area_number, resident_chunks=(0, 1, 2), purified=False,
-                 finished=()):
+                 finished=(), time_stopped=False):
         from gui.level.level_scene import area_files
         # The addresses below are this build's, not only US retail's.
         game_build.use(exe_path)
@@ -576,6 +576,10 @@ class World:
         mem.write(PART_BUDGET, 4, PART_BUDGET_HELD)
         mem.write(POOL_FREE, 1, POOL_FREE_HELD)
         mem.write(AREA_NUMBER, 1, area_number)
+        # Byte 3 of src_CurrentArea is the game's "time is stopped" flag (checked against the DuckStation
+        # states taken before and after: 0 -> 1, and every palette in VRAM goes grey).
+        self.time_stopped = time_stopped
+        if time_stopped: mem.write(AREA_NUMBER + 3, 1, 1)
         self.purified = purified
         self.area_number = area_number
         self.finished = tuple(finished)
@@ -2337,6 +2341,8 @@ class World:
             # area: not gated there, just not in this variant.
             if argument == ARG_CURSED_ONLY and self.purified:
                 continue
+            if argument == ARG_TIME_RUNNING and self.time_stopped:
+                continue                # a record every spawner skips while time is stopped
             first = len(self.actors)
             self.running_scene = scene or None
             try:
@@ -3004,7 +3010,8 @@ def subtree(world, actor, actors=None):
 
 def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
              records, units, frames=FRAMES, spawner=None, purified=False,
-             chests=(), finished=(), log=None, publish=None, ground_fireflies=(), fast=False):
+             chests=(), finished=(), log=None, publish=None, ground_fireflies=(), fast=False,
+             time_stopped=False):
     """The area as it opens - its placed actors, its chests and all they
     spawned - and, given the area's scene spawner, every room it has. An
     area with no placement records is its spawner's scene 0.
@@ -3012,7 +3019,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     `log(message, actors)` hears each stage as it starts and what it stood up."""
     say = log or (lambda _message, _actors=None: None)
     world = World(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
-                  purified=purified, finished=finished)
+                  purified=purified, finished=finished, time_stopped=time_stopped)
     if fast:
         # Initialise native actors and every room without playing or recording
         # cutscenes, skeletal loops, particles, lines or speculative events.

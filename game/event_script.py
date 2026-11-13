@@ -1415,6 +1415,11 @@ def turn_plan(c, positions):
         else:
             return []
         return [(who, target, step)]
+    if c.opcode == 58:
+        # f_RunScriptedActorFaceTombaSequence: the actor (0x8000 = Zippo) turns to Tomba and Tomba to it, 0x100 a tick.
+        tomba = positions.get('tomba')
+        if here is None or tomba is None: return []
+        return [(who, facing(here, tomba), 0x100), ('tomba', facing(tomba, here), 0x100)]
     if c.opcode == 59:
         step = o[0] & 0x7fff
         point = positions.get('self') if step == 0 else (o[1], 0, o[2])
