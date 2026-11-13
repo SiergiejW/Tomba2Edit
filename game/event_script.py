@@ -599,6 +599,12 @@ class Binding:
     # A data word in a script table (lo_at) rather than a lui/addiu pair.
     table: bool = False
     request: int = None
+    # An NPC-specific page: the scene-record variant it is for (its lui/addiu sit in a stub).
+    variant: int = None
+    # A conditional page: the tests that must all hold (see stub_words); empty for the handler's own page.
+    tests: tuple = ()
+    # On a handler page: the test lists of the conditional pages in front of it at this call.
+    overridden: tuple = ()
 
 def _dest(i):
     if i.name in ('lui','addiu','addi','ori','andi','xori','slti','sltiu') or i.name in ('lb','lbu','lh','lhu','lw','lwl','lwr'):
@@ -622,6 +628,7 @@ class Flow:
         self.overlay_end = BASE + len(overlay)
         self.preds, self.calls, self.conversation_calls, self.music_calls = {}, [], [], []
         self.message_calls = []
+        self.stub_sites = {}
         seen, work, roots = set(), [start], {start}
         while work and len(seen) < limit:
             at = work.pop()
@@ -636,11 +643,18 @@ class Flow:
                     if i.name == 'jal' or i.name == 'jalr':
                         if i.name == 'jal':
                             if i.target in LOADERS: self.calls.append((at, LOADERS[i.target]))
+                            elif self._through_stubs(i.target) is not None:
+                                chain, loader = self._through_stubs(i.target)
+                                self.calls.append((at, LOADERS[loader])); self.stub_sites[at] = chain
                             elif i.target in CONFIGURE_CONVERSATION: self.conversation_calls.append(at)
                             elif i.target == BEGIN_INTERACTION_AUDIO: self.music_calls.append(at)
                             elif i.target in QUEUE_MESSAGES: self.message_calls.append((at, QUEUE_MESSAGES[i.target]))
-                            elif BASE <= i.target < self.overlay_end and i.target not in roots:
-                                roots.add(i.target); work.append(i.target)
+                            elif BASE <= i.target < self.overlay_end:
+                                # The callee runs under whatever held at the call, so a page
+                                # loaded inside it carries the tests that led to the call.
+                                self._edge(slot, i.target)
+                                if i.target not in roots:
+                                    roots.add(i.target); work.append(i.target)
                         self._edge(slot, at + 8, call=True); at += 8; continue
                     if i.name == 'j':
                         self._edge(slot, i.target); at = i.target; continue
@@ -654,6 +668,20 @@ class Flow:
                     self._edge(slot, at + 8); at += 8; continue
                 self._edge(at, at + 4); at += 4
         self.seen = seen
+
+    def _through_stubs(self, target):
+        """(stubs, loader) if `target` is an editor-made variant stub that ends in a script loader."""
+        chain = []
+        while len(chain) < 8:
+            info = stub_info(self.read_word_block, target) if hasattr(self, 'read_word_block') else None
+            if info is None: break
+            chain.append(info); target = info['next']
+        return (chain, target) if chain and target in LOADERS else None
+
+    def read_word_block(self, at, size):
+        raw = self.read(at, size)
+        if raw is None or len(raw) < size: raise ValueError('outside')
+        return raw
 
     def image(self, at):
         return next((im for im in self.images if at in im), None)
@@ -722,6 +750,220 @@ class Flow:
             out.extend(self.after(reg, p, depth+1, seen))
         return out
 
+# --- Conditional pages: a stub in front of a loader call ---
+#
+# `jal LOADER` at a page's call site becomes `jal stub`. The stub makes a
+# list of tests; when all hold, it swaps in the script pointer of an
+# editor-made copy of the page, then tail-jumps to the real loader (or the
+# next stub), so the original return address stands and whatever the tests
+# do not match runs exactly what it ran before - the "else" of an If.
+#
+# Each test is six words, with t0..t2 as scratch (dead across a call):
+#   lui t0, hi(A)  /  addu t0, a0, zero     ; a byte of game memory, or of the actor
+#   lbu t0, lo(A)(t0)  /  lbu t0, 3(t0)
+#   addiu t1, zero, VALUE
+#   xor|sltu t2, ...                        ; == != >= <= on the byte
+#   bne|beq t2, zero, SKIP ; nop            ; test failed: keep the original pointer
+# then   lui reg, hi(copy) ; addiu reg, reg, lo(copy)   (reg = the loader's script argument)
+#        j NEXT ; nop                       (SKIP lands on the j)
+TEST_WORDS = 6
+_ACTOR_BASE = 0x00804021            # addu t0, a0, zero
+_STUB_OPS = {'eq': (0x01095026, 0x14000000), 'ne': (0x01095026, 0x10000000),
+        'ge': (0x0109502B, 0x14000000), 'le': (0x0128502B, 0x14000000)}
+_VARIANT_OFFSET = 3             # actor +3: the scene record's slot - which NPC of its kind this is (actor_sim.SLOT)
+
+
+def test_address(test):
+    """Where a test reads: ('actor', offset) or ('memory', address)."""
+    kind, index = test['kind'], test['index']
+    if kind == 'variant': return 'actor', _VARIANT_OFFSET
+    if kind == 'item': return 'memory', INVENTORY + index
+    if kind == 'event': return 'memory', EVENT_STATES + index
+    if kind == 'progress': return 'memory', AREA_PROGRESS + index
+    raise ValueError(f'Unknown test {kind}')
+
+
+def stub_size(tests): return 4 * (TEST_WORDS * len(tests) + 4)
+
+
+def stub_words(tests, copy, reg, next_target, address):
+    if not tests or len(tests) > 8: raise ValueError('A page needs between one and eight conditions.')
+    words = []
+    skip = address + 4 * TEST_WORDS * len(tests) + 8          # the `j`
+    for n, test in enumerate(tests):
+        if test['op'] not in _STUB_OPS: raise ValueError(f'Unknown comparison {test["op"]}')
+        if not 0 <= test['value'] <= 255: raise ValueError('A condition value is a byte (0-255).')
+        base, where = test_address(test)
+        compare, branch = _STUB_OPS[test['op']]
+        if base == 'actor':
+            first, load = _ACTOR_BASE, 0x91080000 | where
+        else:
+            first, load = 0x3C080000 | (((where + 0x8000) >> 16) & 0xffff), 0x91080000 | (where & 0xffff)
+        at = address + 4 * TEST_WORDS * n
+        offset = (skip - (at + 16 + 4)) // 4
+        words += [first, load, 0x24090000 | test['value'], compare, branch | (10 << 21) | (offset & 0xffff), 0]
+    high = (copy + 0x8000) >> 16
+    words += [0x3C000000 | (reg << 16) | (high & 0xffff), 0x24000000 | (reg << 21) | (reg << 16) | (copy & 0xffff),
+              0x08000000 | ((next_target >> 2) & 0x3ffffff), 0]
+    return struct.pack(f'<{len(words)}I', *words)
+
+
+def stub_info(read, address):
+    """The fields of an editor-made conditional-page stub at `address`, or None."""
+    if not EVENT_START <= address < EVENT_END or address & 3: return None
+    def word(k):
+        return struct.unpack('<I', read(address + 4 * k, 4))[0]
+    try:
+        tests, k = [], 0
+        while word(k) == _ACTOR_BASE or word(k) >> 16 == 0x3C08:
+            if len(tests) == 8: return None
+            w = [word(k + j) for j in range(TEST_WORDS)]
+            k += TEST_WORDS
+            if w[5] != 0 or w[2] >> 16 != 0x2409 or w[1] >> 16 != 0x9108: return None
+            op = next((name for name, (cmp_, br) in _STUB_OPS.items() if cmp_ == w[3] and (w[4] & 0xFC000000) == br), None)
+            if op is None: return None
+            if w[0] == _ACTOR_BASE:
+                if w[1] & 0xffff != _VARIANT_OFFSET: return None
+                test = {'kind': 'variant', 'index': 0}
+            else:
+                low = w[1] & 0xffff
+                low = low - 0x10000 if low >= 0x8000 else low
+                a = (((w[0] & 0xffff) << 16) + low) & 0xffffffff
+                if INVENTORY <= a < INVENTORY + 0x100: test = {'kind': 'item', 'index': a - INVENTORY}
+                elif EVENT_STATES <= a < EVENT_STATES + 0x100: test = {'kind': 'event', 'index': a - EVENT_STATES}
+                elif AREA_PROGRESS <= a < AREA_PROGRESS + 0x100: test = {'kind': 'progress', 'index': a - AREA_PROGRESS}
+                else: return None
+            test.update(op=op, value=w[2] & 0xffff)
+            tests.append(test)
+        if not tests: return None
+        lui, addiu, jump, nop = word(k), word(k + 1), word(k + 2), word(k + 3)
+    except (ValueError, struct.error):
+        return None
+    reg = (lui >> 16) & 31
+    if lui >> 26 != 15 or addiu >> 26 != 9 or (addiu >> 21) & 31 != reg or (addiu >> 16) & 31 != reg or jump >> 26 != 2 or nop:
+        return None
+    low = addiu & 0xffff
+    low = low - 0x10000 if low >= 0x8000 else low
+    variant = next((t['value'] for t in tests if t['kind'] == 'variant' and t['op'] == 'eq'), None)
+    return dict(tests=tests, variant=variant, copy=(((lui & 0xffff) << 16) + low) & 0xffffffff, reg=reg,
+                next=0x80000000 | ((jump & 0x3ffffff) << 2), lui_at=address + 4 * k, addiu_at=address + 4 * k + 4,
+                jump_at=address + 4 * k + 8, address=address, size=4 * (k + 4))
+
+
+def test_text(test):
+    """A test in the editor's words."""
+    kind, op, value, index = test['kind'], test['op'], test['value'], test['index']
+    if kind == 'variant':
+        return f'actor variant (scene record) {({"eq": "==", "ne": "!=", "ge": ">=", "le": "<="})[op]} {value}'
+    if kind == 'item':
+        given = _names['items'].get(index)
+        name = f'“{given}”' if given else f'item {index}'
+        if op == 'ge': return f'Tomba has {name}' if value == 1 else f'Tomba has at least {value} × {name}'
+        if op == 'le': return f'Tomba has no {name}' if value == 0 else f'Tomba has at most {value} × {name}'
+        if op == 'eq': return f'Tomba has no {name}' if value == 0 else f'Tomba has exactly {value} × {name}'
+        return f'Tomba has {name}' if value == 0 else f'Tomba does not have exactly {value} × {name}'
+    mode = {'eq': 0, 'le': 1, 'ge': 2, 'ne': 0}[op]
+    return condition_text(44 if kind == 'event' else 43, mode, index, value, negate=op == 'ne')
+
+
+def invert_test(test):
+    """The opposite test (for the page that keeps running when these do not hold)."""
+    op, value = test['op'], test['value']
+    if op == 'eq': return dict(test, op='ne')
+    if op == 'ne': return dict(test, op='eq')
+    if op == 'ge': return dict(test, op='le', value=value - 1) if value >= 1 else None
+    return dict(test, op='ge', value=value + 1)
+
+
+def tests_else_text(tests):
+    """What holds for the page that runs when `tests` do not all hold."""
+    if len(tests) == 1 and invert_test(tests[0]) is not None: return test_text(invert_test(tests[0]))
+    return 'unless ' + ' and '.join(test_text(t) for t in tests)
+
+
+def _verify_layout(exe, overlay):
+    if game_build.current().name != 'us-retail': raise ValueError('Event writing currently requires US retail.')
+    for opcode, target in {5: 0x80042090, 30: 0x8004179c, 40: 0x80043720, 47: 0x80043a40}.items():
+        if struct.unpack('<I', reader(exe, overlay)(CALLBACKS + opcode * 4, 4))[0] != target:
+            raise ValueError('The native command table differs from the verified US layout.')
+
+
+def _call_chain(read, caller):
+    """(stubs at this loader call, the real loader) - following `jal` through editor stubs."""
+    jal = struct.unpack('<I', read(caller, 4))[0]
+    if jal >> 26 != 3: raise ValueError('The loader call is not where the binding says; reopen Events.')
+    target = ((caller + 4) & 0xF0000000) | ((jal & 0x3ffffff) << 2)
+    chain = []
+    while len(chain) < 8:
+        info = stub_info(read, target)
+        if info is None: break
+        chain.append(info); target = info['next']
+    return chain, target
+
+
+def _same_tests(a, b):
+    key = lambda ts: sorted((t['kind'], t['index'], t['op'], t['value']) for t in ts)
+    return key(a) == key(b)
+
+
+def specialise(exe, overlay, binding, commands, tests):
+    """Give a page a condition: when all of `tests` hold (each a dict with
+    kind 'variant' | 'item' | 'event' | 'progress', index, op 'eq' | 'ne' |
+    'ge' | 'le', value), the NPC runs a copy of the page (`commands`, as it
+    stands) instead; otherwise it runs what it ran before. Returns the new
+    area file."""
+    _verify_layout(exe, overlay)
+    if isinstance(tests, int): tests = [dict(kind='variant', index=0, op='eq', value=tests)]
+    if binding.table or binding.tests:
+        raise ValueError('Only a page the NPC’s code loads can be given conditions.')
+    for t in tests: test_address(t)
+    if not tests or len(tests) > 8: raise ValueError('A page needs between one and eight conditions.')
+    read = reader(exe, overlay)
+    chain, loader = _call_chain(read, binding.caller)
+    if any(_same_tests(c['tests'], tests) for c in chain):
+        raise ValueError('A page with exactly these conditions already exists at this call.')
+    if loader not in LOADERS or LOADERS[loader] != binding.register or binding.register == 4:
+        raise ValueError('This loader does not pass the actor in a0, so the page cannot be made conditional here.')
+    out = bytearray(overlay)
+    if len(out) > EVENT_END - BASE: raise ValueError('The area file extends past the free RAM window.')
+    if len(out) < EVENT_START - BASE: out.extend(bytes(EVENT_START - BASE - len(out)))
+    size = sum(len(c.raw) for c in commands)
+    copy = _allocate(out, size, None, 0, binding.lo_at)
+    payload = compile_graph(commands, copy)
+    end = copy - BASE + len(payload)
+    if len(out) < end: out.extend(bytes(end - len(out)))
+    out[copy - BASE:end] = payload
+    stub = _allocate(out, stub_size(tests), None, 0, binding.lo_at)
+    if stub + stub_size(tests) > EVENT_END: raise ValueError('The event extension region is full.')
+    first = chain[0]['address'] if chain else loader            # what the call jumps to now
+    if len(out) < stub - BASE + stub_size(tests): out.extend(bytes(stub - BASE + stub_size(tests) - len(out)))
+    out[stub - BASE:stub - BASE + stub_size(tests)] = stub_words(tests, copy, binding.register, first, stub)
+    struct.pack_into('<I', out, binding.caller - BASE, 0x0C000000 | ((stub >> 2) & 0x3ffffff))
+    return bytes(out)
+
+
+def unspecialise(exe, overlay, binding):
+    """Take a conditional page back out: the call (or the stub before it)
+    jumps past its stub again, and the stub and copy are cleared."""
+    _verify_layout(exe, overlay)
+    if not binding.tests: raise ValueError('This is the handler’s own page, not a conditional one.')
+    read = reader(exe, overlay)
+    chain, _loader = _call_chain(read, binding.caller)
+    for n, info in enumerate(chain):
+        if info['lui_at'] == binding.hi_at: break
+    else:
+        raise ValueError('The page is no longer in the script; reopen Events.')
+    out = bytearray(overlay)
+    word = lambda target, op: op | ((target >> 2) & 0x3ffffff)
+    if n == 0: struct.pack_into('<I', out, binding.caller - BASE, word(info['next'], 0x0C000000))
+    else: struct.pack_into('<I', out, chain[n - 1]['jump_at'] - BASE, word(info['next'], 0x08000000))
+    try: size = sum(len(c.raw) for c in read_graph(read, info['copy']))
+    except ValueError: size = 0
+    out[info['copy'] - BASE:info['copy'] - BASE + size] = bytes(size)
+    out[info['address'] - BASE:info['address'] - BASE + info['size']] = bytes(info['size'])
+    return bytes(out)
+
+
 def discover(exe, overlay, handler):
     """Every literal script a handler's reachable code passes to the loader.
 
@@ -743,6 +985,18 @@ def discover(exe, overlay, handler):
             found[(hi, lo)] = Binding(address, hi, lo, struct.unpack('<I', read(hi, 4))[0],
                                       struct.unpack('<I', read(lo, 4))[0], call, register=register,
                                       animations=tables.pop() if len(tables) == 1 else None)
+    # Pages an editor stub hands to one variant at a call site.
+    for call, chain in flow.stub_sites.items():
+        for info in chain:
+            try: read_graph(read, info['copy'])
+            except ValueError: continue
+            found[(info['lui_at'], info['addiu_at'])] = Binding(
+                info['copy'], info['lui_at'], info['addiu_at'], struct.unpack('<I', read(info['lui_at'], 4))[0],
+                struct.unpack('<I', read(info['addiu_at'], 4))[0], call, register=info['reg'], variant=info['variant'],
+                tests=tuple(info['tests']))
+    for b in found.values():
+        if not b.tests and b.caller in flow.stub_sites:
+            b.overridden = tuple(tuple(i['tests']) for i in flow.stub_sites[b.caller])
     by_hi = {}
     for b in found.values(): by_hi.setdefault(b.hi_at, []).append(b)
     for group in by_hi.values():
@@ -956,8 +1210,8 @@ def conversations(exe, overlay, area, pages, requests=()):
 # --- why a page runs: the native branches that lead to its loader call ---
 
 # Handler-held actor bytes worth naming (the actor is a0 / s-registers).
-ACTOR_FIELDS = {0x03: 'control', 0x04: 'state', 0x05: 'phase', 0x06: 'step',
-                0x2B: 'variant (scene record)', 0x7A: 'dialogue selector', 0xBF: 'conversation handler'}
+ACTOR_FIELDS = {0x03: 'variant (scene record)', 0x04: 'state', 0x05: 'phase', 0x06: 'step',
+                0x2B: 'byte +0x2B', 0x7A: 'dialogue selector', 0xBF: 'conversation handler'}
 GLOBALS = {0x800BF870: 'area', 0x800BF817: 'interior', 0x800BF816: 'weaponless interior',
            0x800BF80E: 'Tomba cutscene control', 0x800BF830: 'conversation request',
            0x800BF831: 'conversation flags'}
@@ -1010,7 +1264,10 @@ def _describe(flow, image, reg, at, depth=0):
             if isinstance(base, int) and base & 0x80000000:
                 return _global((base + i.imm) & 0xFFFFFFFF)
             if i.rs in (4, 16, 17, 18, 19):
-                return f'actor {ACTOR_FIELDS.get(i.imm, f"+0x{i.imm:X}")}'
+                name = ACTOR_FIELDS.get(i.imm)
+                if name is None: return f'NPC counter +0x{i.imm:X}'
+                if name.startswith('variant'): return f'actor {name}'
+                return f'NPC {name} counter' if name in ('state', 'phase', 'step', 'control') else f'actor {name}'
             return '?'
         if i.name == 'addiu':
             base = _describe(flow, image, i.rs, a, depth + 1)
@@ -1048,13 +1305,13 @@ def _branch_text(flow, image, b, taken):
     return f'{_shown(left)} {rel}'
 
 
-def page_conditions(exe, overlay, handler, caller, merges=48):
+def page_conditions(exe, overlay, handler, caller, merges=48, flow=None, memo=None):
     """The native tests that hold whenever a page's loader call is reached,
     nearest first: each conditional branch and jump-table case crossed on
     the way back from the call. Where paths merge, only the tests every
     incoming path makes are kept; a path through a loop adds nothing."""
-    flow = Flow(exe, overlay, handler)
-    memo = {}
+    flow = flow or Flow(exe, overlay, handler)
+    memo = {} if memo is None else memo        # may be shared by calls for several pages of one handler
 
     def step(p, at):
         image = flow.image(p)
@@ -1168,6 +1425,71 @@ def turn_plan(c, positions):
         if positions.get('tomba') is not None: out.append(('tomba', facing(positions['tomba'], point), step))
         return out
     return []
+
+
+def variant_allows(conditions, variant):
+    """Whether an actor whose scene record's variant byte is `variant` can
+    pass the 'actor variant (scene record)' tests among a page's conditions.
+    Other tests are not judged here."""
+    import ast, re
+    for text in conditions:
+        m = re.match(r'actor variant \(scene record\) (==|!=|<=|>=|<|>|in) (.+)$', text)
+        if not m: continue
+        op, rest = m.groups()
+        try:
+            if op == 'in': ok = variant in ast.literal_eval(rest)
+            else:
+                n = int(rest, 0)
+                ok = {'==': variant == n, '!=': variant != n, '<=': variant <= n,
+                      '>=': variant >= n, '<': variant < n, '>': variant > n}[op]
+        except (ValueError, SyntaxError): continue
+        if not ok: return False
+    return True
+
+
+def _own_calls(overlay, handler):
+    """The `jal` targets in the handler's own body (not in what it calls)."""
+    from psx.mips import Image
+    image = Image(overlay, BASE)
+    farthest, out, at = handler, [], handler
+    for _ in range(2000):
+        if at not in image: break
+        i = image.at(at)
+        if i.name == 'jal': out.append(i.target)
+        if i.name in ('beq', 'bne', 'blez', 'bgtz', 'bltz', 'bgez', 'j') and i.target is not None and i.target >= at:
+            farthest = max(farthest, i.target)
+        if i.name == 'jr' and i.rs == 31 and at + 8 > farthest: break
+        at += 4
+    return sorted(set(out))
+
+
+def pages_for_slot(exe, overlay, handler, slot):
+    """The loader call sites of the routines this handler hands an NPC of
+    scene-record slot `slot` to, or None if that cannot be worked out. The
+    handler runs in the emulator with the actor in its running state; each
+    routine it calls directly is noted and skipped, so this reads the
+    handler's own dispatch (a jump table, a chain of compares) as the game
+    does, not by analysis. The pages are then those found in the routines
+    it reached. If it reached a routine that serves every NPC alike, that
+    routine's pages are included."""
+    from psx.cpu import CPU
+    main = struct.unpack_from('<I', exe, 24)[0]
+    cpu = CPU()
+    cpu.mem.load(main, exe[0x800:]); cpu.mem.load(BASE, overlay)
+    hits = []
+    for target in _own_calls(overlay, handler):
+        cpu.hooks[target] = lambda c, t=target: (hits.append(t), 0)[1]
+    actor = 0x801E0000
+    cpu.mem.write(actor + 3, 1, slot & 0xff); cpu.mem.write(actor + 4, 1, 1)
+    try: cpu.call(handler, (actor,), sp=0x801FF000, budget=200000)
+    except Exception: return None
+    routines = [t for t in hits if BASE <= t < BASE + len(overlay)]
+    if not routines: return None
+    callers = set()
+    for routine in routines:
+        try: callers.update(b.caller for b in discover(exe, overlay, routine))
+        except (ValueError, IndexError): continue
+    return callers
 
 
 def native_music_sites(exe, overlay, handler):

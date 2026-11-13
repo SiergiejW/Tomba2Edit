@@ -500,6 +500,11 @@ class LevelEditorPanel(QWidget):
 
     def load_area(self, chunk, keep_camera=False, keep_view="all"):
         """Start a cancellable background load; the GUI remains navigable."""
+        if not self.idx_path or not os.path.exists(self.idx_path) or not self.dat_path or not os.path.exists(self.dat_path):
+            # No disc (or its files are gone): say so, instead of a worker traceback.
+            self.summary.setText("No disc is open for the Level Editor (TOMBA2.IDX / TOMBA2.DAT not found). "
+                                 "Open the disc or project again, then pick the area.")
+            return
         if not self.apply_changes():
             return
         self._close_events()

@@ -2782,6 +2782,22 @@ class LevelScene:
                 names = instance.label+' '+(instance.note or '')
                 found = {a.handler for a in actors if self.handler_name(a.handler) in names}
                 if len(found)==1: self.event_handlers[instance.index]=found.pop()
+            # The scene-record variant byte (actor +0x2B) each NPC was born with: the
+            # shared handler's tests on it are what tell one NPC's pages from another's.
+            self.event_variants = {}
+            for instance in instances:
+                handler = self.event_handlers.get(instance.index)
+                if not handler: continue
+                if instance.placement is not None:
+                    self.event_variants[instance.index] = instance.placement.slot; continue
+                try: here = np.array(instance.game_position, dtype=float)
+                except (AttributeError, TypeError, ValueError): continue
+                near = [a for a in actors if (a.born[0] if a.born else a.handler) == handler
+                        and a.born is not None and a.position is not None]
+                if not near: continue
+                best = min(near, key=lambda a: float(np.linalg.norm(np.asarray(a.position, dtype=float) - here)))
+                if len(near) == 1 or float(np.linalg.norm(np.asarray(best.position, dtype=float) - here)) <= 256:
+                    self.event_variants[instance.index] = best.born[1]
             # Only expose authored scene-table positions when the initialised
             # actor still stands at that record. Script-controlled positions
             # and ambiguous duplicate records remain immovable.

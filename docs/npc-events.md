@@ -63,7 +63,7 @@ state and every quest stage, so A06's Donglin inhabitants show 47 pages.
 The **Conditions** box reads the branches and jump-table cases on the way
 to each page's loader call (`event_script.page_conditions`), e.g. page 33
 "event 33 is cleared AND actor step == 3". These are typically:
-- which actor it is: actor +0x2B, its scene record's variant byte;
+- which actor it is: actor +3, the scene record's slot byte (actor_sim.SLOT) - handlers switch on it with a jump table (Donglin's 6 inhabitants);
 - the handler's state machine: actor +0x04 / +0x05 / +0x06;
 - quest state: event states at 0x800BF8B4, area progress at 0x800BF9B4
   (event 0 = not started, 255 = cleared);
@@ -255,3 +255,16 @@ it like NPC previews (World._parts) and add it to the simulation preview.
 - "Runtime-selected entry": the handler stores constants into the actor dialogue selector (+0x7A); `native_selectors` lists them with their conditions.
 - Progress rows (4, 6, 12, 43): `progress_writers` lists the script rows in the area that set the same byte (native writers are not covered).
 - Animation lists come from the emulated actor table (`animation_catalogue`); a switch blends over the command ticks and the clip then plays that many ticks late.
+
+## NPC-specific pages
+
+NPCs of one handler share its pages. To give NPCs of one scene-record variant (actor +3) a page of their own, the editor copies the page into the event region and puts an eight-word stub in front of the page's loader call: `jal LOADER` becomes `jal stub`; the stub reads `lbu t0, 3(t0)`, swaps the script argument register for the copy's pointer when the variant matches, and tail-jumps to the real loader (or the next stub), so the return address stands and other variants load what they always did. Works for the loaders that take the actor in a0 (f_LoadActorScript, f_InitializeActorScript); f_LoadCurrentScriptActorScript is refused. `specialise` / `unspecialise` in game/event_script.py; discovery sees through the stubs (the copy is a Binding with .variant, the handler's own page lists .overridden). Tabs are marked with a star; right-click a tab to make or remove one.
+
+
+The stub now carries up to eight tests (`stub_words`): Tomba has an item (inventory byte at 0x800BFAB4 + id: at least / at most / exactly), an event state (0x800BF8B4 + n), an area-progress byte (0x800BF9B4 + n), or the actor's scene-record variant (actor +3), all of which must hold for the copy to run; otherwise the original page runs (the Else). The editor's dialog (right-click a tab � Add a copy of this page that runs only if�) offers them with the game's item and event names.
+
+### Which pages are this NPC's
+
+A handler's code is shared by every NPC of its kind and tells them apart by actor +3 (the scene record's slot): it switches on it with a jump table and the per-NPC routines are called from there. `Flow` now follows those calls as edges, so a page loaded inside a per-NPC routine carries the case test (shown as `actor variant (scene record) == k`), and the editor hides the pages whose test fails for the NPC's own slot (Show hidden pages restores them). The two A00 house Fishermen (slots 96 and 97) go from 12 tabs to 2; a Donglin Inhabitant (slot 0) from 47 to 11. The tests are worked out in the background once per handler and kept for the session.
+
+Better than reading the tests: `pages_for_slot` runs the handler itself in the emulator with the actor's slot (+3) and state 1, hooks every routine the handler calls directly (noting and skipping it), and reports the loader calls inside the routines the dispatch reached. For the A00 house Fishermen, slot 96 reaches one routine with page 3 and slot 97 another with page 4. The editor hides every page outside that set (and still applies the slot tests, hand-hiding and 'Show hidden pages').

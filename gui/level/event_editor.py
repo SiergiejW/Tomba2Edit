@@ -8,7 +8,8 @@ from PyQt6.QtCore import QPointF,QRectF
 from PyQt6.QtGui import QColor,QFont,QPainter,QPen,QPolygonF
 from PyQt6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QComboBox,
     QListWidget,QListWidgetItem,QFormLayout,QSpinBox,QPushButton,QMessageBox,QCheckBox,QWidget,QPlainTextEdit,QSplitter,QTabWidget,
-    QTabBar,QGroupBox,QLineEdit,QFrame,QGridLayout,QStyle,QStyledItemDelegate,QMenu,QInputDialog)
+    QTabBar,QGroupBox,QLineEdit,QFrame,QGridLayout,QStyle,QStyledItemDelegate,QMenu,QInputDialog,
+    QTreeWidget,QTreeWidgetItem)
 from game import event_script as script, game_build
 from gui import theme
 
@@ -258,6 +259,112 @@ class MoveTurnDialog(QDialog):
         super().accept()
 
 
+class PageConditionDialog(QDialog):
+    """"Run this page only if ..." - Tomba has an item, an event is in some state,
+    a story byte has a value, the NPC is a given variant. All must hold; when they
+    do not, the NPC runs the page it ran before (the Else)."""
+    def __init__(self,parent,variant=None):
+        super().__init__(parent);self.setWindowTitle('Page conditions');self.resize(560,420);self.variant=variant
+        layout=QVBoxLayout(self)
+        note=QLabel('A copy of this page will run only when ALL of these are true. Otherwise the NPC runs what it ran before '
+                    '(the “Else”). Edit the copy and the original separately afterwards.');note.setWordWrap(True);layout.addWidget(note)
+        self.list=QListWidget();layout.addWidget(self.list,1)
+        row=QHBoxLayout()
+        for text,slot in (('Tomba has item…',self.add_item),('Event…',self.add_event),('Story progress…',self.add_progress),
+                          ('This NPC is variant…',self.add_variant)):
+            b=QPushButton(text);b.clicked.connect(slot);row.addWidget(b)
+        layout.addLayout(row)
+        row=QHBoxLayout();remove=QPushButton('Remove selected');remove.clicked.connect(self.remove)
+        row.addWidget(remove);row.addStretch()
+        ok=QPushButton('OK');ok.setDefault(True);ok.clicked.connect(self.accept)
+        cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject)
+        row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
+    @property
+    def tests(self):
+        return [self.list.item(n).data(Qt.ItemDataRole.UserRole) for n in range(self.list.count())]
+    def _add(self,test):
+        item=QListWidgetItem(script.test_text(test));item.setData(Qt.ItemDataRole.UserRole,test);self.list.addItem(item)
+    def remove(self):
+        for item in self.list.selectedItems():self.list.takeItem(self.list.row(item))
+    def _pick(self,title,label,names):
+        entries=[f'{n} - {name}' if name else str(n) for n,name in names]
+        chosen,ok=QInputDialog.getItem(self,title,label,entries,0,False)
+        return names[entries.index(chosen)][0] if ok else None
+    def add_item(self):
+        names=script._names.get('items',{})
+        item=self._pick('Tomba has item','Item:',[(n,names.get(n,'')) for n in range(256)] if not names else sorted(names.items()))
+        if item is None:return
+        how,ok=QInputDialog.getItem(self,'Tomba has item','How many?',['at least','at most','exactly','none'],0,False)
+        if not ok:return
+        if how=='none':self._add(dict(kind='item',index=item,op='eq',value=0));return
+        count,ok=QInputDialog.getInt(self,'Tomba has item','Number:',1,0 if how!='at least' else 1,255)
+        if ok:self._add(dict(kind='item',index=item,op={'at least':'ge','at most':'le','exactly':'eq'}[how],value=count))
+    def add_event(self):
+        names=script._names.get('events',{})
+        event=self._pick('Event','Event:',sorted(names.items()) if names else [(n,'') for n in range(1,139)])
+        if event is None:return
+        states={'is not started':('eq',0),'has started':('ne',0),'is cleared':('eq',255),'is not cleared':('ne',255)}
+        state,ok=QInputDialog.getItem(self,'Event','The event:',list(states),0,False)
+        if ok:self._add(dict(kind='event',index=event,op=states[state][0],value=states[state][1]))
+    def add_progress(self):
+        index,ok=QInputDialog.getInt(self,'Story progress','Area progress byte number (0-255):',0,0,255)
+        if not ok:return
+        how,ok=QInputDialog.getItem(self,'Story progress','The byte is:',['equal to','not equal to','at least','at most'],0,False)
+        if not ok:return
+        value,ok=QInputDialog.getInt(self,'Story progress','Value:',0,0,255)
+        if ok:self._add(dict(kind='progress',index=index,op={'equal to':'eq','not equal to':'ne','at least':'ge','at most':'le'}[how],value=value))
+    def add_variant(self):
+        value,ok=QInputDialog.getInt(self,'NPC variant','The NPC’s scene-record variant:',self.variant if self.variant is not None else 0,0,255)
+        if ok:self._add(dict(kind='variant',index=0,op='eq',value=value))
+
+
+class LogicDialog(QDialog):
+    """How an NPC's native code decides what runs, as If / Then: the tests on
+    the way to each page (outermost first), merged into a tree, with what the
+    page does at the end. Double-click a page to open it."""
+    def __init__(self,editor):
+        super().__init__(editor);self.setWindowTitle('NPC logic - which page runs when');self.resize(900,640)
+        self.choice=None
+        layout=QVBoxLayout(self)
+        note=QLabel('Read from this NPC’s native code. Each branch is a test the code makes before it starts a page; '
+                    'a “?” is a value the editor cannot work out. Pages for other NPCs of the same handler are included '
+                    'unless hidden.');note.setWordWrap(True);layout.addWidget(note)
+        self.tree=QTreeWidget();self.tree.setHeaderLabels(['If … then …','Rows']);self.tree.setColumnWidth(0,700)
+        layout.addWidget(self.tree,1)
+        self.tree.itemDoubleClicked.connect(self._open)
+        close=QPushButton('Close');close.clicked.connect(self.reject)
+        row=QHBoxLayout();row.addStretch();row.addWidget(close);layout.addLayout(row)
+        self._build(editor)
+        self.tree.expandAll()
+    def _gist(self,editor,n,binding):
+        try:nodes=script.read_graph(script.reader(editor.exe,editor.overlay),binding.script)
+        except ValueError:return f'Page {n+1}',0
+        parts=[]
+        for c in nodes:
+            if c.opcode in (0,1,62,18,19,40,41) or (c.opcode in (5,6,9,10,40) and not parts):
+                parts.append(editor.describe(c)[:90])
+            if len(parts)>=3:break
+        return f'Page {n+1}: '+(' / '.join(parts) if parts else editor.describe(nodes[0])[:90] if nodes else ''),len(nodes)
+    def _build(self,editor):
+        nodes={}
+        for n,binding in enumerate(editor.bindings):
+            if binding.table:continue
+            if n in getattr(editor,'_other_pages',set()) and not editor.show_others.isChecked():continue
+            path=list(reversed(editor._page_conditions(binding)))
+            parent=self.tree.invisibleRootItem();key=()
+            for test in path:
+                key+=(test,)
+                if key not in nodes:
+                    item=QTreeWidgetItem(parent,['If '+test,''])
+                    f=item.font(0);f.setBold(True);item.setFont(0,f);nodes[key]=item
+                parent=nodes[key]
+            text,count=self._gist(editor,n,binding)
+            leaf=QTreeWidgetItem(parent,[('→ ' if path else 'Always → ')+text,str(count)]);leaf.setData(0,Qt.ItemDataRole.UserRole,n)
+    def _open(self,item,_column):
+        n=item.data(0,Qt.ItemDataRole.UserRole)
+        if n is not None:self.choice=n;self.accept()
+
+
 class DragSpinBox(QSpinBox):
     """A number field you can also drag: press in it and move the mouse up
     (more) or down (less), a step per few pixels - Shift for ten. A click
@@ -421,6 +528,21 @@ class ProgressDecode(VoiceDecode):
     def run(self):
         try:self.emit_result((script.progress_writers(*self.args),''))
         except Exception as exc:self.emit_result(({},str(exc)))
+
+
+class ConditionsDecode(VoiceDecode):
+    """The tests on the way to every page of a handler, worked out together."""
+    def __init__(self,exe,overlay,handler,callers,parent):
+        QObject.__init__(self,parent);self.args=(exe,overlay,handler,callers);self.worker=None
+    def run(self):
+        exe,overlay,handler,callers=self.args;out={}
+        try:
+            flow=script.Flow(exe,overlay,handler);memo={}
+            for caller in callers:
+                try:out[caller]=script.page_conditions(exe,overlay,handler,caller,flow=flow,memo=memo)
+                except (ValueError,IndexError,KeyError) as exc:out[caller]=[f'Not read: {exc}']
+        except Exception:pass
+        self.emit_result(out)
 
 
 class CameraDecode(VoiceDecode):
@@ -842,6 +964,8 @@ class ViewportPreview(QObject):
 
 
 class EventEditor(QDialog):
+    _SLOT_KEPT={}            # (handler, slot, area file) -> loader calls of the routines that slot runs
+    _CONDITIONS_KEPT={}      # (handler, area file) -> the tests on the way to each page, kept between openings
     def __init__(self, panel, instance, handler=None):
         super().__init__(panel)
         self.panel,self.instance=panel,instance
@@ -883,6 +1007,7 @@ class EventEditor(QDialog):
         top.addStretch();outer.addLayout(top)
         # Pages: the native scripts this entity's code loads.
         self.pages=QTabBar();self.pages.setExpanding(False);self.pages.setDrawBase(False)
+        self.pages.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu);self.pages.customContextMenuRequested.connect(self.page_tab_menu)
         for n,binding in enumerate(self.bindings):self._add_page_tab(n,binding)
         if not self.bindings:
             self.pages.addTab('Handler');self.pages.setTabToolTip(0,'No event script; behaviour is native handler code.')
@@ -898,6 +1023,17 @@ class EventEditor(QDialog):
         self.page_fields={}
         for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler'),('music','Music')):
             field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field;page_form.addRow(label,field)
+        self.talk_filter=QComboBox();self.talk_filter.setToolTip('Show only the pages that speak from one dialogue (a shared handler '
+            'serves several NPCs, each with its own dialogue). Pages that show no text stay.')
+        self.talk_filter.currentIndexChanged.connect(lambda _=0:self._apply_page_filter())
+        page_form.addRow('Talks from',self.talk_filter)
+        self.show_others=QCheckBox('Show hidden pages');self.show_others.toggled.connect(self._apply_page_filter)
+        self.show_others.setToolTip('A handler shared by several NPCs can start pages meant for the others; they are told apart by '
+                                    'the scene record’s variant. Tick to show those pages too.')
+        page_form.addRow('',self.show_others)
+        self.logic_button=QPushButton('Show as If / Then…');self.logic_button.clicked.connect(self.show_logic)
+        self.logic_button.setToolTip('The tests this NPC’s code makes before it starts each page, as a tree.')
+        page_form.addRow('',self.logic_button)
         self.music_change=QPushButton('Change music…');self.music_change.clicked.connect(self.change_music)
         self.music_change.setToolTip('Pick the conversation-music cue this NPC’s code starts. Shared by NPCs with the same handler.')
         page_form.addRow('',self.music_change)
@@ -1096,7 +1232,8 @@ class EventEditor(QDialog):
         self.timeline_box.setChecked(True)
         self.shared.toggled.connect(self.update_enabled)
         self._undo_state()
-        self.page_changed(0)
+        self._apply_page_filter(initial=True)
+        self.page_changed(self.pages.currentIndex() if self.pages.count() else 0)
         QTimer.singleShot(0,self.show_avatar)
 
     def _conversation_bindings(self,bindings):
@@ -1139,6 +1276,11 @@ class EventEditor(QDialog):
             self.pages.setTabToolTip(n,f'Conversation {binding.request}: script 0x{binding.script:08X}, '
                                      f'from the conversation table slot 0x{binding.caller:08X}. '
                                      'Request conversation (handler 0) runs it.')
+        elif getattr(binding,'tests',None):
+            self.pages.addTab(f'{n+1}★')
+            self.pages.setTabToolTip(n,'A copy that runs only when '+' and '.join(script.test_text(t) for t in binding.tests)+
+                                     f'; otherwise the page it came from runs. Script 0x{binding.script:08X}, chosen by a stub in front '
+                                     f'of the loader call at 0x{binding.caller:08X}.')
         else:
             self.pages.addTab(str(n+1))
             self.pages.setTabToolTip(n,f'Script 0x{binding.script:08X}, loaded at 0x{binding.caller:08X}')
@@ -1190,6 +1332,219 @@ class EventEditor(QDialog):
             self.originals[index]=deepcopy(nodes);self.drafts[index]=nodes
         self.populate()
 
+    def _conditions_ready(self,result):
+        self._conditions_job=None
+        self.__dict__.setdefault('_conditions',{}).update(result)
+        EventEditor._CONDITIONS_KEPT[(self.native_handler,hash(self.overlay))]=dict(self._conditions)
+        self._apply_page_filter()
+        if self.status.text().startswith('Working out'):self.status.setText('')
+
+    def _page_conditions(self,binding):
+        """The tests that lead to a page, read once per page."""
+        cache=self.__dict__.setdefault('_conditions',{})
+        if binding.caller not in cache:
+            try:cache[binding.caller]=script.page_conditions(self.exe,self.overlay,self.native_handler,binding.caller,
+                                                                flow=self.__dict__.get('_flow'))
+            except (ValueError,IndexError,KeyError) as exc:cache[binding.caller]=[f'Not read: {exc}']
+        found=list(cache[binding.caller])
+        for tests in getattr(binding,'overridden',()):
+            found.insert(0,script.tests_else_text(list(tests)))
+        for test in reversed(getattr(binding,'tests',()) or ()):
+            found.insert(0,script.test_text(test))
+        return found
+
+    def _hide_key(self):
+        variant=getattr(self.panel.scene,'event_variants',{}).get(getattr(self.instance,'index',None))
+        return f'eventPages/hidden/{self.native_handler or 0:08X}/{"any" if variant is None else variant}'
+
+    def _user_hidden(self):
+        """Pages you hid for this kind of NPC (handler + variant), by script address."""
+        import json
+        from PyQt6.QtCore import QSettings
+        try:return set(json.loads(QSettings('Tomba2Edit','Tomba2Edit').value(self._hide_key(),'[]')))
+        except Exception:return set()
+
+    def _save_user_hidden(self,values):
+        import json
+        from PyQt6.QtCore import QSettings
+        QSettings('Tomba2Edit','Tomba2Edit').setValue(self._hide_key(),json.dumps(sorted(values)))
+
+    def page_tab_menu(self,pos):
+        n=self.pages.tabAt(pos)
+        menu=QMenu(self)
+        if n>=0 and n<len(self.bindings) and self.pages.isTabVisible(n):
+            hide=menu.addAction('Hide this page for this NPC')
+            hide.triggered.connect(lambda _=False,i=n:self._hide_page(i))
+        if 0<=n<len(self.bindings):
+            binding=self.bindings[n]
+            if getattr(binding,'tests',None):
+                menu.addSeparator()
+                gone=menu.addAction('Remove this conditional page (back to the page it came from)')
+                gone.triggered.connect(lambda _=False,i=n:self._remove_specific(i))
+            elif not binding.table:
+                menu.addSeparator()
+                make=menu.addAction('Add a copy of this page that runs only if…')
+                make.triggered.connect(lambda _=False,i=n:self._make_specific(i))
+        mine=self._user_hidden()
+        restore=menu.addAction(f'Show the pages I hid again ({len(mine)})');restore.setEnabled(bool(mine))
+        restore.triggered.connect(self._restore_pages)
+        menu.addAction('Show hidden pages').setCheckable(True)
+        menu.actions()[-1].setChecked(self.show_others.isChecked())
+        menu.actions()[-1].triggered.connect(lambda on:self.show_others.setChecked(bool(on)))
+        menu.exec(self.pages.mapToGlobal(pos))
+
+    def show_logic(self):
+        if not self.bindings:return
+        dialog=LogicDialog(self)
+        if dialog.exec() and dialog.choice is not None:
+            n=dialog.choice
+            if not self.pages.isTabVisible(n):self.show_others.setChecked(True)
+            self.pages.setCurrentIndex(n)
+
+    def _unsaved_page_edits(self):
+        return any(nodes!=self.originals.get(page,nodes) for page,nodes in self.drafts.items())
+
+    def _write_overlay(self,data):
+        """Write a changed area file through the Level Editor's project files."""
+        path=self.panel.scene.overlay_path
+        if Path(path).read_bytes()!=self.overlay:raise ValueError('The area file changed. Close and reopen Events first.')
+        self.panel._write_placement_files({path:data})
+        self.panel._placement_files[Path(path).name]=data
+        self.panel.scene.overlay_data=data
+        self.panel._scene_memory_cache.clear()
+
+    def _make_specific(self,n):
+        """Add a copy of a page that runs only when conditions hold; the page it
+        copies stays as the Else."""
+        binding=self.bindings[n]
+        variant=getattr(self.panel.scene,'event_variants',{}).get(getattr(self.instance,'index',None))
+        if not self.shared.isChecked():
+            QMessageBox.information(self,'Conditional page','Tick “Apply shared script binding and dialogue-entry changes” first: '
+                                    'this changes the NPC’s native code.');return
+        if self._unsaved_page_edits():
+            QMessageBox.information(self,'Conditional page','Apply or revert your page edits first.');return
+        dialog=PageConditionDialog(self,variant)
+        if not dialog.exec():return
+        tests=dialog.tests
+        if not tests:
+            QMessageBox.information(self,'Conditional page','Add at least one condition.');return
+        try:
+            nodes=self.drafts.get(n) or script.read_graph(script.reader(self.exe,self.overlay),binding.script)
+            data=script.specialise(self.exe,self.overlay,binding,deepcopy(nodes),tests)
+            self._write_overlay(data)
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'Conditional page',str(exc));return
+        self.reload_pages(data)
+        mine=next((i for i,b in enumerate(self.bindings) if b.tests and b.caller==binding.caller
+                   and script._same_tests(list(b.tests),tests)),None)
+        if mine is not None:
+            if not self.pages.isTabVisible(mine):self.show_others.setChecked(True)
+            self.pages.setCurrentIndex(mine)
+        self.status.setText('Added a copy that runs when '+' and '.join(script.test_text(t) for t in tests)+
+                            f': tab {mine+1 if mine is not None else "?"} ★. The page it came from is the Else.')
+
+    def _remove_specific(self,n):
+        binding=self.bindings[n]
+        if self._unsaved_page_edits():
+            QMessageBox.information(self,'NPC-specific page','Apply or revert your page edits first.');return
+        if not self.shared.isChecked():
+            QMessageBox.information(self,'NPC-specific page','Tick “Apply shared script binding and dialogue-entry changes” first.');return
+        if QMessageBox.question(self,'Conditional page','Remove this page? The NPC goes back to the page it came from, and the copy is deleted.'
+                                )!=QMessageBox.StandardButton.Yes:return
+        try:
+            data=script.unspecialise(self.exe,self.overlay,binding);self._write_overlay(data)
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'NPC-specific page',str(exc));return
+        self.reload_pages(data)
+        self.status.setText('The conditional page is removed.')
+
+    def _hide_page(self,n):
+        """Take a page off this NPC's tabs. Only what the editor shows changes;
+        the game still runs the page for whoever its code gives it to."""
+        mine=self._user_hidden();mine.add(f'{self.bindings[n].caller:08X}:{self.bindings[n].script:08X}');self._save_user_hidden(mine)
+        self._apply_page_filter()
+        self.status.setText('Page hidden for this NPC (right-click a tab → “Show the pages I hid again” to bring it back). '
+                            'The game itself is unchanged.')
+
+    def _restore_pages(self):
+        self._save_user_hidden(set());self._apply_page_filter()
+        self.status.setText('The pages you hid are shown again.')
+
+    def _page_masters(self):
+        """{page index: the dialogue masters its Show text rows speak from}."""
+        if '_masters' not in self.__dict__ or self.__dict__.get('_masters_for') is not self.bindings:
+            read=script.reader(self.exe,self.overlay);found={}
+            for n,binding in enumerate(self.bindings):
+                try:rows=script.read_graph(read,binding.script)
+                except ValueError:rows=[]
+                found[n]={c.operands[0]&0xfff for c in rows if c.opcode in (0,1) and c.operands[1]>=0 or c.opcode in (0,1)}
+            self._masters=found;self._masters_for=self.bindings
+        return self._masters
+
+    def _fill_talk_filter(self,masters):
+        """The "Talks from" choices (once per set of pages); the master chosen, or None."""
+        wanted=sorted({m for found in masters.values() for m in found})
+        have=[self.talk_filter.itemData(i) for i in range(1,self.talk_filter.count())]
+        if have!=wanted or self.talk_filter.count()==0:
+            keep=self.talk_filter.currentData()
+            self.talk_filter.blockSignals(True);self.talk_filter.clear();self.talk_filter.addItem('any dialogue',None)
+            for m in wanted:
+                pages=sum(1 for found in masters.values() if m in found)
+                self.talk_filter.addItem(f'dialogue {m} ({pages} page{"s" if pages!=1 else ""})',m)
+            i=self.talk_filter.findData(keep);self.talk_filter.setCurrentIndex(max(i,0));self.talk_filter.blockSignals(False)
+        return self.talk_filter.currentData()
+
+    def _apply_page_filter(self,*_args,initial=False):
+        """Hide the pages a shared handler keeps for other NPCs (their variant
+        test fails for this NPC's scene record), unless asked to show them."""
+        variant=getattr(self.panel.scene,'event_variants',{}).get(getattr(self.instance,'index',None))
+        hidden=set();self._by_hand=set()
+        if variant is not None and self.native_handler and self.bindings:
+            # Run the handler's own dispatch for this NPC's slot: the routines it hands the NPC to
+            # are the ones whose pages are its.
+            key=(self.native_handler,variant,hash(self.overlay))
+            if key not in EventEditor._SLOT_KEPT:
+                try:EventEditor._SLOT_KEPT[key]=script.pages_for_slot(self.exe,self.overlay,self.native_handler,variant)
+                except Exception:EventEditor._SLOT_KEPT[key]=None
+            own=EventEditor._SLOT_KEPT[key]
+            if own:
+                hidden|={n for n,b in enumerate(self.bindings) if not b.table and b.caller not in own}
+            cache=self.__dict__.setdefault('_conditions',{})
+            kept=EventEditor._CONDITIONS_KEPT.get((self.native_handler,hash(self.overlay)))
+            if kept:cache.update(kept)
+            missing=[b.caller for b in self.bindings if not b.table and b.caller not in cache]
+            if missing and not self.__dict__.get('_conditions_job'):
+                job=self._conditions_job=ConditionsDecode(self.exe,self.overlay,self.native_handler,sorted(set(missing)),self)
+                job.decoded.connect(self._conditions_ready);job.start()
+                self.status.setText('Working out which pages belong to this NPC…')
+            if not missing:
+                for n,binding in enumerate(self.bindings):
+                    if binding.table:continue
+                    if not script.variant_allows(self._page_conditions(binding),variant):hidden.add(n)
+        mine=self._user_hidden()
+        for n,binding in enumerate(self.bindings):
+            if f'{binding.caller:08X}:{binding.script:08X}' in mine and n not in hidden:hidden.add(n);self._by_hand.add(n)
+        self._other_pages=hidden
+        show=self.show_others.isChecked()
+        masters=self._page_masters()
+        chosen=self._fill_talk_filter(masters)
+        quiet=set()
+        if chosen is not None:
+            quiet={n for n,found in masters.items() if found and chosen not in found}
+        for n in range(self.pages.count()):self.pages.setTabVisible(n,(show or n not in hidden) and n not in quiet)
+        hidden=hidden|quiet
+        self.show_others.setEnabled(bool(hidden))
+        self.show_others.setText('Show hidden pages'+(f' ({len(hidden)} hidden)' if hidden and not show else ''))
+        if hidden:
+            self.show_others.setToolTip((f'This NPC’s scene-record variant is {variant}; ' if variant is not None else '')+
+                f'{len(hidden)} page(s) are hidden: those a shared handler keeps for another variant, and any you hid '
+                '(right-click a tab). Tick to show them all.')
+        current=self.pages.currentIndex()
+        if current in hidden and not show:
+            first=next((n for n in range(self.pages.count()) if n not in hidden),current)
+            self.pages.blockSignals(initial)
+            self.pages.setCurrentIndex(first);self.pages.blockSignals(False)
+
     def fill_conditions(self,binding):
         self.conditions.clear()
         if binding is None:return
@@ -1198,11 +1553,7 @@ class EventEditor(QDialog):
                          'Request conversation (handler 0) on a page of an NPC in this area.'):
                 self.conditions.addItem(line)
             return
-        cache=self.__dict__.setdefault('_conditions',{})
-        if binding.caller not in cache:
-            try:cache[binding.caller]=script.page_conditions(self.exe,self.overlay,self.native_handler,binding.caller)
-            except (ValueError,IndexError,KeyError) as exc:cache[binding.caller]=[f'Not read: {exc}']
-        found=cache[binding.caller]
+        found=self._page_conditions(binding)
         if not found:self.conditions.addItem('No test on the way to this page: it runs whenever its code is reached.')
         for line in found:self.conditions.addItem('◆ '+line)
 
@@ -2906,6 +3257,8 @@ class EventEditor(QDialog):
         editor shows (and later writes against) the new area file."""
         self.viewport.stop()
         self.overlay=data
+        self.__dict__.pop('_flow',None);self.__dict__.pop('_conditions',None)
+        self.__dict__.pop('_selectors',None);self.__dict__.pop('_messages',None)
         if self.bank is not None:self.bank_original=deepcopy(self.bank)
         page=self.active or 0
         try:
@@ -2922,5 +3275,7 @@ class EventEditor(QDialog):
         if not bindings:self.pages.addTab('Handler')
         page=min(page,self.pages.count()-1);self.pages.setCurrentIndex(page)
         self.pages.blockSignals(False)
+        self._apply_page_filter(initial=True)
+        page=self.pages.currentIndex() if self.pages.isTabVisible(page) is False else page
         self.page_changed(page)
         self.status.setText('Applied. The pages show what was written.')

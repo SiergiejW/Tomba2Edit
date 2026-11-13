@@ -17,7 +17,7 @@ def _hold(world,actor,table,animation,step,max_ticks=120):
         step()
         world.cpu.call(actor_sim.ADVANCE_SKELETAL,(actor.address,),budget=200000,sp=actor_sim.STACK)
 
-def _entity_actor(scene,instance,animations=None):
+def _entity_actor(scene,instance,animations=None,need_table=True):
     """(world, actor, animation table) of the selected entity, initialised by its own code."""
     handler=event_script.handler_for(scene,instance)
     if not handler:raise ValueError('No verified native handler is associated with this entity.')
@@ -47,9 +47,32 @@ def _entity_actor(scene,instance,animations=None):
     if not actor_sim._in_ram(table) and animations and actor_sim._in_ram(animations):
         # Attached when the page starts (f_InitializeActorScript's literal).
         table=animations;world.mem.write(actor.address+0x7c,4,table)
-    if not actor_sim._in_ram(table):raise ValueError('This entity has no native skeletal animation table.')
+    if need_table and not actor_sim._in_ram(table):raise ValueError('This entity has no native skeletal animation table.')
     return world,actor,table
 
+
+def probe_pages(scene,instance,animations=None,ticks=60):
+    """The scripts this entity's own code starts when Tomba is ready to talk to
+    it: its handler runs in the emulator beside the actor, with
+    f_TryPrepareTombaForInteraction answering yes, and every script load made
+    for that actor is noted. Returns the sorted script addresses. This is the
+    state the world starts in; pages that only run after other quest events
+    are not reached."""
+    from psx.cpu import PASS
+    world,actor,_table=_entity_actor(scene,instance,animations,need_table=False)
+    cpu=world.cpu;loads=[]
+    def watch(reg):
+        def hook(c):
+            loads.append((c.r[4],c.r[reg]));return PASS
+        return hook
+    cpu.hooks[event_script.LOAD_SCRIPT]=watch(5);cpu.hooks[0x80040CDC]=watch(6)
+    asked=[0]
+    def ready(c):
+        asked[0]+=1;return 1
+    cpu.hooks[0x8005308C]=ready
+    world.run(ticks,workers=False)
+    probe_pages.asked=asked[0];probe_pages.all_loads=list(loads)
+    return sorted({script for who,script in loads if who==actor.address})
 
 def animation_catalogue(scene,instance=None,animations=None,who='self'):
     """[(id, ticks, loops)] for every animation in the table of the entity
@@ -317,7 +340,26 @@ PLAIN={
  'f_RestorePreviousCameraMode':lambda a:'restore the previous camera mode',
  'f_CalculateYawFromPositionToPoint':lambda a:'work out which way to face',
  'f_StepActorYawTowardAngle':lambda a:'turn the actor toward an angle',
+ 'f_StepAngleTowardTarget':lambda a:'turn toward an angle',
+ 'f_StartTombaScriptedAnimation':lambda a:f'Tomba animation {a[1]&0x7fff}' if a[1] is not None else 'change Tomba’s animation',
+ 'f_SetTombaAnimation':lambda a:'change Tomba’s animation',
+ 'f_SetActorAnimation':lambda a:f'play animation {a[1]} on the actor' if a[1] is not None else 'change the actor’s animation',
+ 'f_StartActorSkeletalAnimation':lambda a:f'play animation {a[2]} on the actor' if a[2] is not None else 'change the actor’s animation',
+ 'f_SetScriptActorInteractionOffset':lambda a:'set where Tomba stands for the talk',
+ 'f_SetCurrentScriptActorMode':lambda a:f'put Zippo in mode {a[0]}' if a[0] is not None else 'change Zippo’s mode',
+ 'f_SetCameraTransform':lambda a:'set the camera transform',
+ 'f_DrawFullscreenOverlay':lambda a:'draw a full-screen overlay (fade)',
+ 'f_SpawnMovingTransientEffectAtFixedPosition':lambda a:f'spawn moving effect {a[0]}' if a[0] is not None else 'spawn a moving effect',
+ 'f_SpawnAreaLinkedItemPickupActor':lambda a:'spawn this area’s linked item pickup',
+ 'f_SpawnLinkedItemPickupActor':lambda a:'spawn the linked item pickup',
+ 'f_StartControllerVibration':lambda a:'vibrate the controller',
+ 'f_SetActorPartModel':lambda a:'change a model part',
+ 'f_ReleaseActorModelParts':lambda a:'release the model parts',
+ 'f_InitializeMultiPartActorModel':lambda a:'set up a multi-part model',
+ 'f_BeginScriptedInteractionAudio':lambda a:f'start conversation music cue {a[1]}' if a[1] is not None else 'start conversation music',
+ 'f_StartActorTimedFrameSequence':lambda a:'start a timed frame sequence',
 }
+OMIT_CALLS=frozenset(('rand','rsin','rcos','ratan2','SquareRoot0'))   # arithmetic helpers: noise in a summary
 
 def native_plain(exe,overlay,callback):
     """The routine in plain words where its calls are known routines;
@@ -326,6 +368,7 @@ def native_plain(exe,overlay,callback):
     out=[]
     for step in native_steps(exe,overlay,callback):
         if step[0]=='set':out.append(f'set {step[1]} to {step[2]}')
+        elif step[1] in OMIT_CALLS:continue
         elif step[1] in PLAIN:
             try:out.append(PLAIN[step[1]](step[2]))
             except Exception:out.append(step[1])
