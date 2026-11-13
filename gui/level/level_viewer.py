@@ -486,6 +486,12 @@ class LevelViewer(SMSTViewer):
         """The picture to draw behind the room, as an (h, w, 3) uint8
         array, or None for none. Drawn as it is: AREA_0A's black above and
         below its trees is the art fading out, not a gap to fill."""
+        if image is not None and self.palette_filter is not None:
+            # Time stopped: the sky greys like everything else (the same luminance the palettes get).
+            image = np.asarray(image)
+            luma = ((77 * (image[..., 0] >> 3).astype(int) + 150 * (image[..., 1] >> 3).astype(int)
+                     + 29 * (image[..., 2] >> 3).astype(int)) >> 8).astype(np.uint8) << 3
+            image = np.dstack([luma, luma, luma]).astype(np.uint8)
         self._background_image = image
         self._background_dirty = True
         self.update()

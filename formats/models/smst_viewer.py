@@ -789,7 +789,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
 
     def set_palette_filter(self, function):
         """Show every palette through `function` (RGBA 16x4 -> RGBA 16x4), or as it is."""
-        if function is self.palette_filter: return
+        if function is None and self.palette_filter is None: return
+        # Not skipped when it is the same filter again: each load stage brings its own (ungreyed)
+        # palettes with it, and they must go through it afresh.
         self.palette_filter = function
         for address in list(self._clut_arrays):
             self._clut_arrays[address] = self._clut_from_vram(address, self._clut_transparency.get(address, False))

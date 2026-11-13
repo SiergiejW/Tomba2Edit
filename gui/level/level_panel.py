@@ -667,7 +667,7 @@ class LevelEditorPanel(QWidget):
         stopped = getattr(scene, "progress", None) == TIME_STOPPED
         from formats.models.smst_viewer import grey_palette
         self.viewer.set_palette_filter(grey_palette if stopped else None)
-        self.viewer.set_background(None if stopped else (phases[0][0] if phases else None))
+        self.viewer.set_background(phases[0][0] if phases else None)       # greyed by the viewer while time is stopped
         self.viewer.set_sprites(*sprites)
         marks.append(("animations+sprites", time.perf_counter()))
         self._loading = not complete
