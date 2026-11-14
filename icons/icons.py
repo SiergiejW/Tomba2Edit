@@ -37,3 +37,7 @@ icon_palette_apple = resource_path("icons/palette/apple.png")
 icon_palette_weapon = resource_path("icons/palette/weapon.png")
 
 icon_palette_warp = resource_path("icons/palette/warp.svg")
+
+model_collision_arrows = resource_path("icons/palette/arrows.smst")
+
+texture_collision_arrows = resource_path("icons/palette/arrows.png")

@@ -20,6 +20,7 @@ Building touches no GL; Overlay.draw() needs the context current.
 """
 import colorsys
 import math
+from functools import lru_cache
 from dataclasses import dataclass
 
 import numpy as np
@@ -246,8 +247,20 @@ def _arrow(lines, a, b, rgb, toward):
         lines.line(tip, (back[0], back[1] + wing * sign, back[2]), rgb)
 
 
+@lru_cache(maxsize=1)
+def load_arrow_fallback():
+    """Original arrow parts, bundled as an external SMST; no ROM dependency."""
+    from pathlib import Path
+    from icons.icons import model_collision_arrows
+    from formats.models.smst_parser import parse_smst
+    model = parse_smst(Path(model_collision_arrows).read_bytes())
+    model['collision_arrow_groups'] = {11: 0, 12: 1}
+    return model
+
+
 def _native_arrow(lines, model, group_index, origin, toward):
     """The resident arrow mesh, in its authored size and vertex colours."""
+    group_index = (model or {}).get('collision_arrow_groups', {}).get(group_index, group_index)
     if model is None or len(model.get('groups', ())) <= group_index:
         return False
     group = model['groups'][group_index]
@@ -265,7 +278,10 @@ def _native_arrow(lines, model, group_index, origin, toward):
                              points[:, 1],
                              -points[:, 0] * ux + points[:, 2] * uz)) + origin
     lines.arrows.extend(posed)
-    lines.arrow_colors.extend(np.clip(colors[faces].reshape(-1, 3), 0, 1))
+    # Keep the source colours unclamped through interpolation, exactly like
+    # the SMST viewer. Some native colour channels deliberately exceed 1.
+    native_colors = colors[faces]
+    lines.arrow_colors.extend(native_colors.reshape(-1, 3))
     return True
 
 
@@ -274,6 +290,8 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_mo
     only what stands inside it; `all_entries` are the planes a lane switch or
     link may lead to (default: `entries`, which a view may have cut down)."""
     style = style or CollisionStyle()
+    if arrow_model is None and style.junctions:
+        arrow_model = load_arrow_fallback()
     inside = scld_render.contains
     geoms = {e.index + 1: geometry(e) for e in (all_entries or entries)}
     hints = []
@@ -381,10 +399,10 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_mo
         a, b, toward, forward, j, entry, index = min(choices, key=lambda h: h[5].index)
         centre = np.mean([h[0] for h in choices], axis=0)
         top = centre + (0, POST, 0)
-        # Native definition table 0x800A4BA8: group 11 at Y +25,
-        # group 12 at Y -25 in game axes (Y is inverted for the viewer).
-        _native_arrow(lines, arrow_model, 11, top + (0, -25, 0), toward)
-        _native_arrow(lines, arrow_model, 12, top + (0, 25, 0), forward)
+        # Separate overlapping faces by only two game units, keeping the
+        # pair centred at the same standing-height hint position.
+        _native_arrow(lines, arrow_model, 11, top + (0, 1, 0), toward)
+        _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), forward)
     return lines
 
 
@@ -481,9 +499,8 @@ class Overlay:
         self.sync()
         wanted = ((self._layers[0], SURFACE_ALPHA, surface, GL.GL_LINES),
                   (self._layers[1], VERTICAL_ALPHA, vertical, GL.GL_LINES),
-                  (self._layers[2], FILL_ALPHA, surface, GL.GL_TRIANGLES),
-                  (self._layers[3], 1.0, surface, GL.GL_TRIANGLES))
-        if not any(layer[3] and on for layer, _a, on, _m in wanted):
+                  (self._layers[2], FILL_ALPHA, surface, GL.GL_TRIANGLES))
+        if not any(layer[3] and on for layer, _a, on, _m in wanted) and not (surface and self._layers[3][3]):
             return
         GL.glDepthMask(GL.GL_FALSE)
         gl_profile.set_line_width(LINE_WIDTH)
@@ -501,6 +518,11 @@ class Overlay:
                 vao.bind()
                 GL.glDrawArrays(mode, 0, count)
                 vao.release()
+        if surface and self._layers[3][3]:
+            from gui.widgets.collision_models import NativeModelPass
+            if not hasattr(self, '_model_pass'):
+                self._model_pass = NativeModelPass()
+            self._model_pass.draw(program, self._layers[3][0], self._layers[3][3])
         program.setUniformValue("hiddenFadeRange", 0.0)
         GL.glDepthFunc(GL.GL_LESS)
         if not blend:

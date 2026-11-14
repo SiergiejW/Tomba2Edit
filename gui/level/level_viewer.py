@@ -24,7 +24,7 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QBitmap, QIcon, QImage, QPainter, QPixmap, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QIcon, QPainter, QPixmap, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -2416,7 +2416,6 @@ class LevelViewer(SMSTViewer):
             if not label.isHidden() and label.geometry().contains(int(x), int(y)):
                 return label.warp_instance
             if not door.isHidden() and door.geometry().contains(int(x), int(y)):
-                local_x, local_y = int(x) - door.x(), int(y) - door.y()
                 return label.warp_instance
             ghost = label.warp_ghost
             if not ghost.isHidden() and ghost.geometry().contains(int(x), int(y)):
@@ -2462,29 +2461,31 @@ class LevelViewer(SMSTViewer):
         return depth
 
     @staticmethod
-    def _warp_visible_region(depth, x, y, width, height, z, screen_width, screen_height):
-        """Vectorized depth mask; bitmap-to-region conversion runs inside Qt."""
+    def _warp_is_obstructed(depth, x, y, width, height, z, screen_width, screen_height):
+        """Classify the symbol as a whole, avoiding torn pixel-mask silhouettes."""
         if depth is None:
-            return QRegion()
+            return False
         dh, dw = depth.shape
-        px = np.floor((x + np.arange(width) + 0.5) * dw / screen_width).astype(int)
-        py = dh - 1 - np.floor((y + np.arange(height) + 0.5) * dh / screen_height).astype(int)
-        visible = ((px[None, :] >= 0) & (px[None, :] < dw)
-                   & (py[:, None] >= 0) & (py[:, None] < dh)
-                   & (z <= depth[np.clip(py, 0, dh - 1)[:, None], np.clip(px, 0, dw - 1)[None, :]] + 0.000002))
-        packed = np.zeros((height, ((width + 31) // 32) * 4), dtype=np.uint8)
-        bits = np.packbits(visible, axis=1)
-        packed[:, :bits.shape[1]] = bits
-        image = QImage(packed.data, width, height, packed.shape[1], QImage.Format.Format_Mono)
-        image.setColorTable([0xffffffff, 0xff000000])
-        return QRegion(QBitmap.fromImage(image))
+        px = np.floor((x + width * np.array([0.25, 0.5, 0.75])) * dw / screen_width).astype(int)
+        py = dh - 1 - np.floor((y + height * np.array([0.25, 0.5, 0.75])) * dh / screen_height).astype(int)
+        valid = ((px[None, :] >= 0) & (px[None, :] < dw)
+                 & (py[:, None] >= 0) & (py[:, None] < dh))
+        samples = depth[np.clip(py, 0, dh - 1)[:, None], np.clip(px, 0, dw - 1)[None, :]]
+        return bool(np.count_nonzero(valid & (z > samples + 0.000002)) > np.count_nonzero(valid) / 2)
 
     @staticmethod
     def _obstructed_opacity(distance):
         return 0.5 / (1.0 + (distance / 12.0) ** 2)
 
+    @staticmethod
+    def _warp_obstructed_opacity(distance):
+        """Gradually ignore obstruction as the camera approaches the door."""
+        mix = min(1.0, max(0.0, (distance - 0.75) / 5.25))
+        mix = mix * mix * (3.0 - 2.0 * mix)
+        return 1.0 - mix * (1.0 - LevelViewer._obstructed_opacity(distance))
+
     def _sync_warp_labels(self, depth=None):
-        """World-sized doors with nearby text, clipped by the scene depth."""
+        """Small doors, solid nearby and faded as a whole behind distant geometry."""
         widgets = getattr(self, '_warp_text_widgets', [])
         used = 0
         if self.scene is not None and self.show_markers and depth is not None:
@@ -2502,16 +2503,18 @@ class LevelViewer(SMSTViewer):
                 ndc = point[:3] / point[3]
                 if np.any(np.abs(ndc) > 1):
                     continue
-                # 240 game units tall. No fixed screen-size floor: far doors
-                # naturally become small, then disappear below three pixels.
-                height = min(96, round(0.24 * focal * self.height() / (2 * point[3])))
+                # Compact symbols, capped at 32 pixels even at close range.
+                height = min(32, round(0.14 * focal * self.height() / (2 * point[3])))
                 if height < 3:
                     continue
                 width = max(2, round(height * 30 / 36))
                 x = round((ndc[0] + 1) * self.width() / 2)
                 y = round((1 - ndc[1]) * self.height() / 2)
-                region = self._warp_visible_region(depth, x - width // 2, y - height,
-                    width, height, ndc[2] * 0.5 + 0.5, self.width(), self.height())
+                distance = float(np.linalg.norm(origin - eye))
+                obstructed = self._warp_is_obstructed(
+                    depth, x - width // 2, y - height, width, height,
+                    ndc[2] * 0.5 + 0.5, self.width(), self.height())
+                region = QRegion() if obstructed else QRegion(0, 0, width, height)
                 if used == len(widgets):
                     label = QLabel(self)
                     label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -2532,8 +2535,9 @@ class LevelViewer(SMSTViewer):
                 label.warp_instance = instance.index
                 door = label.warp_door
                 ghost = label.warp_ghost
-                distance = float(np.linalg.norm(origin - eye))
-                opacity = round(self._obstructed_opacity(distance) * 32) / 32
+                # A broad, continuous proximity fade, with 8-bit alpha rather
+                # than the former coarse 32 steps and close-range cutoff.
+                opacity = round(self._warp_obstructed_opacity(distance) * 255) / 255
                 if label.warp_size != (width, height):
                     door.setPixmap(label.warp_icon.pixmap(width, height))
                     door.setFixedSize(width, height)

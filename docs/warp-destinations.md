@@ -95,3 +95,45 @@ built with vectorized arrays and Qt bitmap conversion rather than Python row
 loops. A local 300-mask comparison measured 554 ms before and 25 ms after.
 The downsampling and shader link were checked in an offscreen native OpenGL
 context on the RTX 4080 SUPER. These measurements are not full-scene FPS.
+
+The latest door sizing is 140 game units with a 32-pixel screen cap. Within
+2500 game units, doors and their labels ignore geometry obstruction and stay
+solid. Between 2500 and 4000 units they ease into the distant obstruction fade.
+The symbol is now classified as a whole using nine depth samples; per-pixel
+silhouette masks were removed to avoid torn/cut-out artifacts at obstacles.
+
+Collision hint arrows now share the same height, 300 units above their standing
+surface. The editor no longer applies the native part definition's separate
+vertical offsets to the two arrows.
+
+Proximity un-obstruction now blends continuously from full opacity within 750
+game units to the regular obstruction fade at 6000 units, using smoothstep.
+There is no separate 2500-unit obstruction bypass. Door and text share the same
+8-bit opacity, replacing the previous coarse 32-step alpha.
+
+Collision arrow fallback now loads `icons/palette/arrows.smst`, bundled outside
+the ROM. It contains only original SMST parts 11 and 12, with their complete
+part payloads preserved byte-for-byte and a two-part pointer table. It uses the
+regular SMST parser and retains the original vertex colour values without
+clamping or recolouring. Collision generation no longer reads the arrow model
+or its material from the opened ROM. The shared asset is bundled via icons.py;
+there are no per-build copies.
+
+## Solid arrow rendering correction
+
+The external SMST was intact, but the collision overlay disabled depth writes,
+so back faces overwrote front faces. Native arrow models now render into their
+own colour/depth buffers first, with normal depth writes. Their nearest surfaces
+are then composited against the unchanged scene depth; obstruction opacity is
+applied only after the model has resolved its own front/back surfaces.
+
+`icons/palette/arrows.png` bundles the original constant texture patch alongside
+the SMST. Both assets load without the ROM. Float colour is retained until this
+texture's colour is applied, so original shading is preserved. GPU comparisons
+against the original textured SMST at three camera angles differ by at most one
+8-bit channel value. Full/partial obstruction, main-model selection masks and
+scene depth preservation are also checked by `work/verify_collision_arrows.py`.
+
+The arrow pair now has a minimal two-game-unit vertical separation (+1/-1
+around the shared hint origin) to prevent coincident faces from z-fighting.
+The bundled original models are unchanged.

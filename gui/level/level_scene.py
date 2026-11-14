@@ -1183,9 +1183,18 @@ class LevelScene:
                 index[instance.index] = mine.get(k)
                 continue
             taken.add(instance.index)
-            index[instance.index] = instance.index = mine[k] = len(self.instances)
+            old_index = instance.index
+            index[old_index] = instance.index = mine[k] = len(self.instances)
             self.instances.append(instance)
             added.append(instance)
+            # What the Events inspector knows of an actor - its native handler and scene-record
+            # slot - comes from the run that stood it up; carry it over to the new number.
+            handler = getattr(done, "event_handlers", {}).get(old_index)
+            if handler is not None:
+                self.event_handlers[instance.index] = handler
+            variant = getattr(done, "event_variants", {}).get(old_index)
+            if variant is not None:
+                self.__dict__.setdefault("event_variants", {})[instance.index] = variant
         for instance in added:
             if instance.flip is not None:
                 head = index.get(instance.flip[0])
@@ -3149,7 +3158,7 @@ class LevelScene:
         from gui.widgets import collision_overlay as overlay
         lines = overlay.Lines()
         if view in (None, "all"):
-            overlay.add_scld(lines, self.planes, style=style, arrow_model=self.model(1))
+            overlay.add_scld(lines, self.planes, style=style)
         elif rooms and view in rooms:
             # A room loads no collision of its own (its enter routine only
             # fills slot 15), so what it stands on is the area's SCLD where
@@ -3157,7 +3166,7 @@ class LevelScene:
             low, high = rooms[view]
             overlay.add_scld(lines, self.planes, bounds=(
                 low[0] - ROOM_REACH, high[0] + ROOM_REACH,
-                low[2] - ROOM_REACH, high[2] + ROOM_REACH), style=style, arrow_model=self.model(1))
+                low[2] - ROOM_REACH, high[2] + ROOM_REACH), style=style)
         datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
         for number, dataset in enumerate(datasets):
             for plane in dataset.planes:
