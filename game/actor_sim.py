@@ -991,8 +991,10 @@ class World:
             # As the game's collision step does each frame: a released rock
             # falling beside another is stopped where the game stops it.
             self._resolve_contacts(budget)
-            if not getattr(self, 'static_edit', False) or _frame == frames-1:
-                self._read()
+            # Sampling initialization is not animation recording. Some native
+            # handlers attach a model briefly before settling; keep that first
+            # valid pose in Edit mode as well as Simulation mode.
+            self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
         for _settle in range(SETTLE_FRAMES):
@@ -2228,8 +2230,9 @@ class World:
         finally:
             self.running_scene = None
         made = self.actors[first:]
-        if not made or not all(self._code(read(a.address + CALLBACK, 4))
-                               for a in made):
+        if made and not all(self._code(read(a.address + CALLBACK, 4)) for a in made):
+            return None
+        if not made and not self.scene_records(spawner, scene):
             return None
         made.extend(self._spawn_gated(spawner, controller, scene, made, budget))
         return made
@@ -3023,7 +3026,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
     if fast:
         # Initialise native actors and every room without playing or recording
         # cutscenes, skeletal loops, particles, lines or speculative events.
-        frames = 12
+        frames = max(frames, 16)
         world.static_edit = True
         world.start_workers()
         for record in records:
@@ -3034,6 +3037,8 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         for pickup in world.tag_chests(chests):
             world.place_chest(pickup)
         world.run(2, workers=False)
+        if records and spawner:
+            world.spawn_area_gated(spawner, frames)
         world.harvest()
         if spawner:
             if publish: publish(world, 'Static actors ready; loading interiors')

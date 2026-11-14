@@ -161,9 +161,8 @@ def background(scene, vram, overlay, fast=False):
     bg = load_bgmp(scene.dat_path, scene.dat_start, *entry)
     textures = bgmp_render.BackgroundTextures(vram) if vram else None
     offset = bgmp_render.detect_page_y_offset(bg, textures)
-    # Edit mode: one still frame, no palette animation run.
-    phases = LevelEditorPanel._background_frames(None, bg, vram, offset,
-                                                 None if fast else overlay)
+    # Native texture animation is cheap and independent of actor recording.
+    phases = LevelEditorPanel._background_frames(None, bg, vram, offset, overlay)
     if sky is not None:
         phases = [(sky_gradient.under(image, sky), ms) for image, ms in phases]
     return phases
@@ -190,7 +189,7 @@ def main(argv):
         # UV animations are looked for in the rooms themselves: the level's
         # other faces with the same palette are captured drawings, which
         # already carry the frames they were recorded in.
-        prepared = (*prepared, ({}, {}, ()) if fast else prepare_animation_data(
+        prepared = (*prepared, prepare_animation_data(
             vram, scene.build(), args[3],
             uv_models=[room for _where, room in scene.rooms]))
         positions = scene.positions(scene.build())

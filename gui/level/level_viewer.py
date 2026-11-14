@@ -21,9 +21,9 @@ import math
 
 import numpy as np
 from OpenGL import GL
-from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QIcon, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QIcon, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -179,7 +179,7 @@ class LevelViewer(SMSTViewer):
     edit_starting = pyqtSignal()
     edit_cancelled = pyqtSignal()
     edit_failed = pyqtSignal(str)
-    # True for Edit mode, False for Preview.
+    # True for Edit mode, False for Simulation.
     mode_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
@@ -218,7 +218,7 @@ class LevelViewer(SMSTViewer):
         self._status_hold.setSingleShot(True)
         self._status_hold.timeout.connect(self._status_animation.start)
 
-        # Preview: the area as the game runs it. Edit: a fast load - no actor
+        # Simulation: the area as the game runs it. Edit: a fast load - no actor
         # code run, nothing recorded - and the only mode that takes new pickups.
         self.edit_mode = False
         self.mode_bar = QToolBar(self)
@@ -226,7 +226,7 @@ class LevelViewer(SMSTViewer):
         self.mode_bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         modes = QActionGroup(self)
         modes.setExclusive(True)
-        self.preview_action = QAction("Preview mode", self)
+        self.preview_action = QAction("Simulation mode", self)
         self.preview_action.setToolTip(
             "The area as the game runs it: every actor's code run, effects "
             "and idle poses recorded. Slow to load; nothing can be added.")
@@ -2396,40 +2396,81 @@ class LevelViewer(SMSTViewer):
 
     def paintGL(self):
         self._paint_level()
+        depth = None
+        if self.show_markers and any(getattr(i, 'warp_labels', ()) for i in self.instances):
+            viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+            width, height = int(viewport[2]), int(viewport[3])
+            raw = GL.glReadPixels(0, 0, width, height, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+            depth = np.frombuffer(raw, np.float32).reshape(height, width) if isinstance(raw, bytes) else np.asarray(raw).reshape(height, width)
         self._paint_badges()
-        self._sync_warp_labels()
+        self._sync_warp_labels(depth)
         self.translation_gizmo.sync()
 
     def _pick_warp_label(self, x, y):
-        """Select the entity behind visible warp text in widget coordinates."""
-        self._sync_warp_labels()
-        # Later labels are painted over earlier ones, so pick in that order.
+        """Pick only the text/door pixels actually visible in the last frame."""
+        if not self.show_markers:
+            return None
         for label in reversed(getattr(self, '_warp_text_widgets', ())):
-            if label.isHidden():
+            if label.warp_instance in self.hidden_groups:
                 continue
-            door = getattr(label, 'warp_door', None)
-            if (label.geometry().contains(int(x), int(y)) or
-                    (door is not None and not door.isHidden()
-                     and door.geometry().contains(int(x), int(y)))):
+            door = label.warp_door
+            if not label.isHidden() and label.geometry().contains(int(x), int(y)):
                 return label.warp_instance
+            if not door.isHidden() and door.geometry().contains(int(x), int(y)):
+                local_x, local_y = int(x) - door.x(), int(y) - door.y()
+                if door.mask().contains(QPoint(local_x, local_y)):
+                    return label.warp_instance
         return None
 
-    def _sync_warp_labels(self):
-        """Red mini doors, bottom-centred on each warp's projected origin."""
+    @staticmethod
+    def _warp_visible_region(depth, x, y, width, height, z, screen_width, screen_height):
+        """Depth-clip a billboard against the rendered geometry, including DPR."""
+        region = QRegion()
+        if depth is None:
+            return region
+        dh, dw = depth.shape
+        px = np.floor((x + np.arange(width) + 0.5) * dw / screen_width).astype(int)
+        py = dh - 1 - np.floor((y + np.arange(height) + 0.5) * dh / screen_height).astype(int)
+        valid_x = (px >= 0) & (px < dw)
+        for row, sample_y in enumerate(py):
+            if not 0 <= sample_y < dh:
+                continue
+            visible = valid_x & (z <= depth[sample_y, np.clip(px, 0, dw - 1)] + 0.000002)
+            changes = np.diff(np.r_[False, visible, False].astype(np.int8))
+            for start, end in zip(np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)):
+                region |= QRegion(int(start), row, int(end - start), 1)
+        return region
+
+    def _sync_warp_labels(self, depth=None):
+        """World-sized doors with nearby text, clipped by the scene depth."""
         widgets = getattr(self, '_warp_text_widgets', [])
         used = 0
-        if self.scene is not None and self.show_markers:
+        if self.scene is not None and self.show_markers and depth is not None:
             mvp = np.array(self._model_view_projection().data(), dtype=np.float64).reshape(4, 4).T
+            eye = np.asarray(self.camera_controls._eye())
+            focal = np.linalg.norm(mvp[1, :3])
             for instance in self.instances:
                 texts = getattr(instance, 'warp_labels', ())
                 if not texts or instance.index in self.hidden_groups:
                     continue
-                point = mvp @ np.array([instance.x / UNIT_SCALE, instance.y / UNIT_SCALE,
-                                        instance.z / UNIT_SCALE, 1.0])
+                origin = np.array([instance.x, instance.y, instance.z]) / UNIT_SCALE
+                point = mvp @ np.r_[origin, 1.0]
                 if point[3] <= 0:
                     continue
                 ndc = point[:3] / point[3]
                 if np.any(np.abs(ndc) > 1):
+                    continue
+                # 420 game units tall. No fixed screen-size floor: far doors
+                # naturally become small, then disappear below three pixels.
+                height = min(160, round(0.42 * focal * self.height() / (2 * point[3])))
+                if height < 3:
+                    continue
+                width = max(2, round(height * 30 / 36))
+                x = round((ndc[0] + 1) * self.width() / 2)
+                y = round((1 - ndc[1]) * self.height() / 2)
+                region = self._warp_visible_region(depth, x - width // 2, y - height,
+                    width, height, ndc[2] * 0.5 + 0.5, self.width(), self.height())
+                if region.isEmpty():
                     continue
                 if used == len(widgets):
                     label = QLabel(self)
@@ -2439,21 +2480,29 @@ class LevelViewer(SMSTViewer):
                     door = QLabel(self)
                     door.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     door.setStyleSheet('background: transparent;')
-                    door.setPixmap(QIcon(icons.icon_palette_warp).pixmap(30, 36))
-                    door.setFixedSize(30, 36)
+                    label.warp_icon = QIcon(icons.icon_palette_warp)
                     label.warp_door = door
+                    label.warp_size = None
                     widgets.append(label)
                 label = widgets[used]
                 label.warp_instance = instance.index
-                label.setToolTip('Click to select this warp; right-click for its destination.')
-                label.setText('\n'.join(texts))
-                label.adjustSize()
-                x = round((ndc[0] + 1) * self.width() / 2)
-                y = round((1 - ndc[1]) * self.height() / 2)
-                label.warp_door.move(x - 15, y - 36)
-                label.warp_door.show()
-                label.move(x + 19, y - 18 - label.height() // 2)
-                label.show()
+                door = label.warp_door
+                if label.warp_size != (width, height):
+                    door.setPixmap(label.warp_icon.pixmap(width, height))
+                    door.setFixedSize(width, height)
+                    label.warp_size = width, height
+                door.move(x - width // 2, y - height)
+                door.setMask(region)
+                door.show()
+                # Text only within 5000 game units, and only if the door's
+                # centre is visible. Selection never makes it show through walls.
+                if np.linalg.norm(origin - eye) <= 5.0 and region.contains(QPoint(width // 2, height // 2)):
+                    label.setText('\n'.join(texts))
+                    label.adjustSize()
+                    label.move(x + width // 2 + 4, y - height // 2 - label.height() // 2)
+                    label.show()
+                else:
+                    label.hide()
                 used += 1
         for label in widgets[used:]:
             label.hide()

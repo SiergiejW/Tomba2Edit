@@ -49,7 +49,7 @@ def _code_stamp():
     if _code is None:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         parts = []
-        for folder in ("functions", "gui"):
+        for folder in ("functions", "gui", "game", "formats"):
             for base, _dirs, names in os.walk(os.path.join(root, folder)):
                 if "__pycache__" in base:
                     continue

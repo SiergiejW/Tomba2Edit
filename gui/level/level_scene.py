@@ -368,6 +368,8 @@ class Instance:
     # An actor that draws nothing, marked where it stands so it can be found.
     warp_labels: tuple = ()
     warp_destinations: tuple = ()
+    warp_return_position: tuple = None
+    area_part: int = None
     marker: bool = False
     # A code-drawn effect played as a flipbook: the head row carries every
     # frame's instance, in order (itself first); each other frame carries
@@ -986,8 +988,6 @@ class LevelScene:
         `fast` initialises native actors and interiors without recording
         effects or animation loops. Only the fresh game is read."""
         self.__init__()
-        if fast and progress != TIME_STOPPED:
-            progress = FRESH
         self.dat_path = dat_path
         self.chunk_index = chunk_index
         self.overlay_path = overlay_path
@@ -1008,7 +1008,7 @@ class LevelScene:
             return self
         started = time.perf_counter()
         done_run = None
-        if progress == BOTH and overlay_path and exe_path and publish is None:
+        if progress == BOTH and overlay_path and exe_path and publish is None and not fast:
             done_run = _start_done(dat_path, idx_path, chunk_index, overlay_path, exe_path)
 
         dat_start, files = area_files(idx_path, chunk_index)
@@ -1100,7 +1100,7 @@ class LevelScene:
             # makes all three Progress choices instant afterwards.
             fresh_name = scene_cache.key(
                 dat_path, idx_path, chunk_index, overlay_path or "",
-                exe_path or "", FRESH)
+                exe_path or "", FRESH, *(("fast-static-v3",) if fast else ()))
             fresh_state = {k: v for k, v in self.__dict__.items()
                            if k != "world"}
             fresh_state["progress"] = FRESH
@@ -1116,7 +1116,7 @@ class LevelScene:
             # Built beside this one, or built here now - either way it is the
             # same scene, and the cache has it if the run finished.
             self._merge(LevelScene().load(dat_path, idx_path, chunk_index,
-                                          overlay_path, exe_path, EVENTS_DONE))
+                                          overlay_path, exe_path, EVENTS_DONE, fast=fast))
         if time.perf_counter() - started > CACHE_WORTH:
             scene_cache.write(name, {k: v for k, v in self.__dict__.items()
                                      if k != "world"})
@@ -2860,30 +2860,70 @@ class LevelScene:
                     if entry[4] & 0x800 and entry[4] >> 12 == 9:
                         destination = ('interior', 9, 0, '')
                         label = warps.destination_label(destination)
-                        vx, vy, vz = view_point(entry[1:4])
+                        vx, vy, vz = view_point(warps.spawns(exe, 6)[4][1:4])
                         instances.append(Instance(index=len(instances), role='spawned', marker=True,
                             label=label, name='Forest Entrance room', x=vx, y=vy, z=vz,
                             warp_labels=(label,), warp_destinations=(destination,),
                             note='Room 9 entrance location from native entry #6 flags 0x9983. '
-                                 'Room-side anchor; departure trigger bounds remain unresolved.'))
+                                 'Entry-side anchor; departure trigger bounds remain unresolved.'))
+                        vx, vy, vz = view_point(entry[1:4])
+                        back = ('area', 6, 4, 'Donglin Forest')
+                        instances.append(Instance(index=len(instances), role='spawned', marker=True,
+                            scene=10, label='warp: room 9 exit', name='Forest Entrance room exit',
+                            x=vx, y=vy, z=vz, warp_destinations=(back,),
+                            warp_labels=(warps.destination_label(back),),
+                            note='Room-side entrance anchor from entry #6; opens the Forest Entrance outside.'))
                 resolved = {}
-                actors = list(self.world.actors)
-                for room_actors in self.world.rooms.values():
-                    actors.extend(room_actors)
-                for instance in instances:
+                actors = [(a, None) for a in self.world.actors]
+                for room_number, room_actors in self.world.rooms.items():
+                    actors.extend((a, room_number) for a in room_actors)
+                return_markers = []
+                for instance in list(instances):
+                    if instance.pickup is not None or instance.follow is not None:
+                        continue
                     handler = (instance.placement.handler if instance.placement is not None
                                else self.event_handlers.get(instance.index))
                     if not handler:
                         continue
-                    matches = [a for a in actors if a.handler == handler and a.position is not None
+                    matches = [a for a, room_number in actors
+                               if room_number == instance.scene and a.handler == handler and a.position is not None
                                and np.linalg.norm(np.asarray(a.position) - instance.game_position) < 1]
-                    interior = matches[0].reward if len(matches) == 1 else None
-                    key = handler, interior
+                    interior = (matches[0].reward if len(matches) == 1 else
+                                instance.placement.slot if instance.placement is not None else None)
+                    key = handler, interior, instance.scene
                     if key not in resolved:
-                        resolved[key] = warps.destinations(exe, overlay, handler, interior, area=self.area_index)
+                        resolved[key] = warps.destinations(exe, overlay, handler, interior,
+                                                           area=self.area_index, scene=instance.scene)
                     destinations = resolved[key]
                     instance.warp_destinations = tuple(destinations)
                     instance.warp_labels = tuple(dict.fromkeys(warps.destination_label(d) for d in destinations))
+                    if instance.scene is None:
+                        for destination in destinations:
+                            if destination[0] != 'interior':
+                                continue
+                            room = destination[1]
+                            if room + 1 not in self.world.rooms:
+                                continue
+                            return_destination = warps.destinations(exe, overlay, handler, interior,
+                                area=self.area_index, scene=room + 1)
+                            if not return_destination:
+                                continue
+                            position = list(instance.game_position)
+                            # A08's shared controller explicitly shifts these
+                            # doorway origins on the room side.
+                            if self.area_index == 8 and handler == 0x8011F16C:
+                                dx, dz = {0: (0x163, 0xb2), 1: (-0x54, 0xab), 7: (0, 0x100)}.get(room, (0, 0))
+                                position[0] += dx
+                                position[2] += dz
+                                if room == 9:
+                                    position[0], position[2] = 0x3312, 0x1ca4
+                            vx, vy, vz = view_point(position)
+                            return_markers.append(Instance(index=-1, role='spawned', marker=True,
+                                scene=room + 1, label='warp: return to main area', name='room exit',
+                                x=vx, y=vy, z=vz, warp_return_position=(instance.x, instance.y, instance.z),
+                                warp_destinations=tuple(return_destination),
+                                warp_labels=tuple(warps.destination_label(d) for d in return_destination),
+                                note='Return path of the native entrance controller, shown on the room side.'))
                     if destinations:
                         detail = '<br>'.join(warps.destination_label(d) +
                                              (f' (arrival #{d[2]}; conditional native path)' if d[0] == 'area' else '')
@@ -2893,8 +2933,29 @@ class LevelScene:
                             instance.note += ('<br>Opens toward Large Mine Underground arrival #28 '
                                               'when that area is purified (src_PurifiedAreas bit 1). '
                                               'Otherwise shows the locked-door message.')
+                for marker in return_markers:
+                    if any(i.scene == marker.scene and i.warp_destinations == marker.warp_destinations
+                           and np.linalg.norm(np.array(i.game_position) - marker.game_position) < 200
+                           for i in instances):
+                        continue
+                    marker.index = len(instances)
+                    instances.append(marker)
             except (OSError, ValueError, struct.error) as error:
                 self.notes.append(f'Warp destination analysis failed: {error}')
+        if self.area_index == 8 and len(self.rooms) >= 3:
+            # The three main MDATs are consecutive TRAIL entries. The fourth
+            # is the side wing belonging to part 1. Assign outdoor entities
+            # to the closest main mesh; room actors remain in their rooms.
+            main_vertices = [np.asarray(room['vertices'], dtype=float) for _name, room in self.rooms[:3]]
+            for instance in instances:
+                if instance.scene is not None:
+                    continue
+                if instance.role == 'room':
+                    instance.area_part = instance.room if instance.room < 3 else 0
+                    continue
+                point = np.array([instance.x, instance.y, instance.z])
+                instance.area_part = min(range(3), key=lambda n: float(np.min(np.sum((main_vertices[n] - point) ** 2, axis=1))))
+
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""

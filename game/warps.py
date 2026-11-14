@@ -57,13 +57,37 @@ def spawns(exe, area):
 DESTINATION = 0x800BF83A  # u16: high byte area, low byte arrival index
 
 
-def destinations(exe, overlay, handler, interior=None, area=None):
+def destinations(exe, overlay, handler, interior=None, area=None, scene=None):
     """Native destinations on reachable paths; conditions remain alternatives.
 
     Follow the same bounded control flow as the event inspector. Only literal
     writes to the destination word are accepted, never nearby arrival points.
     """
+    # Resident pickup/message/render routines are not entrance controllers.
+    # In particular the chest handler can reach unrelated area callbacks.
+    if handler < 0x80108F9C and handler not in (0x800732C0, 0x80073328):
+        return []
     from game.event_script import Flow
+    def area_name(number):
+        from game import labels
+        import json
+        from pathlib import Path
+        names = json.loads((Path(labels.labels_dir()) / 'us-retail.json').read_text(encoding='utf-8'))['bins']
+        tag = 'A0' + '0123456789ABCDEFGHIJKL'[number] + '.BIN' if 0 <= number < 22 else ''
+        return names.get(tag, '')
+    def room_destination(number):
+        return ('interior', number, 0, '') if scene is None else ('area', area, -1, area_name(area))
+    # A08 has fourteen selectors in one handler. Its custom state machines
+    # use 0..9 as rooms; 10 is the mine, 11 the pig-nose mechanism,
+    # 12 Golden Tower, and 13 the raft to Fishermen's Town.
+    if area == 8 and handler == 0x8011F16C:
+        if interior is None:
+            return []
+        selector = 2 if interior == 102 else interior
+        if 0 <= selector <= 9:
+            return [room_destination(selector)]
+        packed = {10: (1, 30), 12: (19, 0), 13: (0, 10)}.get(selector)
+        return [('area', packed[0], packed[1], area_name(packed[0]))] if packed else []
     class EntranceFlow(Flow):
         def _table(self, image, at, reg):
             targets = super()._table(image, at, reg)
@@ -83,7 +107,7 @@ def destinations(exe, overlay, handler, interior=None, area=None):
         rooms = {0: 0, 1: 1, 2: 2, 3: 4, 4: 4, 5: 4, 6: 4,
                  7: 6, 8: 6, 9: 5, 10: 5, 11: 3, 12: 7}
         if interior in rooms:
-            out.add(('interior', rooms[interior], 0, ''))
+            out.add(room_destination(rooms[interior]))
     for at in flow.preds:
         image = flow.image(at)
         if image is None:
@@ -113,7 +137,7 @@ def destinations(exe, overlay, handler, interior=None, area=None):
         elif ins.name == 'jal' and interior is not None:
             # Verified shared entry helper, US retail.
             if ins.target in (0x800732C0, 0x80073328):
-                out.add(('interior', interior, 0, ''))
+                out.add(room_destination(interior))
     return sorted(out)
 
 
@@ -121,7 +145,7 @@ def destination_label(destination):
     kind, number, arrival, name = destination
     if kind == 'interior':
         return f'warp: room {number}'
-    return f'warp: area {number}, {name}'
+    return f'warp: area {number}, {name}' + (' (main area)' if arrival == -1 else '')
 
 
 def destination_chunk(area, source_chunk, available):

@@ -479,7 +479,7 @@ class LevelEditorPanel(QWidget):
         self.apply_button.setEnabled(on)
 
     def _on_mode_changed(self, edit):
-        """Preview <-> Edit: drop whatever the other mode was loading and
+        """Simulation <-> Edit: drop whatever the other mode was loading and
         reload this area its way, same camera, same room."""
         self.progress_box.setEnabled(not edit and self.scene is not None)
         self.palette_label.setText(
@@ -550,7 +550,7 @@ class LevelEditorPanel(QWidget):
         self._stage_overlay = self.overlay_for_area(chunk)
         self._stage_fast = self.viewer.edit_mode
         chosen = self.progress_box.currentData()
-        self._stage_progress = chosen if chosen == TIME_STOPPED or not self._stage_fast else FRESH
+        self._stage_progress = chosen
         self._stage_started = time.perf_counter()
         generation = self._load_generation
         self.summary.setText(f"AREA_{chunk:02X}: loading room and background…")
@@ -717,7 +717,7 @@ class LevelEditorPanel(QWidget):
                 from pathlib import Path
                 if target[1] < warps.AREAS:
                     rows = warps.spawns(Path(self.exe_path).read_bytes(), target[1])
-                    if target[2] < len(rows):
+                    if 0 <= target[2] < len(rows):
                         from gui.level.level_scene import view_point
                         position = view_point(rows[target[2]][1:4])
                         self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in position), 2.0)
@@ -1178,7 +1178,11 @@ class LevelEditorPanel(QWidget):
         current = getattr(self, "_keep_view", None)
         self._filling_views = True
         self.view_box.clear()
-        self.view_box.addItem("Area", None)
+        if self.scene and self.scene.area_index == 8:
+            for part in range(3):
+                self.view_box.addItem(f'Area - Part {part + 1}', ('part', part))
+        else:
+            self.view_box.addItem("Area", None)
         instances = self.scene.instances if self.scene else []
         tables = getattr(self.scene, "room_tables", {}) or {}
         found = {i.scene for i in instances if i.scene is not None}
@@ -1222,6 +1226,8 @@ class LevelEditorPanel(QWidget):
         for instance in self.scene.instances:
             if view == "all":
                 shown = True
+            elif isinstance(view, tuple) and view[0] == 'part':
+                shown = instance.scene is None and instance.area_part == view[1]
             elif view is None:
                 shown = instance.scene is None
             else:
@@ -1240,7 +1246,7 @@ class LevelEditorPanel(QWidget):
         # A recorded effect's later frames have no row of their own.
         self._view_hidden = filtered
         self._apply_folds()
-        self.viewer.set_view(view)
+        self.viewer.set_view(None if isinstance(view, tuple) else view)
         self.viewer.set_hidden_groups(filtered | unchecked)
         self._sync_hidden_parts()
         # Only an interior is framed: it is somewhere else entirely. The area,
@@ -1478,6 +1484,20 @@ class LevelEditorPanel(QWidget):
                 self._apply_view()
             else:
                 self.summary.setText(f'Room {number} is not available in this scene.')
+            return
+        if arrival == -1 and number == self.scene.area_index:
+            target = instance.warp_return_position
+            part = None
+            if target is not None and self.scene.area_index == 8:
+                nearest = min((i for i in self.scene.instances if i.scene is None and i.area_part is not None),
+                              key=lambda i: np.linalg.norm(np.array([i.x, i.y, i.z]) - target), default=None)
+                if nearest is not None:
+                    part = ('part', nearest.area_part)
+            row = self.view_box.findData(part)
+            self.view_box.setCurrentIndex(max(row, 0))
+            self._apply_view(frame=False)
+            if target is not None:
+                self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in target), 2.0)
             return
         available = {self.area_box.itemData(n) for n in range(self.area_box.count())}
         chunk = warps.destination_chunk(number, self.chunk, available)
