@@ -22,7 +22,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
-    QPushButton,
+    QPushButton, QMenu,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -54,7 +54,7 @@ def room_row_name(instance):
     if instance.pickup is not None:
         return instance.label.replace("⧖ ", "")
     label = instance.label.replace("⧖ ", "").replace(" (draws nothing)", "")
-    label = re.sub(r"interior \d+: ", "", label)
+    label = re.sub(r"(?:interior|room) \d+: ", "", label)
     handler = re.search(r"\bf_(?:Update|Handle)?([A-Za-z0-9]+?)(?:Actor)?\b", label)
     if handler:
         return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", handler.group(1)).lower()
@@ -146,6 +146,7 @@ class LevelEditorPanel(QWidget):
             "Animate textures, backgrounds, sprites, actor effects, and idle poses")
         self.viewer.animate_action.toggled.connect(self._sync_motion_animation)
         self.viewer.selection_changed.connect(self._on_view_selection)
+        self.viewer.warp_requested.connect(self._go_to_warp)
         self.viewer.instance_moved.connect(self._on_instance_moved)
         self.viewer.part_changed.connect(self._on_part_selected)
         self.viewer.pickup_dropped.connect(self._add_pickup)
@@ -272,6 +273,10 @@ class LevelEditorPanel(QWidget):
         self.events_button.setEnabled(False)
         self.events_button.clicked.connect(self._open_events)
         edit_layout.addWidget(self.events_button)
+        self.warp_button = QPushButton('Go to warp destination', self)
+        self.warp_button.setEnabled(False)
+        self.warp_button.clicked.connect(self._go_to_warp)
+        edit_layout.addWidget(self.warp_button)
         # Scripts that belong to the area rather than to anything placed:
         # the conversations area code starts (f_HandleAreaScriptActor).
         self.area_scripts_button = QPushButton('Area scripts…', self)
@@ -508,7 +513,7 @@ class LevelEditorPanel(QWidget):
         for loader in getattr(self, "_loaders", ()):
             loader.cancel()
 
-    def load_area(self, chunk, keep_camera=False, keep_view="all"):
+    def load_area(self, chunk, keep_camera=False, keep_view=None):
         """Start a cancellable background load; the GUI remains navigable."""
         if not self.idx_path or not os.path.exists(self.idx_path) or not self.dat_path or not os.path.exists(self.dat_path):
             # No disc (or its files are gone): say so, instead of a worker traceback.
@@ -705,6 +710,17 @@ class LevelEditorPanel(QWidget):
                             + (f"Loaded in {time.perf_counter() - self._stage_started:.1f}s."
                                if complete else "You can explore while loading continues."))
         if complete:
+            target = getattr(self, '_warp_arrival', None)
+            if target is not None and target[0] == self.chunk:
+                self._warp_arrival = None
+                from game import warps
+                from pathlib import Path
+                if target[1] < warps.AREAS:
+                    rows = warps.spawns(Path(self.exe_path).read_bytes(), target[1])
+                    if target[2] < len(rows):
+                        from gui.level.level_scene import view_point
+                        position = view_point(rows[target[2]][1:4])
+                        self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in position), 2.0)
             self.palette.setEnabled(self.viewer.edit_mode)
             self.apply_button.setEnabled(True)
             self.viewer.show_status(
@@ -1157,9 +1173,9 @@ class LevelEditorPanel(QWidget):
         """Area, then every interior by the game's own number (src_Interior,
         its scene index less one). One whose scene table is missing or empty,
         or whose actors draw nothing, is listed too, saying so."""
-        # An area opens with everything in it, rooms included; a Progress
-        # switch keeps what was chosen (see load_area).
-        current = getattr(self, "_keep_view", "all")
+        # Open the outdoor area by default; progress switches preserve the
+        # user's current room choice (see load_area).
+        current = getattr(self, "_keep_view", None)
         self._filling_views = True
         self.view_box.clear()
         self.view_box.addItem("Area", None)
@@ -1182,7 +1198,7 @@ class LevelEditorPanel(QWidget):
                 more = len(set(names)) - len(shown)
                 what = (f"{len(rows)} row(s): " + ", ".join(shown)
                         + (f" +{more} more" if more > 0 else ""))
-            self.view_box.addItem(f"Interior {scene - 1} - {what}", scene)
+            self.view_box.addItem(f"Room {scene - 1} - {what}", scene)
             self.view_box.setItemData(self.view_box.count() - 1,
                                       "\n".join(sorted(set(names))) or what,
                                       Qt.ItemDataRole.ToolTipRole)
@@ -1193,7 +1209,7 @@ class LevelEditorPanel(QWidget):
                 self.view_box.setCurrentIndex(row)
                 break
         else:
-            self.view_box.setCurrentIndex(self.view_box.count() - 1)
+            self.view_box.setCurrentIndex(0)
         self._filling_views = False
 
     def _apply_view(self, *_args, frame=True):
@@ -1439,8 +1455,44 @@ class LevelEditorPanel(QWidget):
                     + f" turned {instance.angle:.0f} deg")
         print("selected: " + "  ".join(bits))
 
+    def _go_to_warp(self, destination=None):
+        from game import warps
+        instance = self._instance(self.viewer.selected)
+        if instance is None or not instance.warp_destinations:
+            return
+        if destination is None or isinstance(destination, bool):
+            choices = instance.warp_destinations
+            if len(choices) > 1:
+                menu = QMenu(self)
+                for choice in choices:
+                    action = menu.addAction(warps.destination_label(choice))
+                    action.triggered.connect(lambda checked=False, d=choice: self._go_to_warp(d))
+                menu.exec(self.warp_button.mapToGlobal(self.warp_button.rect().bottomLeft()))
+                return
+            destination = choices[0]
+        kind, number, arrival, name = destination
+        if kind == 'interior':
+            row = self.view_box.findData(number + 1)
+            if row >= 0:
+                self.view_box.setCurrentIndex(row)
+                self._apply_view()
+            else:
+                self.summary.setText(f'Room {number} is not available in this scene.')
+            return
+        available = {self.area_box.itemData(n) for n in range(self.area_box.count())}
+        chunk = warps.destination_chunk(number, self.chunk, available)
+        if chunk is None:
+            self.summary.setText(f'Destination area {number} is not available on this disc.')
+            return
+        self._filling = True
+        self.area_box.setCurrentIndex(self.area_box.findData(chunk))
+        self._filling = False
+        self._warp_arrival = (chunk, number, arrival)
+        self.load_area(chunk, keep_view=None)
+
     def _show_details(self, index):
         instance = self._instance(index)
+        self.warp_button.setEnabled(bool(instance and instance.warp_destinations) and not getattr(self, "_loading", False))
         self.events_button.setEnabled(instance is not None and bool(self.exe_path)
                                       and bool(self.scene and self.scene.overlay_path)
                                       and not getattr(self, '_loading', False))

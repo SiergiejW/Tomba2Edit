@@ -29,9 +29,11 @@ icon_ALFD = resource_path("icons/graphics/clapperboard.png")
 icon_DRWB = resource_path("icons/graphics/border-all.png")
 icon_VRAM = resource_path("icons/tomba/123.png")
 icon_CVRAM = resource_path("icons/tomba/44.png")
-# Palette previews generated from US retail assets.
-icon_placement_chest = resource_path("icons/placements/us-retail/chest.png")
-icon_placement_crystal = resource_path("icons/placements/us-retail/crystal.png")
-icon_placement_item = resource_path("icons/placements/us-retail/item.png")
-icon_placement_apple = resource_path("icons/placements/us-retail/apple.png")
-icon_placement_weapon = resource_path("icons/placements/us-retail/weapon.png")
+# Shared palette previews.
+icon_palette_chest = resource_path("icons/palette/chest.png")
+icon_palette_crystal = resource_path("icons/palette/crystal.png")
+icon_palette_item = resource_path("icons/palette/item.png")
+icon_palette_apple = resource_path("icons/palette/apple.png")
+icon_palette_weapon = resource_path("icons/palette/weapon.png")
+
+icon_palette_warp = resource_path("icons/palette/warp.svg")

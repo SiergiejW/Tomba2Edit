@@ -23,7 +23,7 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QIcon, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -167,6 +167,7 @@ class LevelViewer(SMSTViewer):
 
     # The index of the selected instance, or None.
     selection_changed = pyqtSignal(object)
+    warp_requested = pyqtSignal(object)
     # An instance that has just been moved, so the panel's position boxes
     # can follow it.
     instance_moved = pyqtSignal(object)
@@ -1180,6 +1181,12 @@ class LevelViewer(SMSTViewer):
         MDATViewer.pick. Anything an object with no model is drawn with
         is a handful of lines that a ray will not meet, so those are
         picked by how near the click lands to where they stand."""
+        # Warp text is a visible selection target even when its controller
+        # has no geometry, or the label is drawn over nearby scenery.
+        self._last_face = None
+        warp = self._pick_warp_label(x, y)
+        if warp is not None:
+            return warp
         if not self.model_data or not self.instances:
             return None
         ray = self._ray(x, y)
@@ -1496,10 +1503,23 @@ class LevelViewer(SMSTViewer):
             self._context_press = None
             self.select(index)
             menu = QMenu(self)
-            for title, mode in (("Move", "free"), ("Move vertically", "vertical"),
-                                ("Move horizontally", "horizontal")):
-                action = menu.addAction(title)
-                action.triggered.connect(lambda checked=False, m=mode: self.begin_move(m))
+            instance = self.instances[index]
+            destinations = getattr(instance, 'warp_destinations', ())
+            if destinations:
+                from game.warps import destination_label
+                if len(destinations) == 1:
+                    action = menu.addAction('Go to warp destination')
+                    action.triggered.connect(lambda checked=False, d=destinations[0]: self.warp_requested.emit(d))
+                else:
+                    submenu = menu.addMenu('Go to warp destination')
+                    for destination in destinations:
+                        action = submenu.addAction(destination_label(destination))
+                        action.triggered.connect(lambda checked=False, d=destination: self.warp_requested.emit(d))
+            if instance.movable and not instance.authored:
+                for title, mode in (("Move", "free"), ("Move vertically", "vertical"),
+                                    ("Move horizontally", "horizontal")):
+                    action = menu.addAction(title)
+                    action.triggered.connect(lambda checked=False, m=mode: self.begin_move(m))
             menu.exec(event.globalPosition().toPoint())
             event.accept()
             return
@@ -1522,7 +1542,7 @@ class LevelViewer(SMSTViewer):
             p = event.position().toPoint()
             index = self.pick(p.x(), p.y())
             instance = next((i for i in self.instances if i.index == index), None)
-            if instance is not None and instance.movable and not instance.authored:
+            if instance is not None and ((instance.movable and not instance.authored) or getattr(instance, 'warp_destinations', ())):
                 self._context_press = (p, index)
                 event.accept()
                 return
@@ -2377,7 +2397,68 @@ class LevelViewer(SMSTViewer):
     def paintGL(self):
         self._paint_level()
         self._paint_badges()
+        self._sync_warp_labels()
         self.translation_gizmo.sync()
+
+    def _pick_warp_label(self, x, y):
+        """Select the entity behind visible warp text in widget coordinates."""
+        self._sync_warp_labels()
+        # Later labels are painted over earlier ones, so pick in that order.
+        for label in reversed(getattr(self, '_warp_text_widgets', ())):
+            if label.isHidden():
+                continue
+            door = getattr(label, 'warp_door', None)
+            if (label.geometry().contains(int(x), int(y)) or
+                    (door is not None and not door.isHidden()
+                     and door.geometry().contains(int(x), int(y)))):
+                return label.warp_instance
+        return None
+
+    def _sync_warp_labels(self):
+        """Red mini doors, bottom-centred on each warp's projected origin."""
+        widgets = getattr(self, '_warp_text_widgets', [])
+        used = 0
+        if self.scene is not None and self.show_markers:
+            mvp = np.array(self._model_view_projection().data(), dtype=np.float64).reshape(4, 4).T
+            for instance in self.instances:
+                texts = getattr(instance, 'warp_labels', ())
+                if not texts or instance.index in self.hidden_groups:
+                    continue
+                point = mvp @ np.array([instance.x / UNIT_SCALE, instance.y / UNIT_SCALE,
+                                        instance.z / UNIT_SCALE, 1.0])
+                if point[3] <= 0:
+                    continue
+                ndc = point[:3] / point[3]
+                if np.any(np.abs(ndc) > 1):
+                    continue
+                if used == len(widgets):
+                    label = QLabel(self)
+                    label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    label.setStyleSheet('color: #ff4545; background: transparent; font-size: 11px;')
+                    from icons import icons
+                    door = QLabel(self)
+                    door.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    door.setStyleSheet('background: transparent;')
+                    door.setPixmap(QIcon(icons.icon_palette_warp).pixmap(30, 36))
+                    door.setFixedSize(30, 36)
+                    label.warp_door = door
+                    widgets.append(label)
+                label = widgets[used]
+                label.warp_instance = instance.index
+                label.setToolTip('Click to select this warp; right-click for its destination.')
+                label.setText('\n'.join(texts))
+                label.adjustSize()
+                x = round((ndc[0] + 1) * self.width() / 2)
+                y = round((1 - ndc[1]) * self.height() / 2)
+                label.warp_door.move(x - 15, y - 36)
+                label.warp_door.show()
+                label.move(x + 19, y - 18 - label.height() // 2)
+                label.show()
+                used += 1
+        for label in widgets[used:]:
+            label.hide()
+            label.warp_door.hide()
+        self._warp_text_widgets = widgets
 
     def _badges(self):
         """[(instance index, its box's 8 corners as GL-unit xyzw)] for

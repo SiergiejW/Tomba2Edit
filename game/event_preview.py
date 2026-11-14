@@ -555,7 +555,17 @@ def _zippo_actor(scene):
     return world, actor
 
 
+import threading
+_ZIPPO_LOCK = threading.Lock()      # one emulated Zippo, shared: two jobs at once corrupted each other's frames
+
+
 def zippo_frames(scene, animation, max_ticks=180, previous=None, blend=4):
+    """See _zippo_frames; jobs run one at a time because they share one emulated actor."""
+    with _ZIPPO_LOCK:
+        return _zippo_frames(scene, animation, max_ticks, previous, blend)
+
+
+def _zippo_frames(scene, animation, max_ticks=180, previous=None, blend=4):
     """(frames, loop tick, origin, yaw) of Zippo playing `animation` from
     the conversation animation table (0x8001B860), as actor_sim Parts. With
     `previous` he starts from that animation's end pose and eases in over

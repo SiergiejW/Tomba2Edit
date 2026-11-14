@@ -12,9 +12,9 @@ PRESETS = (("chest", "Chest", "Red chest"),
 
 
 def preset_icon(kind):
-    """US retail model renders and native pickup art, bundled with the app."""
+    """Shared palette art, bundled with the app."""
     from icons import icons
-    return QIcon(getattr(icons, "icon_placement_" + kind))
+    return QIcon(getattr(icons, "icon_palette_" + kind))
 
 
 class PlacementPalette(QListWidget):

@@ -245,7 +245,7 @@ def file_label(content, slot=None):
 def interior_name(scene):
     """A room by the game's own interior number (src_Interior), which is its
     scene index less one."""
-    return f"interior {scene - 1}"
+    return f"room {scene - 1}"
 
 
 @dataclass
@@ -366,6 +366,8 @@ class Instance:
     # A sprite object's picture, drawn beside the model its code also built.
     object_sprite: bool = False
     # An actor that draws nothing, marked where it stands so it can be found.
+    warp_labels: tuple = ()
+    warp_destinations: tuple = ()
     marker: bool = False
     # A code-drawn effect played as a flipbook: the head row carries every
     # frame's instance, in order (itself first); each other frame carries
@@ -2774,23 +2776,6 @@ class LevelScene:
                 index=len(instances), role="scenery",
                 label=f"scenery {group.index}",
                 sources=((ASSET_PACK_ID, group.index),), authored=True))
-        # Where Tomba arrives in this area: the game's warp-spawn table (resident areas only).
-        try:
-            from game import warps
-            if self.exe_path and game_build.current().name == "us-retail" and 0 <= self.area_index < warps.AREAS:
-                with open(self.exe_path, "rb") as f:
-                    exe_bytes = f.read()
-                for k, x, h, d, flags, section in warps.spawns(exe_bytes, self.area_index):
-                    vx, vy, vz = view_point((x, h, d))
-                    instances.append(Instance(
-                        index=len(instances), role="spawned", marker=True,
-                        label=f"⌖ Tomba arrives #{k}: {section}", name=f"warp spawn {k}",
-                        x=vx, y=vy, z=vz,
-                        note=(f"The game puts Tomba here when he enters this area at spawn {k} "
-                              f"(src_CurrentArea byte 1): game position ({x}, {h}, {d}), section "
-                              f"“{section}”, flags 0x{flags:04X}. From MAIN.EXE's warp table.")))
-        except (OSError, ValueError, IndexError, TypeError):
-            pass
         self.instances = instances
         # The worker serialises scenes without their emulated RAM. Retain
         # explicit native handler identities for the Events inspector.
@@ -2843,6 +2828,73 @@ class LevelScene:
                     candidates=sorted(set(candidates))
                     if candidates and (len(candidates)==1 or candidates[1][0]-candidates[0][0]>1):
                         instance.native_scene_offset=candidates[0][1];used.add(candidates[0][1])
+
+        # Departure labels come from native transition writes, independently of
+        # the arrival markers above. Never infer a departure from proximity.
+        if self.build_name == 'us-retail' and self.world is not None:
+            from game import warps
+            try:
+                from pathlib import Path
+                exe = Path(self.exe_path).read_bytes()
+                overlay = Path(self.overlay_path).read_bytes()
+                # A02's walking exit is tested by the area update, rather than
+                # represented by an actor. The native boundary is x > 10000,
+                # depth < 2800 (FUN_A02__801122a4 and its actor equivalents).
+                if self.area_index == 2:
+                    exits = warps.destinations(exe, overlay, 0x801122A4)
+                    if any(d[:3] == ('area', 1, 2) for d in exits):
+                        destination = next(d for d in exits if d[:3] == ('area', 1, 2))
+                        label = warps.destination_label(destination)
+                        instances.append(Instance(
+                            index=len(instances), role='spawned', label=label,
+                            x=2799.0, y=2000.0, z=10573.0, marker=True,
+                            warp_labels=(label,), warp_destinations=(destination,), name='walking area exit',
+                            note='Native walking boundary: game x > 10000 and depth < 2800. '
+                                 'Marker shows a point in that region, at arrival #0 height; '
+                                 'the trigger is a region, not a single point. Destination arrival #2.'))
+                # Room-side entrance anchor from the native entry flags: bit
+                # 11 enters a room, bits 12..15 are its ID. This is a room
+                # location marker, not a claim about the departure boundary.
+                if self.area_index == 6:
+                    entry = warps.spawns(exe, 6)[6]
+                    if entry[4] & 0x800 and entry[4] >> 12 == 9:
+                        destination = ('interior', 9, 0, '')
+                        label = warps.destination_label(destination)
+                        vx, vy, vz = view_point(entry[1:4])
+                        instances.append(Instance(index=len(instances), role='spawned', marker=True,
+                            label=label, name='Forest Entrance room', x=vx, y=vy, z=vz,
+                            warp_labels=(label,), warp_destinations=(destination,),
+                            note='Room 9 entrance location from native entry #6 flags 0x9983. '
+                                 'Room-side anchor; departure trigger bounds remain unresolved.'))
+                resolved = {}
+                actors = list(self.world.actors)
+                for room_actors in self.world.rooms.values():
+                    actors.extend(room_actors)
+                for instance in instances:
+                    handler = (instance.placement.handler if instance.placement is not None
+                               else self.event_handlers.get(instance.index))
+                    if not handler:
+                        continue
+                    matches = [a for a in actors if a.handler == handler and a.position is not None
+                               and np.linalg.norm(np.asarray(a.position) - instance.game_position) < 1]
+                    interior = matches[0].reward if len(matches) == 1 else None
+                    key = handler, interior
+                    if key not in resolved:
+                        resolved[key] = warps.destinations(exe, overlay, handler, interior, area=self.area_index)
+                    destinations = resolved[key]
+                    instance.warp_destinations = tuple(destinations)
+                    instance.warp_labels = tuple(dict.fromkeys(warps.destination_label(d) for d in destinations))
+                    if destinations:
+                        detail = '<br>'.join(warps.destination_label(d) +
+                                             (f' (arrival #{d[2]}; conditional native path)' if d[0] == 'area' else '')
+                                             for d in destinations)
+                        instance.note += '<br>' + detail
+                        if self.area_index == 6 and handler == 0x8011FE54 and interior == 12:
+                            instance.note += ('<br>Opens toward Large Mine Underground arrival #28 '
+                                              'when that area is purified (src_PurifiedAreas bit 1). '
+                                              'Otherwise shows the locked-door message.')
+            except (OSError, ValueError, struct.error) as error:
+                self.notes.append(f'Warp destination analysis failed: {error}')
 
     def _loads(self, sources):
         """Whether every file a set of sources names reads as a model."""
