@@ -18,12 +18,13 @@ game/placement.py for where the objects' positions come from.
 """
 import ctypes
 import math
+import time
 
 import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QIcon, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QBitmap, QIcon, QImage, QPainter, QPixmap, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -458,6 +459,7 @@ class LevelViewer(SMSTViewer):
         self.pose_pivots = None
         self.model_data = scene.build() if scene is not None else None
         self._badge_cache = None
+        self._warp_depth_key = None
         self._face_instance = None
         self._room_rows = None
         # A drag in progress refers to the instance list being replaced,
@@ -2397,11 +2399,8 @@ class LevelViewer(SMSTViewer):
     def paintGL(self):
         self._paint_level()
         depth = None
-        if self.show_markers and any(getattr(i, 'warp_labels', ()) for i in self.instances):
-            viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
-            width, height = int(viewport[2]), int(viewport[3])
-            raw = GL.glReadPixels(0, 0, width, height, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
-            depth = np.frombuffer(raw, np.float32).reshape(height, width) if isinstance(raw, bytes) else np.asarray(raw).reshape(height, width)
+        if self.show_markers and any(getattr(i, 'warp_labels', ()) and i.index not in self.hidden_groups for i in self.instances):
+            depth = self._read_warp_depth()
         self._paint_badges()
         self._sync_warp_labels(depth)
         self.translation_gizmo.sync()
@@ -2418,28 +2417,71 @@ class LevelViewer(SMSTViewer):
                 return label.warp_instance
             if not door.isHidden() and door.geometry().contains(int(x), int(y)):
                 local_x, local_y = int(x) - door.x(), int(y) - door.y()
-                if door.mask().contains(QPoint(local_x, local_y)):
-                    return label.warp_instance
+                return label.warp_instance
+            ghost = label.warp_ghost
+            if not ghost.isHidden() and ghost.geometry().contains(int(x), int(y)):
+                return label.warp_instance
         return None
+
+    def _read_warp_depth(self):
+        """GPU-downsample depth before readback; refresh stationary views at 10 Hz."""
+        key = (tuple(self._model_view_projection().data()), self.width(), self.height())
+        now = time.monotonic()
+        if (key == getattr(self, '_warp_depth_key', None)
+                and now - getattr(self, '_warp_depth_time', 0) < 0.1):
+            return self._warp_depth_image
+        viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
+        width, height = int(viewport[2]), int(viewport[3])
+        small_width = min(320, width)
+        small_height = max(1, round(height * small_width / max(width, 1)))
+        read_fbo = int(GL.glGetIntegerv(GL.GL_READ_FRAMEBUFFER_BINDING))
+        draw_fbo = int(GL.glGetIntegerv(GL.GL_DRAW_FRAMEBUFFER_BINDING))
+        if not hasattr(self, '_warp_depth_fbo'):
+            self._warp_depth_fbo = GL.glGenFramebuffers(1)
+            self._warp_depth_buffer = GL.glGenRenderbuffers(1)
+            self._warp_depth_size = None
+        try:
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._warp_depth_fbo)
+            if self._warp_depth_size != (small_width, small_height):
+                GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, self._warp_depth_buffer)
+                GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_DEPTH24_STENCIL8, small_width, small_height)
+                GL.glFramebufferRenderbuffer(GL.GL_DRAW_FRAMEBUFFER, GL.GL_DEPTH_STENCIL_ATTACHMENT,
+                                             GL.GL_RENDERBUFFER, self._warp_depth_buffer)
+                GL.glDrawBuffer(GL.GL_NONE)
+                self._warp_depth_size = small_width, small_height
+            GL.glBlitFramebuffer(0, 0, width, height, 0, 0, small_width, small_height,
+                                 GL.GL_DEPTH_BUFFER_BIT, GL.GL_NEAREST)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._warp_depth_fbo)
+            GL.glReadBuffer(GL.GL_NONE)
+            raw = GL.glReadPixels(0, 0, small_width, small_height, GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+            depth = np.frombuffer(raw, np.float32).reshape(small_height, small_width) if isinstance(raw, bytes) else np.asarray(raw).reshape(small_height, small_width)
+        finally:
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, read_fbo)
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, draw_fbo)
+        self._warp_depth_key, self._warp_depth_time, self._warp_depth_image = key, now, depth
+        return depth
 
     @staticmethod
     def _warp_visible_region(depth, x, y, width, height, z, screen_width, screen_height):
-        """Depth-clip a billboard against the rendered geometry, including DPR."""
-        region = QRegion()
+        """Vectorized depth mask; bitmap-to-region conversion runs inside Qt."""
         if depth is None:
-            return region
+            return QRegion()
         dh, dw = depth.shape
         px = np.floor((x + np.arange(width) + 0.5) * dw / screen_width).astype(int)
         py = dh - 1 - np.floor((y + np.arange(height) + 0.5) * dh / screen_height).astype(int)
-        valid_x = (px >= 0) & (px < dw)
-        for row, sample_y in enumerate(py):
-            if not 0 <= sample_y < dh:
-                continue
-            visible = valid_x & (z <= depth[sample_y, np.clip(px, 0, dw - 1)] + 0.000002)
-            changes = np.diff(np.r_[False, visible, False].astype(np.int8))
-            for start, end in zip(np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)):
-                region |= QRegion(int(start), row, int(end - start), 1)
-        return region
+        visible = ((px[None, :] >= 0) & (px[None, :] < dw)
+                   & (py[:, None] >= 0) & (py[:, None] < dh)
+                   & (z <= depth[np.clip(py, 0, dh - 1)[:, None], np.clip(px, 0, dw - 1)[None, :]] + 0.000002))
+        packed = np.zeros((height, ((width + 31) // 32) * 4), dtype=np.uint8)
+        bits = np.packbits(visible, axis=1)
+        packed[:, :bits.shape[1]] = bits
+        image = QImage(packed.data, width, height, packed.shape[1], QImage.Format.Format_Mono)
+        image.setColorTable([0xffffffff, 0xff000000])
+        return QRegion(QBitmap.fromImage(image))
+
+    @staticmethod
+    def _obstructed_opacity(distance):
+        return 0.5 / (1.0 + (distance / 12.0) ** 2)
 
     def _sync_warp_labels(self, depth=None):
         """World-sized doors with nearby text, clipped by the scene depth."""
@@ -2460,9 +2502,9 @@ class LevelViewer(SMSTViewer):
                 ndc = point[:3] / point[3]
                 if np.any(np.abs(ndc) > 1):
                     continue
-                # 420 game units tall. No fixed screen-size floor: far doors
+                # 240 game units tall. No fixed screen-size floor: far doors
                 # naturally become small, then disappear below three pixels.
-                height = min(160, round(0.42 * focal * self.height() / (2 * point[3])))
+                height = min(96, round(0.24 * focal * self.height() / (2 * point[3])))
                 if height < 3:
                     continue
                 width = max(2, round(height * 30 / 36))
@@ -2470,8 +2512,6 @@ class LevelViewer(SMSTViewer):
                 y = round((1 - ndc[1]) * self.height() / 2)
                 region = self._warp_visible_region(depth, x - width // 2, y - height,
                     width, height, ndc[2] * 0.5 + 0.5, self.width(), self.height())
-                if region.isEmpty():
-                    continue
                 if used == len(widgets):
                     label = QLabel(self)
                     label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -2480,6 +2520,10 @@ class LevelViewer(SMSTViewer):
                     door = QLabel(self)
                     door.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     door.setStyleSheet('background: transparent;')
+                    ghost = QLabel(self)
+                    ghost.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    ghost.setStyleSheet('background: transparent;')
+                    label.warp_ghost = ghost
                     label.warp_icon = QIcon(icons.icon_palette_warp)
                     label.warp_door = door
                     label.warp_size = None
@@ -2487,26 +2531,60 @@ class LevelViewer(SMSTViewer):
                 label = widgets[used]
                 label.warp_instance = instance.index
                 door = label.warp_door
+                ghost = label.warp_ghost
+                distance = float(np.linalg.norm(origin - eye))
+                opacity = round(self._obstructed_opacity(distance) * 32) / 32
                 if label.warp_size != (width, height):
                     door.setPixmap(label.warp_icon.pixmap(width, height))
                     door.setFixedSize(width, height)
                     label.warp_size = width, height
+                ghost_key = (width, height, opacity)
+                if getattr(label, 'warp_ghost_key', None) != ghost_key:
+                    faded = QPixmap(width, height)
+                    faded.fill(Qt.GlobalColor.transparent)
+                    painter = QPainter(faded)
+                    painter.setOpacity(opacity)
+                    painter.drawPixmap(0, 0, door.pixmap())
+                    painter.end()
+                    ghost.setPixmap(faded)
+                    ghost.setFixedSize(width, height)
+                    label.warp_ghost_key = ghost_key
                 door.move(x - width // 2, y - height)
-                door.setMask(region)
-                door.show()
-                # Text only within 5000 game units, and only if the door's
-                # centre is visible. Selection never makes it show through walls.
-                if np.linalg.norm(origin - eye) <= 5.0 and region.contains(QPoint(width // 2, height // 2)):
-                    label.setText('\n'.join(texts))
-                    label.adjustSize()
+                ghost.move(door.pos())
+                hidden = QRegion(0, 0, width, height).subtracted(region)
+                if region.isEmpty():
+                    door.hide()
+                else:
+                    if door.mask() != region:
+                        door.setMask(region)
+                    door.show()
+                if hidden.isEmpty() or opacity <= 0:
+                    ghost.hide()
+                else:
+                    if ghost.mask() != hidden:
+                        ghost.setMask(hidden)
+                    ghost.show()
+                # Text follows the whole door's obstruction, rather than a
+                # single centre pixel that can peek around an obstacle.
+                if distance <= 8.0:
+                    obstructed = not hidden.isEmpty()
+                    alpha = max(0, min(255, round(255 * (opacity if obstructed else 1.0))))
+                    style = f'color: rgba(255,69,69,{alpha}); background: transparent; font-size: 11px;'
+                    if label.styleSheet() != style:
+                        label.setStyleSheet(style)
+                    text = '\n'.join(texts)
+                    if label.text() != text:
+                        label.setText(text)
+                        label.adjustSize()
                     label.move(x + width // 2 + 4, y - height // 2 - label.height() // 2)
-                    label.show()
+                    label.setVisible(alpha > 0)
                 else:
                     label.hide()
                 used += 1
         for label in widgets[used:]:
             label.hide()
             label.warp_door.hide()
+            label.warp_ghost.hide()
         self._warp_text_widgets = widgets
 
     def _badges(self):
@@ -2638,9 +2716,23 @@ class LevelViewer(SMSTViewer):
                     GL.glDisable(GL.GL_BLEND)
         if self.show_markers and self.marker_count:
             gl_profile.set_line_width(MARKER_WIDTH)
+            blend = GL.glIsEnabled(GL.GL_BLEND)
+            GL.glEnable(GL.GL_BLEND)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glDepthMask(GL.GL_FALSE)
             self.marker_vao.bind()
-            GL.glDrawArrays(GL.GL_LINES, 0, self.marker_count)
+            for func, alpha, fade in ((GL.GL_LESS, 1.0, 0.0), (GL.GL_GREATER, 0.5, 12.0)):
+                GL.glDepthFunc(func)
+                self.shader_program.setUniformValue("alpha", alpha)
+                self.shader_program.setUniformValue("hiddenFadeRange", fade)
+                GL.glDrawArrays(GL.GL_LINES, 0, self.marker_count)
             self.marker_vao.release()
+            self.shader_program.setUniformValue("hiddenFadeRange", 0.0)
+            self.shader_program.setUniformValue("alpha", 1.0)
+            GL.glDepthFunc(GL.GL_LESS)
+            GL.glDepthMask(GL.GL_TRUE)
+            if not blend:
+                GL.glDisable(GL.GL_BLEND)
         if self.selection_count:
             # Over everything, depth test off: what you have just picked
             # is often the thing behind the wall you are looking at.

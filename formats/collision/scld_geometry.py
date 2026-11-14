@@ -422,7 +422,14 @@ class PlaneGeometry:
         y = floors[len(floors) // 2] if floors else 0
         for j in self.junctions:
             own = [g for g in self.segments if g.slot is j.slot and g.role == "floor"] if j.slot else []
-            j.y = own[0].mid[1] if own else y
+            if j.gated:
+                # A cell can stack several floors (the mine's pipes). The
+                # native height gate identifies which floor this switch is
+                # attached to; choosing the first floor puts arrows far above it.
+                base = j.gate_base - 0x10000 if j.gate_base & 0x8000 else j.gate_base
+                j.y = min(own, key=lambda seg: abs(seg.mid[1] - base)).mid[1] if own else base
+            else:
+                j.y = own[0].mid[1] if own else y
         return y
 
     # -- what the viewers ask

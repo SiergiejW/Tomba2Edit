@@ -3149,7 +3149,7 @@ class LevelScene:
         from gui.widgets import collision_overlay as overlay
         lines = overlay.Lines()
         if view in (None, "all"):
-            overlay.add_scld(lines, self.planes, style=style)
+            overlay.add_scld(lines, self.planes, style=style, arrow_model=self.model(1))
         elif rooms and view in rooms:
             # A room loads no collision of its own (its enter routine only
             # fills slot 15), so what it stands on is the area's SCLD where
@@ -3157,7 +3157,7 @@ class LevelScene:
             low, high = rooms[view]
             overlay.add_scld(lines, self.planes, bounds=(
                 low[0] - ROOM_REACH, high[0] + ROOM_REACH,
-                low[2] - ROOM_REACH, high[2] + ROOM_REACH), style=style)
+                low[2] - ROOM_REACH, high[2] + ROOM_REACH), style=style, arrow_model=self.model(1))
         datasets = town_collision.find(self.overlay_data) if self.overlay_data else ()
         for number, dataset in enumerate(datasets):
             for plane in dataset.planes:

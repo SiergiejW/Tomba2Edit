@@ -1264,6 +1264,7 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                 uniform sampler1D clutTexture;
                 uniform bool useTextures;
                 uniform float alpha;
+                uniform float hiddenFadeRange;
                 // Which texels this pass wants: 0 all, 1 only the ones
                 // the hardware draws opaque, 2 only the ones it blends.
                 // A semi-transparent face carries both - the palette
@@ -1358,7 +1359,9 @@ class SMSTViewer(ClutAnimationMixin, CameraEventMixin, QOpenGLWidget):
                         outColor = clutColor * vec4(fragColor, 1.0);
                         outColor.a = (blended ? blendWeight : 1.0) * alpha;
                     } else {
-                        outColor = vec4(fragColor, alpha);
+                        float fade = hiddenFadeRange > 0.0
+                            ? 1.0 / (1.0 + pow((1.0 / gl_FragCoord.w) / hiddenFadeRange, 2.0)) : 1.0;
+                        outColor = vec4(fragColor, alpha * fade);
                     }
                 }
                 """):
@@ -1960,6 +1963,7 @@ class SMSTPanel(QWidget):
         the viewer has already said what was picked."""
         self._show_polygon(polygon_index)
         if group is None:
+            self._show_all()
             return
         self._filling = True
         for row in range(self.table.rowCount()):

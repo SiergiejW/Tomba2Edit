@@ -991,10 +991,8 @@ class World:
             # As the game's collision step does each frame: a released rock
             # falling beside another is stopped where the game stops it.
             self._resolve_contacts(budget)
-            # Sampling initialization is not animation recording. Some native
-            # handlers attach a model briefly before settling; keep that first
-            # valid pose in Edit mode as well as Simulation mode.
-            self._read()
+            if not getattr(self, 'static_edit', False) or _frame == frames-1:
+                self._read()
         # Actors spawned during the last frame never ran; give them frames
         # of their own so what they build is there to read.
         for _settle in range(SETTLE_FRAMES):

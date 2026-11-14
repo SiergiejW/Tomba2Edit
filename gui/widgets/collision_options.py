@@ -33,6 +33,7 @@ ITEMS = (
      "drawn as a vertical from the record's height to height + rise where the game stops the "
      "probe. Gold ones are Grapple targets (kind bit 0x100)."),
     ("", "Game logic"),
+    ("junction_down", "Direction hints: Down input", "Show the Down hint at a crossing; untick for Up. One native arrow pair per location."),
     ("junctions", "Lane switches",
      "A cell where Up or Down takes Tomba to another plane. The arrow stands on the switch "
      "cell and points at the nearest point of the plane it leads to. Click it for the "

@@ -41,7 +41,7 @@ HIDDEN = 0.5
 LINE_WIDTH = 2.0
 FILL_DEPTH = 40.0           # how far a floor's curtain hangs below it, a ceiling's rises above
 ARROW_HEAD = 90.0           # a lane-switch arrow's head, world units
-POST = 180.0                # the post a lane-switch arrow stands on
+POST = 300.0                # the post a lane-switch arrow stands on
 
 # Colours, by what a surface is. Floors and walls keep the level editor's green and red.
 PLAIN_SURFACE = (0.3, 0.9, 0.4)
@@ -84,6 +84,7 @@ class CollisionStyle:
     ceilings: bool = True
     slopes: bool = True         # sloped wall faces and other 0x80 records
     walls: bool = True
+    junction_down: bool = False # selected input for native direction hints
     junctions: bool = True      # lane switches: arrows to the plane Up / Down leads to
     links: bool = False         # the plane reached off each end of a plane, and redirect cells
     baselines: bool = False     # each plane's own line, with an arrow at its end
@@ -133,8 +134,8 @@ def legend_html(style=None):
     else:
         rows.append(((0.9, 0.5, 0.5), "hue by the plane's gradient; grey = flat"))
     if style.junctions:
-        rows += [(JUNCTION_UP, "lane switch, Up - the post stands on the switch; the arrow is the way Tomba faces after it"),
-                 (JUNCTION_DOWN, "lane switch, Down")]
+        rows += [((1.0, 0.15, 0.9), "direction hint: destination lane (Down input)" if style.junction_down else "direction hint: destination lane (Up input)"),
+                 ((1.0, 0.65, 0.0), "source path; one pair per location, above standing height")]
     if style.links:
         rows += [(LINK_COLOR, "plane end leading to another plane"),
                  (REDIRECT_COLOR, "cell that redirects to another plane")]
@@ -195,6 +196,7 @@ class Lines:
         self.surface, self.surface_colors = [], []
         self.vertical, self.vertical_colors = [], []
         self.fills, self.fill_colors = [], []       # triangles
+        self.arrows, self.arrow_colors = [], []     # native solid-colour models
         self.samples = []           # (x, y, z, entry, record) per pickable point - see pick_sample
         self.ranges = {}            # entry index -> (first vertex, count) in surface
         self.vranges = {}           # the same in vertical
@@ -218,7 +220,8 @@ class Lines:
                     np.asarray(colors, dtype=np.float32).reshape(-1, 3))
         return (pack(self.surface, self.surface_colors),
                 pack(self.vertical, self.vertical_colors),
-                pack(getattr(self, "fills", ()), getattr(self, "fill_colors", ())))
+                pack(getattr(self, "fills", ()), getattr(self, "fill_colors", ())),
+                pack(getattr(self, "arrows", ()), getattr(self, "arrow_colors", ())))
 
 
 def _cross(lines, x, y, z, rgb):
@@ -243,13 +246,37 @@ def _arrow(lines, a, b, rgb, toward):
         lines.line(tip, (back[0], back[1] + wing * sign, back[2]), rgb)
 
 
-def add_scld(lines, entries, bounds=None, style=None, all_entries=None):
+def _native_arrow(lines, model, group_index, origin, toward):
+    """The resident arrow mesh, in its authored size and vertex colours."""
+    if model is None or len(model.get('groups', ())) <= group_index:
+        return False
+    group = model['groups'][group_index]
+    faces = np.asarray(model['faces'][group.first_face:group.first_face + group.face_count], dtype=int)
+    vertices = np.asarray(model['vertices'], dtype=float)
+    colors = np.asarray(model['vertex_colors'], dtype=float)
+    ux, uz = toward
+    norm = math.hypot(ux, uz)
+    if norm < 1e-6:
+        return False
+    ux, uz = ux / norm, uz / norm
+    # Authored +Z points at the tip; +X is across the arrow.
+    points = vertices[faces].reshape(-1, 3)
+    posed = np.column_stack((points[:, 0] * uz + points[:, 2] * ux,
+                             points[:, 1],
+                             -points[:, 0] * ux + points[:, 2] * uz)) + origin
+    lines.arrows.extend(posed)
+    lines.arrow_colors.extend(np.clip(colors[faces].reshape(-1, 3), 0, 1))
+    return True
+
+
+def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_model=None):
     """Each entry's collision as `style` says. `bounds` (x0, x1, z0, z1) keeps
     only what stands inside it; `all_entries` are the planes a lane switch or
     link may lead to (default: `entries`, which a view may have cut down)."""
     style = style or CollisionStyle()
     inside = scld_render.contains
     geoms = {e.index + 1: geometry(e) for e in (all_entries or entries)}
+    hints = []
     for entry in entries:
         if style.only_plane is not None and entry.index != style.only_plane:
             continue
@@ -298,7 +325,11 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None):
                     # when it is clear (the port's SetDestinationPlane: profileYaw).
                     sign = 1 if (j.direction == "up") == j.facing else -1
                     toward = (sign * dest.dir[1], sign * dest.dir[0])
-                _arrow(lines, a, b, JUNCTION_UP if j.direction == "up" else JUNCTION_DOWN, toward)
+                top = (a[0], a[1] + POST, a[2])
+                if arrow_model is not None:
+                    hints.append((a, b, toward, (g.dir[1], g.dir[0]), j, entry, index))
+                else:
+                    _arrow(lines, a, b, JUNCTION_UP if j.direction == "up" else JUNCTION_DOWN, toward)
                 lines.samples.append((a[0], a[1] + POST, a[2], entry, ("junction", index)))
         if style.links:
             _links(lines, entry, g, geoms, bounds)
@@ -333,6 +364,27 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None):
                                  scld_render.entry_color(entry.index)))
         lines.ranges[entry.index] = (first, len(lines.surface) - first)
         lines.vranges[entry.index] = (vfirst, len(lines.vertical) - vfirst)
+    # The game has one player-following controller with two model parts,
+    # not a pair per table cell. Collapse adjacent/reciprocal records into
+    # one editor hint location, with an explicit selected input direction.
+    clusters = []
+    for hint in hints:
+        a = hint[0]
+        cluster = next((c for c in clusters if np.linalg.norm(np.array(c[0][0]) - a) <= 110), None)
+        if cluster is None:
+            clusters.append([hint])
+        else:
+            cluster.append(hint)
+    direction = 'down' if style.junction_down else 'up'
+    for cluster in clusters:
+        choices = [h for h in cluster if h[4].direction == direction] or cluster
+        a, b, toward, forward, j, entry, index = min(choices, key=lambda h: h[5].index)
+        centre = np.mean([h[0] for h in choices], axis=0)
+        top = centre + (0, POST, 0)
+        # Native definition table 0x800A4BA8: group 11 at Y +25,
+        # group 12 at Y -25 in game axes (Y is inverted for the viewer).
+        _native_arrow(lines, arrow_model, 11, top + (0, -25, 0), toward)
+        _native_arrow(lines, arrow_model, 12, top + (0, 25, 0), forward)
     return lines
 
 
@@ -389,7 +441,7 @@ class Overlay:
         self._layers = [[QOpenGLVertexArrayObject(),
                          QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer),
                          QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer), 0]
-                        for _ in range(3)]
+                        for _ in range(4)]
         self._pending = None
 
     def set(self, lines, scale):
@@ -429,7 +481,8 @@ class Overlay:
         self.sync()
         wanted = ((self._layers[0], SURFACE_ALPHA, surface, GL.GL_LINES),
                   (self._layers[1], VERTICAL_ALPHA, vertical, GL.GL_LINES),
-                  (self._layers[2], FILL_ALPHA, surface, GL.GL_TRIANGLES))
+                  (self._layers[2], FILL_ALPHA, surface, GL.GL_TRIANGLES),
+                  (self._layers[3], 1.0, surface, GL.GL_TRIANGLES))
         if not any(layer[3] and on for layer, _a, on, _m in wanted):
             return
         GL.glDepthMask(GL.GL_FALSE)
@@ -440,6 +493,7 @@ class Overlay:
         GL.glDisable(GL.GL_CULL_FACE)
         for func, scale in ((GL.GL_LESS, 1.0), (GL.GL_GREATER, HIDDEN)):
             GL.glDepthFunc(func)
+            program.setUniformValue("hiddenFadeRange", 12.0 if func == GL.GL_GREATER else 0.0)
             for (vao, _vbo, _cbo, count), alpha, on, mode in wanted:
                 if not (on and count):
                     continue
@@ -447,6 +501,7 @@ class Overlay:
                 vao.bind()
                 GL.glDrawArrays(mode, 0, count)
                 vao.release()
+        program.setUniformValue("hiddenFadeRange", 0.0)
         GL.glDepthFunc(GL.GL_LESS)
         if not blend:
             GL.glDisable(GL.GL_BLEND)
