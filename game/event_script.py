@@ -39,7 +39,7 @@ LABELS = {
  51: 'Exit weaponless interior', 52: 'Turn Tomba', 53: 'Sync location from Tomba',
  54: 'Set Tomba location', 55: 'Play Tomba animation', 56: 'Turn Tomba toward actor',
  57: 'Actor + Tomba animation', 58: 'Actor faces Tomba', 59: 'Turn actor and Tomba toward a point',
- 60: 'Item-use sequence', 61: 'Linked pickup sequence', 62: 'Run native code',
+ 60: 'Tomba uses an item', 61: 'Give Tomba an item', 62: 'Run native code',
 }
 CONDITION = 'Condition (-1 always, 0 =, 1 <=, 2 >=, 3 any bit)'
 FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
@@ -90,6 +90,14 @@ FIELDS = {5: ('Ticks (completes after N + 1 ticks)', 'Unused', 'Unused'),
  # 2 = faces away (yaw - 0x800). Operand 2 picks his action state (0 -> 30, else 35).
  # 0x8000 = then wait until he has finished turning.
  52: ('Mode (0 angle, 1 face the actor, 2 face away; 0x8000 = wait for the turn)', 'Angle (mode 0; 4096 = 360°)', 'Pose (0 or 1)'),
+ # f_SpawnScriptConfiguredLinkedPickup (38): item id in the low 12 bits (0x1000 = from the weapon table).
+ 38: ('Item (low 12 bits; 0x1000 = a weapon)', 'Pickup behaviour', 'Pickup effect'),
+ # f_ConfigureScriptSpawnedLinkedPickup (39): acts on the pickup the last Spawn pickup made.
+ 39: ('Phase for it (-1 = release it, starting its own sequence)', 'Behaviour (-1 form: delay in ticks)', 'Effect'),
+ # f_RunScriptedItemUseSequence (60) / f_RunScriptedLinkedPickupSequence (61): the low 10 bits are the item
+ # (0x1000 weapon table, 0x2000 = a linked reward id instead, 0x4000 hand-off form, 0x0800 keep it in the bag).
+ 60: ('Item (low 10 bits) + flags: 0x0800 keep it, 0x1000 weapon, 0x2000 reward, 0x4000 hand-off', 'Actor animation while it shows', 'Actor animation after (-1 = none)'),
+ 61: ('Item (low 10 bits) + flags: 0x0800 end early, 0x1000 weapon, 0x2000 reward', 'Actor animation while handing it over', 'Actor animation after'),
  54: ('Location byte', 'Tomba X', 'Tomba height', 'Tomba depth', 'Unused', 'Unused', 'Unused'),
  # f_RunScriptedTombaAnimationCommand: mode 0 waits; 2 = held state 0x26.
  55: ('Mode (0 wait, 1 continue, 2 continue + hold)', 'Tomba animation ID', 'Blend ticks',
@@ -176,7 +184,7 @@ def move_speed(c):
 EVENT_STATES = 0x800BF8B4
 AREA_PROGRESS = 0x800BF9B4
 INVENTORY = 0x800BFAB4          # one quantity byte per item ID (f_AddInventoryQuantity)
-EVENT_NAMES = 0x800A33E4        # US: event 1's 12-byte record; word 0 = its title
+EVENT_NAMES = 0x800A33E4        # US: event 2's 12-byte record (event n's is (n - 2) records on); word 0 = its title
 EVENT_COUNT = 0x8A
 _names = {'events': {}, 'items': {}}
 
@@ -189,7 +197,7 @@ def load_names(exe, exe_path=None):
     if game_build.current().name == 'us-retail':
         base = struct.unpack_from('<I', exe, 24)[0]
         for n in range(1, EVENT_COUNT + 1):
-            at = EVENT_NAMES + (n - 1) * 12 - base + 0x800
+            at = EVENT_NAMES + (n - 2) * 12 - base + 0x800     # event 1 is "Find Tabby!", the record just before the first listed
             pointer = struct.unpack_from('<I', exe, at)[0] - base + 0x800
             if 0x800 <= pointer < len(exe):
                 end = exe.find(b'\0', pointer, pointer + 96)
@@ -287,6 +295,23 @@ def summary(c):
         verb = 'Start' if op == 18 else 'Complete'
         label = event_label(o[0])
         return f'{verb} {label[0].upper()}{label[1:]}' + (' (goes on while its banner shows)' if o[1] else '')
+    def _what(value, low=0x3ff):
+        if value & 0x2000: return f'linked reward {value & 0xff}'
+        if value & 0x1000: return f'weapon {value & low}'
+        given = _names['items'].get(value & low)
+        return f'“{given}” (item {value & low})' if given else f'item {value & low}'
+    if op == 38:
+        return f'Spawn pickup: {_what(o[0] & 0xfff, 0xfff)} (behaviour {o[1]}, effect {o[2]})'
+    if op == 39:
+        if o[0] == -1: return f'Release the spawned pickup' + (f' after {o[1]} ticks' if o[1] > 0 else '')
+        return f'Set the spawned pickup: phase {o[0]}, behaviour {o[1]}, effect {o[2]}'
+    if op == 60:
+        kept = '' if o[0] & 0x800 else ', and it leaves his bag with its message'
+        after = f', then animation {o[2]}' if o[2] >= 0 else ''
+        return f'Tomba uses {_what(o[0])}{kept} (actor animation {o[1]}{after})'
+    if op == 61:
+        after = f', then animation {o[2]}' if o[2] >= 0 else ''
+        return f'Give Tomba {_what(o[0])}: the actor hands it over (animation {o[1]}{after})'
     if op == 41: return f'Spawn {item_label(o[0])} at Tomba'
     if op == 38: return f'Spawn pickup ({o[0]}, {o[1]}, {o[2]})'
     if op == 16: return f'Interaction offset ({o[0]}, {o[1]}, {o[2]})'
@@ -632,7 +657,7 @@ class Flow:
         seen, work, roots = set(), [start], {start}
         while work and len(seen) < limit:
             at = work.pop()
-            while at not in seen and len(seen) < limit:
+            while at is not None and at not in seen and len(seen) < limit:
                 image = self.image(at)
                 if image is None: break
                 seen.add(at); i = image.at(at)

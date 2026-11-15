@@ -622,6 +622,43 @@ class ViewportPreview(QObject):
         except (AttributeError,TypeError):self.base_game=None
         self.base=((getattr(instance,'x',None),getattr(instance,'y',None),getattr(instance,'z',None),getattr(instance,'angle',None)),
                    None if c is None else (c.camera_x,c.camera_y,c.camera_z,c.camera_angle_h,c.camera_angle_v,c.orbit_distance))
+        try:self._split_scenery()
+        except Exception:self.scenery=None
+    def _split_scenery(self):
+        """What other actors drew with the entity (the chest a man stands on)
+        is not the entity: it stays where it is while the entity moves,
+        animates or jumps off. Those pieces go to an instance of their own
+        for the length of the preview; reset() joins them back."""
+        if getattr(self,'scenery',None) is not None:return
+        instance=self.editor.instance;viewer=self.viewer();scene=getattr(viewer,'scene',None)
+        a=getattr(instance,'assembly',None);owners=list(getattr(a,'owners',None) or ())
+        if not owners or not hasattr(scene,'build') or len(owners)!=len(a.pieces):return
+        mine=owners[0][0]
+        own=[n for n,o in enumerate(owners) if o[0]==mine];rest=[n for n,o in enumerate(owners) if o[0]!=mine]
+        if not rest:return
+        from copy import copy
+        from game.actor_sim import Posed
+        pick=lambda keep:[a.pieces[n] for n in keep]
+        static=copy(instance)
+        static.label=instance.label+' (stays put)';static.placement=None;static.pickup=None;static.flip=None
+        static.flip_frames=();static.follow=None;static.offsets=();static.parts=[];static.spans=[]
+        rest_posed=Posed(a.name,a.note,pick(rest),[],a.origin,a.yaw,owners=[owners[n] for n in rest])
+        static.assembly=rest_posed;static.sources=rest_posed.sources
+        static.index=len(scene.instances);scene.instances.append(static)
+        saved=dict(instance=static,assembly=a,sources=instance.sources)
+        own_posed=Posed(a.name,a.note,pick(own),a.riders,a.origin,a.yaw,owners=[owners[n] for n in own])
+        instance.assembly=own_posed;instance.sources=own_posed.sources
+        self.scenery=saved
+        self._rebuild(viewer)
+    def _join_scenery(self):
+        s=getattr(self,'scenery',None)
+        if s is None:return
+        self.scenery=None
+        instance=self.editor.instance;viewer=self.viewer();scene=getattr(viewer,'scene',None)
+        instance.assembly,instance.sources=s['assembly'],s['sources']
+        if scene is not None:
+            if s['instance'] in scene.instances:scene.instances.remove(s['instance'])
+            self._rebuild(viewer)
     def _refresh(self):
         viewer=self.viewer();instance=self.editor.instance
         try:viewer.refresh_instance(instance.index)
@@ -865,7 +902,7 @@ class ViewportPreview(QObject):
         instance=self.editor.instance
         if x is not None:instance.x,instance.y,instance.z=x,y,z
         if angle is not None:instance.angle=angle
-        self.stop_entity_animation();self.hide_zippo()
+        self.stop_entity_animation();self.hide_zippo();self._join_scenery()
         if getattr(self,'anim_timer',None) is not None:self.anim_timer.stop()
         if viewer is not None:
             try:viewer.refresh_instance(instance.index)
@@ -1718,6 +1755,9 @@ class EventEditor(QDialog):
             button=QPushButton((f'{key[0]}: {key[1]}' if key else 'Move / Turn')+'   — change who / what…')
             button.clicked.connect(self.change_move_turn)
             self.form.insertRow(0,'Move / Turn',button)
+        if not self.raw.isChecked():
+            if c.opcode in (18,19) and len(self.fields)>=2:self._event_picker(c)
+            elif c.opcode in (60,61,38) and len(self.fields)>=3:self._item_picker(c)
         if c.opcode not in self.FRIENDLY_WHO or len(self.fields)<3 or self.raw.isChecked():return
         zbit,which=self.FRIENDLY_WHO[c.opcode];flags=self.fields[0];anim=self.fields[which]
         def signed(v):return v-65536 if v>=32768 else v
@@ -1765,6 +1805,67 @@ class EventEditor(QDialog):
         except ValueError as exc:self.status.setText(str(exc));return
         self.selected=None;self.populate(row)
         self.command_dialog.title.setText(f'{row+1:02d}  {self.describe(self.drafts[self.active][row])}')
+
+    def _event_picker(self,c):
+        """Start / Complete quest event: the game's event list to choose from."""
+        names=script._names.get('events',{})
+        box=self.fields[0]
+        combo=QComboBox();combo.setEditable(True);combo.setMaxVisibleItems(24);combo.setMinimumWidth(320)
+        combo.addItem('(none - only wait for the quest display)',-1)
+        for n in sorted(names):combo.addItem(f'{n} - {names[n]}',n)
+        def show():
+            i=combo.findData(box.value())
+            combo.blockSignals(True)
+            if i>=0:combo.setCurrentIndex(i)
+            else:combo.setEditText(str(box.value()))
+            combo.blockSignals(False)
+        def chosen(i):
+            if combo.itemData(i) is not None and box.value()!=combo.itemData(i):box.setValue(combo.itemData(i))
+        combo.activated.connect(chosen);box.valueChanged.connect(lambda _:show());show()
+        self.form.insertRow(0,'Quest event',combo)
+        wait=QCheckBox('Carry on while its banner shows (do not wait for it)')
+        wait.setChecked(bool(self.fields[1].value()))
+        wait.toggled.connect(lambda on:self.fields[1].setValue(1 if on else 0))
+        self.form.insertRow(1,'',wait)
+        for field in (box,self.fields[1]):self.form.setRowVisible(field,False)
+
+    def _item_picker(self,c):
+        """Item / pickup rows: the game's item list, and what the flag bits mean, as choices."""
+        box=self.fields[0]
+        mask=0xfff if c.opcode==38 else 0x3ff
+        names=script._names.get('items',{})
+        def signed(v):return v-65536 if v>=32768 else v
+        def word():return box.value()&0xffff
+        combo=QComboBox();combo.setEditable(True);combo.setMaxVisibleItems(24);combo.setMinimumWidth(320)
+        for n in sorted(names):combo.addItem(f'{n} - {names[n]}',n)
+        kinds=[(0x1000,'It is a weapon (the weapon table, not the item list)'),(0x2000,'It is a linked reward (the id below is a reward number, not an item)')]
+        if c.opcode==38:kinds=kinds[:1]
+        checks=[]
+        def refresh():
+            value=word();reward=bool(value&0x2000)
+            combo.setEnabled(not reward and not value&0x1000)
+            i=combo.findData(value&mask);combo.blockSignals(True)
+            if i>=0:combo.setCurrentIndex(i)
+            else:combo.setEditText(str(value&mask))
+            combo.blockSignals(False)
+        def set_low(i):
+            data=combo.itemData(i)
+            if data is not None:box.setValue(signed((word()&~mask)|data))
+        combo.activated.connect(set_low)
+        self.form.insertRow(0,'Item' if c.opcode!=38 else 'Pickup item',combo)
+        row=1
+        def flag_box(bit,text):
+            check=QCheckBox(text);check.setChecked(bool(word()&bit))
+            check.toggled.connect(lambda on,b=bit:(box.setValue(signed((word()&~b)|(b if on else 0))),refresh()))
+            return check
+        for bit,text in kinds:
+            self.form.insertRow(row,'',flag_box(bit,text));row+=1
+        if c.opcode==60:
+            self.form.insertRow(row,'',flag_box(0x800,'Keep it: it is not taken from his bag and no message shows'));row+=1
+            self.form.insertRow(row,'',flag_box(0x4000,'Hand-off form (the item moves on to another effect)'));row+=1
+        if c.opcode==61:
+            self.form.insertRow(row,'',flag_box(0x800,'The sequence ends as soon as it is handed over'));row+=1
+        box.valueChanged.connect(lambda _:refresh());refresh()
 
     def _sync_animation_combo(self):
         pack=getattr(self,'_anim_combo',None)
@@ -2594,7 +2695,8 @@ class EventEditor(QDialog):
 
     def _settled(self,point):
         """A position the page gives: kept, its height put on a floor right there."""
-        ground=self._ground(point,reach=64,rise=160)
+        # An entity can stand well above the floor (a man on a chest, 300 up): Tomba beside it is on the floor.
+        ground=self._ground(point,reach=96,rise=640)
         return (point[0],ground[1],point[2]) if ground else point
 
     def _tomba_default(self,start):
@@ -2615,7 +2717,7 @@ class EventEditor(QDialog):
         for turn in (0,30,-30,60,-60,90,-90,120,-120,150,-150,180):
             a=side+math.radians(turn)
             for distance in (self.TOMBA_DISTANCE,self.TOMBA_DISTANCE*0.6,self.TOMBA_DISTANCE*1.4):
-                ground=self._ground((start[0]+distance*math.cos(a),start[1],start[2]+distance*math.sin(a)),reach=96,rise=200)
+                ground=self._ground((start[0]+distance*math.cos(a),start[1],start[2]+distance*math.sin(a)),reach=96,rise=640)
                 if ground is not None:
                     self._tomba_spot=(ground,True);return self._tomba_spot
         self._tomba_spot=((start[0]+self.TOMBA_DISTANCE*math.cos(side),start[1],start[2]+self.TOMBA_DISTANCE*math.sin(side)),False)

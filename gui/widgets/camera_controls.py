@@ -692,7 +692,9 @@ class CameraControls:
         WASD moves rather than moving the camera. Both are measured
         against the scene, not in absolute units - see the module
         docstring."""
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        # Shift is WASD's "faster" in freecam, so a scroll with it held there is
+        # still the wheel's own job, never a pan.
+        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and not self.camera_mode:
             dx, dy = self._scroll_pixels(event)
             if dx or dy:
                 self.pan(dx, dy)

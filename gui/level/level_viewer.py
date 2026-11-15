@@ -24,7 +24,7 @@ import numpy as np
 from OpenGL import GL
 from PyQt6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QIcon, QPainter, QPixmap, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
+    QAction, QActionGroup, QColor, QIcon, QPainter, QPixmap, QRegion, QMatrix4x4, QVector2D, QVector3D, QVector4D)
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
     QOpenGLVertexArrayObject,
@@ -711,6 +711,15 @@ class LevelViewer(SMSTViewer):
         if event.key() == Qt.Key.Key_F and not event.isAutoRepeat():
             self.frame_selection()
             return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.isAutoRepeat():
+            # Enter on a selected warp goes to where it leads (a menu if it has several).
+            chosen = (self.instances[self.selected] if self.selected is not None
+                      and self.selected < len(self.instances) else None)
+            destinations = getattr(chosen, 'warp_destinations', ()) if chosen is not None else ()
+            if destinations:
+                self.warp_requested.emit(destinations[0] if len(destinations) == 1 else None)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def _orbit_target(self):
@@ -2484,10 +2493,17 @@ class LevelViewer(SMSTViewer):
         mix = mix * mix * (3.0 - 2.0 * mix)
         return 1.0 - mix * (1.0 - LevelViewer._obstructed_opacity(distance))
 
+    @staticmethod
+    def _warp_text_opacity(distance):
+        """Fade the destination label in between 8000 and 4000 game units."""
+        amount = min(1.0, max(0.0, (8.0 - distance) / 4.0))
+        return amount * amount * (3.0 - 2.0 * amount)
+
     def _sync_warp_labels(self, depth=None):
         """Small doors, solid nearby and faded as a whole behind distant geometry."""
         widgets = getattr(self, '_warp_text_widgets', [])
         used = 0
+        self._warp_fading = False
         if self.scene is not None and self.show_markers and depth is not None:
             mvp = np.array(self._model_view_projection().data(), dtype=np.float64).reshape(4, 4).T
             eye = np.asarray(self.camera_controls._eye())
@@ -2511,7 +2527,10 @@ class LevelViewer(SMSTViewer):
                 x = round((ndc[0] + 1) * self.width() / 2)
                 y = round((1 - ndc[1]) * self.height() / 2)
                 distance = float(np.linalg.norm(origin - eye))
-                obstructed = self._warp_is_obstructed(
+                # The selected warp is never hidden by what stands in front of it, is drawn last (on top of
+                # the other warps) and a little brighter and bolder.
+                chosen = instance.index == self.selected
+                obstructed = (not chosen) and self._warp_is_obstructed(
                     depth, x - width // 2, y - height, width, height,
                     ndc[2] * 0.5 + 0.5, self.width(), self.height())
                 region = QRegion() if obstructed else QRegion(0, 0, width, height)
@@ -2537,11 +2556,18 @@ class LevelViewer(SMSTViewer):
                 ghost = label.warp_ghost
                 # A broad, continuous proximity fade, with 8-bit alpha rather
                 # than the former coarse 32 steps and close-range cutoff.
-                opacity = round(self._warp_obstructed_opacity(distance) * 255) / 255
-                if label.warp_size != (width, height):
-                    door.setPixmap(label.warp_icon.pixmap(width, height))
+                opacity = 1.0 if chosen else round(self._warp_obstructed_opacity(distance) * 255) / 255
+                if label.warp_size != (width, height, chosen):
+                    pixmap = label.warp_icon.pixmap(width, height)
+                    if chosen:
+                        pixmap = QPixmap(pixmap)
+                        brighten = QPainter(pixmap)
+                        brighten.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+                        brighten.fillRect(pixmap.rect(), QColor(255, 255, 255, 90))
+                        brighten.end()
+                    door.setPixmap(pixmap)
                     door.setFixedSize(width, height)
-                    label.warp_size = width, height
+                    label.warp_size = width, height, chosen
                 ghost_key = (width, height, opacity)
                 if getattr(label, 'warp_ghost_key', None) != ghost_key:
                     faded = QPixmap(width, height)
@@ -2570,26 +2596,63 @@ class LevelViewer(SMSTViewer):
                     ghost.show()
                 # Text follows the whole door's obstruction, rather than a
                 # single centre pixel that can peek around an obstacle.
-                if distance <= 8.0:
+                if distance <= 8.0 or chosen:
                     obstructed = not hidden.isEmpty()
-                    alpha = max(0, min(255, round(255 * (opacity if obstructed else 1.0))))
-                    style = f'color: rgba(255,69,69,{alpha}); background: transparent; font-size: 11px;'
+                    text_opacity = 1.0 if chosen else self._warp_text_opacity(distance) * (opacity if obstructed else 1.0)
+                    alpha = max(0, min(255, round(255 * text_opacity)))
+                    # The depth read-back lags a frame behind a zoom, so for one frame an
+                    # occluded warp can read as clear. Text hides at once but only fades in.
+                    last = getattr(label, 'warp_alpha', None)
+                    label.warp_alpha_target = alpha
+                    if last is not None and getattr(label, 'warp_instance_last', None) == instance.index and alpha > last:
+                        alpha = min(alpha, last + 32)
+                    label.warp_alpha, label.warp_instance_last = alpha, instance.index
+                    if alpha < label.warp_alpha_target: self._warp_fading = True
+                    style = (f'color: rgba(255,130,130,{alpha}); background: transparent; font-size: 12px; font-weight: bold;'
+                             if chosen else
+                             f'color: rgba(255,69,69,{alpha}); background: transparent; font-size: 11px;')
                     if label.styleSheet() != style:
                         label.setStyleSheet(style)
                     text = '\n'.join(texts)
-                    if label.text() != text:
+                    # Text that would run off the right edge goes to the left of
+                    # the door, and if neither side fits it is folded to the room there is.
+                    room_right = self.width() - (x + width // 2 + 4) - 2
+                    room_left = x - width // 2 - 4 - 2
+                    fit = (text, chosen, room_right, room_left)
+                    if getattr(label, 'warp_fit', None) != fit:
+                        label.warp_fit = fit
+                        label.setWordWrap(False)
+                        label.setMinimumSize(0, 0)
+                        label.setMaximumSize(16777215, 16777215)
                         label.setText(text)
                         label.adjustSize()
-                    label.move(x + width // 2 + 4, y - height // 2 - label.height() // 2)
+                        label.warp_side = 'right'
+                        if label.width() > room_right:
+                            if label.width() <= room_left:
+                                label.warp_side = 'left'
+                            else:
+                                label.warp_side = 'right' if room_right >= room_left else 'left'
+                                room = max(60, max(room_right, room_left))
+                                label.setWordWrap(True)
+                                label.setFixedWidth(room)
+                                label.setFixedHeight(label.heightForWidth(room))
+                    left = x + width // 2 + 4
+                    if label.warp_side == 'left':
+                        left = x - width // 2 - 4 - label.width()
+                    label.move(left, y - height // 2 - label.height() // 2)
                     label.setVisible(alpha > 0)
                 else:
                     label.hide()
+                if chosen:
+                    ghost.raise_(); door.raise_(); label.raise_()
                 used += 1
         for label in widgets[used:]:
             label.hide()
             label.warp_door.hide()
             label.warp_ghost.hide()
         self._warp_text_widgets = widgets
+        if self._warp_fading:
+            QTimer.singleShot(16, self.update)
 
     def _badges(self):
         """[(instance index, its box's 8 corners as GL-unit xyzw)] for

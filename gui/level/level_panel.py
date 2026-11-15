@@ -227,6 +227,10 @@ class LevelEditorPanel(QWidget):
             fold_key = QShortcut(QKeySequence(key), self.table)
             fold_key.setContext(Qt.ShortcutContext.WidgetShortcut)
             fold_key.activated.connect(lambda f=fold: self._step_fold(f))
+        for key in ("Return", "Enter"):
+            warp_key = QShortcut(QKeySequence(key), self.table)
+            warp_key.setContext(Qt.ShortcutContext.WidgetShortcut)
+            warp_key.activated.connect(lambda: self.warp_button.isEnabled() and self._go_to_warp())
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.setItemDelegateForColumn(0, RowDelegate(
@@ -713,14 +717,7 @@ class LevelEditorPanel(QWidget):
             target = getattr(self, '_warp_arrival', None)
             if target is not None and target[0] == self.chunk:
                 self._warp_arrival = None
-                from game import warps
-                from pathlib import Path
-                if target[1] < warps.AREAS:
-                    rows = warps.spawns(Path(self.exe_path).read_bytes(), target[1])
-                    if 0 <= target[2] < len(rows):
-                        from gui.level.level_scene import view_point
-                        position = view_point(rows[target[2]][1:4])
-                        self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in position), 2.0)
+                self._frame_arrival(target[1], target[2])
             self.palette.setEnabled(self.viewer.edit_mode)
             self.apply_button.setEnabled(True)
             self.viewer.show_status(
@@ -1461,6 +1458,21 @@ class LevelEditorPanel(QWidget):
                     + f" turned {instance.angle:.0f} deg")
         print("selected: " + "  ".join(bits))
 
+    def _frame_arrival(self, area, arrival):
+        """Fly the camera to where Tomba arrives (native spawn record `arrival`
+        of resident area `area`), close enough to see his surroundings."""
+        from game import warps
+        from pathlib import Path
+        if area >= warps.AREAS or not self.exe_path:
+            return
+        rows = warps.spawns(Path(self.exe_path).read_bytes(), area)
+        if not 0 <= arrival < len(rows):
+            return
+        from gui.level.level_scene import view_point
+        position = view_point(rows[arrival][1:4])
+        self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in position), 2.0)
+        self.summary.setText(f'Arrival {arrival}: {rows[arrival][5] or "area"}.')
+
     def _go_to_warp(self, destination=None):
         from game import warps
         instance = self._instance(self.viewer.selected)
@@ -1503,6 +1515,10 @@ class LevelEditorPanel(QWidget):
         chunk = warps.destination_chunk(number, self.chunk, available)
         if chunk is None:
             self.summary.setText(f'Destination area {number} is not available on this disc.')
+            return
+        if chunk == self.chunk and self.scene is not None and not getattr(self, '_loading', False) and arrival >= 0:
+            # Same level: no reload, just show where the warp ends.
+            self._frame_arrival(number, arrival)
             return
         self._filling = True
         self.area_box.setCurrentIndex(self.area_box.findData(chunk))

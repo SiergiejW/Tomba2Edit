@@ -42,7 +42,9 @@ def spawns(exe, area):
     mine = starts[area]
     if not 0x80000000 <= mine < 0x80200000: return []
     later = sorted({s for s in starts if s > mine})
-    count = (later[0] - mine) // RECORD if later else 16
+    # The last area has no following table to bound it. Its records stay
+    # plausible well past 16 (arrival 0x13 is the Water Temple's deep entry).
+    count = (later[0] - mine) // RECORD if later else 40
     out = []
     section_base = (_at(exe, base, SECTION_BASE + area, 1) or b'\0')[0]
     for k in range(min(count, 64)):
@@ -57,7 +59,7 @@ def spawns(exe, area):
 DESTINATION = 0x800BF83A  # u16: high byte area, low byte arrival index
 
 
-def destinations(exe, overlay, handler, interior=None, area=None, scene=None):
+def destinations(exe, overlay, handler, interior=None, area=None, scene=None, slot=None):
     """Native destinations on reachable paths; conditions remain alternatives.
 
     Follow the same bounded control flow as the event inspector. Only literal
@@ -88,9 +90,26 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None):
             return [room_destination(selector)]
         packed = {10: (1, 30), 12: (19, 0), 13: (0, 10)}.get(selector)
         return [('area', packed[0], packed[1], area_name(packed[0]))] if packed else []
+    # A07's door actors (FUN_A07__8011a398) have no shared-helper call: the
+    # state routine at 0x801199C0 stores actor +3 (the slot) into src_Interior
+    # (0x800BF817) and sets src_InteriorTransition. Only slot 4 (0x80119DA0)
+    # writes an area change; slots 5 and 12 run their own routines.
+    if handler == 0x8011A398 and area == 7 and interior is not None:
+        if interior in (1, 2, 3, 6, 7, 8, 9, 10, 11):
+            return [room_destination(interior)]
     class EntranceFlow(Flow):
         def _table(self, image, at, reg):
             targets = super()._table(image, at, reg)
+            # A jump table indexed by the actor's slot (actor +3, perhaps less a
+            # constant) is one door's own routine, not every door's.
+            if slot is not None and targets:
+                lines = [image.at(at - n * 4) for n in range(1, 24) if at - n * 4 in image]
+                k = next((n for n, i in enumerate(lines) if i.name == 'lbu' and i.imm == 3), None)
+                if k is not None:
+                    shift = next((i.imm for i in reversed(lines[:k])
+                                  if i.name == 'addiu' and i.rs == lines[k].rt and i.imm < 0), 0)
+                    index = slot + shift
+                    return targets[index:index + 1] if 0 <= index < len(targets) else []
             # A06 dispatches all doors through this handler. Following every
             # selector mixes mine/tower warps with unrelated interior doors.
             if (area == 6 and handler == 0x8011FE54 and interior is not None
@@ -108,6 +127,7 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None):
                  7: 6, 8: 6, 9: 5, 10: 5, 11: 3, 12: 7}
         if interior in rooms:
             out.add(room_destination(rooms[interior]))
+    enters_room = False
     for at in flow.preds:
         image = flow.image(at)
         if image is None:
@@ -133,11 +153,25 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None):
                     continue
                 if target_area < AREAS and arrival >= len(spawns(exe, target_area)):
                     continue
-                out.add(('area', target_area, arrival, names[tag]))
+                rows = spawns(exe, target_area) if target_area < AREAS else []
+                section = rows[arrival][5] if arrival < len(rows) else ''
+                out.add(('area', target_area, arrival, names[tag] + (f' - {section}' if section else '')))
+        elif ins.name == 'sb' and interior is not None:
+            # src_Interior (0x800BF817) written: this routine enters a room - the
+            # slot's own, as the door controllers store actor +3 there.
+            addresses = flow.before(ins.rs, at, 0, set())
+            if addresses and all(v is not None and (v[0] + ins.imm) & 0xffffffff == 0x800BF817
+                                 for v in addresses):
+                enters_room = True
         elif ins.name == 'jal' and interior is not None:
             # Verified shared entry helper, US retail.
             if ins.target in (0x800732C0, 0x80073328):
                 out.add(room_destination(interior))
+    if enters_room:
+        out.add(room_destination(interior))
+        if scene is None:
+            # Outside, a same-area arrival is the way back out of that room, not a destination.
+            out = {d for d in out if not (d[0] == 'area' and d[1] == area)}
     return sorted(out)
 
 

@@ -2899,10 +2899,11 @@ class LevelScene:
                                and np.linalg.norm(np.asarray(a.position) - instance.game_position) < 1]
                     interior = (matches[0].reward if len(matches) == 1 else
                                 instance.placement.slot if instance.placement is not None else None)
-                    key = handler, interior, instance.scene
+                    slot = instance.placement.slot if instance.placement is not None else None
+                    key = handler, interior, instance.scene, slot
                     if key not in resolved:
                         resolved[key] = warps.destinations(exe, overlay, handler, interior,
-                                                           area=self.area_index, scene=instance.scene)
+                                                           area=self.area_index, scene=instance.scene, slot=slot)
                     destinations = resolved[key]
                     instance.warp_destinations = tuple(destinations)
                     instance.warp_labels = tuple(dict.fromkeys(warps.destination_label(d) for d in destinations))

@@ -620,7 +620,12 @@ def zippo_position(tomba, tomba_yaw, flags=0, offset=None):
     else:
         radius, height = 0xBE, 0x50
         turn = (0, 0x800, 0xC00, 0x400)[flags & 3] + (0x200 if flags & 0x20 else 0)
-    a = ((tomba_yaw + turn) & 0xFFF) * 2 * math.pi / 4096
+    # Flag 0x10 (f_UpdateScriptActorConversationState): the angle is measured
+    # from the camera, src_CameraRotX + 0x800, not from Tomba's facing. The
+    # conversation camera stands behind Tomba, looking at the one he talks
+    # to, so that base is Tomba's back - never the entity in front of him.
+    base = tomba_yaw + (0x800 if flags & 0x10 else 0)
+    a = ((base + turn) & 0xFFF) * 2 * math.pi / 4096
     x, h, d = tomba
     return (x + radius * math.cos(a), h - height - 0x46, d - radius * math.sin(a))
 
