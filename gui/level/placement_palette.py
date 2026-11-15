@@ -8,13 +8,14 @@ PRESETS = (("chest", "Chest", "Red chest"),
            ("crystal", "Crystal", "100 AP crystal"),
            ("item", "Item", "Red Key"),
            ("apple", "Health", "Red apple"),
-           ("weapon", "Weapon", "Wooden Boomerang"))
+           ("weapon", "Weapon", "Wooden Boomerang"),
+           ("npc", "NPC", "New NPC (model chosen on drop)"))
 
 
 def preset_icon(kind):
     """Shared palette art, bundled with the app."""
     from icons import icons
-    return QIcon(getattr(icons, "icon_palette_" + kind))
+    return QIcon(getattr(icons, "icon_palette_" + kind, icons.icon_palette_item))
 
 
 class PlacementPalette(QListWidget):

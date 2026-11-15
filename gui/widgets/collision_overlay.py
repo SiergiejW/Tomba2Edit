@@ -43,6 +43,7 @@ LINE_WIDTH = 2.0
 FILL_DEPTH = 40.0           # how far a floor's curtain hangs below it, a ceiling's rises above
 ARROW_HEAD = 90.0           # a lane-switch arrow's head, world units
 POST = 300.0                # the post a lane-switch arrow stands on
+TWO_WAY_SHIFT = 55.0        # each half of the two-way arrow, off the post; shafts overlap
 
 # Colours, by what a surface is. Floors and walls keep the level editor's green and red.
 PLAIN_SURFACE = (0.3, 0.9, 0.4)
@@ -135,8 +136,8 @@ def legend_html(style=None):
     else:
         rows.append(((0.9, 0.5, 0.5), "hue by the plane's gradient; grey = flat"))
     if style.junctions:
-        rows += [((1.0, 0.15, 0.9), "direction hint: destination lane (Down input)" if style.junction_down else "direction hint: destination lane (Up input)"),
-                 ((1.0, 0.65, 0.0), "source path; one pair per location, above standing height")]
+        rows += [((1.0, 0.15, 0.9), "lane switch: the plane walked, both ways"),
+                 ((1.0, 0.65, 0.0), "lane switch: into the plane it switches to")]
     if style.links:
         rows += [(LINK_COLOR, "plane end leading to another plane"),
                  (REDIRECT_COLOR, "cell that redirects to another plane")]
@@ -393,18 +394,33 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_mo
                 if any(np.linalg.norm(np.array(h[0]) - hint[0]) <= 110 for h in c)]
         merged = [hint] + [h for c in near for h in c]
         clusters = [c for c in clusters if not any(c is n for n in near)] + [merged]
-    direction = 'down' if style.junction_down else 'up'
+    # As the game shows it: purple both ways along the main plane (the one
+    # whose line carries the row of switch cells), yellow one way into the
+    # plane it switches to, pointing away from the switch.
     for cluster in clusters:
-        choices = [h for h in cluster if h[4].direction == direction] or cluster
-        a, b, toward, forward, j, entry, index = min(choices, key=lambda h: h[5].index)
-        centre = np.mean([h[0] for h in choices], axis=0)
+        counts = {}
+        for h in cluster:
+            counts[h[5].index] = counts.get(h[5].index, 0) + 1
+        main = min(counts, key=lambda i: (-counts[i], i))
+        mains = [h for h in cluster if h[5].index == main]
+        centre = np.mean([h[0] for h in cluster], axis=0)
         top = centre + (0, POST, 0)
-        # Separate overlapping faces by only two game units, keeping the
-        # pair centred at the same standing-height hint position.
-        _native_arrow(lines, arrow_model, 11, top + (0, 1, 0), toward)
-        # Tomba walks the current plane either way, so its arrow goes both.
-        _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), forward)
-        _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), (-forward[0], -forward[1]))
+        fx, fz = mains[0][3]
+        norm = math.hypot(fx, fz) or 1.0
+        shift = np.array((fx, 0.0, fz)) / norm * TWO_WAY_SHIFT
+        # Two copies back to back, shafts overlapping over the post.
+        for sign in (1, -1):
+            _native_arrow(lines, arrow_model, 11, top + (0, 1, 0) + sign * shift,
+                          (sign * fx, sign * fz))
+        dest = geoms.get(mains[0][4].dest)
+        if dest is None:
+            continue
+        ends = [np.array(game_to_view(dest.x1, 0, dest.z1)), np.array(game_to_view(dest.x2, 0, dest.z2))]
+        far = max(ends, key=lambda p: math.hypot(p[0] - centre[0], p[2] - centre[2]))
+        tx, tz = dest.dir[1], dest.dir[0]
+        if tx * (far[0] - centre[0]) + tz * (far[2] - centre[2]) < 0:
+            tx, tz = -tx, -tz
+        _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), (tx, tz))
     return lines
 
 

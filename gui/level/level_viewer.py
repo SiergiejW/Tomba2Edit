@@ -1427,7 +1427,7 @@ class LevelViewer(SMSTViewer):
             event.ignore()
             return
         kind = bytes(event.mimeData().data(MIME)).decode("ascii", errors="replace")
-        if kind not in ("chest", "crystal", "item", "apple", "weapon"):
+        if kind not in ("chest", "crystal", "item", "apple", "weapon", "npc"):
             event.ignore()
             return
         p = event.position()
@@ -2553,6 +2553,12 @@ class LevelViewer(SMSTViewer):
                     label = QLabel(self)
                     label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     label.setStyleSheet('color: #ff4545; background: transparent; font-size: 11px;')
+                    # Opacity is an effect, set before the label is ever shown: a stylesheet's
+                    # alpha is applied late, which let the first frame draw at full strength.
+                    effect = QGraphicsOpacityEffect(label)
+                    effect.setOpacity(0.0)
+                    label.setGraphicsEffect(effect)
+                    label.warp_effect = effect
                     from icons import icons
                     door = QLabel(self)
                     door.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -2628,11 +2634,12 @@ class LevelViewer(SMSTViewer):
                         shown = target
                     label.warp_shown, label.warp_shown_for = shown, instance.index
                     alpha = max(0, min(255, round(shown)))
-                    style = (f'color: rgba(255,130,130,{alpha}); background: transparent; font-size: 12px; font-weight: bold;'
+                    style = ('color: #ff8282; background: transparent; font-size: 12px; font-weight: bold;'
                              if chosen else
-                             f'color: rgba(255,69,69,{alpha}); background: transparent; font-size: 11px;')
+                             'color: #ff4545; background: transparent; font-size: 11px;')
                     if label.styleSheet() != style:
                         label.setStyleSheet(style)
+                    label.warp_effect.setOpacity(alpha / 255.0)
                     text = '\n'.join(texts)
                     # Text that would run off the right edge goes to the left of
                     # the door, and if neither side fits it is folded to the room there is.

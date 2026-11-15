@@ -1354,6 +1354,15 @@ class EventEditor(QDialog):
             self.path_preview.set([],None,self.start_position(),self.others(),'No event page')
             self.status.setText('No statically resolved native scripts were found for this entity. '
                 'Its behaviour is in its handler code (Native code tab); the Model tab shows its model.')
+            placement=getattr(self.instance,'placement',None)
+            sign=self.panel.sign_for(placement) if placement is not None and hasattr(self.panel,'sign_for') else None
+            if sign is not None:
+                shown=sign[1].replace(chr(10),' / ')
+                self.status.setText(f'Signpost: Tomba reads it with the action button and sign text {sign[0]} shows: “{shown}”. '
+                    'The sign bank is System chunk file 2; the slot picks the entry (resident table 0x800A4CA8).')
+                self.code_preview.setPlainText(f'Signpost (resident handler 0x80073CD8), slot {placement.slot}.'+chr(10)*2+
+                    f'Shows sign text {sign[0]}:'+chr(10)*2+sign[1])
+                self.preview_tabs.setCurrentWidget(self.code_tab)
             self.update_enabled();return
         self.fill_conditions(binding)
         if index not in self.drafts:

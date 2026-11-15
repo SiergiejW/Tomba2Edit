@@ -1449,6 +1449,9 @@ class LevelEditorPanel(QWidget):
                         else f"handler {placement.handler}")
             bits.append(f"record {placement.index} of table {placement.table}"
                         f" @ 0x{placement.offset:X} in the overlay")
+            sign = self.sign_for(placement)
+            if sign is not None:
+                bits.append(f"signpost, shows sign text {sign[0]}: " + repr(sign[1]))
         if instance.room is not None:
             bits.append(f"room MDAT {instance.room}")
         if instance.sources:
@@ -1457,6 +1460,19 @@ class LevelEditorPanel(QWidget):
         bits.append("at ({:.0f}, {:.0f}, {:.0f})".format(*instance.game_position)
                     + f" turned {instance.angle:.0f} deg")
         print("selected: " + "  ".join(bits))
+
+    def sign_for(self, placement):
+        """(id, text) a signpost object (resident handler 0x80073CD8) shows, or None."""
+        from game import signs
+        if placement.handler != signs.HANDLER or not self.exe_path or not self.dat_path:
+            return None
+        try:
+            if getattr(self, '_sign_bank', None) is None:
+                self._sign_bank = signs.sign_bank(self.dat_path, self.idx_path)
+            from pathlib import Path
+            return signs.sign_text(Path(self.exe_path).read_bytes(), self._sign_bank, placement.slot)
+        except (OSError, ValueError):
+            return None
 
     def _frame_arrival(self, area, arrival):
         """Fly the camera to where Tomba arrives (native spawn record `arrival`
@@ -1833,10 +1849,62 @@ class LevelEditorPanel(QWidget):
         self._show_details(selected)
         self._sync_motion_animation(self.viewer.animate_action.isChecked())
 
+    def _add_npc(self, point):
+        """Drop a new NPC: pick one of the area's models, write its handler
+        and scene record into the overlay (game/new_npc.py), reload."""
+        import struct
+        from pathlib import Path
+        from game import new_npc
+        scene = self.scene
+        try:
+            if self.view_box.currentData() is not None:
+                raise ValueError("New NPCs go in the Area view, not inside a room.")
+            if scene.world is None or not scene.overlay_path:
+                raise ValueError("The area's actors must be loaded first.")
+            if not self.apply_changes():
+                return
+            overlay_path = scene.overlay_path
+            exe = Path(self.exe_path).read_bytes()
+            overlay = Path(overlay_path).read_bytes()
+            handlers = {a.handler for a in scene.world.actors if a.parts and not a.dead}
+            names = {h: scene.handler_name(h) for h in handlers}
+            choices = new_npc.model_choices(exe, overlay, handlers, names)
+            if not choices:
+                raise ValueError("This area has no NPC model the editor can reuse.")
+            labels = [c.describe() for c in choices]
+            label, ok = QInputDialog.getItem(
+                self, "New NPC", "Model (from this area's own NPCs):", labels, 0, False)
+            if not ok:
+                return
+            model = choices[labels.index(label)]
+            spawner = scene._scene_spawner()
+            tables = scene.world._scene_tables(spawner) if spawner else []
+            table = next((t for t in tables
+                          if scene.world._records_at(scene.world.mem.read(t, 4)) is not None), None)
+            if table is None:
+                raise ValueError("This area's scene record lists were not found.")
+            pos, _plane = scene.pickup_position(point, 0, snap_ground=True, view=None)
+            position = level_scene.view_point(pos)
+            template = next((r for r in new_npc.read_list(overlay, scene.world.mem.read(table, 4))
+                             if struct.unpack_from("<I", r, 12)[0] == model.handler), None)
+            overlay, handler, variant = new_npc.add_npc(
+                overlay, table - new_npc.BASE, 0, model, position, template=template)
+            self._write_placement_files({overlay_path: overlay})
+            self._placement_files[os.path.basename(overlay_path)] = overlay
+            self._scene_memory_cache.clear()
+        except (ValueError, OSError) as exc:
+            QMessageBox.information(self, "Couldn't place an NPC", str(exc))
+            return
+        self.load_area(self.chunk, keep_camera=True, keep_view=self.view_box.currentData())
+        self.viewer.show_status(
+            f"NPC added (variant {variant}); select it and open Events to edit its talk.", done=True)
+
     def _add_pickup(self, category, point):
         if (self.scene is None or not self.viewer.edit_mode
                 or getattr(self, "_loading", False)):
             return
+        if category == "npc":
+            return self._add_npc(point)
         from game import pickup_edit
         try:
             overlays = self._all_overlay_paths()

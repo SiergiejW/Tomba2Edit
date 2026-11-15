@@ -39,7 +39,9 @@ CUSTOM_TAG_AT = CUSTOM_OFFSET + CUSTOM_COUNT * pickup_art.REWARD.size
 CUSTOM_END = CUSTOM_TAG_AT + len(CUSTOM_TAG)
 TABLES_OFFSET = (CUSTOM_END + 0xF) & ~0xF
 WINDOW_LIMIT = WINDOW_END - game_build.US_OVERLAY_BASE
-TABLES_LIMIT = EVENT_START - game_build.US_OVERLAY_BASE
+# New NPCs (game/new_npc.py) hold the 4 KB just below the event region.
+NPC_REGION_SIZE = 0x1000
+TABLES_LIMIT = EVENT_START - NPC_REGION_SIZE - game_build.US_OVERLAY_BASE
 
 # The first layout put the reward table at overlay +0x70000 and a copy in
 # MAIN.EXE. That is inside the resident System chunk: loading any padded
