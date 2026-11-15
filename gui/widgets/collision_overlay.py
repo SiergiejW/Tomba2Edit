@@ -385,14 +385,14 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_mo
     # The game has one player-following controller with two model parts,
     # not a pair per table cell. Collapse adjacent/reciprocal records into
     # one editor hint location, with an explicit selected input direction.
+    # Linked through any member: a row of switch cells is one location even
+    # when its ends are further apart than the reach (Golden Tower's five).
     clusters = []
     for hint in hints:
-        a = hint[0]
-        cluster = next((c for c in clusters if np.linalg.norm(np.array(c[0][0]) - a) <= 110), None)
-        if cluster is None:
-            clusters.append([hint])
-        else:
-            cluster.append(hint)
+        near = [c for c in clusters
+                if any(np.linalg.norm(np.array(h[0]) - hint[0]) <= 110 for h in c)]
+        merged = [hint] + [h for c in near for h in c]
+        clusters = [c for c in clusters if not any(c is n for n in near)] + [merged]
     direction = 'down' if style.junction_down else 'up'
     for cluster in clusters:
         choices = [h for h in cluster if h[4].direction == direction] or cluster
@@ -402,7 +402,9 @@ def add_scld(lines, entries, bounds=None, style=None, all_entries=None, arrow_mo
         # Separate overlapping faces by only two game units, keeping the
         # pair centred at the same standing-height hint position.
         _native_arrow(lines, arrow_model, 11, top + (0, 1, 0), toward)
+        # Tomba walks the current plane either way, so its arrow goes both.
         _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), forward)
+        _native_arrow(lines, arrow_model, 12, top - (0, 1, 0), (-forward[0], -forward[1]))
     return lines
 
 

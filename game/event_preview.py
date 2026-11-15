@@ -151,6 +151,20 @@ def animation_frames(scene,instance,command,max_ticks=120,animations=None,previo
 
 TOMBA_BONES = 0x800A3FA8   # 17-bone tree (parent, x, y, z)
 
+def tomba_catalogue(scene):
+    """[(id, ticks, loops, name)] for every animation Tomba's verified US table holds."""
+    from game import game_build
+    if game_build.current().name!='us-retail':raise ValueError('Tomba animation list requires the verified US table.')
+    from formats.animation import anmp_parser,sequences
+    exe=Path(scene.exe_path).read_bytes()
+    where=getattr(scene,'resident',{}).get(4)
+    if not where:raise ValueError('Tomba’s animation file (resident 4) is not in this scene.')
+    start,(offset,size)=where
+    anmp=anmp_parser.load_anmp(scene.dat_path,start+offset,size)
+    bank=sequences.tomba_bank([('MAIN.EXE',exe)],anmp,4)
+    if bank is None:raise ValueError('Unverified executable or ANMP; Tomba’s animations are not guessed.')
+    return sorted((c.id,c.duration,c.loop_start is not None,c.name or '') for c in bank.clips)
+
 def tomba_frames(scene,animation,max_ticks=240):
     """Tomba's model and one scripted animation, posed from the verified
     US table (f_SetTombaAnimation's IDs). Returns a dict for SMSTViewer:

@@ -461,6 +461,8 @@ class ViewerDispatchMixin:
                                     chunk_index, merge_common=True)
                                 self.anmp_viewer.set_approvals(
                                     self._approved_pairings())
+                                self.anmp_viewer.set_pose_names(
+                                    self.pose_name_of, self.rename_pose)
                                 self.anmp_viewer.set_skeleton_types(
                                     self._skeleton_types())
                                 self.anmp_viewer.set_skeleton_sources(

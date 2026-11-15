@@ -73,6 +73,13 @@ throw your work away.
   this is only for areas that have no MDAT or whose level wants a different
   name. Keys are the hex chunk number.
 
+```json
+  "poses": {"3f7a9c1e5b0d2468": {"0": "Stand", "4": "Jump start"}}
+```
+
+- `poses` — names for poses inside an ANMP, typed in the ANMP tab. Keyed by
+  the ANMP's content hash, then pose index.
+
 ## Builds
 
 `us-retail.json` is SCUS-94454 and `us-demo.json` the US standalone demo. Other

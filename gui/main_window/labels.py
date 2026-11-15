@@ -102,6 +102,20 @@ class LabelsMixin:
         apply_labels_flat(self)
         self._refresh_edit_status()
 
+    def pose_name_of(self, key, index):
+        return self.labels.pose_name(key, index) if self.labels else ""
+
+    def rename_pose(self, key, index, name):
+        """Name a pose of an ANMP; stored in the labels file like any name."""
+        if self.labels is None:
+            self.labels = labels_module.LabelSet(
+                name=os.path.basename(os.path.dirname(self.dat_file or "")) or "Untitled",
+                build="custom")
+            self.labels_override = self.labels
+        self.labels.rename_pose(key, index, name)
+        self.labels_dirty = True
+        self._refresh_edit_status()
+
     def export_labels_dialog(self):
         """Write the names currently on the tree out as a labels file."""
         if self.labels is None:

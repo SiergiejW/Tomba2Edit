@@ -120,6 +120,22 @@ class LabelSet:
     # (chunk index, file index) -> content hash, for the build this set
     # was written against. See by_slot().
     slots: dict = field(default_factory=dict)
+    # ANMP content hash -> {pose index: name}. Keyed like entries, so a
+    # name reaches every copy of the file.
+    poses: dict = field(default_factory=dict)
+
+    def pose_name(self, content, index):
+        return self.poses.get(content, {}).get(index, "")
+
+    def rename_pose(self, content, index, name):
+        """Name a pose of one ANMP; empty clears it."""
+        name = name.strip()
+        if name:
+            self.poses.setdefault(content, {})[index] = name
+        elif content in self.poses:
+            self.poses[content].pop(index, None)
+            if not self.poses[content]:
+                del self.poses[content]
 
     def __len__(self):
         return len(self.entries)
@@ -257,7 +273,22 @@ def load(path):
         areas=_expand_areas(raw.get("areas") or {}, path),
         bins={str(k).upper(): str(v) for k, v in (raw.get("bins") or {}).items()},
         slots=_expand_slots(raw.get("slots") or {}),
+        poses=_expand_poses(raw.get("poses") or {}),
     )
+
+
+def _expand_poses(raw):
+    """The "poses" table - ANMP content hash to {pose index: name}."""
+    out = {}
+    for content, names in raw.items():
+        for key, name in (names or {}).items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            if str(name).strip():
+                out.setdefault(str(content), {})[index] = str(name).strip()
+    return out
 
 
 def _expand_slots(raw):
@@ -444,7 +475,8 @@ def rekey_by_content(label_set, idx_path, dat_path):
         name=label_set.name, build=label_set.build, serial=label_set.serial,
         source=label_set.source, dat_size=label_set.dat_size,
         path=label_set.path, entries=merged,
-        areas=dict(label_set.areas), bins=dict(label_set.bins))
+        areas=dict(label_set.areas), bins=dict(label_set.bins),
+        poses={c: dict(n) for c, n in label_set.poses.items()})
     return rekeyed, conflicts, orphaned
 
 
@@ -475,6 +507,8 @@ def save(label_set, path, keep_existing=True):
         "areas": {f"{index:02X}": name
                   for index, name in sorted(label_set.areas.items())},
         "bins": dict(sorted(label_set.bins.items())),
+        "poses": {c: {str(i): n for i, n in sorted(names.items())}
+                  for c, names in sorted(label_set.poses.items())},
         "entries": [
             {
                 "content": label.content,

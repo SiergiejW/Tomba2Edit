@@ -2483,6 +2483,21 @@ class LevelViewer(SMSTViewer):
         return bool(np.count_nonzero(valid & (z > samples + 0.000002)) > np.count_nonzero(valid) / 2)
 
     @staticmethod
+    def _warp_obstruction_fraction(depth, x, y, width, height, z, screen_width, screen_height):
+        """How much of the symbol stands behind geometry, 0..1 - the same nine samples
+        as _warp_is_obstructed, but a continuous amount, so text does not jump between
+        two opacities as the camera moves."""
+        if depth is None:
+            return 0.0
+        dh, dw = depth.shape
+        px = np.floor((x + width * np.array([0.25, 0.5, 0.75])) * dw / screen_width).astype(int)
+        py = dh - 1 - np.floor((y + height * np.array([0.25, 0.5, 0.75])) * dh / screen_height).astype(int)
+        valid = ((px[None, :] >= 0) & (px[None, :] < dw) & (py[:, None] >= 0) & (py[:, None] < dh))
+        samples = depth[np.clip(py, 0, dh - 1)[:, None], np.clip(px, 0, dw - 1)[None, :]]
+        count = np.count_nonzero(valid)
+        return float(np.count_nonzero(valid & (z > samples + 0.000002)) / count) if count else 0.0
+
+    @staticmethod
     def _obstructed_opacity(distance):
         return 0.5 / (1.0 + (distance / 12.0) ** 2)
 
@@ -2503,7 +2518,7 @@ class LevelViewer(SMSTViewer):
         """Small doors, solid nearby and faded as a whole behind distant geometry."""
         widgets = getattr(self, '_warp_text_widgets', [])
         used = 0
-        self._warp_fading = False
+        self._warp_easing = False
         if self.scene is not None and self.show_markers and depth is not None:
             mvp = np.array(self._model_view_projection().data(), dtype=np.float64).reshape(4, 4).T
             eye = np.asarray(self.camera_controls._eye())
@@ -2527,10 +2542,10 @@ class LevelViewer(SMSTViewer):
                 x = round((ndc[0] + 1) * self.width() / 2)
                 y = round((1 - ndc[1]) * self.height() / 2)
                 distance = float(np.linalg.norm(origin - eye))
-                # The selected warp is never hidden by what stands in front of it, is drawn last (on top of
-                # the other warps) and a little brighter and bolder.
+                # The selected warp fades with distance and obstruction like the rest, but is drawn
+                # last (on top of the other warps) and a little brighter and bolder.
                 chosen = instance.index == self.selected
-                obstructed = (not chosen) and self._warp_is_obstructed(
+                obstructed = self._warp_is_obstructed(
                     depth, x - width // 2, y - height, width, height,
                     ndc[2] * 0.5 + 0.5, self.width(), self.height())
                 region = QRegion() if obstructed else QRegion(0, 0, width, height)
@@ -2556,7 +2571,7 @@ class LevelViewer(SMSTViewer):
                 ghost = label.warp_ghost
                 # A broad, continuous proximity fade, with 8-bit alpha rather
                 # than the former coarse 32 steps and close-range cutoff.
-                opacity = 1.0 if chosen else round(self._warp_obstructed_opacity(distance) * 255) / 255
+                opacity = round(self._warp_obstructed_opacity(distance) * 255) / 255
                 if label.warp_size != (width, height, chosen):
                     pixmap = label.warp_icon.pixmap(width, height)
                     if chosen:
@@ -2596,18 +2611,23 @@ class LevelViewer(SMSTViewer):
                     ghost.show()
                 # Text follows the whole door's obstruction, rather than a
                 # single centre pixel that can peek around an obstacle.
-                if distance <= 8.0 or chosen:
-                    obstructed = not hidden.isEmpty()
-                    text_opacity = 1.0 if chosen else self._warp_text_opacity(distance) * (opacity if obstructed else 1.0)
-                    alpha = max(0, min(255, round(255 * text_opacity)))
-                    # The depth read-back lags a frame behind a zoom, so for one frame an
-                    # occluded warp can read as clear. Text hides at once but only fades in.
-                    last = getattr(label, 'warp_alpha', None)
-                    label.warp_alpha_target = alpha
-                    if last is not None and getattr(label, 'warp_instance_last', None) == instance.index and alpha > last:
-                        alpha = min(alpha, last + 32)
-                    label.warp_alpha, label.warp_instance_last = alpha, instance.index
-                    if alpha < label.warp_alpha_target: self._warp_fading = True
+                if distance <= 8.0:
+                    fraction = self._warp_obstruction_fraction(
+                        depth, x - width // 2, y - height, width, height, ndc[2] * 0.5 + 0.5,
+                        self.width(), self.height())
+                    text_opacity = self._warp_text_opacity(distance) * (1.0 - fraction * (1.0 - opacity))
+                    # Eased toward its target, so a change in what the depth read-back sees is a fade, not a jump.
+                    target = 255.0 * text_opacity
+                    shown = getattr(label, 'warp_shown', None)
+                    if shown is None or getattr(label, 'warp_shown_for', None) != instance.index:
+                        shown = target
+                    elif abs(target - shown) > 1.0:
+                        shown += max(-48.0, min(48.0, target - shown))
+                        self._warp_easing = True
+                    else:
+                        shown = target
+                    label.warp_shown, label.warp_shown_for = shown, instance.index
+                    alpha = max(0, min(255, round(shown)))
                     style = (f'color: rgba(255,130,130,{alpha}); background: transparent; font-size: 12px; font-weight: bold;'
                              if chosen else
                              f'color: rgba(255,69,69,{alpha}); background: transparent; font-size: 11px;')
@@ -2643,15 +2663,17 @@ class LevelViewer(SMSTViewer):
                     label.setVisible(alpha > 0)
                 else:
                     label.hide()
+                    label.warp_shown = None
                 if chosen:
                     ghost.raise_(); door.raise_(); label.raise_()
                 used += 1
         for label in widgets[used:]:
             label.hide()
+            label.warp_shown = None
             label.warp_door.hide()
             label.warp_ghost.hide()
         self._warp_text_widgets = widgets
-        if self._warp_fading:
+        if self._warp_easing:
             QTimer.singleShot(16, self.update)
 
     def _badges(self):

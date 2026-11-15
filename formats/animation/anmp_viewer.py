@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from formats.models import gltf_export
 from formats.animation import pairings
+from game.labels import content_key
 from formats.animation import skeleton_tree as skeleton
 from gui.widgets import export_dialog
 from gui.widgets import panel_title
@@ -92,7 +93,12 @@ class ANMPViewer(QWidget):
         # the disc is open, since resolving them to bone tables needs
         # the overlays - see formats/animation/pairings.py.
         self._approvals = {}
-        self._variations = {}         # spare group -> the limb it replaces
+        # Pose names: get(key, index) -> str, put(key, index, name); set
+        # by MainWindow from the labels file. _pose_key is the ANMP's hash.
+        self._pose_get = None
+        self._pose_put = None
+        self._pose_key = None
+        self._variations = {}       # spare group -> the limb it replaces
         self._spanning = {}           # bone -> the group long enough for it
         self._hierarchy = ()
         self._named_hierarchy = False
@@ -138,7 +144,11 @@ class ANMPViewer(QWidget):
         self.frames_table.setHorizontalHeaderLabels(["Frame", "Limbs", "Tag", "Offset"])
         self.frames_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.frames_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.frames_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Only the Name cells are editable (per-item flags).
+        self.frames_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.frames_table.itemChanged.connect(self._on_pose_item_changed)
         self.frames_table.verticalHeader().setVisible(False)
         self.frames_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents)
@@ -348,6 +358,38 @@ class ANMPViewer(QWidget):
         """{(animation, model): (bones, table)} already judged by eye."""
         self._approvals = dict(approved or {})
 
+    def set_pose_names(self, get, put):
+        self._pose_get, self._pose_put = get, put
+
+    def pose_name(self, index):
+        if self._pose_get is None or not self._pose_key:
+            return ""
+        return self._pose_get(self._pose_key, index) or ""
+
+    def pose_text(self, index):
+        """"3" or "3 · Wave" - for anywhere a pose is mentioned."""
+        name = self.pose_name(index)
+        return f"{index} · {name}" if name else str(index)
+
+    def _on_pose_item_changed(self, item):
+        if item.column() != 1 or self._pose_put is None or not self._pose_key:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if index is None:
+            return
+        self._pose_put(self._pose_key, index, item.text())
+        rows = self.frames_table.selectionModel().selectedRows()
+        self._fill_frames()
+        if rows:
+            self.frames_table.blockSignals(True)
+            self.frames_table.selectRow(rows[0].row())
+            self.frames_table.blockSignals(False)
+        self._update_clip_names()
+
+    def _update_clip_names(self):
+        if self._clip is not None:
+            self._show_clip_position(self._where)
+
     def set_skeleton_types(self, names):
         """{signature: "Type A"} - the disc's shape catalogue, so the
         chooser can name a skeleton by what kind of rig it is rather
@@ -402,6 +444,12 @@ class ANMPViewer(QWidget):
         self.play_button.setChecked(False)
         self._timer.stop()
         self._source = (dat_file_path, address, size)
+        try:
+            with open(dat_file_path, "rb") as f:
+                f.seek(address)
+                self._pose_key = content_key(f.read(size))
+        except OSError:
+            self._pose_key = None
         self._area_membership = area_membership or {}
         self._current_area = current_area
         self._preferred = list(preferred or [])
@@ -462,25 +510,31 @@ class ANMPViewer(QWidget):
         clip = self._clip
         frames = ([self._frames_by_id[s.pose] for s in clip.steps]
                   if clip else self.anmp.frames)
-        self.frames_table.setColumnCount(6 if clip else 4)
+        self.frames_table.setColumnCount(7 if clip else 5)
         self.frames_table.setHorizontalHeaderLabels(
-            ["Pose", "Limbs", "Tag", "Offset", "Ticks", "Transition"]
-            if clip else ["Pose", "Limbs", "Tag", "Offset"])
+            ["Pose", "Name", "Limbs", "Tag", "Offset", "Ticks", "Transition"]
+            if clip else ["Pose", "Name", "Limbs", "Tag", "Offset"])
         self.frames_table.setRowCount(len(frames))
         for row, f in enumerate(frames):
-            self.frames_table.setItem(row, 0, QTableWidgetItem(str(f.index)))
+            index_item = QTableWidgetItem(str(f.index))
+            index_item.setFlags(index_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.frames_table.setItem(row, 0, index_item)
+            name_item = QTableWidgetItem(self.pose_name(f.index))
+            name_item.setData(Qt.ItemDataRole.UserRole, f.index)
+            name_item.setToolTip("Double-click to name this pose")
+            self.frames_table.setItem(row, 1, name_item)
             limbs = f"{f.limb_count}" + (" + root" if f.root else "")
-            self.frames_table.setItem(row, 1, QTableWidgetItem(limbs))
+            self._ro_item(row, 2, limbs)
             tag = f"0x{f.tag:02X}" + ("  *" if f.flagged else "")
             item = QTableWidgetItem(tag)
             if f.flagged:
                 item.setToolTip("bit 6 is set: this frame carries a scale "
                                 "for every limb as well as a rotation")
-            self.frames_table.setItem(row, 2, item)
-            self.frames_table.setItem(row, 3, QTableWidgetItem(f"0x{f.offset:X}"))
+            self._ro_item(row, 3, item)
+            self._ro_item(row, 4, f"0x{f.offset:X}")
             if clip:
                 step = clip.steps[row]
-                self.frames_table.setItem(row, 4, QTableWidgetItem(str(step.ticks)))
+                self._ro_item(row, 5, str(step.ticks))
                 kind = "Tween" if step.blend else "Hold"
                 if row == len(clip.steps) - 1:
                     kind += (f" / loop to step {clip.loop_start + 1}"
@@ -490,8 +544,14 @@ class ANMPViewer(QWidget):
                     f"Step {row + 1} @ 0x{step.address:08X}\n"
                     f"Flags 0x{step.flags:04X}; payloads "
                     f"0x{step.payload2:04X}, 0x{step.payload4:04X}")
-                self.frames_table.setItem(row, 5, item)
+                self._ro_item(row, 6, item)
         self.frames_table.blockSignals(False)
+
+    def _ro_item(self, row, column, item):
+        if isinstance(item, str):
+            item = QTableWidgetItem(item)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.frames_table.setItem(row, column, item)
 
     def _on_bank_changed(self, index):
         self.play_button.setChecked(False)
@@ -1553,7 +1613,7 @@ class ANMPViewer(QWidget):
         self.viewer.set_pose(transforms, self._pivots)
         self._where = tick
         self.frame_label.setText(
-            f"Pose {frame.index} · step {row + 1}/{len(clip.steps)} · "
+            f"Pose {self.pose_text(frame.index)} · step {row + 1}/{len(clip.steps)} · "
             f"tick {tick + 1}/{clip.duration}")
         self.frames_table.blockSignals(True)
         self.frames_table.selectRow(row)

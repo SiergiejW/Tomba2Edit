@@ -56,7 +56,38 @@ def spawns(exe, area):
     return out
 
 
+SECTIONS = {}  # (area, arrival) -> the section name of that spawn record, noted as destinations are found
 DESTINATION = 0x800BF83A  # u16: high byte area, low byte arrival index
+
+
+def _field_destinations(flow, image, at, store):
+    """The values a destination store can write when it is `field | constant`, with the
+    field one the (slot-filtered) flow fills with constants; [] if it is not that."""
+    constant = None
+    field = None
+    for back in range(1, 9):
+        before = image.at(at - back * 4) if at - back * 4 in image else None
+        if before is None:
+            break
+        if constant is None and before.name == 'ori' and before.rt == store.rt:
+            constant = before.unsigned
+            source = before.rs
+        elif constant is not None and before.name in ('lhu', 'lh', 'lbu') and before.rt == source:
+            field = before.imm
+            break
+    if constant is None or field is None:
+        return []
+    found = set()
+    for place in flow.seen:
+        im = flow.image(place)
+        i = im.at(place) if im is not None else None
+        if i is None or i.name not in ('sh', 'sb') or i.imm != field:
+            continue
+        values = flow.before(i.rt, place, 0, set()) if i.rt else [(0, None, None)]
+        for v in values or []:
+            if v is not None and v[1] is None and v[2] is None:
+                found.add((v[0] | constant) & 0xffff)
+    return sorted(found)
 
 
 def destinations(exe, overlay, handler, interior=None, area=None, scene=None, slot=None):
@@ -128,6 +159,7 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
         if interior in rooms:
             out.add(room_destination(rooms[interior]))
     enters_room = False
+    pending = []
     for at in flow.preds:
         image = flow.image(at)
         if image is None:
@@ -140,7 +172,11 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
                 continue
             values = flow.before(ins.rt, at, 0, set())
             if not values or any(v is None for v in values):
-                continue
+                # `lhu rX, F(actor); ori rt, rX, C; sh rt, destination`: the arrival is a
+                # field the slot's own init routine stored (constants), or'd with C.
+                values = [(v,) for v in _field_destinations(flow, image, at, ins)]
+                if not values:
+                    continue
             for value in values:
                 packed = value[0] & 0xffff
                 target_area, arrival = packed >> 8, packed & 255
@@ -155,7 +191,9 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
                     continue
                 rows = spawns(exe, target_area) if target_area < AREAS else []
                 section = rows[arrival][5] if arrival < len(rows) else ''
-                out.add(('area', target_area, arrival, names[tag] + (f' - {section}' if section else '')))
+                if section:
+                    SECTIONS[(target_area, arrival)] = section
+                pending.append((at, ('area', target_area, arrival, names[tag])))
         elif ins.name == 'sb' and interior is not None:
             # src_Interior (0x800BF817) written: this routine enters a room - the
             # slot's own, as the door controllers store actor +3 there.
@@ -167,7 +205,9 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
             # Verified shared entry helper, US retail.
             if ins.target in (0x800732C0, 0x80073328):
                 out.add(room_destination(interior))
-    if enters_room:
+    # A store the very next lines overwrite (a default, then the real value) is not a destination.
+    out.update(d for at, d in pending if not any(0 < later - at <= 0x20 for later, _ in pending))
+    if enters_room and not (area == 2 and handler == 0x8011718C):
         out.add(room_destination(interior))
         if scene is None:
             # Outside, a same-area arrival is the way back out of that room, not a destination.
@@ -179,7 +219,10 @@ def destination_label(destination):
     kind, number, arrival, name = destination
     if kind == 'interior':
         return f'warp: room {number}'
-    return f'warp: area {number}, {name}' + (' (main area)' if arrival == -1 else '')
+    section = SECTIONS.get((number, arrival))
+    return (f'warp: area {number}, {name}' + (f' - {section}' if section and section not in name else '')
+            + (f' (arrival {arrival})' if arrival > 0 and section else '')
+            + (' (main area)' if arrival == -1 else ''))
 
 
 def destination_chunk(area, source_chunk, available):

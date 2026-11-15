@@ -1758,6 +1758,11 @@ class EventEditor(QDialog):
         if not self.raw.isChecked():
             if c.opcode in (18,19) and len(self.fields)>=2:self._event_picker(c)
             elif c.opcode in (60,61,38) and len(self.fields)>=3:self._item_picker(c)
+        if c.opcode in TOMBA_OPS and not self.raw.isChecked() and len(self.fields)>(1 if c.opcode==55 else 2):
+            tomba_box=self.fields[1 if c.opcode==55 else 2]
+            tomba_button=QPushButton('Browse Tomba’s animations, playing…')
+            tomba_button.clicked.connect(lambda:self.browse_animations('tomba',tomba_box,'Pick a Tomba animation'))
+            self.form.insertRow(0,'Tomba animation',tomba_button)
         if c.opcode not in self.FRIENDLY_WHO or len(self.fields)<3 or self.raw.isChecked():return
         zbit,which=self.FRIENDLY_WHO[c.opcode];flags=self.fields[0];anim=self.fields[which]
         def signed(v):return v-65536 if v>=32768 else v
@@ -1777,6 +1782,9 @@ class EventEditor(QDialog):
         combo=QComboBox();combo.setMaxVisibleItems(24);combo.setMinimumWidth(260)
         self._anim_combo=(combo,anim,who)
         self.form.insertRow(row,'Animation',combo)
+        browse=QPushButton('Browse animations, playing…')
+        browse.clicked.connect(lambda:self.browse_animations('zippo' if who.currentIndex()==1 else 'self',anim,'Pick an animation'))
+        self.form.insertRow(row+1,'',browse)
         def chosen(i):
             value=combo.itemData(i)
             if value is not None and anim.value()!=value:anim.setValue(value)
@@ -1785,6 +1793,13 @@ class EventEditor(QDialog):
         for box in (flags,):                       # the raw flag operand is now shown by the choices above
             self.form.setRowVisible(box,False)
         self._fill_animations(who.currentIndex()==1)
+
+    def browse_animations(self,who,box,title):
+        """The animation picker over operand `box`: `who` is 'self' (the entity),
+        'zippo' or 'tomba'."""
+        from gui.level.animation_picker import AnimationPicker
+        dialog=AnimationPicker(self,who,box.value(),title)
+        if dialog.exec() and dialog.choice is not None and box.value()!=dialog.choice:box.setValue(dialog.choice)
 
     def change_move_turn(self):
         """Change who a move / turn row acts on, or what it does, in place."""
@@ -2856,7 +2871,10 @@ class EventEditor(QDialog):
         came_from={'self':shown.get('self',before[0]),'zippo':shown.get('zippo',before[1])}
         if self.is_conversation():entity=None
         self._on_screen={'self':entity,'zippo':zippo}
+        # Same animation as the row before: let it keep playing, not restart.
+        playing=lambda who:'frames' in (getattr(self.viewport,who,None) or {})
         if entity is None:self.viewport.stop_entity_animation()
+        elif entity==shown.get('self') and playing('entity'):pass
         else:self._with_frames('self',entity,lambda r:self.viewport.show_entity_animation(r[0],r[1]),
                                previous=came_from['self'],blend=blend['self'])
         if not talking:self.viewport.hide_zippo();return
@@ -2875,6 +2893,9 @@ class EventEditor(QDialog):
             yaws,positions=self.yaws_at(nodes,row if yaw_row is None else yaw_row)
             facing=yaws['zippo']
             if positions.get('zippo') is not None:place=positions['zippo']
+        spot=(tuple(place),facing);kept=getattr(self,'_zippo_at',None)==spot and zippo==shown.get('zippo')
+        self._zippo_at=spot
+        if kept and playing('zippo'):return
         self._with_frames('zippo',zippo or 0,lambda r:self.viewport.show_zippo(place,facing,r[0],r[1],r[2],r[3]),
                           previous=came_from['zippo'],blend=blend['zippo'])
 
@@ -3218,9 +3239,11 @@ class EventEditor(QDialog):
         if self.animation_kind=='tomba':self.model_viewer.set_pose(frame,self._tomba_pivots)
         else:self.show_model_parts(frame,frame=False)
 
-    def _entity_model(self,parts,face_front=False):
+    def _entity_model(self,parts,face_front=False,origin=None,yaw=None,angle=None):
         """The entity alone as a model (posed by `parts` if given), or None.
-        `face_front` turns it to game yaw 0 whatever way it was facing."""
+        `face_front` turns it to game yaw 0 whatever way it was facing.
+        `origin` / `yaw` pose it about another actor's spot (Zippo's), `angle`
+        turns the instance by a fixed number of degrees."""
         from gui.level.level_scene import LevelScene
         from game.actor_sim import Posed
         from copy import copy
@@ -3229,11 +3252,14 @@ class EventEditor(QDialog):
         selected.follow=None;selected.flip=None;selected.flip_frames=()
         if parts is not None:
             from game.actor_assembly import degrees_to_units
-            posed=Posed(self.instance.label,'Native animation preview',parts,[],np.array(self.instance.game_position),degrees_to_units(self.instance.angle))
+            posed=Posed(self.instance.label,'Native animation preview',parts,[],
+                        np.array(self.instance.game_position if origin is None else origin,dtype=float),
+                        degrees_to_units(self.instance.angle) if yaw is None else yaw)
             selected.assembly=posed;selected.sources=posed.sources
         if face_front:
             found=baked_facing(getattr(selected,'assembly',None))
             if found is not None:selected.angle=((found[0]-found[1])&0xfff)*360/4096
+        if angle is not None:selected.angle=angle
         selected.index=0
         try:
             scene=LevelScene();scene.__dict__.update(self.panel.scene.__dict__)
