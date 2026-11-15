@@ -1854,19 +1854,30 @@ class LevelEditorPanel(QWidget):
         and scene record into the overlay (game/new_npc.py), reload."""
         import struct
         from pathlib import Path
+        from PyQt6.QtWidgets import QApplication
         from game import new_npc
         scene = self.scene
         try:
             if self.view_box.currentData() is not None:
                 raise ValueError("New NPCs go in the Area view, not inside a room.")
-            if scene.world is None or not scene.overlay_path:
-                raise ValueError("The area's actors must be loaded first.")
+            if not scene.overlay_path:
+                raise ValueError("This area has no overlay.")
             if not self.apply_changes():
                 return
             overlay_path = scene.overlay_path
             exe = Path(self.exe_path).read_bytes()
             overlay = Path(overlay_path).read_bytes()
-            handlers = {a.handler for a in scene.world.actors if a.parts and not a.dead}
+            spawner = scene._scene_spawner()
+            if not spawner:
+                raise ValueError("This area's scene spawner was not found.")
+            self.viewer.show_status("Reading the area's NPC models...")
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                handlers, table, pointer = new_npc.probe(scene, spawner)
+            finally:
+                QApplication.restoreOverrideCursor()
+            if table is None:
+                raise ValueError("This area's scene record lists were not found.")
             names = {h: scene.handler_name(h) for h in handlers}
             choices = new_npc.model_choices(exe, overlay, handlers, names)
             if not choices:
@@ -1877,15 +1888,9 @@ class LevelEditorPanel(QWidget):
             if not ok:
                 return
             model = choices[labels.index(label)]
-            spawner = scene._scene_spawner()
-            tables = scene.world._scene_tables(spawner) if spawner else []
-            table = next((t for t in tables
-                          if scene.world._records_at(scene.world.mem.read(t, 4)) is not None), None)
-            if table is None:
-                raise ValueError("This area's scene record lists were not found.")
             pos, _plane = scene.pickup_position(point, 0, snap_ground=True, view=None)
             position = level_scene.view_point(pos)
-            template = next((r for r in new_npc.read_list(overlay, scene.world.mem.read(table, 4))
+            template = next((r for r in new_npc.read_list(overlay, pointer)
                              if struct.unpack_from("<I", r, 12)[0] == model.handler), None)
             overlay, handler, variant = new_npc.add_npc(
                 overlay, table - new_npc.BASE, 0, model, position, template=template)

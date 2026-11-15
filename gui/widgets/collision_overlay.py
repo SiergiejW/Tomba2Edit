@@ -43,7 +43,7 @@ LINE_WIDTH = 2.0
 FILL_DEPTH = 40.0           # how far a floor's curtain hangs below it, a ceiling's rises above
 ARROW_HEAD = 90.0           # a lane-switch arrow's head, world units
 POST = 300.0                # the post a lane-switch arrow stands on
-TWO_WAY_SHIFT = 55.0        # each half of the two-way arrow, off the post; shafts overlap
+TWO_WAY_SHIFT = 30.0       # each half of the two-way arrow, off the post; shafts overlap
 
 # Colours, by what a surface is. Floors and walls keep the level editor's green and red.
 PLAIN_SURFACE = (0.3, 0.9, 0.4)

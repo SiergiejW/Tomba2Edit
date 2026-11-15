@@ -31,7 +31,7 @@ BLOCKS_AT = LIST_AT + (LIST_CAP + 1) * RECORD
 BLOCK = 0x200
 CODE_SIZE = 0x180
 MAX_NPCS = (REGION_END - BLOCKS_AT) // BLOCK
-FIRST_VARIANT = 200
+FIRST_VARIANT = 64        # below 0x80: native contact code branches on that bit
 FILE_TABLE = 0x800ECF58
 
 # The Fishermen's Town talkers' box, used when a model's own is unknown.
@@ -134,13 +134,15 @@ def _lines(model, script, yaw):
     table = model.anim_table
     box = "\n".join(f"addiu v0, zero, {v}\nsh v0, {o}(s0)"
                     for o, v in zip(BOX_AT, model.box))
+    # The s0 copy fills the phase load's R3000 delay slot. The native
+    # dispatcher enters with v0 holding this handler's address, not zero.
     return f"""
 addiu sp, sp, -32
 sw s0, 16(sp)
 sw s1, 20(sp)
 sw ra, 24(sp)
+lbu v0, 4(a0)
 addu s0, a0, zero
-lbu v0, 4(s0)
 beq v0, zero, INIT
 addiu v1, zero, 1
 beq v0, v1, RUN
@@ -333,3 +335,21 @@ def add_npc(overlay, table_at, scene, model, position, yaw=0, template=None):
     out[LIST_AT:LIST_AT + len(blob)] = blob
     struct.pack_into("<I", out, pointer_at, BASE + LIST_AT)
     return bytes(out), address, variant
+
+
+def probe(scene, spawner):
+    """(handlers, scene-list table address) from a throwaway static run of
+    scene 0 - the editor's own scene may hold no simulation (fast edit)."""
+    import os
+    from game import actor_sim
+    idx = getattr(scene, "idx_path", None) or os.path.join(os.path.dirname(scene.dat_path), "TOMBA2.IDX")
+    world = actor_sim.World(scene.exe_path, scene.overlay_path, scene.dat_path, idx,
+                            scene.chunk_index, scene.area_index)
+    world.static_edit = True
+    world.start_workers()
+    world.enter_scene(spawner, scene.area_index, 0)
+    world.run(12, workers=False)
+    handlers = {a.handler for a in world.actors if a.parts and not a.dead}
+    table = next((t for t in world._scene_tables(spawner)
+                  if world._records_at(world.mem.read(t, 4)) is not None), None)
+    return handlers, table, world.mem.read(table, 4) if table else None
