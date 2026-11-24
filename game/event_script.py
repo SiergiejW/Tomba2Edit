@@ -477,12 +477,13 @@ def split_presentation(commands, selected):
     line at blend 4, the line waits until it closes, and "-1" is the same
     rest animation (+0x7B) the original restores. Refused for flag 0x2000
     (rest mid-line when the gesture ends), 0x8000 (another actor's rest)
-    and branch forms."""
+    (a jump form splits too: the jump goes with the last part)."""
     c = commands[selected]
     if c.opcode != 1: raise ValueError('Only "Animate presentation" actions combine text and animation.')
     o = c.operands
-    if c.branch is not None or c.fallthrough is None:
-        raise ValueError('This presentation also decides where the script goes; it cannot be split.')
+    if c.fallthrough is None:
+        raise ValueError('This presentation ends the script; it cannot be split.')
+    branch = c.branch                 # the jump it ends with: it moves to the last of the parts
     if o[0] & 0x8000:
         raise ValueError("It gestures another actor; that actor's rest animation cannot be named in a script.")
     if o[0] & 0x2000:
@@ -500,7 +501,12 @@ def split_presentation(commands, selected):
     del commands[-len(parts):]
     for a, b in zip(parts, parts[1:]):
         a.edges = [(b.address, None)]
-    parts[-1].edges = [(after, None)]
+    last = parts[-1]
+    last.edges = [(after, None)]
+    if branch is not None:
+        last.raw = last.raw[:8] + bytes(8)        # the jump form: room for the pointer at +12
+        last.set_header(last.header | BRANCH)
+        last.edges = [(after, None), (branch, 12)]
     _redirect(commands, c.address, gesture.address, skip=c)
     commands[selected:selected + 1] = parts
     return parts

@@ -2,7 +2,7 @@
 
 Drawn the way Windows 2003 drew its icons - a dark outline, a glossy vertical gradient, a one pixel
 highlight down the lit edge - on a 16 x 16 grid and then scaled with nearest-neighbour, so they stay
-crisp and blocky at any size. The warp door, the timed hourglass and the signpost "!" share one red.
+crisp and blocky at any size. The warp door, the timed hourglass, the signpost "!" and the save-point floppy share one red.
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QImage, QPixmap
@@ -148,7 +148,7 @@ def _icon(kind):
     if kind == 'timed':
         return _paint(_HOURGLASS, RED_TOP, RED_BOTTOM, RED_LINE, _SAND)
     if kind == 'save':
-        return _paint(_FLOPPY, BLUE_TOP, BLUE_BOTTOM, BLUE_LINE)
+        return _paint(_FLOPPY, RED_TOP, RED_BOTTOM, RED_LINE)
     if kind == 'speaker':
         return _paint(_SPEAKER, BLUE_TOP, BLUE_BOTTOM, BLUE_LINE)
     return _paint(_BANG, RED_TOP, RED_BOTTOM, RED_LINE)

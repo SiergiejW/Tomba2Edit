@@ -685,6 +685,7 @@ QPushButton {{
     border: 1px solid {c["line"]};
     border-radius: 6px;
     padding: 5px 12px;
+    min-height: 16px;
 }}
 QPushButton:hover {{
     background-color: {c["hover"]};
@@ -760,6 +761,7 @@ QLineEdit, QComboBox, QPlainTextEdit, QTextEdit {{
     border: 1px solid {c["line"]};
     border-radius: 6px;
     padding: 4px 8px;
+    min-height: 18px;
     selection-background-color: {c["accent"]};
     selection-color: {c["accent_text"]};
 }}
@@ -802,6 +804,13 @@ QComboBox::down-arrow {{
 }}
 QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
     image: url({g["down_hot"]});
+}}
+QComboBox {{
+    combobox-popup: 0;
+}}
+QComboBoxPrivateContainer {{
+    background-color: {c["card"]};
+    border: 1px solid {c["line_strong"]};
 }}
 QComboBox QAbstractItemView {{
     background-color: {c["card"]};

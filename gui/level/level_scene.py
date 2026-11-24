@@ -2905,6 +2905,7 @@ class LevelScene:
                             warp_labels=(warps.destination_label(back),),
                             note='Room-side entrance anchor from entry #6; opens the Forest Entrance outside.'))
                 resolved = {}
+                door_links = {}
                 hints = None
                 try:
                     from formats.text import system_messages
@@ -2934,7 +2935,8 @@ class LevelScene:
                         resolved[key] = warps.destinations(exe, overlay, handler, interior,
                                                            area=self.area_index, scene=instance.scene, slot=slot,
                                                            hints=hints)
-                    destinations = resolved[key]
+                    destinations = list(resolved[key])
+                    destinations += self._linked_door_destinations(exe, overlay, handler, instance, matches, interior, door_links)
                     for d in destinations:
                         if d[0] == 'interior' and d[3]:
                             self.room_names.setdefault(d[1], d[3])
@@ -3231,6 +3233,28 @@ class LevelScene:
             return set()
         least = min(sizes.values())
         return {scene for scene, size in sizes.items() if size <= least * 1.0001}
+
+    def _linked_door_destinations(self, exe, overlay, handler, instance, matches, selector, cache):
+        """Tower doors (A0G) come in pairs inside one area: a door's own field names the reward_type of the
+        door Tomba comes out of. [('door', instance index, that number, its label)] for this one."""
+        from game import warps
+        if handler not in cache:
+            cache[handler] = warps.door_link_field(exe, overlay, handler)
+        field = cache[handler]
+        if field is None or len(matches) != 1 or selector is None:
+            return []
+        link = self.world.mem.read(matches[0].address + field, 2)
+        out = []
+        for other in self.instances:
+            if other.index == instance.index or other.marker or other.scene != instance.scene:
+                continue
+            if (other.placement.handler if other.placement is not None else self.event_handlers.get(other.index)) != handler:
+                continue
+            near = [a for a in self.world.actors if a.handler == handler and a.position is not None
+                    and np.linalg.norm(np.asarray(a.position) - other.game_position) < 1]
+            if len(near) == 1 and near[0].reward == link:
+                out.append(('door', other.index, link, other.label))
+        return out
 
     def markers(self, hidden=()):
         """Line geometry for the objects with no model, as

@@ -44,7 +44,10 @@ def function_text(tag, address, symbol_name=None):
             first = start
             while first > 0 and (_lines[first - 1].startswith('//') or not _lines[first - 1].strip()) and start - first < 8:
                 first -= 1
-            return '\n'.join(_lines[first:end + 1])
+            rows = [l for l in _lines[first:end + 1] if not l.startswith('// WARNING')]
+            while rows and not rows[0].strip():          # the export's blank lines before its comment
+                rows.pop(0)
+            return '\n'.join(rows)
     return None
 
 

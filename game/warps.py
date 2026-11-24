@@ -93,6 +93,32 @@ def door_hint(exe, overlay, handler, selector, flow=None):
     return found.pop() if len(found) == 1 else None
 
 
+LINKED_DOOR = 0x800BF854      # src_Area0 door link: the door a tower door just used names the one to come out of
+
+
+def door_link_field(exe, overlay, handler):
+    """The actor field a tower door stores into LINKED_DOOR when it is used - the reward_type of the door
+    it leads to (A0G-A0J's entrance actors link in pairs inside one area) - or None for any other handler."""
+    from game.event_script import Flow
+    try:
+        flow = Flow(exe, overlay, handler)
+    except (ValueError, IndexError, struct.error):
+        return None
+    for at in sorted(flow.seen):
+        image = flow.image(at)
+        i = image.at(at) if image is not None else None
+        if i is None or i.name != 'sw':
+            continue
+        values = flow.before(i.rs, at, 0, set())
+        if not values or any(v is None or v[1] is None or (v[0] + i.imm) & 0xFFFFFFFF != LINKED_DOOR for v in values):
+            continue
+        for back in range(1, 8):
+            j = image.at(at - 4 * back) if at - 4 * back in image else None
+            if j is not None and j.name in ('lh', 'lhu') and j.rt == i.rt:
+                return j.imm & 0xFFFF
+    return None
+
+
 def place_name(hints, hint):
     """The printed name for hint id `hint`, or ''."""
     text = (hints or {}).get(hint, '') if hint is not None else ''
@@ -271,6 +297,8 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
 
 def destination_label(destination):
     kind, number, arrival, name = destination
+    if kind == 'door':
+        return f'warp: through to door {arrival}' + (f' ({name})' if name else '')
     if kind == 'interior':
         return f'warp: room {number}' + (f' ({name})' if name else '')
     section = SECTIONS.get((number, arrival))

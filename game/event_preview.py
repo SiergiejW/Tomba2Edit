@@ -479,6 +479,8 @@ def native_code_at(exe,overlay,callback,count=64,tag=None):
     if not c:
         c=native_c(exe,overlay,callback);source='decoded from the machine code (this routine is not in the Ghidra export)'
         if c.count(chr(10))>500:c=chr(10).join(c.split(chr(10))[:500])+chr(10)+'/* ... cut: the routine branches too much to print in full ... */'
+    from game import fun_names
+    c=fun_names.rename(c,exe,overlay)
     head=(f'As C, {source}; a routine like this runs every tick until it returns 1:'+chr(10)+c+chr(10)+chr(10)) if c else ''
     return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 

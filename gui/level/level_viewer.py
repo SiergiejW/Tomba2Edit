@@ -124,6 +124,8 @@ def selection_kind(instance):
         return "scenery"
     return "object" if instance.role == "object" else "prop"
 MARKER_WIDTH = 2.0
+# View units (1000 game units): how far behind code-drawn polygons a real object may be and still win the click.
+DRAWN_PICK_SLACK = 0.6
 
 # How near a click has to land, in pixels, to pick an object that has no
 # geometry to hit - a marker is a few lines and a ray rarely meets one.
@@ -434,6 +436,7 @@ class LevelViewer(SMSTViewer):
         self._pick_faces = None
         self._face_instance = None
         self._room_rows = None
+        self._drawn_rows = None
         self._drag = None
         self._last_face = None
         self.selected_part = None
@@ -1261,6 +1264,20 @@ class LevelViewer(SMSTViewer):
                     inside = hit & ~np.isin(self._face_instance, rooms)
                     if inside.any():
                         hit = inside
+                # Polygons an actor's draw routine put out (glare, flames, a chain's glow) are copied in as
+                # models of their own; they sit over the real object, so one the ray meets within a little of
+                # a real object's surface is not what was meant - the object is (a chest in its flames).
+                drawn = getattr(self, "_drawn_rows", None)
+                if drawn is None:
+                    from gui.level.level_scene import DRAWN_ID, DRAWN_END
+                    drawn = self._drawn_rows = np.fromiter(
+                        (i.index for i in self.instances
+                         if i.sources and DRAWN_ID <= i.sources[0][0] < DRAWN_END), dtype=np.int64)
+                if len(drawn):
+                    real = hit & ~np.isin(self._face_instance, drawn)
+                    if real.any() and (np.where(real, t, np.inf).min()
+                                       <= np.where(hit, t, np.inf).min() + DRAWN_PICK_SLACK):
+                        hit = real
                 which = int(np.argmin(np.where(hit, t, np.inf)))
                 hit_instance = int(self._face_instance[which])
                 # A recorded effect's frame is its first frame's row.

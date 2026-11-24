@@ -1528,6 +1528,13 @@ class LevelEditorPanel(QWidget):
                 return
             destination = choices[0]
         kind, number, arrival, name = destination
+        if kind == 'door':
+            # Another door of the same area: select it and fly to it.
+            other = self._instance(number)
+            if other is not None:
+                self.viewer.select(number)
+                self.viewer.camera_controls.glide_to(tuple(v / 1000.0 for v in (other.x, other.y, other.z)), 2.0)
+            return
         if kind == 'interior':
             row = self.view_box.findData(number + 1)
             if row >= 0:

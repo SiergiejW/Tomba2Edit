@@ -142,6 +142,20 @@ def row_colour(opcode):
     return CATEGORY.get(opcode,'#d8d8d8')
 
 
+def readable(colour,ground):
+    """`colour` (QColor) moved towards white or black until it reads on `ground`: the row colours are chosen by
+    theme name, and a theme whose name says light but paints dark (or the reverse) left them unreadable."""
+    def lum(c):return 0.299*c.red()+0.587*c.green()+0.114*c.blue()
+    c=QColor(colour)
+    if abs(lum(c)-lum(ground))>=110:return c
+    target=QColor('#ffffff') if lum(ground)<128 else QColor('#000000')
+    for step in range(1,11):
+        mixed=QColor(round(c.red()+(target.red()-c.red())*step/10),round(c.green()+(target.green()-c.green())*step/10),
+                     round(c.blue()+(target.blue()-c.blue())*step/10))
+        if abs(lum(mixed)-lum(ground))>=110:return mixed
+    return target
+
+
 class RowDelegate(QStyledItemDelegate):
     """Paints a command as RPG Maker does: "@>" then the command in its
     colour, on alternating bands. Number and jump notes stay grey."""
@@ -153,16 +167,24 @@ class RowDelegate(QStyledItemDelegate):
         number,indent,text,suffix,colour=parts
         pal=option.palette;r=option.rect
         selected=bool(option.state&QStyle.StateFlag.State_Selected)
-        if selected:ground=pal.highlight().color()
-        elif index.row()%2:
-            ground=QColor('#e4ecf2') if theme.is_grey() else QColor(theme._mix(pal.base().color().name(),pal.text().color().name(),0.06))
-        else:ground=pal.base().color()
+        modern=not theme.is_grey() and theme.current_theme() in ('modern','modern_bright','modern_pink')
+        if modern:
+            # The modern stylesheets paint the list from the theme's own colours; the widget palette can say
+            # something else entirely (the strawberry theme's is dark under a pink pane), so read the same ones.
+            c=theme.colours()
+            ground=QColor(c['accent_dim']) if selected else QColor(theme._mix(c['panel'],c['text'],0.06) if index.row()%2 else c['panel'])
+            text_colour=QColor(c['text'])
+        elif selected:ground=pal.highlight().color();text_colour=pal.highlightedText().color()
+        else:
+            ground=QColor('#e4ecf2') if theme.is_grey() and index.row()%2 else (
+                QColor(theme._mix(pal.base().color().name(),pal.text().color().name(),0.06)) if index.row()%2 and not theme.is_grey() else pal.base().color())
+            text_colour=pal.text().color()
         painter.save();painter.fillRect(r,ground);painter.setFont(option.font)
-        plain=pal.highlightedText().color() if selected else pal.text().color()
+        plain=text_colour
         dim=plain if selected else QColor('#808080')
         fm=option.fontMetrics;x=r.left()+3
         for piece,pen in ((f'{number:02d} ',dim),(indent,dim),('@>',plain),
-                          (text,plain if selected or not colour else QColor(colour)),
+                          (text,plain if selected or not colour else readable(QColor(colour),ground)),
                           ('   '+suffix if suffix else '',dim)):
             if not piece:continue
             painter.setPen(pen)
@@ -1156,7 +1178,7 @@ class EventEditor(QDialog):
                 row=QHBoxLayout();row.setSpacing(4);row.addWidget(field,1)
                 self.music_player_button=QPushButton();self.music_player_button.setFixedSize(26,22)
                 self.music_player_button.setIcon(QIcon(pixel_icons.pixmap('speaker',16)));self.music_player_button.setIconSize(QSize(16,16))     # 1:1 with the grid: no smoothing
-                self.music_player_button.setToolTip('Open a small player for the conversation music this NPC can start - listen before you choose.')
+                self.music_player_button.setToolTip('Conversation music: listen to the cues and choose the one this NPC (or every NPC here) starts.')
                 self.music_player_button.clicked.connect(self.open_music_player)
                 row.addWidget(self.music_player_button);page_form.addRow(label,row)
             else:page_form.addRow(label,field)
@@ -1168,12 +1190,9 @@ class EventEditor(QDialog):
         self.show_others.setToolTip('A handler shared by several NPCs can start pages meant for the others; they are told apart by '
                                     'the scene record’s variant. Tick to show those pages too.')
         page_form.addRow('',self.show_others)
-        self.logic_button=QPushButton('Show as If / Then…');self.logic_button.clicked.connect(self.show_logic)
+        self.logic_button=QPushButton('Event conditions…');self.logic_button.clicked.connect(self.show_logic)
         self.logic_button.setToolTip('The tests this NPC’s code makes before it starts each page, as a tree.')
         page_form.addRow('',self.logic_button)
-        self.music_change=QPushButton('Change music…');self.music_change.clicked.connect(self.change_music)
-        self.music_change.setToolTip('Pick the conversation-music cue this NPC’s code starts. Shared by NPCs with the same handler.')
-        page_form.addRow('',self.music_change)
         self.handler_code_button=QPushButton('Handler code…')
         self.handler_code_button.setToolTip('The code that runs this NPC: the decompiled C (where the project has it) and the disassembly. '
                                             'The dialogue, item and recipe logic that has no page is here.')
@@ -1543,7 +1562,8 @@ class EventEditor(QDialog):
                 from game.event_preview import native_c
                 tag=Path(self.panel.scene.overlay_path).stem
                 text=(decomp_view.function_with_callees(tag,self.native_handler) if self.native_handler else None) or                      (native_c(self.exe,self.overlay,self.native_handler) if self.native_handler else '')
-                body=text.split(chr(10)) if text else []
+                from game import fun_names
+                body=fun_names.rename(text,self.exe,self.overlay).split(chr(10)) if text else []
             except Exception:body=[]
             if not body and not self.native_handler and getattr(self.instance,'pickup',None) is not None:
                 # A crystal or apple has no code of its own: the resident placement manager spawns and runs every one from its record.
@@ -1895,6 +1915,14 @@ class EventEditor(QDialog):
     def describe(self,c):
         """The row's summary, with the dialogue line or item name when known."""
         text=script.summary(c)
+        if c.opcode in (0,1) and c.operands[1]<0:
+            # The row names no entry: the NPC's code stores one into the actor (+0x7A) first. Say which it can store.
+            cache=self.__dict__.setdefault('_selectors',{})
+            if self.native_handler not in cache:
+                try:cache[self.native_handler]=script.native_selectors(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+                except Exception:cache[self.native_handler]=[]
+            values=sorted({v for v,_a,_c in cache[self.native_handler]})
+            if values:text=text.replace(',?  (entry chosen at run time)',','+('/'.join(str(v) for v in values[:8])+('/…' if len(values)>8 else ''))+'  (one of these, picked by the NPC’s code)')
         try:
             if c.opcode in (0,1) and c.operands[1]>=0:
                 self.load_bank()
@@ -1963,7 +1991,12 @@ class EventEditor(QDialog):
         out=[]
         # What actually runs: a plain command's jump form always jumps (its callback only ever returns 0 or 1, never the
         # "carry on" 2), so the row below it is reached only by a jump or a test that holds.
-        reached={0} if nodes else set();todo=[0] if nodes else []
+        # The page starts at row 1, and so does any other page of this entity whose script begins inside these
+        # rows: pages share tails, so what looks unreachable from here may be another page's own start.
+        starts={b.script for b in getattr(self,'bindings',())}
+        roots=[0] if nodes else []
+        roots+=[k for k,c in enumerate(nodes) if c.address in starts and k not in roots]
+        reached=set(roots);todo=list(roots)
         while todo:
             c=nodes[todo.pop()]
             for target,pointer in c.edges:
@@ -1989,7 +2022,7 @@ class EventEditor(QDialog):
                         tail=' → '.join(script.summary(x).split(' (')[0] for x in steps[:8])+(' → …' if len(steps)>8 else '')
                     except (ValueError,IndexError):tail=''
                     notes.append(f'⟶ GOTO shared resident script 0x{t:08X}'+(f' [{tail}]' if tail else ''))
-            if n not in reached:notes.insert(0,'▫ unused: nothing in this page runs it')
+            if n not in reached:notes.insert(0,'▫ unused: no page of this entity starts here or jumps here')
             if c.header&script.END:notes.append('■ end')
             if n in incoming:
                 ifs=[k for k in incoming[n] if nodes[k].opcode in script.CONDITION_OPS and k<n]
@@ -2101,6 +2134,8 @@ class EventEditor(QDialog):
             name=next((k for k,v in names.items() if isinstance(v,list) and v[0]==tag and v[1]==handler),None)
         except (OSError,ValueError):name=None
         c=decomp_view.function_text(tag,handler,name)
+        from game import fun_names
+        c=fun_names.rename(c,self.exe,self.overlay) if c else c
         try:asm=native_code_at(self.exe,self.overlay,handler,400,tag=self._overlay_tag())
         except ValueError as exc:asm=str(exc)
         dialog=QDialog(self);dialog.setWindowTitle(f'Handler code - {name or hex(handler)} (0x{handler:08X}, {tag})');dialog.resize(1000,720)
@@ -2468,7 +2503,7 @@ class EventEditor(QDialog):
         for cue in range(1,9):
             sound=script.music_sound(cue);slot=script.music_slot(sound) if sound is not None else None
             playable=slot is not None and (slot<10 or slot in have)
-            text=f'Cue {cue}   sound 0x{sound:02X}  SEQ slot {slot}'+('   ★ this NPC’s default' if cue==default else '')+('' if playable else '   (empty here)')
+            text=f'Cue {cue}   sound 0x{sound:02X}  SEQ slot {slot}'+('   ★' if cue==default else '')+('' if playable else '   (empty here)')
             item=QListWidgetItem(text);item.setData(Qt.ItemDataRole.UserRole,cue)
             if not playable:item.setFlags(item.flags()&~Qt.ItemFlag.ItemIsEnabled)
             if cue==default:
@@ -2753,7 +2788,7 @@ class EventEditor(QDialog):
         self.up.setEnabled(c is not None and self.selected>0)
         self.down.setEnabled(c is not None and self.selected<len(nodes)-1)
         self.revert.setEnabled(enabled and self.active in self.originals and nodes!=self.originals[self.active])
-        self.save.setEnabled(enabled and self.shared.isChecked())
+        self.save.setEnabled(enabled and (self.shared.isChecked() or self._unsaved_page_edits()))
 
     def _edit(self,action,row):
         if self.selected is None:return
@@ -3748,13 +3783,17 @@ class EventEditor(QDialog):
                 or (self.bank is not None and self.bank!=getattr(self,'bank_original',self.bank)))
 
     def ok(self):
-        if self.save.isEnabled():self.apply(close=True)
-        elif not self.has_changes():self.accept()
-        else:self.status.setText('Tick “Apply shared script binding…” to write these edits, or Cancel to drop them.')
+        if not self.has_changes():self.accept()
+        else:self.apply(close=True)
 
     def apply(self,close=True):
-        if not self.shared.isChecked() or game_build.current().name!='us-retail':
-            self.status.setText('Shared edits must be enabled, and event writing currently requires US retail.');return
+        if game_build.current().name!='us-retail':
+            self.status.setText('Event writing currently requires US retail.');return
+        if not self.shared.isChecked():
+            # A page belongs to every NPC that loads it, so writing it changes them all: ask, rather than a greyed button.
+            if QMessageBox.question(self,'Write the changes','These pages are shared with every NPC that runs the same script, '
+                                    'so the changes apply to all of them. Write them?')!=QMessageBox.StandardButton.Yes:return
+            self.shared.setChecked(True)
         self.store_operands()
         data=self.overlay
         try:
