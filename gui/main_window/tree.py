@@ -3,7 +3,7 @@
 from PyQt6.QtCore import QItemSelectionModel, Qt
 from PyQt6.QtGui import QStandardItemModel
 from PyQt6.QtWidgets import QAbstractItemView, QMenu
-from formats.archive.idx_parser import LabelNameDelegate, row_label_data
+from formats.archive.idx_parser import LabelNameDelegate, row_label_data, area_index_of
 
 
 class TreeMixin:
@@ -179,6 +179,23 @@ class TreeMixin:
         if not renameable:
             rename.setToolTip(
                 "Only AREA folders and the files in them carry names")
+
+        area_item = item
+        while area_item.parent() is not None:
+            area_item = area_item.parent()
+        npc_chunk = area_index_of(area_item)
+        if npc_chunk is None:
+            location = item.data(Qt.ItemDataRole.UserRole + 2)
+            npc_chunk = location[0] if location else None
+        if npc_chunk is not None and 4 <= npc_chunk < 26:
+            row = row_label_data(item)
+            if area_index_of(item) is not None or (row and row[1] == 'SMST'):
+                menu.addSeparator()
+                npcs = menu.addAction('NPC models / Import NPC…')
+                preferred = self._entry_bytes(item) if row and row[1] == 'SMST' else None
+                npcs.triggered.connect(
+                    lambda _checked=False, chunk=npc_chunk, data=preferred:
+                    self.open_npc_catalogue(chunk, preferred_data=data))
 
         if item.data(Qt.ItemDataRole.UserRole):
             menu.addSeparator()

@@ -277,6 +277,13 @@ class LevelEditorPanel(QWidget):
         self.events_button.setEnabled(False)
         self.events_button.clicked.connect(self._open_events)
         edit_layout.addWidget(self.events_button)
+        self.npc_model_button = QPushButton('Change NPC model…', self)
+        self.npc_model_button.setEnabled(False)
+        self.npc_model_button.setToolTip(
+            'Choose a registered NPC model. Native story actors can be explicitly '
+            'converted to custom NPCs with their own editable event page.')
+        self.npc_model_button.clicked.connect(self._change_npc_model)
+        edit_layout.addWidget(self.npc_model_button)
         self.warp_button = QPushButton('Go to warp destination', self)
         self.warp_button.setEnabled(False)
         self.warp_button.clicked.connect(self._go_to_warp)
@@ -1199,9 +1206,10 @@ class LevelEditorPanel(QWidget):
                 more = len(set(names)) - len(shown)
                 what = (f"{len(rows)} row(s): " + ", ".join(shown)
                         + (f" +{more} more" if more > 0 else ""))
-            self.view_box.addItem(f"Room {scene - 1} - {what}", scene)
+            title = getattr(self.scene, "room_names", {}).get(scene - 1)
+            self.view_box.addItem(f"Room {scene - 1}" + (f" ({title})" if title else "") + f" - {what}", scene)
             self.view_box.setItemData(self.view_box.count() - 1,
-                                      "\n".join(sorted(set(names))) or what,
+                                      (f"{title}\n" if title else "") + ("\n".join(sorted(set(names))) or what),
                                       Qt.ItemDataRole.ToolTipRole)
         if scenes:
             self.view_box.addItem("Area and every room", "all")
@@ -1474,6 +1482,20 @@ class LevelEditorPanel(QWidget):
         except (OSError, ValueError):
             return None
 
+    def sign_for_instance(self, instance):
+        """(id, text) of a signpost object, placed or spawned from a scene table, or None."""
+        from game import signs
+        scene = self.scene
+        placement = getattr(instance, 'placement', None)
+        if placement is not None:
+            return self.sign_for(placement)
+        handler = getattr(scene, 'event_handlers', {}).get(instance.index)
+        slot = getattr(scene, 'event_variants', {}).get(instance.index)
+        if handler != signs.HANDLER or slot is None:
+            return None
+        from types import SimpleNamespace
+        return self.sign_for(SimpleNamespace(handler=handler, slot=slot))
+
     def _frame_arrival(self, area, arrival):
         """Fly the camera to where Tomba arrives (native spawn record `arrival`
         of resident area `area`), close enough to see his surroundings."""
@@ -1548,6 +1570,10 @@ class LevelEditorPanel(QWidget):
         self.events_button.setEnabled(instance is not None and bool(self.exe_path)
                                       and bool(self.scene and self.scene.overlay_path)
                                       and not getattr(self, '_loading', False))
+        self.npc_model_button.setEnabled(
+            instance is not None and getattr(instance, 'native_scene_offset', None) is not None
+            and bool(self.exe_path) and bool(self.scene and self.scene.overlay_path)
+            and not getattr(self, '_loading', False))
         self._update_area_scripts()
         self._print_selection(instance)
         if instance is None:
@@ -1849,6 +1875,86 @@ class LevelEditorPanel(QWidget):
         self._show_details(selected)
         self._sync_motion_animation(self.viewer.animate_action.isChecked())
 
+    def _choose_npc_model(self, title):
+        from pathlib import Path
+        from PyQt6.QtWidgets import QApplication
+        from game import new_npc, npc_resources
+        scene = self.scene
+        overlay = Path(scene.overlay_path).read_bytes()
+        choices = npc_resources.registered_models(overlay)
+        labels = [m.describe() + ' — registered' for m in choices]
+        spawner = scene._scene_spawner()
+        if spawner:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                handlers, _table, _pointer = new_npc.probe(scene, spawner)
+                names = {h: scene.handler_name(h) for h in handlers}
+                native = new_npc.model_choices(Path(self.exe_path).read_bytes(), overlay,
+                                               handlers, names)
+            finally:
+                QApplication.restoreOverrideCursor()
+            # Zippo's visible conversation size differs from his hidden
+            # initializer. His registered recipe carries that full setup.
+            native = [m for m in native if m.handler != 0x80071A3C]
+            choices.extend(native)
+            labels.extend(m.describe() for m in native)
+        host = self.window()
+        more = 'More NPC models / import from IDX…'
+        if hasattr(host, 'open_npc_catalogue'):
+            labels.append(more)
+        if not labels:
+            raise ValueError('No reusable NPC models were found in this area.')
+        label, ok = QInputDialog.getItem(self, title, 'NPC model:', labels, 0, False)
+        if not ok:
+            return None
+        if label == more:
+            return host.open_npc_catalogue(self.chunk)
+        return choices[labels.index(label)]
+
+    def _change_npc_model(self):
+        import struct
+        from pathlib import Path
+        from game import new_npc
+        instance = self._instance(self.viewer.selected)
+        if instance is None or getattr(instance, 'native_scene_offset', None) is None:
+            return
+        record_at = instance.native_scene_offset
+        try:
+            if not self.apply_changes():
+                return
+            model = self._choose_npc_model('Change NPC model')
+            if model is None:
+                return
+            # Importing a recipe can rebuild the level and rebase its files.
+            scene = self.scene
+            overlay_path = scene.overlay_path
+            overlay = Path(overlay_path).read_bytes()
+            handler = struct.unpack_from('<I', overlay, record_at + 12)[0]
+            if new_npc.is_generated(overlay, handler):
+                overlay = new_npc.change_model(Path(self.exe_path).read_bytes(), overlay,
+                                              handler, model)
+                message = 'NPC model changed; its custom event pages were preserved.'
+            else:
+                answer = QMessageBox.question(
+                    self, 'Convert this story actor to a custom NPC?',
+                    f'Replace this actor with {model.name} at the same position?\n\n'
+                    'The original native dialogue, quest behavior and spawn conditions '
+                    'will be replaced by a custom NPC with a new editable event page. '
+                    'Other actors using the original handler keep their behavior.',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                overlay, handler, _variant = new_npc.replace_npc(overlay, record_at, model)
+                message = 'Actor converted to a custom NPC. Open Events to edit its dialogue.'
+            self._write_placement_files({overlay_path: overlay})
+            self._placement_files[os.path.basename(overlay_path)] = overlay
+            self._scene_memory_cache.clear()
+            self.load_area(self.chunk, keep_camera=True, keep_view=self.view_box.currentData())
+            self.viewer.show_status(message, done=True)
+        except (ValueError, OSError) as exc:
+            QMessageBox.information(self, "Couldn't change the NPC model", str(exc))
+
     def _add_npc(self, point):
         """Drop a new NPC: pick one of the area's models, write its handler
         and scene record into the overlay (game/new_npc.py), reload."""
@@ -1864,6 +1970,11 @@ class LevelEditorPanel(QWidget):
                 raise ValueError("This area has no overlay.")
             if not self.apply_changes():
                 return
+            model = self._choose_npc_model('New NPC')
+            if model is None:
+                return
+            # The IDX catalogue can import resources and rebuild this scene.
+            scene = self.scene
             overlay_path = scene.overlay_path
             exe = Path(self.exe_path).read_bytes()
             overlay = Path(overlay_path).read_bytes()
@@ -1878,16 +1989,6 @@ class LevelEditorPanel(QWidget):
                 QApplication.restoreOverrideCursor()
             if table is None:
                 raise ValueError("This area's scene record lists were not found.")
-            names = {h: scene.handler_name(h) for h in handlers}
-            choices = new_npc.model_choices(exe, overlay, handlers, names)
-            if not choices:
-                raise ValueError("This area has no NPC model the editor can reuse.")
-            labels = [c.describe() for c in choices]
-            label, ok = QInputDialog.getItem(
-                self, "New NPC", "Model (from this area's own NPCs):", labels, 0, False)
-            if not ok:
-                return
-            model = choices[labels.index(label)]
             pos, _plane = scene.pickup_position(point, 0, snap_ground=True, view=None)
             position = level_scene.view_point(pos)
             template = next((r for r in new_npc.read_list(overlay, pointer)

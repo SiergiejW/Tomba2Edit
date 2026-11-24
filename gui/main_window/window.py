@@ -76,6 +76,8 @@ from gui.main_window.tree import TreeMixin
 from gui.main_window.viewers import ViewerDispatchMixin
 from gui.main_window.labels import LabelsMixin
 from gui.main_window.models import ModelsMixin
+from gui.main_window.npcs import NpcMixin
+from gui.main_window.character_swap import CharacterSwapMixin
 from gui.main_window.files import FileEditsMixin
 from gui.main_window.textures import TextureMigrationMixin
 from gui.main_window.text import TextMixin
@@ -84,7 +86,7 @@ from gui.main_window.disc import DiscMixin
 from gui.main_window.project import ProjectMixin
 
 
-class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileEditsMixin, TextureMigrationMixin, TextMixin, VramMixin, DiscMixin, ProjectMixin, QMainWindow):
+class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, NpcMixin, CharacterSwapMixin, FileEditsMixin, TextureMigrationMixin, TextMixin, VramMixin, DiscMixin, ProjectMixin, QMainWindow):
     # Overlay ids run six ahead of the IDX chunk they belong to: chunk 0
     # is START.BIN's id 6, so chunk 4 is id 10, which is A00.BIN. Every
     # one of the 22 chunks carrying a TXTD lines up with an Axx.BIN this
@@ -646,6 +648,14 @@ class MainWindow(TreeMixin, ViewerDispatchMixin, LabelsMixin, ModelsMixin, FileE
             "Take a saved set of letter-to-cell assignments")
         import_letters_action.triggered.connect(self.import_letters)
         text_menu.addAction(import_letters_action)
+
+        mods_menu = self.menuBar().addMenu("&Mods")
+        swap_action = QAction("Play as Another Character...", self)
+        swap_action.setToolTip(
+            "Put another character's body (Tabby, or any character an area "
+            "builds) on Tomba's costumes, playing all of his animations")
+        swap_action.triggered.connect(self.open_character_swap)
+        mods_menu.addAction(swap_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
         theme_menu = settings_menu.addMenu("Theme")

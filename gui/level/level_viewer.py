@@ -126,6 +126,7 @@ MARKER_WIDTH = 2.0
 # How near a click has to land, in pixels, to pick an object that has no
 # geometry to hit - a marker is a few lines and a ray rarely meets one.
 MARKER_PICK_PIXELS = 18.0
+MARKER_SURFACE_SLACK = 0.35        # world units (game units / 1000)
 
 # The vertical field of view every view here draws with. Kept here as
 # well as in paintGL's matrix because the background has to be hung at
@@ -1268,7 +1269,9 @@ class LevelViewer(SMSTViewer):
             index, distance = near
             # A marker in front of whatever the ray hit wins; one behind
             # it is something else's, standing further away.
-            if hit_instance is None or distance < hit_distance:
+            # (A sign stands against its wall: the wall's face is a hair nearer than the sign's own
+            # point, so a marker within a little of the surface still wins.)
+            if hit_instance is None or distance < hit_distance + MARKER_SURFACE_SLACK:
                 self._last_face = None
                 return index
         sprite = self._pick_sprite(x, y, origin, direction)

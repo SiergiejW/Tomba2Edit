@@ -9,7 +9,7 @@ from PyQt6.QtGui import QColor,QFont,QPainter,QPen,QPolygonF
 from PyQt6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QComboBox,
     QListWidget,QListWidgetItem,QFormLayout,QSpinBox,QPushButton,QMessageBox,QCheckBox,QWidget,QPlainTextEdit,QSplitter,QTabWidget,
     QTabBar,QGroupBox,QLineEdit,QFrame,QGridLayout,QStyle,QStyledItemDelegate,QMenu,QInputDialog,
-    QTreeWidget,QTreeWidgetItem)
+    QTreeWidget,QTreeWidgetItem,QStackedWidget)
 from game import event_script as script, game_build
 from gui import theme
 
@@ -259,26 +259,134 @@ class MoveTurnDialog(QDialog):
         super().accept()
 
 
+class ConditionEditDialog(QDialog):
+    """One page condition, chosen from lists: what Tomba carries (the game's item
+    list), a quest event (its title list and a state), a story byte, or which NPC
+    of its kind this is. `.test` is the result."""
+    KINDS=(('item','Tomba carries an item'),('using','Tomba is using an item'),('contact','A used item has touched this NPC'),
+           ('event','A quest event'),('progress','A story progress byte'),('variant','Which NPC this is (variant)'))
+    HOW=('has at least','has at most','has exactly','has none')
+    STATES=('is not started','has started','is cleared','is not cleared','is exactly step','is at least step','is at most step')
+    def __init__(self,parent,test=None,kind='item',variant=None):
+        super().__init__(parent);self.setWindowTitle('Condition');self.resize(480,260)
+        layout=QVBoxLayout(self);form=QFormLayout();layout.addLayout(form)
+        self.kind=QComboBox()
+        for key,text in self.KINDS:self.kind.addItem(text,key)
+        form.addRow('Condition',self.kind)
+        self.stack=QStackedWidget();layout.addWidget(self.stack)
+        def page(*rows):
+            box=QWidget();inner=QFormLayout(box);inner.setContentsMargins(0,0,0,0)
+            for label,widget in rows:inner.addRow(label,widget)
+            self.stack.addWidget(box)
+        def names_combo(names,count):
+            combo=QComboBox();combo.setEditable(True);combo.setMaxVisibleItems(24);combo.setMinimumWidth(320)
+            for n,name in (sorted(names.items()) if names else [(n,'') for n in range(count)]):
+                combo.addItem(f'{n} - {name}' if name else str(n),n)
+            return combo
+        spin=lambda low,high,value=0:(lambda b:(b.setRange(low,high),b.setValue(value),b)[2])(QSpinBox())
+        self.item=names_combo(script._names.get('items',{}),256)
+        self.how=QComboBox();self.how.addItems(self.HOW);self.count=spin(0,255,1)
+        page(('Item',self.item),('Tomba',self.how),('How many',self.count))
+        self.used=names_combo(script._names.get('items',{}),256)
+        self.usedhow=QComboBox();self.usedhow.addItems(('is the item he is using','is not the item he is using'))
+        page(('Item',self.used),('This',self.usedhow))
+        self.touch=QComboBox();self.touch.addItems(('has touched this NPC (it reacts)','has not touched this NPC'))
+        page(('A used item',self.touch))
+        self.event=names_combo(script._names.get('events',{}),139)
+        self.state=QComboBox();self.state.addItems(self.STATES);self.step=spin(1,254,1)
+        page(('Event',self.event),('The event',self.state),('Step',self.step))
+        self.byte=spin(0,255);self.rel=QComboBox();self.rel.addItems(('equal to','not equal to','at least','at most'));self.value=spin(0,255)
+        page(('Progress byte number',self.byte),('The byte is',self.rel),('Value',self.value))
+        self.variant=spin(0,255,variant if variant is not None else 0)
+        page(('Scene-record variant',self.variant))
+        self.kind.currentIndexChanged.connect(self.stack.setCurrentIndex)
+        self.how.currentIndexChanged.connect(lambda i:self.count.setEnabled(i!=3))
+        self.state.currentIndexChanged.connect(lambda i:self.step.setEnabled(i>=4))
+        buttons=QHBoxLayout();buttons.addStretch()
+        ok=QPushButton('OK');ok.setDefault(True);ok.clicked.connect(self.accept)
+        cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject)
+        buttons.addWidget(ok);buttons.addWidget(cancel);layout.addLayout(buttons)
+        self._load(test,kind);self.step.setEnabled(self.state.currentIndex()>=4);self.count.setEnabled(self.how.currentIndex()!=3)
+    def _select(self,combo,number):
+        i=combo.findData(number)
+        if i>=0:combo.setCurrentIndex(i)
+        else:combo.setEditText(str(number))
+    def _number(self,combo):
+        data=combo.itemData(combo.currentIndex()) if combo.currentText()==combo.itemText(combo.currentIndex()) else None
+        if data is not None:return data
+        digits=''.join(ch for ch in combo.currentText().split('-')[0] if ch.isdigit())
+        return int(digits) if digits else 0
+    def _load(self,test,kind):
+        if test is not None:kind=test['kind']
+        if kind=='used':kind='using'
+        self.kind.setCurrentIndex(max(0,[k for k,_ in self.KINDS].index(kind)));self.stack.setCurrentIndex(self.kind.currentIndex())
+        if test is None:return
+        op,value,index=test['op'],test['value'],test['index']
+        if kind=='item':
+            self._select(self.item,index)
+            if value==0 and op in ('le','eq'):self.how.setCurrentIndex(3)
+            else:self.how.setCurrentIndex({'ge':0,'le':1,'eq':2}.get(op,2));self.count.setValue(value)
+        elif kind in ('using','used'):
+            self._select(self.used,value if test['kind']=='used' else 0);self.usedhow.setCurrentIndex(1 if (test['kind']=='used' and op=='ne') else 0)
+        elif kind=='contact':
+            self.touch.setCurrentIndex(1 if op=='ne' else 0)
+        elif kind=='event':
+            self._select(self.event,index)
+            state={('eq',0):0,('ne',0):1,('eq',255):2,('ne',255):3}.get((op,value))
+            if state is None:
+                state={'eq':4,'ge':5,'le':6}.get(op,4);self.step.setValue(max(1,min(254,value)))
+            self.state.setCurrentIndex(state)
+        elif kind=='progress':
+            self.byte.setValue(index);self.rel.setCurrentIndex({'eq':0,'ne':1,'ge':2,'le':3}[op]);self.value.setValue(value)
+        else:self.variant.setValue(value)
+    @property
+    def test(self):
+        kind=self.kind.currentData()
+        if kind=='using':return dict(kind='used',index=0,op=('eq','ne')[self.usedhow.currentIndex()],value=self._number(self.used))
+        if kind=='contact':return dict(kind='contact',index=0,op=('eq','ne')[self.touch.currentIndex()],value=2)
+        if kind=='item':
+            how=self.how.currentIndex();index=self._number(self.item)
+            if how==3:return dict(kind='item',index=index,op='eq',value=0)
+            return dict(kind='item',index=index,op=('ge','le','eq')[how],value=self.count.value())
+        if kind=='event':
+            state=self.state.currentIndex();index=self._number(self.event)
+            fixed=((('eq',0),('ne',0),('eq',255),('ne',255)))
+            if state<4:return dict(kind='event',index=index,op=fixed[state][0],value=fixed[state][1])
+            return dict(kind='event',index=index,op=('eq','ge','le')[state-4],value=self.step.value())
+        if kind=='progress':
+            return dict(kind='progress',index=self.byte.value(),op=('eq','ne','ge','le')[self.rel.currentIndex()],value=self.value.value())
+        return dict(kind='variant',index=0,op='eq',value=self.variant.value())
+
+
 class PageConditionDialog(QDialog):
     """"Run this page only if ..." - Tomba has an item, an event is in some state,
     a story byte has a value, the NPC is a given variant. All must hold; when they
-    do not, the NPC runs the page it ran before (the Else)."""
-    def __init__(self,parent,variant=None):
+    do not, the NPC runs the page it ran before (the Else). With `tests` given it
+    changes the conditions of a page already made."""
+    def __init__(self,parent,variant=None,tests=None):
         super().__init__(parent);self.setWindowTitle('Page conditions');self.resize(560,420);self.variant=variant
         layout=QVBoxLayout(self)
-        note=QLabel('A copy of this page will run only when ALL of these are true. Otherwise the NPC runs what it ran before '
-                    '(the “Else”). Edit the copy and the original separately afterwards.');note.setWordWrap(True);layout.addWidget(note)
+        editing=tests is not None
+        note=QLabel(('This page runs only when ALL of these are true. Otherwise the NPC runs the page it ran before (the “Else”). '
+                     'Double-click a condition to change it.') if editing else
+                    ('A copy of this page will run only when ALL of these are true. Otherwise the NPC runs what it ran before '
+                     '(the “Else”). Edit the copy and the original separately afterwards.'))
+        note.setWordWrap(True);layout.addWidget(note)
         self.list=QListWidget();layout.addWidget(self.list,1)
+        self.list.itemDoubleClicked.connect(lambda _item:self.edit())
         row=QHBoxLayout()
-        for text,slot in (('Tomba has item…',self.add_item),('Event…',self.add_event),('Story progress…',self.add_progress),
-                          ('This NPC is variant…',self.add_variant)):
-            b=QPushButton(text);b.clicked.connect(slot);row.addWidget(b)
+        for text,kind in (('Tomba has item…','item'),('Tomba is using item…','using'),('Item touched this NPC…','contact'),
+                          ('Event…','event'),('Story progress…','progress'),('This NPC is variant…','variant')):
+            b=QPushButton(text);b.clicked.connect(lambda _=False,k=kind:self.add(k));row.addWidget(b)
         layout.addLayout(row)
-        row=QHBoxLayout();remove=QPushButton('Remove selected');remove.clicked.connect(self.remove)
+        row=QHBoxLayout()
+        change=QPushButton('Change selected…');change.clicked.connect(self.edit);row.addWidget(change)
+        remove=QPushButton('Remove selected');remove.clicked.connect(self.remove)
         row.addWidget(remove);row.addStretch()
         ok=QPushButton('OK');ok.setDefault(True);ok.clicked.connect(self.accept)
         cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject)
         row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
+        for test in tests or ():self._add(test)
     @property
     def tests(self):
         return [self.list.item(n).data(Qt.ItemDataRole.UserRole) for n in range(self.list.count())]
@@ -286,36 +394,20 @@ class PageConditionDialog(QDialog):
         item=QListWidgetItem(script.test_text(test));item.setData(Qt.ItemDataRole.UserRole,test);self.list.addItem(item)
     def remove(self):
         for item in self.list.selectedItems():self.list.takeItem(self.list.row(item))
-    def _pick(self,title,label,names):
-        entries=[f'{n} - {name}' if name else str(n) for n,name in names]
-        chosen,ok=QInputDialog.getItem(self,title,label,entries,0,False)
-        return names[entries.index(chosen)][0] if ok else None
-    def add_item(self):
-        names=script._names.get('items',{})
-        item=self._pick('Tomba has item','Item:',[(n,names.get(n,'')) for n in range(256)] if not names else sorted(names.items()))
+    def add(self,kind):
+        dialog=ConditionEditDialog(self,kind=kind,variant=self.variant)
+        if not dialog.exec():return
+        test=dialog.test
+        # An item id stays in src_LastUsedItem after the item is used: say he is using one right now as well.
+        if test['kind']=='used' and test['op']=='eq' and not any(t['kind']=='using' for t in self.tests):
+            self._add(dict(kind='using',index=0,op='ne',value=0))
+        self._add(test)
+    def edit(self):
+        item=self.list.currentItem()
         if item is None:return
-        how,ok=QInputDialog.getItem(self,'Tomba has item','How many?',['at least','at most','exactly','none'],0,False)
-        if not ok:return
-        if how=='none':self._add(dict(kind='item',index=item,op='eq',value=0));return
-        count,ok=QInputDialog.getInt(self,'Tomba has item','Number:',1,0 if how!='at least' else 1,255)
-        if ok:self._add(dict(kind='item',index=item,op={'at least':'ge','at most':'le','exactly':'eq'}[how],value=count))
-    def add_event(self):
-        names=script._names.get('events',{})
-        event=self._pick('Event','Event:',sorted(names.items()) if names else [(n,'') for n in range(1,139)])
-        if event is None:return
-        states={'is not started':('eq',0),'has started':('ne',0),'is cleared':('eq',255),'is not cleared':('ne',255)}
-        state,ok=QInputDialog.getItem(self,'Event','The event:',list(states),0,False)
-        if ok:self._add(dict(kind='event',index=event,op=states[state][0],value=states[state][1]))
-    def add_progress(self):
-        index,ok=QInputDialog.getInt(self,'Story progress','Area progress byte number (0-255):',0,0,255)
-        if not ok:return
-        how,ok=QInputDialog.getItem(self,'Story progress','The byte is:',['equal to','not equal to','at least','at most'],0,False)
-        if not ok:return
-        value,ok=QInputDialog.getInt(self,'Story progress','Value:',0,0,255)
-        if ok:self._add(dict(kind='progress',index=index,op={'equal to':'eq','not equal to':'ne','at least':'ge','at most':'le'}[how],value=value))
-    def add_variant(self):
-        value,ok=QInputDialog.getInt(self,'NPC variant','The NPC’s scene-record variant:',self.variant if self.variant is not None else 0,0,255)
-        if ok:self._add(dict(kind='variant',index=0,op='eq',value=value))
+        dialog=ConditionEditDialog(self,item.data(Qt.ItemDataRole.UserRole),variant=self.variant)
+        if dialog.exec():
+            test=dialog.test;item.setData(Qt.ItemDataRole.UserRole,test);item.setText(script.test_text(test))
 
 
 class LogicDialog(QDialog):
@@ -355,7 +447,7 @@ class LogicDialog(QDialog):
             for test in path:
                 key+=(test,)
                 if key not in nodes:
-                    item=QTreeWidgetItem(parent,['If '+test,''])
+                    item=QTreeWidgetItem(parent,['If '+script.plain_condition(test),''])
                     f=item.font(0);f.setBold(True);item.setFont(0,f);nodes[key]=item
                 parent=nodes[key]
             text,count=self._gist(editor,n,binding)
@@ -1066,6 +1158,11 @@ class EventEditor(QDialog):
         self.music_change=QPushButton('Change music…');self.music_change.clicked.connect(self.change_music)
         self.music_change.setToolTip('Pick the conversation-music cue this NPC’s code starts. Shared by NPCs with the same handler.')
         page_form.addRow('',self.music_change)
+        self.handler_code_button=QPushButton('Handler code…')
+        self.handler_code_button.setToolTip('The code that runs this NPC: the decompiled C (where the project has it) and the disassembly. '
+                                            'The dialogue, item and recipe logic that has no page is here.')
+        self.handler_code_button.clicked.connect(self.show_handler_code)
+        page_form.addRow('',self.handler_code_button)
         left.addWidget(page_box)
         # RPG Maker's Graphic and Conditions, side by side as there.
         looks=QHBoxLayout();looks.setSpacing(6)
@@ -1079,7 +1176,17 @@ class EventEditor(QDialog):
         self.conditions=QListWidget();self.conditions.setWordWrap(True)
         self.conditions.setToolTip('What the native handler tests before it starts this page - read from its code. '
                                    '“?” is a value set on another path.')
-        conditions.addWidget(self.conditions);looks.addWidget(conditions_box,1)
+        conditions.addWidget(self.conditions)
+        self.items_label=QLabel();self.items_label.setWordWrap(True)
+        self.items_label.setToolTip('What this NPC’s code does with items, from a static scan of it (docs/npc-item-scan.md lists every area). '
+                                    '“Checks” reads the inventory: a test or a display.')
+        conditions.addWidget(self.items_label)
+        self.edit_conditions_button=QPushButton('Change conditions…');self.edit_conditions_button.setEnabled(False)
+        self.edit_conditions_button.setToolTip('Change when this page runs, from lists of items, events and story bytes. '
+                                               'Works on pages made with “Add a copy of this page that runs only if…”; '
+                                               'conditions read from the NPC’s own code are shown but are part of that code.')
+        self.edit_conditions_button.clicked.connect(lambda:self._edit_conditions())
+        conditions.addWidget(self.edit_conditions_button);looks.addWidget(conditions_box,1)
         left.addLayout(looks)
         # Command: the selected row's parameters and preview.
         command_box=QGroupBox('Command');command=QVBoxLayout(command_box)
@@ -1305,6 +1412,9 @@ class EventEditor(QDialog):
             self.pages.setTabToolTip(n,f'Conversation {binding.request}: script 0x{binding.script:08X}, '
                                      f'from the conversation table slot 0x{binding.caller:08X}. '
                                      'Request conversation (handler 0) runs it.')
+        elif getattr(binding,'selector',None) is not None:
+            self.pages.addTab(f'{n+1} · {self._selector_name(binding)}')
+            self.pages.setTabToolTip(n,self._selector_tip(binding))
         elif getattr(binding,'tests',None):
             self.pages.addTab(f'{n+1}★')
             self.pages.setTabToolTip(n,'A copy that runs only when '+' and '.join(script.test_text(t) for t in binding.tests)+
@@ -1313,6 +1423,55 @@ class EventEditor(QDialog):
         else:
             self.pages.addTab(str(n+1))
             self.pages.setTabToolTip(n,f'Script 0x{binding.script:08X}, loaded at 0x{binding.caller:08X}')
+
+    def _handler_c(self):
+        """The handler's decompiled C (the project's Ghidra export), headed, or '' when it has no entry."""
+        from game import decomp_view
+        try:
+            tag=Path(self.panel.scene.overlay_path).stem
+            c=decomp_view.function_text(tag,self.native_handler,None)
+        except (OSError,AttributeError):c=None
+        return f'--- Decompiled C ---\n{c}\n\n--- Plain words and disassembly ---\n' if c else ''
+
+    def _selector_name(self,binding):
+        """Short tab text for a page chosen by an actor byte: what hands Tomba's item over, or its value."""
+        field,value=binding.selector
+        items=[r for r in self._reactions() if r['actor'][field]==value]
+        if items:
+            names=script._names['items']
+            shown=[names.get(r['item'],str(r['item'])) for r in items]
+            return shown[0] if len(shown)==1 else f'{shown[0]} +{len(shown)-1}'
+        return f'state {value}'
+
+    def _selector_tip(self,binding):
+        field,value=binding.selector
+        return (f'Runs when this NPC’s byte +0x{field:02X} ({script.ACTOR_FIELDS.get(field,"state")}) is {value}: the handler loads the '
+                f'script from slot {value} of the table at 0x{binding.slot-4*value:08X}. Script 0x{binding.script:08X}.')
+
+    def _reactions(self):
+        """Per item Tomba can hand over: what the NPC's own item test does with it (run in the emulator)."""
+        rows=self.__dict__.get('_reaction_rows')
+        if rows is None:
+            from game import item_scan
+            try:rows=item_scan.item_reactions(self.exe,self.overlay,self.native_handler,self.__dict__.get('_flow')) if self.native_handler else []
+            except Exception:rows=[]
+            self._reaction_rows=rows
+        return rows
+
+    def _selector_lines(self,binding):
+        """Words for what picks a selector page: the byte's value and the items whose test sets it."""
+        field,value=binding.selector
+        out=[f'This NPC’s {script.ACTOR_FIELDS.get(field,"state")} byte (+0x{field:02X}) is {value}  (slot {value} of the script table at 0x{binding.slot-4*value:08X}).']
+        gives=0x60
+        for r in self._reactions():
+            if r['actor'][field]!=value:continue
+            back=r['actor'][gives]|r['actor'][gives+1]<<8
+            line=f'Tomba hands over {script.item_label(r["item"])}'
+            if back and back!=r['item']:line+=f'  →  the NPC hands back {script.item_label(back)}'
+            elif back:line+='  →  the NPC hands it back'
+            out.append('◆ '+line)
+        if len(out)==1:out.append('Set by the NPC’s own code, not by a handed-over item (it starts at 0, then moves on as the conversation is won).')
+        return out
 
     def conversation_page(self,request):
         return next((n for n,b in enumerate(self.bindings) if b.table and b.request==request),None)
@@ -1347,20 +1506,28 @@ class EventEditor(QDialog):
         if self.active is None:
             if self.native_handler:
                 from game.event_preview import native_code_at
-                try:self.code_preview.setPlainText('Native handler — this entity’s behaviour runs here.\n\n'+native_code_at(self.exe,self.overlay,self.native_handler,160))
+                try:self.code_preview.setPlainText('Native handler — this entity’s behaviour runs here (it has no event pages, so this code is all there is).\n\n'+self._handler_c()+native_code_at(self.exe,self.overlay,self.native_handler,160))
                 except ValueError as exc:self.code_preview.setPlainText(str(exc))
                 self.preview_tabs.setCurrentWidget(self.code_tab)
             else:self.code_preview.setPlainText('No native handler is associated with this entity.')
             self.path_preview.set([],None,self.start_position(),self.others(),'No event page')
             self.status.setText('No statically resolved native scripts were found for this entity. '
                 'Its behaviour is in its handler code (Native code tab); the Model tab shows its model.')
-            placement=getattr(self.instance,'placement',None)
-            sign=self.panel.sign_for(placement) if placement is not None and hasattr(self.panel,'sign_for') else None
+            sign=self.panel.sign_for_instance(self.instance) if hasattr(self.panel,'sign_for_instance') else None
+            self.actions.blockSignals(True);self.actions.clear()
+            lines=[('This entity has no script page: its behaviour is in its handler code (press “Handler code…”).')]
+            if sign is not None:
+                lines=[f'Signpost: Tomba walks up and presses the action button; sign text {sign[0]} is shown:']+['    '+part for part in sign[1].split(chr(10))]
+            note=self._item_summary()
+            if note:lines+=['',note]
+            for line in lines:
+                item=QListWidgetItem(line);item.setFlags(Qt.ItemFlag.ItemIsEnabled);self.actions.addItem(item)
+            self.actions.blockSignals(False)
             if sign is not None:
                 shown=sign[1].replace(chr(10),' / ')
                 self.status.setText(f'Signpost: Tomba reads it with the action button and sign text {sign[0]} shows: “{shown}”. '
                     'The sign bank is System chunk file 2; the slot picks the entry (resident table 0x800A4CA8).')
-                self.code_preview.setPlainText(f'Signpost (resident handler 0x80073CD8), slot {placement.slot}.'+chr(10)*2+
+                self.code_preview.setPlainText('Signpost (resident handler 0x80073CD8).'+chr(10)*2+
                     f'Shows sign text {sign[0]}:'+chr(10)*2+sign[1])
                 self.preview_tabs.setCurrentWidget(self.code_tab)
             self.update_enabled();return
@@ -1389,6 +1556,9 @@ class EventEditor(QDialog):
             found.insert(0,script.tests_else_text(list(tests)))
         for test in reversed(getattr(binding,'tests',()) or ()):
             found.insert(0,script.test_text(test))
+        if getattr(binding,'selector',None) is not None:
+            field,value=binding.selector
+            found.insert(0,f'NPC {script.ACTOR_FIELDS.get(field,"state")} (+0x{field:02X}) == {value}')
         return found
 
     def _hide_key(self):
@@ -1417,9 +1587,11 @@ class EventEditor(QDialog):
             binding=self.bindings[n]
             if getattr(binding,'tests',None):
                 menu.addSeparator()
+                change=menu.addAction('Change this page’s conditions…')
+                change.triggered.connect(lambda _=False,i=n:self._edit_conditions(i))
                 gone=menu.addAction('Remove this conditional page (back to the page it came from)')
                 gone.triggered.connect(lambda _=False,i=n:self._remove_specific(i))
-            elif not binding.table:
+            elif not binding.table and getattr(binding,'selector',None) is None:
                 menu.addSeparator()
                 make=menu.addAction('Add a copy of this page that runs only if…')
                 make.triggered.connect(lambda _=False,i=n:self._make_specific(i))
@@ -1480,6 +1652,39 @@ class EventEditor(QDialog):
             self.pages.setCurrentIndex(mine)
         self.status.setText('Added a copy that runs when '+' and '.join(script.test_text(t) for t in tests)+
                             f': tab {mine+1 if mine is not None else "?"} ★. The page it came from is the Else.')
+
+    def _edit_conditions(self,n=None):
+        """Change the conditions of a conditional page made here, in place."""
+        n=self.active if n is None else n
+        if n is None or not 0<=n<len(self.bindings):return
+        binding=self.bindings[n]
+        if not getattr(binding,'tests',None):
+            QMessageBox.information(self,'Page conditions','These conditions are read from the NPC’s own code and are part of it. '
+                'Use “Add a copy of this page that runs only if…” to make a page whose conditions you can change.');return
+        if not self.shared.isChecked():
+            QMessageBox.information(self,'Page conditions','Tick “Apply shared script binding and dialogue-entry changes” first: '
+                                    'this changes the NPC’s native code.');return
+        if self._unsaved_page_edits():
+            QMessageBox.information(self,'Page conditions','Apply or revert your page edits first.');return
+        variant=getattr(self.panel.scene,'event_variants',{}).get(getattr(self.instance,'index',None))
+        dialog=PageConditionDialog(self,variant,tests=[dict(t) for t in binding.tests])
+        if not dialog.exec():return
+        tests=dialog.tests
+        if not tests:
+            QMessageBox.information(self,'Page conditions','A page needs at least one condition. To take the page out, remove it from the tab menu.');return
+        if script._same_tests(list(binding.tests),tests):return
+        try:
+            nodes=self.drafts.get(n) or script.read_graph(script.reader(self.exe,self.overlay),binding.script)
+            data=script.respecialise(self.exe,self.overlay,self.native_handler,binding,deepcopy(nodes),tests)
+            self._write_overlay(data)
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'Page conditions',str(exc));return
+        self.reload_pages(data)
+        mine=next((i for i,b in enumerate(self.bindings) if b.tests and script._same_tests(list(b.tests),tests)),None)
+        if mine is not None:
+            if not self.pages.isTabVisible(mine):self.show_others.setChecked(True)
+            self.pages.setCurrentIndex(mine)
+        self.status.setText('The page now runs when '+' and '.join(script.test_text(t) for t in tests)+'.')
 
     def _remove_specific(self,n):
         binding=self.bindings[n]
@@ -1546,7 +1751,7 @@ class EventEditor(QDialog):
                 except Exception:EventEditor._SLOT_KEPT[key]=None
             own=EventEditor._SLOT_KEPT[key]
             if own:
-                hidden|={n for n,b in enumerate(self.bindings) if not b.table and b.caller not in own}
+                hidden|={n for n,b in enumerate(self.bindings) if not b.table and getattr(b,'selector',None) is None and b.caller not in own}
             cache=self.__dict__.setdefault('_conditions',{})
             kept=EventEditor._CONDITIONS_KEPT.get((self.native_handler,hash(self.overlay)))
             if kept:cache.update(kept)
@@ -1583,8 +1788,29 @@ class EventEditor(QDialog):
             self.pages.blockSignals(initial)
             self.pages.setCurrentIndex(first);self.pages.blockSignals(False)
 
+    def _item_summary(self):
+        """One line on the items this NPC's handler checks, gives and takes ('' if none)."""
+        if self.__dict__.get('_items_note') is not None:return self._items_note
+        text=''
+        try:
+            from game import item_scan
+            tag=Path(self.panel.scene.overlay_path).stem
+            found=item_scan.scan_handler(self.exe,self.overlay,self.native_handler,item_scan._symbols(tag)) if self.native_handler else None
+            names=script._names.get('items',{})
+            label=lambda ids:', '.join(f'{names.get(n,n)}' for n in sorted(ids))
+            parts=[f'{word} {label(found[key])}' for key,word in (('used','Reacts to Tomba using'),('has','Checks'),('script','Page rows use'),('gives','Gives'),('takes','Takes')) if found and found[key]]
+            if found and found['spawns_used']:parts.append('takes any item Tomba uses on it')
+            for low,high in sorted(found['used_ranges']) if found else ():parts.append(f'reacts to items {low}-{high}')
+            if found and found['reads_used'] and not found['used'] and not found['used_ranges'] and not found['spawns_used']:parts.append('reads which item was used')
+            if found and found['routines']:parts.append('item routines: '+', '.join(sorted(found['routines'])))
+            text='Items: '+' · '.join(parts) if parts else ''
+        except Exception:text=''
+        self._items_note=text;return text
+
     def fill_conditions(self,binding):
+        self.items_label.setText(self._item_summary());self.items_label.setVisible(bool(self.items_label.text()))
         self.conditions.clear()
+        self.edit_conditions_button.setEnabled(bool(binding is not None and getattr(binding,'tests',None)))
         if binding is None:return
         if binding.table:
             for line in (f'Conversation {binding.request}: started on Zippo by',
@@ -1593,7 +1819,10 @@ class EventEditor(QDialog):
             return
         found=self._page_conditions(binding)
         if not found:self.conditions.addItem('No test on the way to this page: it runs whenever its code is reached.')
-        for line in found:self.conditions.addItem('◆ '+line)
+        if getattr(binding,'selector',None) is not None:
+            for line in self._selector_lines(binding):self.conditions.addItem(line)
+            found=[f for f in found if not f.startswith('NPC ') or '(+0x' not in f]
+        for line in found:self.conditions.addItem('◆ '+script.plain_condition(line))
 
     AVATAR_HEADING = 0.0     # with the facing undone, 0 shows every actor's front
 
@@ -1705,7 +1934,12 @@ class EventEditor(QDialog):
                     text='If '+script.condition_text(c.opcode,o[0],o[1],o[2],negate=True)+':'
                     notes.append(f'(else skip to #{index[t]+1:02d})')
                 elif t in index:notes.append(f'⟶ #{index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else ''))
-                elif t<script.BASE:notes.append(f'⟶ shared resident script 0x{t:08X}')
+                elif t<script.BASE:
+                    # A tail every conversation shares (kept in MAIN.EXE): say what it does.
+                    try:
+                        tail=' → '.join(script.summary(x).split(' (')[0] for x in script.read_graph(script.reader(self.exe,self.overlay),t)[:4])
+                    except (ValueError,IndexError):tail=''
+                    notes.append(f'⟶ then jumps to shared resident script 0x{t:08X}'+(f' ({tail})' if tail else ''))
             if c.header&script.END:notes.append('■ end')
             if n in incoming:
                 ifs=[k for k in incoming[n] if nodes[k].opcode in script.CONDITION_OPS and k<n]
@@ -1802,6 +2036,31 @@ class EventEditor(QDialog):
         for box in (flags,):                       # the raw flag operand is now shown by the choices above
             self.form.setRowVisible(box,False)
         self._fill_animations(who.currentIndex()==1)
+
+    def show_handler_code(self):
+        """A window with this NPC's handler as decompiled C and as disassembly."""
+        handler=self.native_handler
+        if not handler:
+            QMessageBox.information(self,'Handler code','No native handler is associated with this entity.');return
+        from game import decomp_view
+        from game.event_preview import native_code_at
+        tag=Path(self.panel.scene.overlay_path).stem
+        try:
+            import json
+            names=json.loads((Path(__file__).resolve().parents[2]/'decomp'/'symbols_us.json').read_text(encoding='utf-8'))
+            name=next((k for k,v in names.items() if isinstance(v,list) and v[0]==tag and v[1]==handler),None)
+        except (OSError,ValueError):name=None
+        c=decomp_view.function_text(tag,handler,name)
+        try:asm=native_code_at(self.exe,self.overlay,handler,400)
+        except ValueError as exc:asm=str(exc)
+        dialog=QDialog(self);dialog.setWindowTitle(f'Handler code - {name or hex(handler)} (0x{handler:08X}, {tag})');dialog.resize(1000,720)
+        layout=QVBoxLayout(dialog);tabs=QTabWidget();layout.addWidget(tabs)
+        mono=QFont('Consolas',9)
+        for title,text in (('Decompiled C',c or 'The project’s decompiler export has no entry for this routine. The disassembly tab has its code.'),('Disassembly',asm)):
+            box=QPlainTextEdit();box.setReadOnly(True);box.setFont(mono);box.setPlainText(text);box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap);tabs.addTab(box,title)
+        note=QLabel(self._item_summary() or '');note.setWordWrap(True);layout.addWidget(note)
+        close=QPushButton('Close');close.clicked.connect(dialog.accept);layout.addWidget(close)
+        dialog.exec()
 
     def browse_animations(self,who,box,title):
         """The animation picker over operand `box`: `who` is 'self' (the entity),
@@ -3385,7 +3644,7 @@ class EventEditor(QDialog):
         editor shows (and later writes against) the new area file."""
         self.viewport.stop()
         self.overlay=data
-        self.__dict__.pop('_flow',None);self.__dict__.pop('_conditions',None)
+        self.__dict__.pop('_flow',None);self.__dict__.pop('_conditions',None);self.__dict__.pop('_reaction_rows',None)
         self.__dict__.pop('_selectors',None);self.__dict__.pop('_messages',None)
         if self.bank is not None:self.bank_original=deepcopy(self.bank)
         page=self.active or 0

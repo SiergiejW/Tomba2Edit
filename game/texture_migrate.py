@@ -74,7 +74,8 @@ def _packets(blob):
         raise MigrationError("this is not an SMST - its first word is not 0")
     offsets = struct.unpack_from(f"<{count}I", blob, 4)
     out = []
-    for offset in offsets:
+    # an aliased group (same offset twice) is one set of packets
+    for offset in dict.fromkeys(offsets):
         tris, quads = struct.unpack_from("<HH", blob, offset)
         at = offset + GROUP_HEADER
         for _ in range(tris):

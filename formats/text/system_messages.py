@@ -39,3 +39,38 @@ def load(dat_path, idx_path):
     with open(dat_path, "rb") as source:
         source.seek(start + offset)
         return parse(source.read(size))
+
+
+HINT_FILE_ID = 2
+
+
+def parse_hints(blob):
+    """{id: text} of the hint / sign / place-name resource (System chunk file 2).
+    Unlike file 3 its table has two half-words per entry (offset, a constant),
+    f_SpawnMovementHintActor reads text at table + 4 * count (the header's first
+    half-word). The doors of a town show their room's name from here."""
+    from formats.text.tombadict import letters
+    count = struct.unpack_from("<H", blob, 0)[0]
+    base = TABLE + count * 4
+    out = {}
+    for n in range(count):
+        at = base + struct.unpack_from("<H", blob, TABLE + 4 * n)[0]
+        text = []
+        while at < len(blob) and blob[at] != 0xFF:
+            byte = blob[at]
+            text.append(letters[byte] if byte in letters else "{$%02X}" % byte)
+            at += 1
+        out[n] = "".join(text).replace("\n", " ")
+    return out
+
+
+def load_hints(dat_path, idx_path):
+    from gui.level.level_scene import area_files
+    start, files = area_files(idx_path, RESIDENT_CHUNK)
+    where = {fid: (offset, size) for _, fid, offset, size in files}.get(HINT_FILE_ID)
+    if where is None:
+        raise ValueError("The System chunk has no hint table (file 2).")
+    offset, size = where
+    with open(dat_path, "rb") as source:
+        source.seek(start + offset)
+        return parse_hints(source.read(size))

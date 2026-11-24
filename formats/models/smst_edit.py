@@ -56,10 +56,12 @@ def _bodies(data):
     or clearing any part of such a model quietly shortened it - which is
     what this walk is here to stop."""
     walked = smst_groups(data)
+    starts = sorted({offset for _i, offset, *_rest in walked})
     out = []
-    for pos, (_i, offset, _tris, _quads, _size) in enumerate(walked):
-        end = walked[pos + 1][1] if pos + 1 < len(walked) else len(data)
-        out.append(bytes(data[offset:end]))
+    for _i, offset, _tris, _quads, _size in walked:
+        # next distinct start: an aliased group repeats its original's bytes
+        later = [s for s in starts if s > offset]
+        out.append(bytes(data[offset:later[0] if later else len(data)]))
     return out
 
 

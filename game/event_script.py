@@ -1,6 +1,7 @@
 """Native US actor scripts: lossless records, control-flow edges and relocation."""
 from dataclasses import dataclass, field
 import struct
+from pathlib import Path
 from psx.mips import Image
 from game import game_build, pickup_edit
 
@@ -630,6 +631,10 @@ class Binding:
     tests: tuple = ()
     # On a handler page: the test lists of the conditional pages in front of it at this call.
     overridden: tuple = ()
+    # A page the handler picks from a script table by an actor byte (the Chef's recipes): the table
+    # word (lo_at too) and (actor field offset, value) that selects it. Staged like a table page.
+    slot: int = None
+    selector: tuple = None
 
 def _dest(i):
     if i.name in ('lui','addiu','addi','ori','andi','xori','slti','sltiu') or i.name in ('lb','lbu','lh','lhu','lw','lwl','lwr'):
@@ -655,6 +660,7 @@ class Flow:
         self.message_calls = []
         self.stub_sites = {}
         seen, work, roots = set(), [start], {start}
+        self.roots = roots
         while work and len(seen) < limit:
             at = work.pop()
             while at is not None and at not in seen and len(seen) < limit:
@@ -796,12 +802,19 @@ _ACTOR_BASE = 0x00804021            # addu t0, a0, zero
 _STUB_OPS = {'eq': (0x01095026, 0x14000000), 'ne': (0x01095026, 0x10000000),
         'ge': (0x0109502B, 0x14000000), 'le': (0x0128502B, 0x14000000)}
 _VARIANT_OFFSET = 3             # actor +3: the scene record's slot - which NPC of its kind this is (actor_sim.SLOT)
+_CONTACT_OFFSET = 0x2B          # actor +0x2B: 2 once a thrown / used item has touched it (f_BeginStarvingCharlesItemUse)
+ACTOR_TESTS = {_VARIANT_OFFSET: 'variant', _CONTACT_OFFSET: 'contact'}
+USING_ITEM = 0x800BF80A         # src_UsingItem2: non-zero while Tomba is using an item
+LAST_USED_ITEM = 0x800BF80B     # src_LastUsedItem: the id of the item he is using / last used
 
 
 def test_address(test):
     """Where a test reads: ('actor', offset) or ('memory', address)."""
     kind, index = test['kind'], test['index']
     if kind == 'variant': return 'actor', _VARIANT_OFFSET
+    if kind == 'contact': return 'actor', _CONTACT_OFFSET
+    if kind == 'using': return 'memory', USING_ITEM
+    if kind == 'used': return 'memory', LAST_USED_ITEM
     if kind == 'item': return 'memory', INVENTORY + index
     if kind == 'event': return 'memory', EVENT_STATES + index
     if kind == 'progress': return 'memory', AREA_PROGRESS + index
@@ -848,13 +861,16 @@ def stub_info(read, address):
             op = next((name for name, (cmp_, br) in _STUB_OPS.items() if cmp_ == w[3] and (w[4] & 0xFC000000) == br), None)
             if op is None: return None
             if w[0] == _ACTOR_BASE:
-                if w[1] & 0xffff != _VARIANT_OFFSET: return None
-                test = {'kind': 'variant', 'index': 0}
+                kind = ACTOR_TESTS.get(w[1] & 0xffff)
+                if kind is None: return None
+                test = {'kind': kind, 'index': 0}
             else:
                 low = w[1] & 0xffff
                 low = low - 0x10000 if low >= 0x8000 else low
                 a = (((w[0] & 0xffff) << 16) + low) & 0xffffffff
-                if INVENTORY <= a < INVENTORY + 0x100: test = {'kind': 'item', 'index': a - INVENTORY}
+                if a == USING_ITEM: test = {'kind': 'using', 'index': 0}
+                elif a == LAST_USED_ITEM: test = {'kind': 'used', 'index': 0}
+                elif INVENTORY <= a < INVENTORY + 0x100: test = {'kind': 'item', 'index': a - INVENTORY}
                 elif EVENT_STATES <= a < EVENT_STATES + 0x100: test = {'kind': 'event', 'index': a - EVENT_STATES}
                 elif AREA_PROGRESS <= a < AREA_PROGRESS + 0x100: test = {'kind': 'progress', 'index': a - AREA_PROGRESS}
                 else: return None
@@ -880,6 +896,16 @@ def test_text(test):
     kind, op, value, index = test['kind'], test['op'], test['value'], test['index']
     if kind == 'variant':
         return f'actor variant (scene record) {({"eq": "==", "ne": "!=", "ge": ">=", "le": "<="})[op]} {value}'
+    if kind == 'using':
+        return 'Tomba is using an item' if (op, value) in (('ne', 0), ('ge', 1)) else 'Tomba is not using an item' if (op, value) in (('eq', 0), ('le', 0)) else f'item-use state {op} {value}'
+    if kind == 'used':
+        given = _names['items'].get(value)
+        name = f'“{given}”' if given else f'item {value}'
+        return f'the item Tomba used is {name}' if op == 'eq' else f'the item Tomba used is not {name}' if op == 'ne' else f'the item Tomba used id {op} {value}'
+    if kind == 'contact':
+        if op == 'eq' and value == 2: return 'a used item has touched this NPC'
+        if op == 'ne' and value == 2: return 'no used item has touched this NPC'
+        return f'NPC contact state {({"eq": "==", "ne": "!=", "ge": ">=", "le": "<="})[op]} {value}'
     if kind == 'item':
         given = _names['items'].get(index)
         name = f'“{given}”' if given else f'item {index}'
@@ -939,7 +965,7 @@ def specialise(exe, overlay, binding, commands, tests):
     area file."""
     _verify_layout(exe, overlay)
     if isinstance(tests, int): tests = [dict(kind='variant', index=0, op='eq', value=tests)]
-    if binding.table or binding.tests:
+    if binding.table or binding.tests or binding.slot is not None:
         raise ValueError('Only a page the NPC’s code loads can be given conditions.')
     for t in tests: test_address(t)
     if not tests or len(tests) > 8: raise ValueError('A page needs between one and eight conditions.')
@@ -989,6 +1015,17 @@ def unspecialise(exe, overlay, binding):
     return bytes(out)
 
 
+def respecialise(exe, overlay, handler, binding, commands, tests):
+    """Change the conditions of an editor-made conditional page: the page and its
+    stub come out, then go back in with `tests` (and `commands`, as they stand) at
+    the same call. Returns the new area file."""
+    base_overlay = unspecialise(exe, overlay, binding)
+    base = next((b for b in discover(exe, base_overlay, handler)
+                 if b.caller == binding.caller and not b.tests and b.register == binding.register), None)
+    if base is None: raise ValueError('The page this one came from could not be found again; reopen Events.')
+    return specialise(exe, base_overlay, base, commands, tests)
+
+
 def discover(exe, overlay, handler):
     """Every literal script a handler's reachable code passes to the loader.
 
@@ -1030,10 +1067,110 @@ def discover(exe, overlay, handler):
     # Several bindings at one lo (merged paths) cannot be retargeted apart.
     by_lo = {}
     for b in found.values(): by_lo.setdefault(b.lo_at, []).append(b)
-    return [b for g in by_lo.values() if len(g) == 1 for b in g]
+    pages = [b for g in by_lo.values() if len(g) == 1 for b in g]
+    # Scripts the handler picks from a table by an actor byte: one page per table slot.
+    known = {(b.script, b.caller) for b in pages}
+    tables = indexed_pages(exe, overlay, flow, read)
+    animations = next((b.animations for b in pages if b.animations is not None), None)
+    for b in tables:
+        if (b.script, b.caller) not in known:
+            if b.animations is None: b.animations = animations
+            pages.append(b)
+    return pages
+
+_LOADS = {'lw': 4, 'lh': 2, 'lhu': 2, 'lb': 1, 'lbu': 1}
+
+
+def indexed_load(image, call, reg, window=40):
+    """How `reg` got its value at the call `call`, when it was read from a table
+    indexed by a byte or half-word of memory (`lui/addiu base; lbu idx,F(x); sll
+    idx,idx,k; addu t,base,idx; lw reg,0(t)`): {'table', 'stride', 'field', 'size'}
+    or None. A straight read of the code just before the call; branches are
+    ignored, the last definition of `reg` wins."""
+    consts, scaled, addrs = {}, {}, {}
+    found = None
+    for at in range(call - 4 * window, call + 8, 4):
+        if at not in image: continue
+        i = image.at(at)
+        n, d = i.name, _dest(i)
+        load, new = None, None
+        if n in _LOADS and i.rs in addrs:
+            base, (field, shift) = addrs[i.rs]
+            load = dict(table=(base + i.imm) & 0xffffffff, stride=1 << shift, field=field, size=_LOADS[n])
+        elif n == 'lui': new = (consts, i.unsigned << 16)
+        elif n in ('addiu', 'ori') and i.rs in consts:
+            new = (consts, (consts[i.rs] + (i.imm if n == 'addiu' else i.unsigned)) & 0xffffffff)
+        elif n in _LOADS and i.rs not in consts: new = (scaled, (i.imm, 0))
+        elif n == 'sll' and i.rt in scaled: new = (scaled, (scaled[i.rt][0], scaled[i.rt][1] + i.shift))
+        elif n == 'addu':
+            for a, b in ((i.rs, i.rt), (i.rt, i.rs)):
+                if a in consts and b in scaled: new = (addrs, (consts[a], scaled[b]))
+        if d is not None:
+            consts.pop(d, None); scaled.pop(d, None); addrs.pop(d, None)
+            if d == reg: found = load
+        if new: new[0][d] = new[1]
+    return found
+
+
+def indexed_pages(exe, overlay, flow, read):
+    """Bindings for the scripts a loader call takes from a table of script
+    pointers indexed by an actor byte: slot k is the page that runs when the
+    byte holds k. Entries are read while they are valid scripts."""
+    out = []
+    for call, register in flow.calls:
+        image = flow.image(call)
+        info = indexed_load(image, call, register) if image is not None else None
+        if not info or info['stride'] != 4 or info['size'] != 4: continue
+        for k in range(32):
+            slot = info['table'] + 4 * k
+            try:
+                target = struct.unpack('<I', read(slot, 4))[0]
+                if not BASE <= target < BASE + len(overlay): break
+                read_graph(read, target)
+            except (ValueError, struct.error): break
+            out.append(Binding(target, slot, slot, 0, target, call, register=register,
+                               slot=slot, selector=(info['field'], k)))
+    return out
+
+
+_REDIRECTS = {}
+
+
+def redirect_handler(exe, overlay, handler, slot):
+    """The routine a dispatcher handler hands an actor of scene-record `slot` over to: the
+    handler runs its setup in the emulator on a blank actor and the callback it leaves in
+    actor +0x1C is the real one (Coal Mining Town's 0x8011D4E8 picks one of its miners from a
+    table by slot). None when it keeps its own."""
+    key = (handler, slot, len(overlay))
+    if key in _REDIRECTS: return _REDIRECTS[key]
+    found = None
+    try:
+        from psx.cpu import CPU
+        cpu = CPU()
+        cpu.mem.load(struct.unpack_from('<I', exe, 24)[0], exe[0x800:]); cpu.mem.load(BASE, overlay)
+        for target in _own_calls(overlay, handler): cpu.hooks[target] = lambda c: 0
+        actor = 0x801E0000
+        for k in range(0, 0x100, 4): cpu.mem.write(actor + k, 4, 0)
+        cpu.mem.write(actor + 3, 1, slot & 0xff)
+        cpu.call(handler, (actor,), sp=0x801FF000, budget=200000)
+        new = cpu.mem.read(actor + 0x1C, 4)
+        if new != handler and not new & 3 and BASE <= new < BASE + len(overlay): found = new
+    except Exception: found = None
+    _REDIRECTS[key] = found
+    return found
+
 
 def handler_for(scene, instance):
-    if instance.placement is not None: return instance.placement.handler
+    if instance.placement is not None:
+        handler = instance.placement.handler
+        try:
+            exe = Path(scene.exe_path).read_bytes(); overlay = Path(scene.overlay_path).read_bytes()
+            real = redirect_handler(exe, overlay, handler, instance.placement.slot)
+            # Only when the dispatcher itself shows no page of its own and the routine it hands over to does.
+            own = lambda h: any(b.script >= BASE for b in discover(exe, overlay, h))
+            if real and not own(handler) and own(real): return real
+        except Exception: pass
+        return handler
     if instance.pickup is not None and instance.pickup.chest:
         from game.actor_sim import CHEST_HANDLER
         return CHEST_HANDLER
@@ -1104,7 +1241,7 @@ def stage(exe,overlay,binding,commands):
         if struct.unpack('<I',reader(exe,overlay)(CALLBACKS+opcode*4,4))[0]!=target:
             raise ValueError('The native command table differs from the verified US layout.')
     read=reader(exe,overlay)
-    if binding.table:
+    if binding.table or binding.slot is not None:
         return _stage_table(read,overlay,binding,commands)
     if struct.unpack('<I',read(binding.hi_at,4))[0]!=binding.hi_word or struct.unpack('<I',read(binding.lo_at,4))[0]!=binding.lo_word:
         raise ValueError('The event binding changed; reopen Events before saving.')
@@ -1235,8 +1372,18 @@ def conversations(exe, overlay, area, pages, requests=()):
 # --- why a page runs: the native branches that lead to its loader call ---
 
 # Handler-held actor bytes worth naming (the actor is a0 / s-registers).
-ACTOR_FIELDS = {0x03: 'variant (scene record)', 0x04: 'state', 0x05: 'phase', 0x06: 'step',
-                0x2B: 'byte +0x2B', 0x7A: 'dialogue selector', 0xBF: 'conversation handler'}
+ACTOR_FIELDS = {0x03: 'variant (scene record)', 0x5E: 'behaviour', 0x60: 'item it hands back', 0x04: 'state', 0x05: 'phase', 0x06: 'step',
+                0x07: 'sub-step', 0x2B: 'item contact', 0x70: 'script state', 0x7A: 'dialogue selector',
+                0xBF: 'conversation handler'}
+# What a test on such a byte means, in words: (what it reads, relation, value) -> sentence.
+_PLAIN = {('NPC item contact', '==', 2): 'a used item has touched this NPC',
+          ('NPC item contact', '!=', 2): 'no used item has touched this NPC',
+          ('NPC item contact', '==', 3): 'this NPC is in its other contact state (3)',
+          ('NPC item contact', '==', 0): 'nothing has touched this NPC',
+          ('NPC script state', '==', 255): 'no script is running on this NPC (the last one has finished)',
+          ('NPC script state', '!=', 255): 'a script is running on this NPC',
+          ('NPC script state', '==', 0): 'this NPC’s script is between commands',
+          ('NPC script state', '!=', 0): 'this NPC’s script is not between commands'}
 GLOBALS = {0x800BF870: 'area', 0x800BF817: 'interior', 0x800BF816: 'weaponless interior',
            0x800BF80E: 'Tomba cutscene control', 0x800BF830: 'conversation request',
            0x800BF831: 'conversation flags'}
@@ -1263,14 +1410,14 @@ def _global(address):
     if EVENT_STATES <= address < EVENT_STATES + 0x100: return event_label(address - EVENT_STATES)
     if INVENTORY <= address < INVENTORY + 0x100: return f'count of {item_label(address - INVENTORY)}'
     if AREA_PROGRESS <= address < AREA_PROGRESS + 0x100: return f'progress {address - AREA_PROGRESS}'
-    return GLOBALS.get(address, f'[0x{address:08X}]')
+    return GLOBALS.get(address, f'game byte 0x{address:08X}')
 
 
 def _describe(flow, image, reg, at, depth=0):
     """What register `reg` holds just before `at`: a constant, a named
     actor byte or global, a call's result - read back along straight code."""
     if reg == 0: return 0
-    if depth > 3: return '?'
+    if depth > 3: return _carried(flow, reg, at)
     lui = None
     for back in range(1, 16):
         a = at - back * 4
@@ -1290,9 +1437,10 @@ def _describe(flow, image, reg, at, depth=0):
                 return _global((base + i.imm) & 0xFFFFFFFF)
             if i.rs in (4, 16, 17, 18, 19):
                 name = ACTOR_FIELDS.get(i.imm)
-                if name is None: return f'NPC counter +0x{i.imm:X}'
+                if name is None: return f'NPC byte {i.imm}'
                 if name.startswith('variant'): return f'actor {name}'
-                return f'NPC {name} counter' if name in ('state', 'phase', 'step', 'control') else f'actor {name}'
+                if name in ('item contact', 'script state'): return f'NPC {name}'
+                return f'NPC {name} counter' if name in ('state', 'phase', 'step', 'sub-step', 'control') else f'actor {name}'
             return '?'
         if i.name == 'addiu':
             base = _describe(flow, image, i.rs, a, depth + 1)
@@ -1302,6 +1450,17 @@ def _describe(flow, image, reg, at, depth=0):
         if i.name in ('slti', 'sltiu'):
             return f'({_describe(flow, image, i.rs, a, depth + 1)} < {i.imm})'
         return '?'
+    return _carried(flow, reg, at)
+
+
+def _carried(flow, reg, at):
+    """A constant `reg` holds on every path into `at` (set earlier in the routine, out of the short
+    window read above), else '?'."""
+    try: values = flow.before(reg, at, 0, set())
+    except (RecursionError, KeyError): return '?'
+    known = {v[0] for v in values if v is not None and v[1] is None and v[2] is None}
+    if values and len(known) == 1 and all(v is not None and v[1] is None and v[2] is None for v in values):
+        return known.pop()
     return '?'
 
 
@@ -1326,6 +1485,8 @@ def _branch_text(flow, image, b, taken):
         if isinstance(left, str) and left.startswith('event ') and isinstance(right, int) and rel in ('==', '!='):
             state = event_value(right)
             return f'{left} {"is" if rel == "==" else "is not"} {state}'
+        plain = _PLAIN.get((left, rel, right)) if isinstance(left, str) else None
+        if plain: return plain
         return f'{_shown(left)} {rel} {_shown(right)}'
     return f'{_shown(left)} {rel}'
 
@@ -1384,6 +1545,22 @@ def page_conditions(exe, overlay, handler, caller, merges=48, flow=None, memo=No
         return found
 
     return _tidy(back(caller, merges, frozenset()) or [])
+
+
+_WORDS = {'==': 'is', '!=': 'is not', '<=': 'is at most', '>=': 'is at least', '<': 'is below', '>': 'is above'}
+
+
+def plain_condition(text):
+    """A condition line in words for display: 'NPC step counter == 0' reads
+    'NPC step counter is 0'. The strings the editor reasons about keep their symbols."""
+    import re
+    m = re.match(r'^(.*?) (<= 0|> 0)$', text)
+    if m: return f'{m.group(1)} is {"0 or less" if m.group(2) == "<= 0" else "more than 0"}'
+    m = re.match(r'^(.*?) (==|!=|<=|>=|<|>) (.+)$', text)
+    if m and not m.group(1).startswith('not '): return f'{m.group(1)} {_WORDS[m.group(2)]} {m.group(3)}'
+    m = re.match(r'^(.*?) in (\[.*\])$', text)
+    if m: return f'{m.group(1)} is one of {m.group(2)}'
+    return text
 
 
 def progress_writers(scene, exe, overlay):

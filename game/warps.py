@@ -56,6 +56,49 @@ def spawns(exe, area):
     return out
 
 
+MOVEMENT_HINT = 0x8007E038   # f_SpawnMovementHintActor(hint id, mode): what a door shows when Tomba stands at it
+FIRST_PLACE_NAME = 68        # hint ids from here on are place names ('-' = none)
+
+
+ENTRANCE_INDICATOR = 0x800735F4   # f_UpdateEntranceContactIndicator(door, hint id): the shared door's hint
+
+
+def door_hint(exe, overlay, handler, selector, flow=None):
+    """The hint id a door shows for door `selector` - a table of half-words in the overlay indexed by
+    the door, or a constant at the call - or None when none or several are reachable. It is the text
+    the game prints for the room behind the door ('Cafeteria')."""
+    from game.event_script import Flow, indexed_load
+    if flow is None:
+        try:
+            flow = Flow(exe, overlay, handler)
+        except (ValueError, IndexError, struct.error):
+            return None
+    found = set()
+    for at in sorted(flow.seen):
+        image = flow.image(at)
+        i = image.at(at) if image is not None else None
+        if i is None or i.name != 'jal' or i.target not in (MOVEMENT_HINT, ENTRANCE_INDICATOR):
+            continue
+        reg = 4 if i.target == MOVEMENT_HINT else 5
+        info = indexed_load(image, at, reg)
+        if info and info['size'] == 2 and info['stride'] == 2:
+            raw = flow.read(info['table'] + 2 * selector, 2) if selector is not None else None
+            if raw and len(raw) == 2 and struct.unpack('<H', raw)[0] != 0xFFFF:
+                found.add(struct.unpack('<H', raw)[0])
+        elif info is None:
+            for v in flow.after(reg, at + 4) or []:
+                if v is not None and v[1] is None and v[2] is None:
+                    found.add(v[0] & 0xFFFF)
+    found = {h for h in found if h >= FIRST_PLACE_NAME}
+    return found.pop() if len(found) == 1 else None
+
+
+def place_name(hints, hint):
+    """The printed name for hint id `hint`, or ''."""
+    text = (hints or {}).get(hint, '') if hint is not None else ''
+    return '' if text.strip() in ('', '-') else text
+
+
 SECTIONS = {}  # (area, arrival) -> the section name of that spawn record, noted as destinations are found
 DESTINATION = 0x800BF83A  # u16: high byte area, low byte arrival index
 
@@ -90,7 +133,7 @@ def _field_destinations(flow, image, at, store):
     return sorted(found)
 
 
-def destinations(exe, overlay, handler, interior=None, area=None, scene=None, slot=None):
+def destinations(exe, overlay, handler, interior=None, area=None, scene=None, slot=None, hints=None):
     """Native destinations on reachable paths; conditions remain alternatives.
 
     Follow the same bounded control flow as the event inspector. Only literal
@@ -108,8 +151,18 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
         names = json.loads((Path(labels.labels_dir()) / 'us-retail.json').read_text(encoding='utf-8'))['bins']
         tag = 'A0' + '0123456789ABCDEFGHIJKL'[number] + '.BIN' if 0 <= number < 22 else ''
         return names.get(tag, '')
+    state = {}
+
     def room_destination(number):
-        return ('interior', number, 0, '') if scene is None else ('area', area, -1, area_name(area))
+        if scene is not None:
+            return ('area', area, -1, area_name(area))
+        # The name the game prints at the door (System hint table), not the door's own number.
+        name = ''
+        if hints:
+            # The slot's own routine first; a controller whose hint call sits outside it is read whole.
+            hint = door_hint(exe, overlay, handler, interior, state.get('flow'))
+            name = place_name(hints, hint if hint is not None else door_hint(exe, overlay, handler, interior))
+        return ('interior', number, 0, name)
     # A08 has fourteen selectors in one handler. Its custom state machines
     # use 0..9 as rooms; 10 is the mine, 11 the pig-nose mechanism,
     # 12 Golden Tower, and 13 the raft to Fishermen's Town.
@@ -148,6 +201,7 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
                 return targets[interior:interior + 1] if 0 <= interior < len(targets) else []
             return targets
     flow = EntranceFlow(exe, overlay, handler)
+    state['flow'] = flow
     out = set()
     # Coal Mining Town's door controller uses a door selector, NOT the
     # destination interior. FUN_A02__8011718c initializes interior_only;
@@ -218,7 +272,7 @@ def destinations(exe, overlay, handler, interior=None, area=None, scene=None, sl
 def destination_label(destination):
     kind, number, arrival, name = destination
     if kind == 'interior':
-        return f'warp: room {number}'
+        return f'warp: room {number}' + (f' ({name})' if name else '')
     section = SECTIONS.get((number, arrival))
     return (f'warp: area {number}, {name}' + (f' - {section}' if section and section not in name else '')
             + (f' (arrival {arrival})' if arrival > 0 and section else '')

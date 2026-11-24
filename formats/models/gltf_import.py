@@ -172,6 +172,22 @@ def _matrix(node):
     return m
 
 
+def _colour(doc, attributes):
+    """The first COLOR_n that is not plain white. Blender 5.2 can export a
+    white COLOR_0 beside the model's real colours in COLOR_1 (seen after
+    joining OBJ-imported objects)."""
+    names = sorted((k for k in attributes if k.startswith("COLOR_")),
+                   key=lambda k: int(k[6:]) if k[6:].isdigit() else 99)
+    first = None
+    for name in names:
+        values = doc.accessor(attributes[name])[:, :3]
+        if first is None:
+            first = values
+        if (values < 0.999).any():
+            return values
+    return first
+
+
 def read_gltf(path, colors=None, pair=True):
     """[Face] with the file's own positions. `colors` turns a COLOR_0
     value into what a face keeps; see obj_exchange.shades()."""
@@ -196,7 +212,7 @@ def read_gltf(path, colors=None, pair=True):
                 position = doc.accessor(attributes["POSITION"]).astype(float)
                 position = position @ world[:3, :3].T + world[:3, 3]
                 uv = doc.accessor(attributes["TEXCOORD_0"]) if "TEXCOORD_0" in attributes else None
-                colour = doc.accessor(attributes["COLOR_0"])[:, :3] if "COLOR_0" in attributes else None
+                colour = _colour(doc, attributes)
                 order = (doc.accessor(primitive["indices"]).reshape(-1) if "indices" in primitive
                          else np.arange(len(position)))
                 material = names[primitive["material"]] if "material" in primitive else ""

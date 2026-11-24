@@ -149,12 +149,20 @@ def smst_groups(data):
     _need(offsets[0] == table_end,
           f"first offset is {offsets[0]:#x}, the table ends at {table_end:#x}")
 
+    # An offset equal to an earlier group's is an alias - the game reads
+    # groups only through this table (game/character_swap.py's spares).
     groups = []
+    own = {}
+    top = 0
     for i, offset in enumerate(offsets):
+        if offset in own:
+            groups.append((i,) + own[offset][1:])
+            continue
         if i:
-            _need(offset > offsets[i - 1],
-                  f"offset {i} ({offset:#x}) doesn't climb")
-        limit = offsets[i + 1] if i + 1 < count else len(data)
+            _need(offset > top, f"offset {i} ({offset:#x}) doesn't climb")
+        top = offset
+        later = [o for o in offsets[i + 1:] if o > offset]
+        limit = min(later) if later else len(data)
         _need(offset + SMST_GROUP_HEADER <= limit,
               f"group {i} has no room for a header")
         tris, quads = struct.unpack_from("<HH", data, offset)
@@ -162,6 +170,7 @@ def smst_groups(data):
         _need(offset + size <= limit,
               f"group {i} needs {size:#x} bytes and has {limit - offset:#x}")
         groups.append((i, offset, tris, quads, size))
+        own[offset] = groups[-1]
     return groups
 
 

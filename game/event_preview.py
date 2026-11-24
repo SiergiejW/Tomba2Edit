@@ -286,43 +286,94 @@ def native_code(exe,overlay,command,count=64):
     callback=struct.unpack('<I',read(event_script.CALLBACKS+command.opcode*4,4))[0]
     return f'Command bytes: {command.raw.hex(" ")}\n'+native_code_at(exe,overlay,callback,count)
 
+FIELD_NAMES={0x05:'phase',0x2E:'X',0x32:'height',0x36:'depth',0x5E:'behaviour',0x60:'item it hands back',0x40:'timer',0x2B:'item contact'}
+GLOBAL_WORDS={0x800BF844:'the spawned pickup'}
+_LOAD_WIDTH=('lw','lh','lhu','lb','lbu')
+
+def _sym_text(sym):
+    """A tracked value in words: the actor in a0, a game global, or a field of one of them."""
+    if sym is None:return '?'
+    if sym[0]=='arg':return 'this actor'
+    if sym[0]=='ret':return 'the actor it just created'
+    if sym[0]=='g':return GLOBAL_WORDS.get(sym[1]) or f'the value in {event_script._global(sym[1])}'
+    if sym[0]=='f':
+        base=_sym_text(sym[1]);name=FIELD_NAMES.get(sym[2])
+        return f'{name or "field +0x%02X"%sym[2]} of {base}' if sym[1][0]=='arg' or True else base
+    return '?'
+
 def native_steps(exe,overlay,callback,count=200):
     """What a straight-line native routine visibly does: the functions it
-    calls with their constant arguments and the fixed memory it writes.
-    Branches are not followed (the first path through is read), so this is a
-    sketch, not a proof. [('set', label, value) | ('call', name, [args])]"""
+    calls with their arguments and the memory it writes - fixed globals, and
+    fields of the actor in a0 or of an actor a global points to (the pickup
+    a script spawned). Branches are not followed (the first path through is
+    read), so this is a sketch, not a proof.
+    [('set', label, value) | ('call', name, [args], [argument words]) | ('field', owner words, field, value words)]"""
     from psx.mips import Image
     data,base=(overlay,event_script.BASE) if callback>=event_script.BASE else (exe[0x800:],struct.unpack_from('<I',exe,24)[0])
     image=Image(data,base)
     if callback not in image:return []
-    regs={0:0};lines=[]
+    regs={0:0};sym={4:('arg',)};lines=[]
     def const(r):return regs.get(r)
+    def drop(r):regs.pop(r,None);sym.pop(r,None)
     widths={'sb':0xff,'sh':0xffff,'sw':0xffffffff}
     pending=None;leaving=False
-    for ins in image.walk(callback,count):
+    for ins in _path(image,callback,count):
         n=ins.name
         if pending is not None or leaving:      # the delay slot: it runs before the call / return takes effect
             pass
-        if n=='lui':regs[ins.rt]=(ins.unsigned<<16)&0xffffffff
+        if n in _LOAD_WIDTH:
+            owner=sym.get(ins.rs);fixed=const(ins.rs)
+            drop(ins.rt)
+            if fixed is not None and fixed>=0x80000000:sym[ins.rt]=('g',(fixed+ins.imm)&0xffffffff)
+            elif owner is not None:sym[ins.rt]=('f',owner,ins.imm&0xffff)
+        elif n in widths and const(ins.rs) is None and ins.rs in sym:
+            value=const(ins.rt)
+            lines.append(('field',_sym_text(sym[ins.rs]),ins.imm&0xffff,str(_signed(value)) if value is not None else _sym_text(sym.get(ins.rt))))
+        elif n=='lui':regs[ins.rt]=(ins.unsigned<<16)&0xffffffff;sym.pop(ins.rt,None)
         elif n in ('addiu','ori') and const(ins.rs) is not None:
-            regs[ins.rt]=((const(ins.rs)+ins.imm) if n=='addiu' else (const(ins.rs)|ins.unsigned))&0xffffffff
-        elif n in ('addu','or') and ins.rt==0 and const(ins.rs) is not None:regs[ins.rd]=const(ins.rs)
+            regs[ins.rt]=((const(ins.rs)+ins.imm) if n=='addiu' else (const(ins.rs)|ins.unsigned))&0xffffffff;sym.pop(ins.rt,None)
+        elif n in ('addu','or') and ins.rt==0 and const(ins.rs) is not None:regs[ins.rd]=const(ins.rs);sym.pop(ins.rd,None)
+        elif n in ('addu','or') and ins.rt==0 and ins.rs in sym:sym[ins.rd]=sym[ins.rs];regs.pop(ins.rd,None)
         elif n in widths and const(ins.rs) is not None and const(ins.rt) is not None and const(ins.rs)>=0x80000000:
             lines.append(('set',event_script._global((const(ins.rs)+ins.imm)&0xffffffff),const(ins.rt)&widths[n]))
         elif n=='jal':pending=ins.target;continue
         elif n=='jr' and ins.rs==31:leaving=True;continue
+        elif _dest_reg(ins) is not None and n not in widths:drop(_dest_reg(ins))
         if pending is not None:
-            lines.append(('call',event_script._symbol(pending),[const(r) for r in (4,5,6,7)]))
-            for r in range(2,26):regs.pop(r,None)
+            lines.append(('call',event_script._symbol(pending),[const(r) for r in (4,5,6,7)],[_sym_text(sym.get(r)) if const(r) is None and r in sym else None for r in (4,5,6,7)]))
+            for r in range(2,26):drop(r)
+            sym[2]=('ret',)
             pending=None
         if leaving:break
     return lines
+
+def _path(image,start,count):
+    """The instructions of the path a routine most likely takes: straight on, except that a branch
+    guarding an early return (`if (x == 0) return;`) is taken, so the real work after it is read."""
+    out=[];at=start
+    while len(out)<count and at in image:
+        i=image.at(at);out.append(i)
+        if i.name in ('beq','bne','blez','bgtz','bltz','bgez') or i.name in ('j','jr'):
+            if at+4 in image:out.append(image.at(at+4))
+            if i.name=='jr':break
+            if i.name=='j':at=i.target;continue
+            fall=at+8
+            guard=any(fall+4*k in image and image.at(fall+4*k).name=='jr' and image.at(fall+4*k).rs==31 for k in range(3))
+            at=i.target if guard and i.target in image else fall
+            continue
+        at+=4
+    return out
+
+def _dest_reg(ins):
+    d=event_script._dest(ins)
+    return d if d not in (None,0) else None
 
 def native_gist(exe,overlay,callback,count=200):
     """native_steps as short technical lines."""
     out=[]
     for step in native_steps(exe,overlay,callback,count):
         if step[0]=='set':out.append(f'sets {step[1]} = {step[2]}')
+        elif step[0]=='field':out.append(f'sets {FIELD_NAMES.get(step[2],"+0x%02X"%step[2])} of {step[1]} = {step[3]}')
         else:
             shown=', '.join('?' if v is None else (f'0x{v:X}' if v>=0x8000 else str(v)) for v in step[2])
             out.append(f'calls {step[1]}({shown})')
@@ -351,7 +402,7 @@ PLAIN={
  'f_QueueResourceMessage':lambda a:f'show system message {a[0]}' if a[0] is not None else 'show a system message',
  'f_QueueItemMessage':lambda a:f'show the message for {event_script.item_label(a[0])}' if a[0] is not None else 'show an item message',
  'f_QueuePopupMessage':lambda a:'show a popup message',
- 'f_SetTombaAnimationIfChanged':lambda a:f'Tomba animation {a[0]}' if a[0] is not None else 'change Tomba’s animation',
+ 'f_SetTombaAnimationIfChanged':lambda a:(f'Tomba animation {a[1] if a[0] is not None and a[0]>=0x80000000 else a[0]}' if a[0] is not None else 'change Tomba’s animation'),
  'f_SetActorAnimationIfChanged':lambda a:f'play animation {a[1]} on the actor' if a[1] is not None else 'change the actor’s animation',
  'f_SpawnGoldFishhookPickup':lambda a:'spawn the gold fishhook pickup',
  'f_SetCameraFocusPosition':lambda a:'set where the camera looks',
@@ -381,19 +432,27 @@ PLAIN={
 }
 OMIT_CALLS=frozenset(('rand','rsin','rcos','ratan2','SquareRoot0'))   # arithmetic helpers: noise in a summary
 
+def _plain_call(name,consts):
+    """A call in words, '' for arithmetic noise, None when the routine is not known."""
+    if name in OMIT_CALLS:return ''
+    if name in ('f_SpawnAreaLinkedItemPickupActor','f_SpawnLinkedItemPickupActor'):
+        return f'spawn a pickup of {event_script.item_label(consts[1])}' if consts[1] is not None else 'spawn a pickup of the item it hands back'
+    if name in PLAIN:
+        try:return PLAIN[name](consts)
+        except Exception:return name
+    return None
+
+def native_paths(exe,overlay,callback):
+    """Every path through a native routine as guarded effects (game/native_decode.py)."""
+    from game import native_decode
+    try:return native_decode.decode(exe,overlay,callback,_plain_call,event_script._symbol,event_script._global)
+    except (ValueError,IndexError,struct.error,KeyError):return []
+
 def native_plain(exe,overlay,callback):
-    """The routine in plain words where its calls are known routines;
-    [] when it calls nothing recognisable. Unknown calls are named as the
-    game's own code names them (FUN_… when it has no name)."""
-    out=[]
-    for step in native_steps(exe,overlay,callback):
-        if step[0]=='set':out.append(f'set {step[1]} to {step[2]}')
-        elif step[1] in OMIT_CALLS:continue
-        elif step[1] in PLAIN:
-            try:out.append(PLAIN[step[1]](step[2]))
-            except Exception:out.append(step[1])
-        else:out.append(f'run {step[1]}')
-    return out
+    """The routine in plain words, for a row: the distinct things it does, in order.
+    [] when it does nothing it can name."""
+    from game import native_decode
+    return native_decode.summary(native_paths(exe,overlay,callback))
 
 def native_code_at(exe,overlay,callback,count=64):
     from psx.mips import Image
@@ -406,8 +465,9 @@ def native_code_at(exe,overlay,callback,count=64):
         if ins.name=='jr' and ins.rs==31:
             if ins.address+4 in image:lines.extend(image.text(ins.address+4,1))
             break
-    gist=native_gist(exe,overlay,callback);plain=native_plain(exe,overlay,callback)
-    head=(('In plain words (first path only): '+'; '.join(plain)+'.\n') if plain else '')+(('Calls and writes: '+'; '.join(gist)+'\n\n') if gist else '')
+    from game import native_decode
+    paths=native_paths(exe,overlay,callback)
+    head=('In plain words, by case (a routine like this runs every tick until it returns 1):'+chr(10)+chr(10).join(native_decode.lines(paths))+chr(10)+chr(10)) if paths else ''
     return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 
 def sound_samples(exe,overlay,snd,area,sound_id,pitch_offset=0):

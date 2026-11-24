@@ -8,6 +8,190 @@ HEADER_SIZE = CHUNK_SIZE - TRAILER_SIZE
 CD_SECTOR_SIZE = 0x800  # PSX CD-ROM sector size - DAT is read in whole
                         # sectors, so its size (and every chunk boundary
                         # within it) must stay a multiple of this.
+MAX_SDAT_FILES = (HEADER_SIZE - 20) // 4
+MAX_SDAT_OFFSET = 0xFFFFFF
+
+
+def _idx_chunks_from_bytes(idx_bytes, dat_size=None):
+    """Read and validate the address-bearing parts needed for insertion."""
+    if not idx_bytes or len(idx_bytes) % CHUNK_SIZE:
+        raise ValueError("IDX must contain complete 2048-byte chunks.")
+    chunks = []
+    for area in range(len(idx_bytes) // CHUNK_SIZE):
+        at = area * CHUNK_SIZE
+        image_start, image_end, start, end, count = struct.unpack_from('<5I', idx_bytes, at)
+        if image_end < image_start:
+            raise ValueError(f"AREA_{area:02X} has an invalid IMG range.")
+        if start > end or (dat_size is not None and end > dat_size):
+            raise ValueError(f"AREA_{area:02X} has an invalid DAT range.")
+        if start % CD_SECTOR_SIZE or end % CD_SECTOR_SIZE:
+            raise ValueError(f"AREA_{area:02X} DAT boundaries must be sector-aligned.")
+        if count > MAX_SDAT_FILES:
+            raise ValueError(f"AREA_{area:02X} exceeds the {MAX_SDAT_FILES}-entry SDAT header.")
+        words = struct.unpack_from(f'<{count}I', idx_bytes, at + 20)
+        pointers = [(word >> 24, word & MAX_SDAT_OFFSET) for word in words]
+        ids = [runtime_id for runtime_id, _offset in pointers]
+        offsets = [offset for _runtime_id, offset in pointers]
+        # Retail's ending chunk repeats ID 10. Preserve native duplicates;
+        # only newly appended IDs must be distinct from every existing ID.
+        if any(runtime_id >= 64 for runtime_id in ids):
+            raise ValueError(f"AREA_{area:02X} has invalid SDAT runtime IDs.")
+        if offsets != sorted(offsets) or any(offset > end - start or offset % 4 for offset in offsets):
+            raise ValueError(f"AREA_{area:02X} has invalid SDAT offsets.")
+        words = struct.unpack_from(f'<{TRAILER_SIZE // 4}I', idx_bytes, at + HEADER_SIZE)
+        trails = list(zip(words[::2], words[1::2]))
+        if any((s or e) and (not s or s >= e or (dat_size is not None and e > dat_size))
+               for s, e in trails):
+            raise ValueError(f"AREA_{area:02X} has an invalid TRAIL range.")
+        chunks.append(dict(img_start=image_start, img_end=image_end, dat_start=start,
+                           dat_end=end, sdat_pointers=pointers, trail_ranges=trails))
+    ranges = sorted((c['dat_start'], c['dat_end']) for c in chunks
+                    if c['dat_start'] < c['dat_end'])
+    if any(end > following for (_start, end), (following, _end) in zip(ranges, ranges[1:])):
+        raise ValueError("IDX contains overlapping DAT chunks.")
+    return chunks
+
+
+def _idx_bytes_from_chunks(chunks, original):
+    """Keep unused header bytes while rewriting pointers and range fields."""
+    out = bytearray(original)
+    for area, chunk in enumerate(chunks):
+        at = area * CHUNK_SIZE
+        pointers = chunk['sdat_pointers']
+        struct.pack_into('<5I', out, at, chunk['img_start'], chunk['img_end'],
+                         chunk['dat_start'], chunk['dat_end'], len(pointers))
+        for index, (runtime_id, offset) in enumerate(pointers):
+            struct.pack_into('<I', out, at + 20 + index * 4, runtime_id << 24 | offset)
+        for index, (start, end) in enumerate(chunk['trail_ranges']):
+            struct.pack_into('<II', out, at + HEADER_SIZE + index * 8, start, end)
+    return bytes(out)
+
+
+def parse_idx_bytes(idx_bytes):
+    """Parse an in-memory IDX using the same chunk dictionaries as parse_idx.
+
+    Structure, IDs and relative ranges are validated. Actual DAT/IMG file
+    bounds are the caller's responsibility because those files are absent.
+    """
+    if not isinstance(idx_bytes, (bytes, bytearray, memoryview)):
+        raise ValueError("IDX must be a bytes-like object.")
+    chunks = _idx_chunks_from_bytes(bytes(idx_bytes))
+    for chunk in chunks:
+        chunk['trail_ranges'] = [(s, e) for s, e in chunk['trail_ranges'] if s]
+    return chunks
+
+
+def build_idx_bytes(chunks):
+    """Serialize chunk dictionaries to a validated, sector-sized IDX."""
+    try:
+        chunks = list(chunks)
+        if not chunks:
+            raise ValueError("IDX must contain at least one chunk.")
+        for chunk in chunks:
+            pointers = chunk['sdat_pointers']
+            if len(pointers) > MAX_SDAT_FILES:
+                raise ValueError(f"An SDAT header holds at most {MAX_SDAT_FILES} entries.")
+            if len(chunk['trail_ranges']) > TRAILER_SIZE // 8:
+                raise ValueError("The IDX TRAIL table is full.")
+            for runtime_id, offset in pointers:
+                if (not isinstance(runtime_id, int) or isinstance(runtime_id, bool)
+                        or not 0 <= runtime_id < 64):
+                    raise ValueError("SDAT runtime IDs must be integers in 0..63.")
+                if (not isinstance(offset, int) or isinstance(offset, bool)
+                        or not 0 <= offset <= MAX_SDAT_OFFSET):
+                    raise ValueError("SDAT offsets must be nonnegative 24-bit integers.")
+        out = _idx_bytes_from_chunks(chunks, bytes(len(chunks) * CHUNK_SIZE))
+    except (KeyError, TypeError, struct.error, OverflowError) as error:
+        raise ValueError("Invalid IDX chunk fields.") from error
+    _idx_chunks_from_bytes(out)
+    return out
+
+
+def append_sdat_files(dat_bytes, idx_bytes, area, files):
+    """Return a DAT/IDX pair with ``(runtime_id, bytes)`` files appended.
+
+    Existing entries keep their IDs, order, offsets and complete contents.
+    New entries start at the old chunk end, align to four bytes, and the
+    grown chunk ends on a CD sector. Later chunks and absolute TRAIL ranges
+    move together. Inputs are never modified and no files are written.
+
+    Runtime IDs must be free in the destination SDAT and in 0..63. The
+    caller also checks IDs reserved by resident or dynamically loaded game
+    resources, and the destination area's runtime memory capacity.
+    """
+    binary = (bytes, bytearray, memoryview)
+    if not isinstance(dat_bytes, binary) or not isinstance(idx_bytes, binary):
+        raise ValueError("DAT and IDX must be bytes-like objects.")
+    dat_bytes, idx_bytes = bytes(dat_bytes), bytes(idx_bytes)
+    if len(dat_bytes) % CD_SECTOR_SIZE:
+        raise ValueError("DAT size must be sector-aligned.")
+    chunks = _idx_chunks_from_bytes(idx_bytes, len(dat_bytes))
+    if isinstance(area, bool) or not isinstance(area, int) or not 0 <= area < len(chunks):
+        raise ValueError("The destination AREA is outside this IDX.")
+    try:
+        entries = list(files)
+    except TypeError as error:
+        raise ValueError("Files must be a sequence of (runtime ID, bytes) pairs.") from error
+    chunk = chunks[area]
+    if len(chunk['sdat_pointers']) + len(entries) > MAX_SDAT_FILES:
+        raise ValueError(f"The destination SDAT can hold at most {MAX_SDAT_FILES} entries.")
+    used = {runtime_id for runtime_id, _offset in chunk['sdat_pointers']}
+    added = bytearray()
+    pointers = list(chunk['sdat_pointers'])
+    original_size = chunk['dat_end'] - chunk['dat_start']
+    for entry in entries:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            raise ValueError("Each file must be a (runtime ID, bytes) pair.")
+        runtime_id, payload = entry
+        if isinstance(runtime_id, bool) or not isinstance(runtime_id, int) or not 0 <= runtime_id < 64:
+            raise ValueError("SDAT runtime IDs must be integers in 0..63.")
+        if runtime_id in used:
+            raise ValueError(f"SDAT runtime ID {runtime_id} is already in use.")
+        if not isinstance(payload, binary):
+            raise ValueError("An SDAT file's contents must be bytes-like.")
+        payload = bytes(payload)
+        offset = original_size + len(added)
+        if offset > MAX_SDAT_OFFSET:
+            raise ValueError("The appended SDAT offset exceeds 24 bits.")
+        if offset + len(payload) > MAX_SDAT_OFFSET + 1:
+            raise ValueError("The grown SDAT chunk exceeds its 24-bit offset range.")
+        pointers.append((runtime_id, offset))
+        used.add(runtime_id)
+        added.extend(payload)
+        added.extend(bytes((-len(added)) % 4))
+    if not entries:
+        return dat_bytes, idx_bytes
+    added.extend(bytes((-len(added)) % CD_SECTOR_SIZE))
+    if original_size + len(added) > MAX_SDAT_OFFSET + 1:
+        raise ValueError("The grown SDAT chunk exceeds its 24-bit offset range.")
+    anchor, growth = chunk['dat_end'], len(added)
+
+    def shifted_range(start, end):
+        if not start and not end:
+            return start, end
+        if start == end and start >= anchor:
+            if end + growth > 0xFFFFFFFF:
+                raise ValueError("The shifted DAT address exceeds 32 bits.")
+            return start + growth, end + growth
+        if end <= anchor:
+            return start, end
+        if start < anchor:
+            raise ValueError("Appending would split an existing DAT or TRAIL range.")
+        if end + growth > 0xFFFFFFFF:
+            raise ValueError("The shifted DAT address exceeds 32 bits.")
+        return start + growth, end + growth
+
+    for number, other in enumerate(chunks):
+        if number == area:
+            if other['dat_end'] + growth > 0xFFFFFFFF:
+                raise ValueError("The grown DAT address exceeds 32 bits.")
+            other['dat_end'] += growth
+            other['sdat_pointers'] = pointers
+        elif other['dat_start'] or other['dat_end']:
+            other['dat_start'], other['dat_end'] = shifted_range(other['dat_start'], other['dat_end'])
+        other['trail_ranges'] = [shifted_range(s, e) for s, e in other['trail_ranges']]
+    new_dat = dat_bytes[:anchor] + added + dat_bytes[anchor:]
+    return bytes(new_dat), _idx_bytes_from_chunks(chunks, idx_bytes)
 
 
 def pad_to_sector(data):

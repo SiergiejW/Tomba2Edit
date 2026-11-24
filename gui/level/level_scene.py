@@ -969,6 +969,8 @@ class LevelScene:
         # scene -> records in its table, None for no table - see
         # actor_sim.World.run_rooms; rooms with nothing drawn still listed.
         self.room_tables = {}
+        # {room (src_Interior): the name the game prints at its door}, from the System hint table
+        self.room_names = {}
         # {drawn model id: the captured polygons it was built from} - what a
         # sprite rip cuts out of VRAM (formats/sprites/sprite_rip.py).
         self.drawn_polys = {}
@@ -1445,6 +1447,22 @@ class LevelScene:
             frames=frames, loops=actor.loops, name="",
             semi_transparent=actor.sprite_semi)
 
+    def _sign_text(self, slot):
+        """A signpost's text on one line (System chunk sign bank, entry picked by its slot), or ''."""
+        from game import signs
+        try:
+            if getattr(self, '_sign_bank', None) is None:
+                self._sign_bank = signs.sign_bank(self.dat_path, self.idx_path)
+            from pathlib import Path
+            found = signs.sign_text(Path(self.exe_path).read_bytes(), self._sign_bank, slot)
+        except (OSError, ValueError, AttributeError, TypeError):
+            return ''
+        if not found:
+            return ''
+        import re
+        text = ' '.join(re.sub(r'\{\$[^}]*\}', ' ', found[1].replace(chr(10), ' / ')).split())
+        return '“' + (text if len(text) <= 70 else text[:67] + '…') + '”'
+
     def _actor_name(self, actor):
         """A handler's name - or, for a chest or an item some code stood
         up, what it is and what it gives."""
@@ -1452,6 +1470,10 @@ class LevelScene:
             return "Tomba (the player)"
         read = self.world.mem.read if self.world is not None else None
         handler = actor.born[0] if actor.born else actor.handler
+        if read is not None and handler == 0x80073CD8:
+            sign = self._sign_text(read(actor.address + actor_sim.SLOT, 1))
+            if sign:
+                return f'{self.handler_name(handler)} signpost: {sign}'      # the handler name stays: Events finds the NPC by it
         if read is not None and handler == actor_sim.CHEST_HANDLER:
             kind = read(actor.address + actor_sim.SLOT, 1) & 0x7F
             contents = (read(actor.address + actor_sim.CHEST_CONTENTS, 2)
@@ -2883,6 +2905,13 @@ class LevelScene:
                             warp_labels=(warps.destination_label(back),),
                             note='Room-side entrance anchor from entry #6; opens the Forest Entrance outside.'))
                 resolved = {}
+                hints = None
+                try:
+                    from formats.text import system_messages
+                    idx = getattr(self, 'idx_path', None) or str(Path(self.dat_path).with_name('TOMBA2.IDX'))
+                    hints = system_messages.load_hints(self.dat_path, idx)
+                except (OSError, ValueError, struct.error, KeyError):
+                    pass
                 actors = [(a, None) for a in self.world.actors]
                 for room_number, room_actors in self.world.rooms.items():
                     actors.extend((a, room_number) for a in room_actors)
@@ -2903,8 +2932,12 @@ class LevelScene:
                     key = handler, interior, instance.scene, slot
                     if key not in resolved:
                         resolved[key] = warps.destinations(exe, overlay, handler, interior,
-                                                           area=self.area_index, scene=instance.scene, slot=slot)
+                                                           area=self.area_index, scene=instance.scene, slot=slot,
+                                                           hints=hints)
                     destinations = resolved[key]
+                    for d in destinations:
+                        if d[0] == 'interior' and d[3]:
+                            self.room_names.setdefault(d[1], d[3])
                     instance.warp_destinations = tuple(destinations)
                     instance.warp_labels = tuple(dict.fromkeys(warps.destination_label(d) for d in destinations))
                     if instance.scene is None:
