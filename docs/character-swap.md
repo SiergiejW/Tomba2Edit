@@ -33,7 +33,14 @@ Every other SMST on the disc is checked to still read the same texels; one that 
   - Vertex colours on this tool's `T2_` materials read back as exported. Other materials follow the PS1-tool rule, where white means unshaded.
 - A body on a rig whose joints don't sit where its limbs bend shows gaps when animated. Pick the closest rig.
 
-## Not verified
+## Verified in an emulator (2026-11-24)
 
-- In-game behaviour has not been run in an emulator yet.
-- Runtime VRAM uploads other than the pants palettes are only known from savestates you add.
+A disc with Tabby on all 11 costumes was booted from scratch in the headless Beetle core (`work/blender_geometry/emulator/run_core.py`). It played 9,600 frames: the opening, walking around Town and the scripted dialogues, with no crash. Read back from the emulator's memory:
+
+- The costume buffer at `0x8017C800` equals the installed model.
+- The bone table at `0x800A3FA8` is Tabby's.
+- All 17 parts point into her groups.
+- All 2,886 halfwords she samples in live VRAM match the install.
+- All 1,281 texel reads and 10 palettes are identical to Tabby in her own area.
+
+Not yet run in the game: changing costume (suits, robes, the Wing Suit's wings) and bodies imported from Blender. Runtime VRAM uploads other than the pants palettes are only known from savestates you add.

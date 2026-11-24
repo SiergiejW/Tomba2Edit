@@ -46,3 +46,51 @@ def function_text(tag, address, symbol_name=None):
                 first -= 1
             return '\n'.join(_lines[first:end + 1])
     return None
+
+
+_names = {}
+
+
+def _overlay_names(tag):
+    """{name: address} of the project's own names for routines of overlay `tag`."""
+    if tag not in _names:
+        import json
+        out = {}
+        try:
+            data = json.loads((_PATH.parent / 'symbols_us.json').read_text(encoding='utf-8'))
+            for name, value in data.items():
+                if isinstance(value, list) and len(value) == 2 and value[0] == tag:
+                    out[name] = value[1]
+        except (OSError, ValueError):
+            pass
+        _names[tag] = out
+    return _names[tag]
+
+
+def function_with_callees(tag, address, symbol_name=None, depth=2):
+    """The C of the routine and, below it, of the overlay routines it calls (to `depth` levels,
+    each once): what the handler actually does, as Ghidra read it. None when the export has no entry."""
+    _load()
+    names = _overlay_names(tag)
+    reverse = {v: k for k, v in names.items()}
+    seen, out = set(), []
+
+    def visit(addr, name, level):
+        if addr in seen:
+            return
+        seen.add(addr)
+        text = function_text(tag, addr, name or reverse.get(addr))
+        if text is None:
+            return
+        out.append(text)
+        if level >= depth:
+            return
+        for m in re.finditer(r'\b(FUN_%s__([0-9a-fA-F]{8})|[A-Za-z_]\w*)\s*\(' % tag, text):
+            callee = m.group(1)
+            if m.group(2):
+                visit(int(m.group(2), 16), None, level + 1)
+            elif callee in names:
+                visit(names[callee], callee, level + 1)
+
+    visit(address, symbol_name, 0)
+    return '\n\n'.join(out) if out else None

@@ -8,9 +8,17 @@ either, a call's result, a comparison) and keeps, per path, the tests that
 led to it, what it wrote or called, and what it returned. Nothing is run; a
 loop is entered once. A path is dropped when it does nothing and waits.
 """
+import re
 import struct
+import threading
 
 from psx.mips import Image
+
+_mode = threading.local()      # _mode.c: words (default) or C text
+
+
+def _c():
+    return getattr(_mode, 'c', False)
 
 BASE_FIELDS = {0x04: 'state', 0x79: 'sub-step', 0x05: 'phase', 0x06: 'step', 0x2B: 'item contact', 0x2E: 'X', 0x32: 'height', 0x36: 'depth',
                0x40: 'timer', 0x5E: 'behaviour', 0x60: 'item it hands back', 0x78: 'step'}
@@ -27,7 +35,8 @@ def _signed(v):
 
 
 def text(v, glob):
-    """A symbolic value in words."""
+    """A symbolic value in words (or as a C expression in C mode)."""
+    if _c(): return ctext(v, glob)
     k = v[0]
     if k == 'c':
         n = _signed(v[1])
@@ -52,6 +61,51 @@ def text(v, glob):
     return '?'
 
 
+C_FIELDS = {0x04: 'lifecycle_state', 0x05: 'pickup_phase', 0x06: 'special_phase', 0x2B: 'field_0x2b', 0x2E: 'x', 0x32: 'y', 0x36: 'z',
+            0x40: 'health_timer', 0x5E: 'pickup_behavior', 0x60: 'effect_enabled', 0x78: 'step', 0x79: 'sub_step'}
+
+
+def _ident(offset):
+    return C_FIELDS.get(offset) or f'field_0x{offset:02x}'
+
+
+def _gname(addr, size=1):
+    from game import event_script
+    if event_script.EVENT_STATES <= addr < event_script.EVENT_STATES + 0x100: return f'event_state[{addr - event_script.EVENT_STATES}]'
+    if event_script.INVENTORY <= addr < event_script.INVENTORY + 0x100: return f'inventory[{addr - event_script.INVENTORY}]'
+    if event_script.AREA_PROGRESS <= addr < event_script.AREA_PROGRESS + 0x100: return f'area_progress[{addr - event_script.AREA_PROGRESS}]'
+    name = event_script._symbol(addr)
+    if not name.startswith('0x'): return name
+    return f'*(u{8 * size} *)0x{addr:08X}'
+
+
+def ctext(v, glob):
+    """A symbolic value as a C expression."""
+    k = v[0]
+    if k == 'c':
+        n = _signed(v[1])
+        return str(n) if -0x10000 <= n <= 0xFFFF else f'0x{v[1]:X}'
+    if k == 'arg': return 'actor'
+    if k == 'g': return _gname(v[1], v[2] if len(v) > 2 else 1)
+    if k == 'f':
+        base = v[1]
+        inner = ctext(base, glob)
+        if base[0] == 'g': inner = f'((Tomba2PickupObject *){inner})'
+        return f'{inner}->{_ident(v[2])}'
+    if k == 'ret': return f'r{v[3]}' if len(v) > 3 else f'{v[1]}()'
+    if k == 'cmp':
+        if v[1] == '<' and v[3] == ('c', 1):
+            x = v[2]
+            if x[0] == 'op' and x[1] == '^' and x[3] == ('c', 1): return f'{ctext(x[2], glob)} == 1'
+            return f'!{ctext(x, glob)}' if x[0] in ('f', 'g', 'ret') else f'({ctext(x, glob)}) == 0'
+        return f'{ctext(v[2], glob)} {v[1]} {ctext(v[3], glob)}'
+    if k == 'op':
+        if v[1] == '+' and v[3][0] == 'c' and _signed(v[3][1]) < 0:
+            return f'({ctext(v[2], glob)} - {-_signed(v[3][1])})'
+        return f'({ctext(v[2], glob)} {v[1]} {ctext(v[3], glob)})'
+    return 'unknown'
+
+
 def _negate(op):
     return {'==': '!=', '!=': '==', '<': '>=', '>=': '<', '<=': '>', '>': '<='}[op]
 
@@ -71,7 +125,7 @@ class _State:
         return s
 
 
-def decode(exe, overlay, start, plain_call, symbol, glob, depth=0):
+def decode(exe, overlay, start, plain_call, symbol, glob, depth=0, shown=None):
     """[{'conds': [str], 'effects': [str], 'result': str}] for the routine at `start`.
     `plain_call(name, consts)` words a call (or None), `symbol(addr)` names a routine, `glob(addr)` a global."""
     from game import event_script
@@ -80,7 +134,7 @@ def decode(exe, overlay, start, plain_call, symbol, glob, depth=0):
     if image is None:
         return []
     first = _State()
-    first.ctx = (exe, overlay, depth)
+    first.ctx = (exe, overlay, depth, set() if shown is None else shown)
     paths, work = [], [(start, first)]
     while work and len(paths) < MAX_PATHS:
         at, st = work.pop()
@@ -116,7 +170,8 @@ def decode(exe, overlay, start, plain_call, symbol, glob, depth=0):
                     break
                 if i.rs == 31:
                     v0 = st.regs.get(2)
-                    if v0 and v0[0] == 'c': result = RETURNS.get(v0[1], f'returns {v0[1]}')
+                    if _c(): result = f'return {text(v0, glob)};' if v0 else 'return;'
+                    elif v0 and v0[0] == 'c': result = RETURNS.get(v0[1], f'returns {v0[1]}')
                     elif v0 and v0[0] == 'cmp': result = f'finishes once {text(v0, glob)}, waits until then'
                     else: result = f'returns {text(v0, glob)}' if v0 else 'returns'
                     paths.append(dict(conds=_simplify(st.conds), effects=st.effects, result=result))
@@ -129,6 +184,11 @@ def decode(exe, overlay, start, plain_call, symbol, glob, depth=0):
             _step(i, st, plain_call, symbol, glob)
             st.steps += 1; at += 4
     return _tidy(paths)
+
+
+def _emit(st, text):
+    """Record an effect; in C mode with the number of tests passed so far, so it prints where it happened."""
+    st.effects.append((len(st.conds), text) if _c() else text)
 
 
 def _val(st, r):
@@ -234,16 +294,21 @@ def _step(i, st, plain_call, symbol, glob):
         r[i.rd] = ('cmp', '<', _val(st, i.rs), _val(st, i.rt))
     elif n in LOADS:
         a = _val(st, i.rs)
-        if a[0] == 'c' and (a[1] + i.imm) >= 0x80000000: r[i.rt] = ('g', (a[1] + i.imm) & 0xffffffff)
+        if a[0] == 'c' and (a[1] + i.imm) >= 0x80000000: r[i.rt] = ('g', (a[1] + i.imm) & 0xffffffff, LOADS[n])
         elif a[0] in ('arg', 'f', 'g', 'ret'): r[i.rt] = ('f', a, i.imm & 0xffff)
         else: r[i.rt] = ('unk',)
     elif n in STORES:
         a, v = _val(st, i.rs), _val(st, i.rt)
         if a[0] == 'c' and a[1] + i.imm >= 0x80000000:
             where = (a[1] + i.imm) & 0xffffffff
-            st.effects.append(f'set {GLOBAL_WORDS.get(where) or glob(where)} to {text(v, glob)}')
+            if _c(): _emit(st, f'{_gname(where, STORES[n])} = {text(v, glob)};')
+            else: _emit(st, f'set {GLOBAL_WORDS.get(where) or glob(where)} to {text(v, glob)}')
+        elif a[0] in ('arg', 'f', 'g', 'ret') and _c():
+            base = text(a, glob)
+            if a[0] == 'g': base = f'((Tomba2PickupObject *){base})'
+            _emit(st, f'{base}->{_ident(i.imm & 0xffff)} = {text(v, glob)};')
         elif a[0] in ('arg', 'f', 'g', 'ret'):
-            st.effects.append(f'set the {BASE_FIELDS.get(i.imm & 0xffff, "field +0x%02X" % (i.imm & 0xffff))} of {text(a, glob)} to {text(v, glob)}')
+            _emit(st, f'set the {BASE_FIELDS.get(i.imm & 0xffff, "field +0x%02X" % (i.imm & 0xffff))} of {text(a, glob)} to {text(v, glob)}')
     else:
         from game import event_script
         d = event_script._dest(i)
@@ -255,23 +320,49 @@ def _call(i, st, plain_call, symbol, glob):
     target = i.target if i.name == 'jal' else None
     name = symbol(target) if target is not None else 'a routine in a register'
     args = [_val(st, k) for k in (4, 5, 6, 7)]
+    if _c():
+        _call_c(i, st, target, name, args, symbol, glob)
+        return
     consts = [_const(a) for a in args]
     said = plain_call(name, consts) if target is not None else None
     if said is None and target is not None and args[0] == ('arg',) and st.ctx and st.ctx[2] < 2:
         # An overlay routine run on this actor: say what it does, indented under the call.
         from game import event_script
-        exe, overlay, depth = st.ctx
-        if event_script.BASE <= target < event_script.BASE + len(overlay):
-            sub = decode(exe, overlay, target, plain_call, symbol, glob, depth + 1)
+        exe, overlay, depth, shown = st.ctx
+        if target in shown:
+            said = f'run {name} (this actor)'          # described where it first appears
+        elif event_script.BASE <= target < event_script.BASE + len(overlay):
+            shown.add(target)
+            sub = decode(exe, overlay, target, plain_call, symbol, glob, depth + 1, shown)
             if sub:
                 said = f'run {name} (this actor), which does:' + chr(10) + chr(10).join('        ' + l for l in lines(sub))
     if said is None:
         shown = ', '.join(text(a, glob) for a in args[:3] if a[0] != 'unk')
         said = f'run {name}' + (f' ({shown})' if shown else '')
     if said:
-        st.effects.append(said)
+        _emit(st, said)
     for k in list(range(1, 16)) + [24, 25]: st.regs[k] = ('unk',)     # s0-s7 survive a call
     st.regs[2] = ('ret', name, tuple(args))
+    st.regs[31] = ('unk',)
+
+
+def _call_c(i, st, target, name, args, symbol, glob):
+    """A call as a C statement; an overlay routine run on this actor is decoded once, into ctx's `shown`."""
+    from game import event_script
+    known = [k for k, a in enumerate(args) if a[0] != 'unk']
+    shown_args = ', '.join(text(a, glob) if a[0] != 'unk' else '0 /* ? */' for a in args[:(known[-1] + 1 if known else 0)])
+    call = f'{name}({shown_args})' if target is not None else f'(*fn)({shown_args})'
+    keeps = any(w in name for w in ('Spawn', 'Allocate', 'Create'))
+    st.regs['rn'] = st.regs.get('rn', 0) + 1
+    rn = st.regs['rn']
+    _emit(st, f'r{rn} = {call};' if keeps else f'{call};')
+    if st.ctx and target is not None and args[0] == ('arg',):
+        exe, overlay, depth, shown = st.ctx
+        if target not in shown and depth < 2 and event_script.BASE <= target < event_script.BASE + len(overlay):
+            shown[target] = None
+            shown[target] = decode(exe, overlay, target, None, symbol, glob, depth + 1, shown)
+    for k in list(range(1, 16)) + [24, 25]: st.regs[k] = ('unk',)
+    st.regs[2] = ('ret', name, tuple(args), rn)
     st.regs[31] = ('unk',)
 
 
@@ -291,15 +382,80 @@ def _tidy(paths):
 
 
 def lines(paths):
-    """The paths as indented words."""
-    out = []
+    """The paths as an indented tree: tests shared with the path above are printed once."""
+    out, before = [], []
     for p in paths:
-        when = ' and '.join(p['conds']) if p['conds'] else 'always'
-        more = f' (or {len(p["alternatives"])} other way{"s" if len(p["alternatives"]) > 1 else ""})' if p['alternatives'] else ''
-        out.append(f'When {when}{more}:')
-        out.extend(f'    {e}' for e in p['effects'])
-        out.append(f'    → {p["result"]}')
+        conds = p['conds']
+        keep = 0
+        while keep < min(len(conds), len(before)) and conds[keep] == before[keep]:
+            keep += 1
+        for depth in range(keep, len(conds)):
+            out.append('    ' * depth + f'When {conds[depth]}:')
+        pad = '    ' * len(conds)
+        if not conds and not p['effects']:
+            out.append('Always:')
+        for e in p['effects']:
+            first, *rest = e.split(chr(10))
+            out.append(pad + first)
+            out.extend(pad + l for l in rest)
+        out.append(pad + '→ ' + p['result'])
+        before = conds
     return out
+
+
+
+def c_function(name, paths):
+    """One routine as C: tests shared with the path above nest once; each statement prints at the
+    depth it happened at (a call before a test it feeds comes before the `if`)."""
+    out = [f'int {name}(Tomba2PickupObject *actor)', '{']
+    before, emitted = [], set()
+    for p in paths:
+        conds = p['conds']
+        keep = 0
+        while keep < min(len(conds), len(before)) and conds[keep] == before[keep]:
+            keep += 1
+        for depth in range(len(before) - 1, keep - 1, -1):
+            out.append('    ' * (depth + 1) + '}')
+        by_level = {}
+        for level, e in p['effects']:
+            by_level.setdefault(min(level, len(conds)), []).append(e)
+
+        def put(depth):
+            for n, e in enumerate(by_level.get(depth, [])):
+                key = (tuple(conds[:depth]), depth, n, e)
+                if key not in emitted:
+                    emitted.add(key)
+                    out.extend('    ' * (depth + 1) + line for line in e.split(chr(10)))
+
+        put(0) if keep == 0 else None
+        for depth in range(1, len(conds) + 1):
+            if depth > keep:
+                out.append('    ' * depth + f'if ({conds[depth - 1]}) {{')
+            put(depth)
+        out.append('    ' * (len(conds) + 1) + p['result'])
+        before = conds
+    for depth in range(len(before) - 1, -1, -1):
+        out.append('    ' * (depth + 1) + '}')
+    out.append('}')
+    return out
+
+
+def c_text(exe, overlay, start, symbol, glob):
+    """The routine and the overlay routines it runs on its actor, as C. Empty when nothing was found."""
+    _mode.c = True
+    try:
+        shown = {}
+        main = decode(exe, overlay, start, None, symbol, glob, 0, shown)
+        def named(addr):
+            n = symbol(addr)
+            return f'handler_{addr:08X}' if n.startswith('0x') else n
+        blocks = [c_function(named(start), main)] if main else []
+        for target, paths in shown.items():
+            if paths:
+                blocks.append(c_function(named(target), paths))
+        return '\n\n'.join(chr(10).join(b) for b in blocks)
+    finally:
+        _mode.c = False
 
 
 def summary(paths, limit=6):

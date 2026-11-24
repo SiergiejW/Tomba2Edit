@@ -2949,6 +2949,10 @@ class LevelScene:
                                 continue
                             return_destination = warps.destinations(exe, overlay, handler, interior,
                                 area=self.area_index, scene=room + 1)
+                            # Walking out of a room puts Tomba back at the door he came in by. The shared
+                            # controller's other area writes belong to other doors, not to this exit.
+                            return_destination = [d for d in return_destination
+                                                  if d[0] == 'area' and d[1] == self.area_index and d[2] == -1]
                             if not return_destination:
                                 continue
                             position = list(instance.game_position)
@@ -2966,7 +2970,8 @@ class LevelScene:
                                 x=vx, y=vy, z=vz, warp_return_position=(instance.x, instance.y, instance.z),
                                 warp_destinations=tuple(return_destination),
                                 warp_labels=tuple(warps.destination_label(d) for d in return_destination),
-                                note='Return path of the native entrance controller, shown on the room side.'))
+                                note='Return path of the native entrance controller, shown on the room side: Tomba comes out at '
+                                     f'the door he entered by, at ({instance.x:.0f}, {instance.y:.0f}, {instance.z:.0f}) in the main area.'))
                     if destinations:
                         detail = '<br>'.join(warps.destination_label(d) +
                                              (f' (arrival #{d[2]}; conditional native path)' if d[0] == 'area' else '')

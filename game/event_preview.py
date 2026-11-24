@@ -448,6 +448,12 @@ def native_paths(exe,overlay,callback):
     try:return native_decode.decode(exe,overlay,callback,_plain_call,event_script._symbol,event_script._global)
     except (ValueError,IndexError,struct.error,KeyError):return []
 
+def native_c(exe,overlay,callback):
+    """The routine, and the overlay routines it runs on its actor, as C (game/native_decode.py)."""
+    from game import native_decode
+    try:return native_decode.c_text(exe,overlay,callback,event_script._symbol,event_script._global)
+    except (ValueError,IndexError,struct.error,KeyError):return ''
+
 def native_plain(exe,overlay,callback):
     """The routine in plain words, for a row: the distinct things it does, in order.
     [] when it does nothing it can name."""
@@ -465,9 +471,8 @@ def native_code_at(exe,overlay,callback,count=64):
         if ins.name=='jr' and ins.rs==31:
             if ins.address+4 in image:lines.extend(image.text(ins.address+4,1))
             break
-    from game import native_decode
-    paths=native_paths(exe,overlay,callback)
-    head=('In plain words, by case (a routine like this runs every tick until it returns 1):'+chr(10)+chr(10).join(native_decode.lines(paths))+chr(10)+chr(10)) if paths else ''
+    c=native_c(exe,overlay,callback)
+    head=('As C (decoded from the machine code; a routine like this runs every tick until it returns 1):'+chr(10)+c+chr(10)+chr(10)) if c else ''
     return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 
 def sound_samples(exe,overlay,snd,area,sound_id,pitch_offset=0):

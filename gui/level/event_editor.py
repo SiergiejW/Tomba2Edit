@@ -1515,7 +1515,19 @@ class EventEditor(QDialog):
                 'Its behaviour is in its handler code (Native code tab); the Model tab shows its model.')
             sign=self.panel.sign_for_instance(self.instance) if hasattr(self.panel,'sign_for_instance') else None
             self.actions.blockSignals(True);self.actions.clear()
-            lines=[('This entity has no script page: its behaviour is in its handler code (press “Handler code…”).')]
+            lines=['This entity has no script page: its behaviour is its native handler, shown below as C (every tick).']
+            body=[]
+            try:
+                from game import decomp_view
+                from game.event_preview import native_c
+                tag=Path(self.panel.scene.overlay_path).stem
+                text=(decomp_view.function_with_callees(tag,self.native_handler) if self.native_handler else None) or                      (native_c(self.exe,self.overlay,self.native_handler) if self.native_handler else '')
+                body=text.split(chr(10)) if text else []
+            except Exception:body=[]
+            if body:
+                limit=400
+                lines+=['']+body[:limit]+([f'… {len(body)-limit} more lines (Handler code… has all of it)'] if len(body)>limit else [])
+            else:lines.append('The handler could not be put into C; see Handler code…')
             if sign is not None:
                 lines=[f'Signpost: Tomba walks up and presses the action button; sign text {sign[0]} is shown:']+['    '+part for part in sign[1].split(chr(10))]
             note=self._item_summary()
@@ -1921,7 +1933,7 @@ class EventEditor(QDialog):
             if t in index:
                 incoming.setdefault(index[t],[]).append(n)
                 for k in range(n+1,index[t]):depth[k]+=1
-        out=[]
+        out=[];goto_rows=set()
         for n,c in enumerate(nodes):
             notes=[]
             t=c.branch
@@ -1935,11 +1947,16 @@ class EventEditor(QDialog):
                     notes.append(f'(else skip to #{index[t]+1:02d})')
                 elif t in index:notes.append(f'⟶ #{index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else ''))
                 elif t<script.BASE:
-                    # A tail every conversation shares (kept in MAIN.EXE): say what it does.
+                    # A tail every conversation shares (kept in MAIN.EXE): say what it does, in full.
                     try:
-                        tail=' → '.join(script.summary(x).split(' (')[0] for x in script.read_graph(script.reader(self.exe,self.overlay),t)[:4])
+                        steps=script.read_graph(script.reader(self.exe,self.overlay),t)
+                        tail=' → '.join(script.summary(x).split(' (')[0] for x in steps[:8])+(' → …' if len(steps)>8 else '')
                     except (ValueError,IndexError):tail=''
-                    notes.append(f'⟶ then jumps to shared resident script 0x{t:08X}'+(f' ({tail})' if tail else ''))
+                    notes.append(f'⟶ GOTO shared resident script 0x{t:08X}'+(f' [{tail}]' if tail else ''))
+            if t is not None and not script.two_way(c.opcode):
+                goto_rows.add(n)
+            if n-1 in goto_rows and n not in incoming:
+                notes.insert(0,f'✗ never reached by running on: row {n:02d} always jumps away (the game only falls through after a test that holds)')
             if c.header&script.END:notes.append('■ end')
             if n in incoming:
                 ifs=[k for k in incoming[n] if nodes[k].opcode in script.CONDITION_OPS and k<n]
