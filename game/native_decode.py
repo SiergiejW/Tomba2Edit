@@ -25,6 +25,7 @@ BASE_FIELDS = {0x04: 'state', 0x79: 'sub-step', 0x05: 'phase', 0x06: 'step', 0x2
 GLOBAL_WORDS = {0x800BF844: 'the spawned pickup', 0x800BF80A: 'the item-use flag', 0x800BF80B: 'the item Tomba is using',
                 0x800BF80E: 'Tomba’s cutscene control'}
 MAX_PATHS, MAX_STEPS = 300, 400
+MAX_TOTAL = 2500            # paths started in one routine: a routine that forks without end stops here
 LOADS = {'lw': 4, 'lh': 2, 'lhu': 2, 'lb': 1, 'lbu': 1}
 STORES = {'sw': 4, 'sh': 2, 'sb': 1}
 RETURNS = {0: 'keeps waiting (returns 0)', 1: 'finishes (returns 1)', 2: 'falls through (returns 2)', 3: 'jumps (returns 3)'}
@@ -42,6 +43,7 @@ def text(v, glob):
         n = _signed(v[1])
         return str(n) if -0x10000 <= n < 65536 else f'0x{v[1]:X}'
     if k == 'arg': return 'this actor'
+    if k == 't': return f'entry {text(v[2], glob)} of the table at 0x{v[1]:08X}'
     if k == 'g': return GLOBAL_WORDS.get(v[1]) or glob(v[1])
     if k == 'f':
         name = BASE_FIELDS.get(v[2])
@@ -86,6 +88,7 @@ def ctext(v, glob):
         n = _signed(v[1])
         return str(n) if -0x10000 <= n <= 0xFFFF else f'0x{v[1]:X}'
     if k == 'arg': return 'actor'
+    if k == 't': return f'((u{8 * v[3]} *)0x{v[1]:08X})[{ctext(v[2], glob)}]'
     if k == 'g': return _gname(v[1], v[2] if len(v) > 2 else 1)
     if k == 'f':
         base = v[1]
@@ -111,10 +114,11 @@ def _negate(op):
 
 
 class _State:
-    __slots__ = ('regs', 'conds', 'effects', 'seen', 'steps', 'bound', 'ctx')
+    __slots__ = ('regs', 'conds', 'effects', 'seen', 'steps', 'bound', 'ctx', 'stack', 'lohi')
 
     def __init__(self):
-        self.regs = {0: ('c', 0), 4: ('arg',)}
+        self.regs = {0: ('c', 0), 4: ('arg',), 29: ('sp', 0)}
+        self.stack, self.lohi = {}, None
         self.conds, self.effects, self.seen, self.steps, self.bound = [], [], {}, 0, None
         self.ctx = None
 
@@ -122,6 +126,7 @@ class _State:
         s = _State()
         s.regs, s.conds, s.effects = dict(self.regs), list(self.conds), list(self.effects)
         s.seen, s.steps, s.bound, s.ctx = dict(self.seen), self.steps, self.bound, self.ctx
+        s.stack, s.lohi = dict(self.stack), self.lohi
         return s
 
 
@@ -136,12 +141,16 @@ def decode(exe, overlay, start, plain_call, symbol, glob, depth=0, shown=None):
     first = _State()
     first.ctx = (exe, overlay, depth, set() if shown is None else shown)
     paths, work = [], [(start, first)]
-    while work and len(paths) < MAX_PATHS:
+    spent = 0
+    while work and len(paths) < MAX_PATHS and spent < MAX_TOTAL:
         at, st = work.pop()
+        spent += 1
         while at in image and st.steps < MAX_STEPS:
             if st.seen.get(at, 0) >= 2:
                 break
             st.seen[at] = st.seen.get(at, 0) + 1
+            spent += 0.02
+            if spent > MAX_TOTAL: break
             i = image.at(at)
             n = i.name
             if n in ('beq', 'bne', 'blez', 'bgtz', 'bltz', 'bgez'):
@@ -189,6 +198,16 @@ def decode(exe, overlay, start, plain_call, symbol, glob, depth=0, shown=None):
 def _emit(st, text):
     """Record an effect; in C mode with the number of tests passed so far, so it prints where it happened."""
     st.effects.append((len(st.conds), text) if _c() else text)
+
+
+def _table(a):
+    """(base, index) when `a` is a constant table base plus a scaled index, else None."""
+    if a[0] != 'op' or a[1] != '+': return None
+    for base, idx in ((a[2], a[3]), (a[3], a[2])):
+        if base[0] == 'c' and base[1] >= 0x80000000 and idx[0] != 'c':
+            if idx[0] == 'op' and idx[1] == '<<' and idx[3][0] == 'c': return base[1], idx[2]
+            return base[1], idx
+    return None
 
 
 def _val(st, r):
@@ -264,7 +283,8 @@ def _step(i, st, plain_call, symbol, glob):
     if n == 'lui': r[i.rt] = ('c', (i.unsigned << 16) & 0xffffffff)
     elif n in ('addiu', 'addi'):
         a = _val(st, i.rs)
-        r[i.rt] = ('c', (a[1] + i.imm) & 0xffffffff) if a[0] == 'c' else (('op', '+', a, ('c', i.imm)) if i.rt != i.rs or True else a)
+        if a[0] == 'sp': r[i.rt] = ('sp', a[1] + i.imm)
+        else: r[i.rt] = ('c', (a[1] + i.imm) & 0xffffffff) if a[0] == 'c' else (('op', '+', a, ('c', i.imm)) if i.rt != i.rs or True else a)
     elif n == 'ori':
         a = _val(st, i.rs)
         r[i.rt] = ('c', a[1] | i.unsigned) if a[0] == 'c' else ('op', '|', a, ('c', i.unsigned))
@@ -287,6 +307,20 @@ def _step(i, st, plain_call, symbol, glob):
         a = _val(st, i.rt)
         if a[0] == 'op' and a[1] == '<<' and a[3] == ('c', i.shift) and i.shift in (16, 24): r[i.rd] = a[2]
         else: r[i.rd] = ('op', '>>', a, ('c', i.shift)) if a[0] != 'c' else ('c', a[1] >> i.shift)
+    elif n in ('mult', 'multu'):
+        st.lohi = (('op', '*', _val(st, i.rs), _val(st, i.rt)), ('unk',))
+    elif n in ('div', 'divu'):
+        a, b = _val(st, i.rs), _val(st, i.rt)
+        st.lohi = (('op', '/', a, b), ('op', '%', a, b))
+    elif n in ('mflo', 'mfhi'):
+        r[i.rd] = (st.lohi[0 if n == 'mflo' else 1] if st.lohi else ('unk',))
+    elif n in ('sllv', 'srlv', 'srav'):
+        r[i.rd] = ('op', '<<' if n == 'sllv' else '>>', _val(st, i.rt), _val(st, i.rs))
+    elif n == 'xor':
+        r[i.rd] = ('op', '^', _val(st, i.rs), _val(st, i.rt))
+    elif n == 'add':
+        a, b = _val(st, i.rs), _val(st, i.rt)
+        r[i.rd] = a if b == ('c', 0) else b if a == ('c', 0) else ('op', '+', a, b)
     elif n in ('slti', 'sltiu'):
         if n == 'sltiu': st.bound = _val(st, i.rs)       # the switch value, before it is scaled into a table index
         r[i.rt] = ('cmp', '<', _val(st, i.rs), ('c', i.imm & 0xffffffff if n == 'sltiu' else i.imm))
@@ -294,12 +328,16 @@ def _step(i, st, plain_call, symbol, glob):
         r[i.rd] = ('cmp', '<', _val(st, i.rs), _val(st, i.rt))
     elif n in LOADS:
         a = _val(st, i.rs)
-        if a[0] == 'c' and (a[1] + i.imm) >= 0x80000000: r[i.rt] = ('g', (a[1] + i.imm) & 0xffffffff, LOADS[n])
+        t = _table(a)
+        if a[0] == 'sp': r[i.rt] = st.stack.get(a[1] + i.imm, ('unk',))
+        elif t: r[i.rt] = ('t', (t[0] + i.imm) & 0xffffffff, t[1], LOADS[n])
+        elif a[0] == 'c' and (a[1] + i.imm) >= 0x80000000: r[i.rt] = ('g', (a[1] + i.imm) & 0xffffffff, LOADS[n])
         elif a[0] in ('arg', 'f', 'g', 'ret'): r[i.rt] = ('f', a, i.imm & 0xffff)
         else: r[i.rt] = ('unk',)
     elif n in STORES:
         a, v = _val(st, i.rs), _val(st, i.rt)
-        if a[0] == 'c' and a[1] + i.imm >= 0x80000000:
+        if a[0] == 'sp': st.stack[a[1] + i.imm] = v
+        elif a[0] == 'c' and a[1] + i.imm >= 0x80000000:
             where = (a[1] + i.imm) & 0xffffffff
             if _c(): _emit(st, f'{_gname(where, STORES[n])} = {text(v, glob)};')
             else: _emit(st, f'set {GLOBAL_WORDS.get(where) or glob(where)} to {text(v, glob)}')
@@ -453,7 +491,11 @@ def c_text(exe, overlay, start, symbol, glob):
         for target, paths in shown.items():
             if paths:
                 blocks.append(c_function(named(target), paths))
-        return '\n\n'.join(chr(10).join(b) for b in blocks)
+        text = (chr(10) * 2).join(chr(10).join(b) for b in blocks)
+        rows = text.split(chr(10))
+        if len(rows) > 600:
+            text = chr(10).join(rows[:600] + ['/* ... cut: too many paths to print in full ... */'])
+        return text
     finally:
         _mode.c = False
 
@@ -463,6 +505,7 @@ def summary(paths, limit=6):
     seen = []
     for p in paths:
         for e in p['effects']:
+            e = e.split(chr(10))[0].rstrip(':').replace(', which does', '')      # a row is one line
             if e not in seen: seen.append(e)
     if not seen:
         seen = list(dict.fromkeys(p['result'] for p in paths))

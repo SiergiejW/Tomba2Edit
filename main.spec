@@ -150,11 +150,13 @@ a = Analysis(
     # spawner for the level editor (symbols_jp-demo.json the JP demo's own
     # handlers); decomp/builds/ says where each other
     # build keeps those addresses (game/game_build.py). The rest of
-    # decomp/ is not read.
+    # decomp/ is not read - except MAIN.EXE_US_DECOMP.c, which game/decomp_view.py
+    # reads for the editor's Handler code C view and the C of native-code rows.
     datas=_icon_files() + [('labels', 'labels'), ('audio_names', 'audio_names'),
                            ('fonts', 'fonts'),
                            ('decomp/symbols_us.json', 'decomp'),
                            ('decomp/symbols_jp-demo.json', 'decomp'),
+                           ('decomp/MAIN.EXE_US_DECOMP.c', 'decomp'),
                            ('decomp/builds', 'decomp/builds')] + _multimedia_plugins(),
     # QtMultimedia is imported inside the functions that play audio, so
     # the analysis does not always see it; naming it here is what gets

@@ -142,6 +142,7 @@ class LevelEditorPanel(QWidget):
         self._sprite_timer.timeout.connect(self._next_sprite_tick)
 
         self.viewer = LevelViewer(self)
+        self.viewer.sign_resolver = self.sign_for_instance     # signposts get the "!" badge
         self.viewer.animate_action.setToolTip(
             "Animate textures, backgrounds, sprites, actor effects, and idle poses")
         self.viewer.animate_action.toggled.connect(self._sync_motion_animation)

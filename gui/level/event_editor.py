@@ -1,11 +1,11 @@
 """Native event pages and an editable, relocatable action stack."""
 from copy import deepcopy
 from pathlib import Path
-from PyQt6.QtCore import Qt,QObject,pyqtSignal,QBuffer,QByteArray,QIODevice,QTimer
+from PyQt6.QtCore import Qt,QObject,pyqtSignal,QBuffer,QByteArray,QIODevice,QTimer,QSize
 from threading import Thread
 from PyQt6.QtMultimedia import QAudioOutput,QMediaPlayer
 from PyQt6.QtCore import QPointF,QRectF
-from PyQt6.QtGui import QColor,QFont,QPainter,QPen,QPolygonF
+from PyQt6.QtGui import QColor,QFont,QIcon,QPainter,QPen,QPolygonF
 from PyQt6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QComboBox,
     QListWidget,QListWidgetItem,QFormLayout,QSpinBox,QPushButton,QMessageBox,QCheckBox,QWidget,QPlainTextEdit,QSplitter,QTabWidget,
     QTabBar,QGroupBox,QLineEdit,QFrame,QGridLayout,QStyle,QStyledItemDelegate,QMenu,QInputDialog,
@@ -1121,8 +1121,6 @@ class EventEditor(QDialog):
         self.add.clicked.connect(lambda:self.insert())
         self.revert=big('Revert Page',icon.SP_BrowserReload,'Put this page back as it was when the editor opened.')
         self.revert.clicked.connect(self.revert_page)
-        self.split_all=big('Separate All',icon.SP_ArrowRight,'Separate every text + gesture action on this page that can be separated exactly.')
-        self.split_all.clicked.connect(self.split_page)
         self.undo_button=big('Undo',icon.SP_ArrowBack,'Undo the last event edit (Ctrl+Z).');self.undo_button.clicked.connect(self.undo)
         self.redo_button=big('Redo',icon.SP_ArrowForward,'Redo (Ctrl+Y or Ctrl+Shift+Z).');self.redo_button.clicked.connect(self.redo)
         top.addStretch();outer.addLayout(top)
@@ -1143,7 +1141,16 @@ class EventEditor(QDialog):
         page_box=QGroupBox('Page');page_form=QFormLayout(page_box)
         self.page_fields={}
         for key,label in (('script','Script'),('caller','Loaded at'),('count','Commands'),('handler','Handler'),('music','Music')):
-            field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field;page_form.addRow(label,field)
+            field=QLineEdit();field.setReadOnly(True);self.page_fields[key]=field
+            if key=='music':
+                from gui.level import pixel_icons
+                row=QHBoxLayout();row.setSpacing(4);row.addWidget(field,1)
+                self.music_player_button=QPushButton();self.music_player_button.setFixedSize(26,22)
+                self.music_player_button.setIcon(QIcon(pixel_icons.pixmap('speaker',32)));self.music_player_button.setIconSize(QSize(18,18))
+                self.music_player_button.setToolTip('Open a small player for the conversation music this NPC can start - listen before you choose.')
+                self.music_player_button.clicked.connect(self.open_music_player)
+                row.addWidget(self.music_player_button);page_form.addRow(label,row)
+            else:page_form.addRow(label,field)
         self.talk_filter=QComboBox();self.talk_filter.setToolTip('Show only the pages that speak from one dialogue (a shared handler '
             'serves several NPCs, each with its own dialogue). Pages that show no text stay.')
         self.talk_filter.currentIndexChanged.connect(lambda _=0:self._apply_page_filter())
@@ -1424,6 +1431,10 @@ class EventEditor(QDialog):
             self.pages.addTab(str(n+1))
             self.pages.setTabToolTip(n,f'Script 0x{binding.script:08X}, loaded at 0x{binding.caller:08X}')
 
+    def _overlay_tag(self):
+        try:return Path(self.panel.scene.overlay_path).stem
+        except AttributeError:return None
+
     def _handler_c(self):
         """The handler's decompiled C (the project's Ghidra export), headed, or '' when it has no entry."""
         from game import decomp_view
@@ -1506,7 +1517,7 @@ class EventEditor(QDialog):
         if self.active is None:
             if self.native_handler:
                 from game.event_preview import native_code_at
-                try:self.code_preview.setPlainText('Native handler — this entity’s behaviour runs here (it has no event pages, so this code is all there is).\n\n'+self._handler_c()+native_code_at(self.exe,self.overlay,self.native_handler,160))
+                try:self.code_preview.setPlainText('Native handler — this entity’s behaviour runs here (it has no event pages, so this code is all there is).\n\n'+self._handler_c()+native_code_at(self.exe,self.overlay,self.native_handler,160,tag=self._overlay_tag()))
                 except ValueError as exc:self.code_preview.setPlainText(str(exc))
                 self.preview_tabs.setCurrentWidget(self.code_tab)
             else:self.code_preview.setPlainText('No native handler is associated with this entity.')
@@ -1546,6 +1557,7 @@ class EventEditor(QDialog):
         self.fill_conditions(binding)
         if index not in self.drafts:
             nodes=script.read_graph(script.reader(self.exe,self.overlay),self.bindings[index].script)
+            self._separate_all(nodes)
             self.originals[index]=deepcopy(nodes);self.drafts[index]=nodes
         self.populate()
 
@@ -2068,7 +2080,7 @@ class EventEditor(QDialog):
             name=next((k for k,v in names.items() if isinstance(v,list) and v[0]==tag and v[1]==handler),None)
         except (OSError,ValueError):name=None
         c=decomp_view.function_text(tag,handler,name)
-        try:asm=native_code_at(self.exe,self.overlay,handler,400)
+        try:asm=native_code_at(self.exe,self.overlay,handler,400,tag=self._overlay_tag())
         except ValueError as exc:asm=str(exc)
         dialog=QDialog(self);dialog.setWindowTitle(f'Handler code - {name or hex(handler)} (0x{handler:08X}, {tag})');dialog.resize(1000,720)
         layout=QVBoxLayout(dialog);tabs=QTabWidget();layout.addWidget(tabs)
@@ -2414,6 +2426,66 @@ class EventEditor(QDialog):
         panel._scene_memory_cache.clear()
         return True
 
+    def open_music_player(self):
+        """A little player over the conversation cues the game has (1-8): each one's sound and SEQ slot, which ones this
+        area can actually play, and the cue this NPC starts marked. Play renders the SEQ the way the game would."""
+        from PyQt6.QtWidgets import QListWidget,QListWidgetItem
+        try:sites=script.native_music_sites(self.exe,self.overlay,self.native_handler) if self.native_handler else []
+        except Exception:sites=[]
+        default=sites[0][1] if sites else None
+        try:
+            from formats.audio import seq
+            have=dict((k,v) for k,v in seq.overlay(Path(self.panel.scene.overlay_path).stem,self.overlay) if k is not None)
+        except Exception:have={}
+        dialog=getattr(self,'_music_dialog',None)
+        if dialog is not None:dialog.close()
+        dialog=self._music_dialog=QDialog(self);dialog.setWindowTitle('Conversation music');dialog.resize(380,300)
+        layout=QVBoxLayout(dialog)
+        note=QLabel('This NPC starts '+(f'cue {default}.' if default else 'no fixed cue (its page can start one with “Start conversation music”).')+
+                    '  Cues that open an empty SEQ slot play nothing in this area.');note.setWordWrap(True);layout.addWidget(note)
+        listing=QListWidget();layout.addWidget(listing,1)
+        for cue in range(1,9):
+            sound=script.music_sound(cue);slot=script.music_slot(sound) if sound is not None else None
+            playable=slot is not None and (slot<10 or slot in have)
+            text=f'Cue {cue}   sound 0x{sound:02X}  SEQ slot {slot}'+('   ★ this NPC’s default' if cue==default else '')+('' if playable else '   (empty here)')
+            item=QListWidgetItem(text);item.setData(Qt.ItemDataRole.UserRole,cue)
+            if not playable:item.setFlags(item.flags()&~Qt.ItemFlag.ItemIsEnabled)
+            if cue==default:
+                f=item.font();f.setBold(True);item.setFont(f)
+            listing.addItem(item)
+        if default:listing.setCurrentRow(default-1)
+        status=QLabel('');layout.addWidget(status)
+        row=QHBoxLayout();play=QPushButton('Play');stop=QPushButton('Stop');close=QPushButton('Close')
+        for b in (play,stop,close):row.addWidget(b)
+        layout.addLayout(row)
+        cache=self.__dict__.setdefault('_cue_wavs',{})
+        def start():
+            item=listing.currentItem()
+            if item is None:return
+            cue=item.data(Qt.ItemDataRole.UserRole)
+            if cue in cache:self._play_wav(cache[cue]);status.setText(f'Playing cue {cue}.');return
+            try:snd=self._snd()
+            except Exception as exc:status.setText(str(exc));return
+            status.setText(f'Rendering cue {cue}…');play.setEnabled(False)
+            job=MusicDecode(snd,Path(self.panel.scene.overlay_path).stem,self.overlay,cue,self);job.key=cue
+            def done(result,job=job):
+                play.setEnabled(True);wav,why=result
+                status.setText(why)
+                if wav is not None:
+                    cache[job.key]=wav
+                    if listing.currentItem() is not None and listing.currentItem().data(Qt.ItemDataRole.UserRole)==job.key:self._play_wav(wav)
+            self._cue_job=job;job.decoded.connect(done);job.start()
+        play.clicked.connect(start);listing.itemDoubleClicked.connect(lambda _:start())
+        stop.clicked.connect(lambda:(self.player.stop(),status.setText('Stopped.')))
+        close.clicked.connect(dialog.close);dialog.finished.connect(lambda _:self.player.stop())
+        dialog.show()
+
+    def _play_wav(self,wav):
+        self.audio.setVolume(1.)
+        self.voice_buffer=QBuffer(self);self.voice_buffer.setData(QByteArray(wav))
+        self.voice_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        self.player.setSourceDevice(self.voice_buffer);self.player.play()
+
     def change_music(self):
         """Pick another conversation-music cue for this NPC: rewrites the cue
         number its native code passes to f_BeginScriptedInteractionAudio."""
@@ -2458,7 +2530,7 @@ class EventEditor(QDialog):
             text=native_code(self.exe,self.overlay,c)
             if c.opcode==62:
                 target=script.code_pointer(c)
-                try:text=f'Script calls native code at 0x{target:08X}\n\n'+native_code_at(self.exe,self.overlay,target,160)+'\n\n— dispatcher —\n'+text
+                try:text=f'Script calls native code at 0x{target:08X}\n\n'+native_code_at(self.exe,self.overlay,target,160,tag=self._overlay_tag())+'\n\n— dispatcher —\n'+text
                 except ValueError as exc:text=f'Native code target 0x{target:08X}: {exc}\n\n'+text
             elif c.opcode==21:
                 pointer=script.code_pointer(c)
@@ -2497,7 +2569,6 @@ class EventEditor(QDialog):
         self.pick_text.setEnabled(c.opcode in (0,1) and game_build.current().name=='us-retail')
         self.goto_txtd.setEnabled(c.opcode in (0,1))
         self.split_text.setEnabled(c.opcode==1 and game_build.current().name=='us-retail')
-        self.split_all.setEnabled(game_build.current().name=='us-retail' and any(x.opcode==1 for x in self.drafts.get(self.active,())))
         self.music_button.setEnabled(c.opcode==11 and c.operands[0]!=0)
         self.text_choices.blockSignals(True);self.text_choices.clear();self.text_choices.blockSignals(False)
         self.text_preview.blockSignals(True);self.text_preview.clear();self.text_preview.blockSignals(False)
@@ -3001,19 +3072,14 @@ class EventEditor(QDialog):
 
     def _tomba_default(self,start):
         """No position on the page: Tomba stands TOMBA_DISTANCE from the
-        entity, on the first spot round it - from the side the viewport looks
-        from - that lands on a collision floor near the entity's height.
+        entity, on the first spot round it - starting in front of it - that
+        lands on a collision floor near the entity's height.
         (position, grounded). Fixed once found, so it does not jump."""
         import math
         if getattr(self,'_tomba_spot',None) is not None:return self._tomba_spot
-        side=None
-        c=getattr(getattr(self.panel,'viewer',None),'camera_controls',None)
-        if c is not None:
-            from gui.level.level_viewer import UNIT_SCALE
-            e=c._eye();eye=(e[2]*UNIT_SCALE,-e[1]*UNIT_SCALE,e[0]*UNIT_SCALE)   # view -> game axes
-            dx,dd=eye[0]-start[0],eye[2]-start[2]
-            if math.hypot(dx,dd)>1:side=math.atan2(dd,dx)
-        if side is None:side=-self.start_yaw()*2*math.pi/4096              # inverse of yaw_toward
+        # In front of the NPC, the way it faces at rest: it was turned to whoever walked up to it. The
+        # viewport camera used to decide this, so the same page faced a different way from every angle.
+        side=-self.start_yaw()*2*math.pi/4096              # inverse of yaw_toward
         for turn in (0,30,-30,60,-60,90,-90,120,-120,150,-150,180):
             a=side+math.radians(turn)
             for distance in (self.TOMBA_DISTANCE,self.TOMBA_DISTANCE*0.6,self.TOMBA_DISTANCE*1.4):
@@ -3281,6 +3347,18 @@ class EventEditor(QDialog):
         if not image:raise ValueError('TOMBA2.SND was not found; attach the source disc to preview audio.')
         from formats.audio.voice import extract_file
         return extract_file(image,'TOMBA2.SND')
+
+    def _separate_all(self,nodes):
+        """Every text + gesture row that splits exactly becomes Play animation / Show text / back to rest,
+        as the page opens. The original page is taken after this, so nothing is rewritten until you edit."""
+        if game_build.current().name!='us-retail':return
+        row=0
+        while row<len(nodes):
+            if nodes[row].opcode==1:
+                try:
+                    row+=len(script.split_presentation(nodes,row));continue
+                except ValueError:pass
+            row+=1
 
     def split_page(self):
         nodes=self.drafts.get(self.active)

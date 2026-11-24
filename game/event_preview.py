@@ -460,7 +460,7 @@ def native_plain(exe,overlay,callback):
     from game import native_decode
     return native_decode.summary(native_paths(exe,overlay,callback))
 
-def native_code_at(exe,overlay,callback,count=64):
+def native_code_at(exe,overlay,callback,count=64,tag=None):
     from psx.mips import Image
     data,base=(overlay,event_script.BASE) if callback>=event_script.BASE else (exe[0x800:],struct.unpack_from('<I',exe,24)[0])
     image=Image(data,base)
@@ -471,8 +471,15 @@ def native_code_at(exe,overlay,callback,count=64):
         if ins.name=='jr' and ins.rs==31:
             if ins.address+4 in image:lines.extend(image.text(ins.address+4,1))
             break
-    c=native_c(exe,overlay,callback)
-    head=('As C (decoded from the machine code; a routine like this runs every tick until it returns 1):'+chr(10)+c+chr(10)+chr(10)) if c else ''
+    c,source='',''
+    if tag:
+        from game import decomp_view
+        c=decomp_view.function_with_callees(tag,callback) or ''
+        source='the project'+chr(8217)+'s Ghidra export'
+    if not c:
+        c=native_c(exe,overlay,callback);source='decoded from the machine code (this routine is not in the Ghidra export)'
+        if c.count(chr(10))>500:c=chr(10).join(c.split(chr(10))[:500])+chr(10)+'/* ... cut: the routine branches too much to print in full ... */'
+    head=(f'As C, {source}; a routine like this runs every tick until it returns 1:'+chr(10)+c+chr(10)+chr(10)) if c else ''
     return f'Callback 0x{callback:08X}\n\n'+head+'\n'.join(lines)
 
 def sound_samples(exe,overlay,snd,area,sound_id,pitch_offset=0):

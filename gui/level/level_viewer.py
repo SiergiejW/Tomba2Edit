@@ -2413,7 +2413,7 @@ class LevelViewer(SMSTViewer):
         depth = None
         if self.show_markers and any(getattr(i, 'warp_labels', ()) and i.index not in self.hidden_groups for i in self.instances):
             depth = self._read_warp_depth()
-        self._paint_badges()
+        self._sync_badges()
         self._sync_warp_labels(depth)
         self.translation_gizmo.sync()
 
@@ -2582,7 +2582,8 @@ class LevelViewer(SMSTViewer):
                 # than the former coarse 32 steps and close-range cutoff.
                 opacity = round(self._warp_obstructed_opacity(distance) * 255) / 255
                 if label.warp_size != (width, height, chosen):
-                    pixmap = label.warp_icon.pixmap(width, height)
+                    from gui.level import pixel_icons
+                    pixmap = pixel_icons.pixmap('warp', width, height)
                     if chosen:
                         pixmap = QPixmap(pixmap)
                         brighten = QPainter(pixmap)
@@ -2687,13 +2688,21 @@ class LevelViewer(SMSTViewer):
             QTimer.singleShot(16, self.update)
 
     def _badges(self):
-        """[(instance index, its box's 8 corners as GL-unit xyzw)] for
-        every timed instance."""
+        """[(instance index, its box's 8 corners as GL-unit xyzw, 'timed' | 'sign')] for
+        every timed instance and every signpost."""
         if self._badge_cache is None:
             out, positions = [], None
+            resolver = getattr(self, 'sign_resolver', None)
             for instance in self.instances:
-                if (instance.role == "room" or not instance.timed
-                        or instance.flip is not None or instance.marker):
+                if (instance.role == "room" or instance.flip is not None or instance.marker):
+                    continue
+                kind = "timed" if instance.timed else None
+                if kind is None and resolver is not None:
+                    try:
+                        kind = "sign" if resolver(instance) is not None else None
+                    except Exception:
+                        kind = None
+                if kind is None:
                     continue
                 if instance.vertex_count:
                     if positions is None:
@@ -2708,70 +2717,71 @@ class LevelViewer(SMSTViewer):
                     x0, x1, y0, y1, z0, z1 = (v / UNIT_SCALE for v in box)
                 corners = np.array([(x, y, z, 1.0) for x in (x0, x1)
                                     for y in (y0, y1) for z in (z0, z1)])
-                out.append((instance.index, corners))
+                out.append((instance.index, corners, kind))
             self._badge_cache = out
         return self._badge_cache
 
-    def _paint_badges(self):
-        """A yellow hourglass at the top right of each timed instance on
-        screen, drawn in GL with the line shader. A QPainter over the widget
-        left its depth mask off, so the next frame's depth never cleared
-        and the whole level went see-through."""
+    # Distances in GL units (1000 game units): a badge is invisible beyond FAR, full strength inside NEAR -
+    # warps' text fades in over 8..4, these show from further off.
+    BADGE_FAR, BADGE_NEAR = 14.0, 8.0
+
+    def _sync_badges(self):
+        """The pixel hourglass (timed) and "!" (signpost) at the top right of each such instance on
+        screen, as small hard-edged labels: sized by distance like the warp doors and faded in from afar."""
+        pool = self.__dict__.setdefault('_badge_labels', [])
+        used = 0
         badges = self._badges() if self.show_badges and self.scene is not None else ()
-        if not badges:
-            return
-        mvp = np.array(self._model_view_projection().data(),
-                       dtype=np.float64).reshape(4, 4).T
-        width, height = max(self.width(), 1), max(self.height(), 1)
-        fill, edges = [], []
-        for index, corners in badges:
-            if index in self.hidden_groups:
-                continue
-            clip = corners @ mvp.T
-            front = clip[:, 3] > 1e-6
-            if not front.any():
-                continue
-            ndc = clip[front, :3] / clip[front, 3:4]
-            if (ndc[:, 0].max() < -1 or ndc[:, 0].min() > 1
-                    or ndc[:, 1].max() < -1 or ndc[:, 1].min() > 1
-                    or ndc[:, 2].min() > 1):
-                continue
-            middle = ndc.mean(axis=0)
-            x = ((middle[0] + (min(ndc[:, 0].max(), 1.0) - middle[0]) * BADGE_REACH)
-                 + 1) * 0.5 * width
-            y = ((middle[1] + (min(ndc[:, 1].max(), 1.0) - middle[1]) * BADGE_REACH)
-                 + 1) * 0.5 * height + BADGE_HEIGHT / 2
-            triangles, outline = hourglass(min(max(x, 1.0), width - BADGE_WIDTH - 1),
-                                           min(max(y, BADGE_HEIGHT + 1), height - 1))
-            fill.extend(triangles)
-            edges.extend(outline)
-        if not fill or not self.shader_program.bind():
-            return
-
-        def arrays(points, color):
-            positions = np.array([(px / width * 2 - 1, py / height * 2 - 1, 0.0)
-                                  for px, py in points], dtype=np.float32)
-            return positions, np.tile(np.array(color, dtype=np.float32), (len(points), 1))
-
-        depth = GL.glIsEnabled(GL.GL_DEPTH_TEST)
-        cull = GL.glIsEnabled(GL.GL_CULL_FACE)
-        GL.glDisable(GL.GL_DEPTH_TEST)
-        GL.glDisable(GL.GL_CULL_FACE)
-        self.shader_program.setUniformValue("modelViewProjection", QMatrix4x4())
-        self.shader_program.setUniformValue("useTextures", False)
-        self.shader_program.setUniformValue("alpha", 1.0)
-        for points, color, mode in ((fill, BADGE_COLOR, GL.GL_TRIANGLES),
-                                    (edges, BADGE_OUTLINE, GL.GL_LINES)):
-            count = self._upload_lines(arrays(points, color), self.badge_vao,
-                                       self.badge_vbo, self.badge_cbo)
-            self.badge_vao.bind()
-            GL.glDrawArrays(mode, 0, count)
-            self.badge_vao.release()
-        self.shader_program.release()
-        if depth:
-            GL.glEnable(GL.GL_DEPTH_TEST)
-        if cull:
-            GL.glEnable(GL.GL_CULL_FACE)
+        if badges:
+            from gui.level import pixel_icons
+            mvp = np.array(self._model_view_projection().data(), dtype=np.float64).reshape(4, 4).T
+            eye = np.asarray(self.camera_controls._eye())
+            focal = np.linalg.norm(mvp[1, :3])
+            width, height = max(self.width(), 1), max(self.height(), 1)
+            for index, corners, kind in badges:
+                if index in self.hidden_groups:
+                    continue
+                clip = corners @ mvp.T
+                front = clip[:, 3] > 1e-6
+                if not front.any():
+                    continue
+                ndc = clip[front, :3] / clip[front, 3:4]
+                if (ndc[:, 0].max() < -1 or ndc[:, 0].min() > 1 or ndc[:, 1].max() < -1
+                        or ndc[:, 1].min() > 1 or ndc[:, 2].min() > 1):
+                    continue
+                middle = ndc.mean(axis=0)
+                centre = corners[:, :3].mean(axis=0)
+                distance = float(np.linalg.norm(centre - eye))
+                amount = min(1.0, max(0.0, (self.BADGE_FAR - distance) / (self.BADGE_FAR - self.BADGE_NEAR)))
+                opacity = amount * amount * (3.0 - 2.0 * amount)
+                if opacity <= 0.01:
+                    continue
+                depth_w = float(np.mean(clip[front, 3]))
+                size = min(26, round(0.11 * focal * height / (2 * max(depth_w, 1e-6))))
+                if size < 4:
+                    continue
+                x = round(((middle[0] + (min(ndc[:, 0].max(), 1.0) - middle[0]) * BADGE_REACH) + 1) * 0.5 * width)
+                y = round((1 - ((middle[1] + (min(ndc[:, 1].max(), 1.0) - middle[1]) * BADGE_REACH) + 1) * 0.5) * height)
+                if used == len(pool):
+                    label = QLabel(self)
+                    label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    label.setStyleSheet('background: transparent;')
+                    effect = QGraphicsOpacityEffect(label)
+                    effect.setOpacity(0.0)
+                    label.setGraphicsEffect(effect)
+                    label.badge_effect = effect
+                    pool.append(label)
+                label = pool[used]
+                used += 1
+                key = (kind, size)
+                if getattr(label, 'badge_key', None) != key:
+                    label.setPixmap(pixel_icons.pixmap(kind, size))
+                    label.setFixedSize(size, size)
+                    label.badge_key = key
+                label.badge_effect.setOpacity(opacity)
+                label.move(min(max(x - size // 2, 0), width - size), min(max(y - size // 2, 0), height - size))
+                label.show()
+        for label in pool[used:]:
+            label.hide()
 
     def _paint_level(self):
         self._sync_lines()
