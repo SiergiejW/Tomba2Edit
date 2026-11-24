@@ -84,6 +84,24 @@ _SPEAKER = (
     "................",
     "................",
 )
+_FLOPPY = (
+    "................",
+    ".##############.",
+    ".#............#.",
+    ".#.##########.#.",
+    ".#.##########.#.",
+    ".#.##########.#.",
+    ".#............#.",
+    ".#............#.",
+    ".#.##########.#.",
+    ".#.#........#.#.",
+    ".#.#........#.#.",
+    ".#.#........#.#.",
+    ".##############.",
+    "................",
+    "................",
+    "................",
+)
 BLUE_TOP, BLUE_BOTTOM, BLUE_LINE = (150, 190, 255), (30, 80, 200), (0, 20, 90)
 _KNOB = {(10, 8): (255, 236, 150), (10, 9): (232, 170, 40)}
 _SAND = {(7, 10): (255, 232, 150), (8, 10): (255, 232, 150), (6, 11): (255, 214, 110), (7, 11): (255, 214, 110),
@@ -129,13 +147,15 @@ def _icon(kind):
         return _paint(_DOOR, RED_TOP, RED_BOTTOM, RED_LINE, _KNOB)
     if kind == 'timed':
         return _paint(_HOURGLASS, RED_TOP, RED_BOTTOM, RED_LINE, _SAND)
+    if kind == 'save':
+        return _paint(_FLOPPY, BLUE_TOP, BLUE_BOTTOM, BLUE_LINE)
     if kind == 'speaker':
         return _paint(_SPEAKER, BLUE_TOP, BLUE_BOTTOM, BLUE_LINE)
     return _paint(_BANG, RED_TOP, RED_BOTTOM, RED_LINE)
 
 
 def pixmap(kind, width, height=None, bright=False):
-    """The symbol `kind` ('warp' | 'timed' | 'sign' | 'speaker') at width x height, hard-edged. `bright` lightens it."""
+    """The symbol `kind` ('warp' | 'timed' | 'sign' | 'save' | 'speaker') at width x height, hard-edged. `bright` lightens it."""
     height = height or width
     key = (kind, width, height, bright)
     if key not in _cache:

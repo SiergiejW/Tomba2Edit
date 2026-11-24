@@ -75,6 +75,8 @@ BADGE_WIDTH, BADGE_HEIGHT = 6.0, 8.0
 BADGE_REACH = 0.4
 BADGE_COLOR = (1.0, 0.84, 0.0)
 BADGE_OUTLINE = (0.0, 0.0, 0.0)
+# The resident handler of the winged save-point sign (writes the save spot, unlocks the warp destination).
+SAVE_POINT_HANDLER = 0x800739AC
 
 
 def hourglass(x, y):
@@ -264,13 +266,14 @@ class LevelViewer(SMSTViewer):
         self.show_markers = True
         self.marker_action = QAction(
             self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
-            "Markers", self)
+            "Symbols", self)
         self.marker_action.setCheckable(True)
         self.marker_action.setChecked(True)
         self.marker_action.setToolTip(
-            "Mark the objects whose model isn't known - the record says "
-            "where one stands and which routine runs it, but not what it "
-            "is drawn with. See game/placement.py.")
+            "Everything drawn over the level that is not the level: warp doors and their destinations, "
+            "timed (hourglass), signpost (!) and save-point badges, markers for the objects whose model "
+            "isn't known, and the lines the actors' own code draws (ropes, chains, fishing lines). "
+            "One switch for all of them.")
         self.marker_action.toggled.connect(self._toggle_markers)
         self.toolbar.insertAction(self.export_action, self.marker_action)
 
@@ -360,7 +363,10 @@ class LevelViewer(SMSTViewer):
             "Middle-drag circles the selected object instead of whatever is "
             "in the middle of the view. Off, orbiting works as usual even "
             "with something still selected.")
-        self.toolbar.insertAction(self.lines_action, self.orbit_action)
+        self.orbit_action.setChecked(True)      # always on: no button for it
+        # The badges and lines follow the one Symbols button; their own buttons are gone.
+        self.toolbar.removeAction(self.badge_action)
+        self.toolbar.removeAction(self.lines_action)
         self.camera_controls.orbit_target = self._orbit_target
 
         # Line overlays, both built on the CPU and uploaded from paintGL
@@ -1583,7 +1589,12 @@ class LevelViewer(SMSTViewer):
     # --- what the toolbar toggles -------------------------------------
 
     def _toggle_markers(self, checked):
-        self.show_markers = checked
+        """The one Symbols button: markers and warps, the timed / sign / save badges, the code-drawn lines."""
+        self.show_markers = self.show_badges = self.show_lines = checked
+        for action in (self.badge_action, self.lines_action):
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
         self.update()
 
     def _toggle_background(self, checked):
@@ -2688,8 +2699,8 @@ class LevelViewer(SMSTViewer):
             QTimer.singleShot(16, self.update)
 
     def _badges(self):
-        """[(instance index, its box's 8 corners as GL-unit xyzw, 'timed' | 'sign')] for
-        every timed instance and every signpost."""
+        """[(instance index, its box's 8 corners as GL-unit xyzw, 'timed' | 'sign' | 'save')] for
+        every timed instance, signpost and save point."""
         if self._badge_cache is None:
             out, positions = [], None
             resolver = getattr(self, 'sign_resolver', None)
@@ -2697,6 +2708,10 @@ class LevelViewer(SMSTViewer):
                 if (instance.role == "room" or instance.flip is not None or instance.marker):
                     continue
                 kind = "timed" if instance.timed else None
+                handler = (instance.placement.handler if getattr(instance, "placement", None) is not None
+                           else getattr(self.scene, "event_handlers", {}).get(instance.index))
+                if kind is None and handler == SAVE_POINT_HANDLER:
+                    kind = "save"
                 if kind is None and resolver is not None:
                     try:
                         kind = "sign" if resolver(instance) is not None else None

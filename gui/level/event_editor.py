@@ -500,6 +500,15 @@ class CommandDialog(QDialog):
         cancel=QPushButton('Cancel');cancel.setFixedWidth(88);cancel.clicked.connect(self.reject)
         row.addWidget(ok);row.addWidget(cancel);layout.addLayout(row)
 
+    def showEvent(self,event):
+        super().showEvent(event)
+        # The model viewers inside were built hidden and are shown with the dialog; a GL surface not yet painted
+        # since then can show whatever was last in video memory (a shrunken picture of this very window).
+        # Repaint every one a moment after the dialog is up, and again once it has settled.
+        from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+        for delay in (0,60,250):
+            QTimer.singleShot(delay,lambda:[w.update() for w in self.findChildren(QOpenGLWidget)])
+
 
 class ShowTextDialog(QDialog):
     """RPG Maker's Show Text window: the line itself, edited in place.
@@ -1146,7 +1155,7 @@ class EventEditor(QDialog):
                 from gui.level import pixel_icons
                 row=QHBoxLayout();row.setSpacing(4);row.addWidget(field,1)
                 self.music_player_button=QPushButton();self.music_player_button.setFixedSize(26,22)
-                self.music_player_button.setIcon(QIcon(pixel_icons.pixmap('speaker',32)));self.music_player_button.setIconSize(QSize(18,18))
+                self.music_player_button.setIcon(QIcon(pixel_icons.pixmap('speaker',16)));self.music_player_button.setIconSize(QSize(16,16))     # 1:1 with the grid: no smoothing
                 self.music_player_button.setToolTip('Open a small player for the conversation music this NPC can start - listen before you choose.')
                 self.music_player_button.clicked.connect(self.open_music_player)
                 row.addWidget(self.music_player_button);page_form.addRow(label,row)
@@ -1498,8 +1507,8 @@ class EventEditor(QDialog):
         for cue in cues:
             sound=script.music_sound(cue)
             slot=script.music_slot(sound) if sound is not None else None
-            parts.append(f'cue {cue}'+(f' (sound 0x{sound:02X}, SEQ slot {slot})' if slot is not None else ''))
-        self._music_text='Started by native code: '+', '.join(parts) if parts else None
+            parts.append(f'Track {cue}'+(f'  ·  slot {slot}, sound 0x{sound:02X}' if slot is not None else ''))
+        self._music_text=',  '.join(parts) if parts else None
         return self._music_text
 
     def page_changed(self,index):
@@ -1513,7 +1522,8 @@ class EventEditor(QDialog):
         for key,value in (('script',binding and f'0x{binding.script:08X}'),
                           ('caller',binding and (f'table slot 0x{binding.caller:08X}' if binding.table else f'0x{binding.caller:08X}')),
                           ('count',None),('handler',self.native_handler and f'0x{self.native_handler:08X}'),('music',self.native_music_text())):
-            self.page_fields[key].setText(value or '—')
+            self.page_fields[key].setText(value or '—');self.page_fields[key].setCursorPosition(0)
+            if key=='music':self.music_player_button.setEnabled(bool(value))     # no cue to hear or change
         if self.active is None:
             if self.native_handler:
                 from game.event_preview import native_code_at
@@ -1526,7 +1536,7 @@ class EventEditor(QDialog):
                 'Its behaviour is in its handler code (Native code tab); the Model tab shows its model.')
             sign=self.panel.sign_for_instance(self.instance) if hasattr(self.panel,'sign_for_instance') else None
             self.actions.blockSignals(True);self.actions.clear()
-            lines=['This entity has no script page: its behaviour is its native handler, shown below as C (every tick).']
+            lines=[]
             body=[]
             try:
                 from game import decomp_view
@@ -1535,9 +1545,14 @@ class EventEditor(QDialog):
                 text=(decomp_view.function_with_callees(tag,self.native_handler) if self.native_handler else None) or                      (native_c(self.exe,self.overlay,self.native_handler) if self.native_handler else '')
                 body=text.split(chr(10)) if text else []
             except Exception:body=[]
+            if not body and not self.native_handler and getattr(self.instance,'pickup',None) is not None:
+                # A crystal or apple has no code of its own: the resident placement manager spawns and runs every one from its record.
+                from game import decomp_view
+                parts=[decomp_view.function_text('MAIN',0,n) for n in ('f_HandlePersistentPickupPlacementManagerActor','f_SpawnPersistentPickupPlacementTable')]
+                body=chr(10).join(t for t in parts if t).split(chr(10)) if any(parts) else []
             if body:
                 limit=400
-                lines+=['']+body[:limit]+([f'… {len(body)-limit} more lines (Handler code… has all of it)'] if len(body)>limit else [])
+                lines+=body[:limit]+([f'… {len(body)-limit} more lines (Handler code… has all of it)'] if len(body)>limit else [])
             else:lines.append('The handler could not be put into C; see Handler code…')
             if sign is not None:
                 lines=[f'Signpost: Tomba walks up and presses the action button; sign text {sign[0]} is shown:']+['    '+part for part in sign[1].split(chr(10))]
@@ -1885,7 +1900,7 @@ class EventEditor(QDialog):
                 self.load_bank()
                 entries=self.bank['entries'][c.operands[0]&0xfff]['entries']
                 line=plain_line(entries[c.operands[1]]['text'])
-                if line:text+=f' — “{line}”'
+                if line:text+=f': “{line}”'
             elif c.opcode==13 and c.operands[0]&0xff==0:
                 page=self.conversation_page(c.operands[1])
                 if page is not None:
@@ -1945,7 +1960,16 @@ class EventEditor(QDialog):
             if t in index:
                 incoming.setdefault(index[t],[]).append(n)
                 for k in range(n+1,index[t]):depth[k]+=1
-        out=[];goto_rows=set()
+        out=[]
+        # What actually runs: a plain command's jump form always jumps (its callback only ever returns 0 or 1, never the
+        # "carry on" 2), so the row below it is reached only by a jump or a test that holds.
+        reached={0} if nodes else set();todo=[0] if nodes else []
+        while todo:
+            c=nodes[todo.pop()]
+            for target,pointer in c.edges:
+                if pointer is None and c.branch is not None and not script.two_way(c.opcode):continue
+                k=index.get(target)
+                if k is not None and k not in reached:reached.add(k);todo.append(k)
         for n,c in enumerate(nodes):
             notes=[]
             t=c.branch
@@ -1956,8 +1980,8 @@ class EventEditor(QDialog):
                     # "If <condition>:" with the block indented under it.
                     o=c.operands
                     text='If '+script.condition_text(c.opcode,o[0],o[1],o[2],negate=True)+':'
-                    notes.append(f'(else skip to #{index[t]+1:02d})')
-                elif t in index:notes.append(f'⟶ #{index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else ''))
+                    notes.append(f'(else skip to {index[t]+1:02d})')
+                elif t in index:notes.append(f'⟶ {index[t]+1:02d}'+(' if true' if c.opcode in script.CONDITION_OPS else ''))
                 elif t<script.BASE:
                     # A tail every conversation shares (kept in MAIN.EXE): say what it does, in full.
                     try:
@@ -1965,17 +1989,14 @@ class EventEditor(QDialog):
                         tail=' → '.join(script.summary(x).split(' (')[0] for x in steps[:8])+(' → …' if len(steps)>8 else '')
                     except (ValueError,IndexError):tail=''
                     notes.append(f'⟶ GOTO shared resident script 0x{t:08X}'+(f' [{tail}]' if tail else ''))
-            if t is not None and not script.two_way(c.opcode):
-                goto_rows.add(n)
-            if n-1 in goto_rows and n not in incoming:
-                notes.insert(0,f'✗ never reached by running on: row {n:02d} always jumps away (the game only falls through after a test that holds)')
+            if n not in reached:notes.insert(0,'▫ unused: nothing in this page runs it')
             if c.header&script.END:notes.append('■ end')
             if n in incoming:
                 ifs=[k for k in incoming[n] if nodes[k].opcode in script.CONDITION_OPS and k<n]
-                if ifs:notes.append('◁ End of If '+', '.join(f'#{k+1:02d}' for k in ifs))
+                if ifs:notes.append('◁ End of If '+', '.join(f'{k+1:02d}' for k in ifs))
                 other=[k for k in incoming[n] if k not in ifs]
-                if other:notes.append('◁ '+', '.join(f'#{k+1:02d}' for k in other))
-            out.append((n+1,' :  '*depth[n],text,'   '.join(notes),row_colour(c.opcode)))
+                if other:notes.append('◁ '+', '.join(f'{k+1:02d}' for k in other))
+            out.append((n+1,' :  '*depth[n],text,'   '.join(notes),'#7a7a7a' if n not in reached else row_colour(c.opcode)))
         return out
 
     def row_texts(self,nodes):
@@ -2458,6 +2479,15 @@ class EventEditor(QDialog):
         row=QHBoxLayout();play=QPushButton('Play');stop=QPushButton('Stop');close=QPushButton('Close')
         for b in (play,stop,close):row.addWidget(b)
         layout.addLayout(row)
+        use=QHBoxLayout();this=QPushButton('Use for this NPC…');every=QPushButton('Use for every NPC here…')
+        this.setToolTip('Make the selected cue the one this NPC’s code starts. NPCs sharing its handler change with it.')
+        every.setToolTip('Make the selected cue the one every NPC in this area starts when it talks.')
+        use.addWidget(this);use.addWidget(every);layout.addLayout(use)
+        def chosen():
+            item=listing.currentItem()
+            return None if item is None else item.data(Qt.ItemDataRole.UserRole)
+        this.clicked.connect(lambda:self._apply_cue(chosen(),False,dialog))
+        every.clicked.connect(lambda:self._apply_cue(chosen(),True,dialog))
         cache=self.__dict__.setdefault('_cue_wavs',{})
         def start():
             item=listing.currentItem()
@@ -2479,6 +2509,33 @@ class EventEditor(QDialog):
         stop.clicked.connect(lambda:(self.player.stop(),status.setText('Stopped.')))
         close.clicked.connect(dialog.close);dialog.finished.connect(lambda _:self.player.stop())
         dialog.show()
+
+    def _apply_cue(self,cue,everyone,dialog):
+        """Rewrite the cue number the NPC code passes to f_BeginScriptedInteractionAudio: this handler's, or every handler in the area."""
+        if cue is None:return
+        handlers=[self.native_handler] if self.native_handler else []
+        if everyone:
+            from game import item_scan
+            tag=Path(self.panel.scene.overlay_path).stem
+            try:handlers=list(item_scan.handlers_of(tag,self.panel.scene.overlay_path,item_scan._symbols(tag)))
+            except Exception:pass
+        changes={};touched=0
+        for handler in handlers:
+            try:sites=script.native_music_sites(self.exe,self.overlay,handler)
+            except Exception:continue
+            if any(old!=cue for _a,old in sites):touched+=1
+            for address,_old in sites:changes[address]=0x24050000|cue       # addiu a1, zero, cue
+        if not changes:
+            QMessageBox.information(dialog,'Conversation music','No NPC code here starts music with a fixed cue that can be changed. '
+                'Insert “Start conversation music” in a page instead.');return
+        who=f'every NPC in this area ({touched} handler(s))' if everyone else f'this NPC and the others using handler 0x{self.native_handler:08X}'
+        if QMessageBox.question(dialog,'Conversation music',f'Make cue {cue} the conversation music for {who}? ({len(changes)} instruction(s) in the area file.)')!=QMessageBox.StandardButton.Yes:return
+        if not self._apply_code(changes):return
+        self._music_text=False
+        self.page_fields['music'].setText(self.native_music_text() or '—')
+        self.music_player_button.setEnabled(bool(self.native_music_text()))
+        self.status.setText(f'Conversation music cue is now {cue} for {who}.')
+        dialog.close()
 
     def _play_wav(self,wav):
         self.audio.setVolume(1.)
@@ -2516,6 +2573,7 @@ class EventEditor(QDialog):
         if not self._apply_code(changes):return
         self._music_text=False
         self.page_fields['music'].setText(self.native_music_text() or '—')
+        self.music_player_button.setEnabled(bool(self.native_music_text()))
         self.status.setText(f'Conversation music cue is now {cue}.')
 
     def show_code(self,c):
@@ -2980,7 +3038,7 @@ class EventEditor(QDialog):
             return (facing+degrees_to_units(angle or 0)-pose_yaw)&0xfff
         return degrees_to_units(angle or 0)
 
-    TOMBA_DISTANCE = 250    # assumed stand-off when a page gives no position
+    TOMBA_DISTANCE = 380    # assumed stand-off when a page gives no position: Zippo stands 190 from Tomba, so any less puts him inside the NPC
 
     def tomba_state(self,nodes,row,yaw_row=None):
         """(position, yaw, animation ID, how found) of Tomba after rows

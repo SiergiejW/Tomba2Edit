@@ -271,14 +271,15 @@ def summary(c):
     def cond(mode): return CONDITIONS[mode+1] if -1 <= mode <= 3 else f'mode {mode}'
     if op == 5: return f'Wait: {o[0]+1} ticks ({(o[0]+1)/TICK_HZ:.2f} s)'
     if op in (0, 1):
-        entry = 'runtime-selected entry' if o[1] < 0 else f'entry {o[1]}'
+        entry = '?' if o[1] < 0 else str(o[1])
         # 0x8000: the gesture plays on src_CurrentScriptActor, not this entity.
         who = 'Zippo' if o[0] & 0x8000 else 'actor'
-        return f'{c.label}: dialogue {o[0]&0xfff}, {entry}' + (f', {who} animation {o[2]}' if op == 1 else '')
+        head = 'Text' if op == 0 else 'Text + gesture'
+        return f'{head}: {o[0]&0xfff},{entry}' + ('  (entry chosen at run time)' if o[1] < 0 else '') + (f', {who} animation {o[2]}' if op == 1 else '')
     if op == 30:
         who = 'Zippo' if o[0] & 1 else 'this actor'
         # -1: the actor's rest animation (+0x7B), f_RunScriptedActorAnimationCommand.
-        if o[1] < 0: return f'Back to rest animation on {who}' + (', wait' if o[0] & 2 else '')
+        if o[1] < 0: return f'Play idle animation on {who}' + (', wait' if o[0] & 2 else '')
         return f'Play animation {o[1]} on {who}' + (', wait' if o[0] & 2 else '')
     if op == 40:
         if o[0] == 10: return 'Wait: the open message to close'

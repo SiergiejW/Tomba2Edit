@@ -3250,6 +3250,8 @@ class LevelScene:
                 continue
             if instance.drawn_as_sprite:
                 continue
+            if instance.marker and getattr(instance, 'warp_labels', ()):
+                continue                 # a warp has its door symbol; the diamond placeholder is not needed
             x, y, z = instance.x, instance.y, instance.z
             r = MARKER_SIZE
             color = instance_color(instance)

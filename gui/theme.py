@@ -246,10 +246,9 @@ QToolBar#viewerToolbar {{
     border-bottom: 1px solid {_GREY["dark"]};
 }}
 QLabel#viewerOverlay {{
-    background-color: {_GREY["face"]};
-    color: #000000;
-    border: 1px solid;
-    border-color: {_SUNKEN};
+    background-color: transparent;
+    color: #ffffff;
+    border: none;
     padding: 2px 4px;
 }}
 QLabel#panelTitle {{
