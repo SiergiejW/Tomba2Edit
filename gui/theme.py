@@ -808,6 +808,23 @@ QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
 QComboBox {{
     combobox-popup: 0;
 }}
+/* the pickers that choose what a whole tab shows: accent-edged, bold */
+QComboBox#prominentPicker {{
+    background-color: {c["raised"]};
+    border: 1px solid {c["line_strong"]};
+    font-weight: 600;
+}}
+QComboBox#prominentPicker:hover {{
+    border-color: {c["accent"]};
+}}
+QComboBox#prominentPicker:disabled {{
+    border-color: {c["line"]};
+    background-color: {c["ground"]};
+}}
+QLabel#prominentPickerLabel {{
+    color: {c["dim"]};
+    font-weight: 600;
+}}
 QComboBoxPrivateContainer {{
     background-color: {c["card"]};
     border: 1px solid {c["line_strong"]};

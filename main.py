@@ -58,6 +58,22 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
+    # A freeze leaves no traceback: the window just stops answering. This timer re-arms a faulthandler
+    # alarm every second while the main thread is alive; if it stops for 8 s, every thread's Python
+    # stack is written to crash.log - where the program was stuck.
+    try:
+        import faulthandler
+        from PyQt6.QtCore import QTimer
+        stream = globals().get("_fault_log")
+        if stream is not None:
+            def rearm():
+                faulthandler.dump_traceback_later(8, repeat=False, file=stream)
+            rearm()
+            window._hang_watch = QTimer(window)
+            window._hang_watch.timeout.connect(rearm)
+            window._hang_watch.start(1000)
+    except Exception:
+        pass
     app.exec()
 
 if __name__ == "__main__":

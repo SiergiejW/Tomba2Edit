@@ -154,6 +154,27 @@ class NpcMixin:
 
         return run_import(task, parent or self, reporting=True)
 
+    def npc_catalogue_all(self, chunks, parent=None):
+        """[(chunk, recipes)] over several areas in one cancellable run; an
+        area that fails is skipped and reported as (chunk, error)."""
+        jobs = [(chunk, *self._npc_paths(chunk)[:4]) for chunk in chunks]
+        labels = self.labels
+
+        def task(progress, cancelled):
+            found, failed = [], []
+            for n, (chunk, exe, overlay, dat, idx) in enumerate(jobs):
+                if cancelled():
+                    raise ValueError('Character search cancelled.')
+                progress(f'AREA_{chunk:02X} ({n + 1} of {len(jobs)}): reading characters…')
+                try:
+                    found.append((chunk, npc_catalogue.catalogue(
+                        exe, overlay, dat, idx, chunk, labels=labels)))
+                except Exception as error:
+                    failed.append((chunk, str(error)))
+            return found, failed
+
+        return run_import(task, parent or self, reporting=True)
+
     def import_npc_recipe(self, recipe, destination, name=None, state_path=None, parent=None):
         """Prepare and install a complete character, retaining all other edits."""
         parent = parent or self

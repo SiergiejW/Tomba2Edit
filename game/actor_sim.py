@@ -50,6 +50,12 @@ PART_BUDGET_HELD = 0x4000
 POOL_FREE = 0x800E7E7C
 POOL_FREE_HELD = 0x40
 NEW_GAME = 0x8007982C               # f_NewGameSetDefaultValues
+SPAWN_TRANSIENT_EFFECT = 0x800310F4  # f_SpawnTransientEffect(packed id, draw depth)
+# The ambient effect each area's scene controller starts when Tomba arrives outdoors (A04 0x801169E8
+# spawns 0x500, A05 0x80111B50 0x600, A08 0x80115428 0x901). The simulation places the area's records and
+# never runs the controller, so its blizzard (with its gusts) and its rain were missing: the effect's own
+# update and draw routines do all the work once it exists, so it is spawned the way the controller does.
+AREA_EFFECTS = {4: (0x500,), 5: (0x600,), 8: (0x901,)}
 INTRO_CUTSCENE = 0x800BF89C         # src_IntroCutscene: 2 at New Game,
 INTRO_PLAYED = 4                    # 4 once the intro is over
 AREA_NUMBER = 0x800BF870
@@ -1034,6 +1040,14 @@ class World:
                 and self.mem.read(actor.address + CLASS, 1) == EFFECT_CLASS):
             return ("worker", actor.worker)
         return actor.address
+
+    def spawn_area_effects(self):
+        """Start the area's ambient effects (AREA_EFFECTS), as its scene controller does."""
+        for effect in AREA_EFFECTS.get(self.area_number, ()):
+            try:
+                self.cpu.call(SPAWN_TRANSIENT_EFFECT, (effect, 0), sp=STACK)
+            except EmuError:
+                pass
 
     def probe_transient_clips(self, frames=2, budget=BUDGET):
         """Archive effects present at the start of a long cutscene.
@@ -3031,6 +3045,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
             world.place(record, units)
         if spawner:
             world.enter_scene(spawner, area_number, 0)
+        world.spawn_area_effects()
         world.run(frames, workers=False)
         for pickup in world.tag_chests(chests):
             world.place_chest(pickup)
@@ -3063,6 +3078,7 @@ def simulate(exe_path, overlay_path, dat_path, idx_path, chunk, area_number,
         else:
             say("no records: running Tomba himself")
             world.add_player()
+    world.spawn_area_effects()
     say(f"running the area, {frames} frame(s)")
     world.run(frames)
     world.add_firefly_previews()

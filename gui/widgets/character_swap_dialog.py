@@ -86,9 +86,14 @@ class CharacterSwapDialog(QDialog):
         find.setToolTip("Run the area's own code and list every character it builds "
                         "with a verified skeleton.")
         find.clicked.connect(self._find_characters)
+        find_all = QPushButton("Find in every area")
+        find_all.setToolTip("Runs every area's own code in turn - slow, but lists every "
+                            "character the game builds that has a verified skeleton.")
+        find_all.clicked.connect(self._find_all_characters)
         more = QHBoxLayout()
         more.addWidget(self.area_box, 1)
         more.addWidget(find)
+        more.addWidget(find_all)
         self.source_note = QLabel()
         self.source_note.setWordWrap(True)
 
@@ -374,6 +379,12 @@ class CharacterSwapDialog(QDialog):
         except Exception as error:
             QMessageBox.warning(self, "Find characters", str(error))
             return
+        added = self._add_recipes(recipes)
+        self.source_note.setText(f"{added} character(s) added from {self.area_box.currentText()}.")
+        if added:
+            self.source_box.setCurrentIndex(self.source_box.count() - added)
+
+    def _add_recipes(self, recipes):
         added = 0
         for recipe in recipes:
             source = cs.from_recipe(recipe)
@@ -384,7 +395,20 @@ class CharacterSwapDialog(QDialog):
             self._add_body(source, source.name)
             self._add_skeleton(cs.skeleton_of(source))
             added += 1
-        self.source_note.setText(f"{added} character(s) added from {self.area_box.currentText()}.")
+        return added
+
+    def _find_all_characters(self):
+        chunks = [self.area_box.itemData(i) for i in range(self.area_box.count())]
+        try:
+            found, failed = self.host.npc_catalogue_all(chunks, self)
+        except Exception as error:
+            QMessageBox.warning(self, "Find characters", str(error))
+            return
+        added = sum(self._add_recipes(recipes) for _chunk, recipes in found)
+        note = f"{added} character(s) added from {len(found)} area(s)."
+        if failed:
+            note += " Skipped: " + "; ".join(f"AREA_{c:02X} ({e})" for c, e in failed) + "."
+        self.source_note.setText(note)
         if added:
             self.source_box.setCurrentIndex(self.source_box.count() - added)
 

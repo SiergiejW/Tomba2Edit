@@ -45,10 +45,32 @@ class CharacterSwapMixin:
             if current.bones != skeletons[0].bones:     # a swapped body's own rig
                 skeletons.append(character_swap.skeleton_of(current))
             dialog = CharacterSwapDialog(self, paths, sources, skeletons)
+            found, failed = self._swap_catalogue()
+            added = sum(dialog._add_recipes(recipes) for _chunk, recipes in found)
+            if found or failed:
+                note = f"{added} character(s) found in {len(found)} area(s)."
+                if failed:
+                    note += " Skipped: " + "; ".join(f"AREA_{c:02X}" for c, _e in failed) + "."
+                dialog.source_note.setText(note)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Play as another character", str(error))
             return
         dialog.exec()
+
+    def _swap_catalogue(self):
+        """Every area's characters, searched once per opened game/project."""
+        key = str(self.dat_file)
+        cached = getattr(self, "_swap_catalogue_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        chunks = [c for c in range(4, 26) if self.overlay_for_area(c)]
+        try:
+            result = self.npc_catalogue_all(chunks)
+        except Exception as error:          # cancelled or unreadable: open without them
+            print(f"Character search: {error}")
+            return [], []
+        self._swap_catalogue_cache = (key, result)
+        return result
 
     def install_character_swap(self, prepared):
         """Write a prepared swap into the working project and rebase on it."""

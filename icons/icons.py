@@ -33,6 +33,7 @@ icon_CVRAM = resource_path("icons/tomba/44.png")
 icon_palette_chest = resource_path("icons/palette/chest.png")
 icon_palette_crystal = resource_path("icons/palette/crystal.png")
 icon_palette_item = resource_path("icons/palette/item.png")
+icon_palette_npc = resource_path("icons/palette/npc.png")
 icon_palette_apple = resource_path("icons/palette/apple.png")
 icon_palette_weapon = resource_path("icons/palette/weapon.png")
 

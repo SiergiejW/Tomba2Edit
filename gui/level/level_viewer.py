@@ -247,7 +247,9 @@ class LevelViewer(SMSTViewer):
         self.edit_action.setChecked(True)
         self.edit_mode = True
         self.edit_action.toggled.connect(self._set_edit_mode)
-        self.layout().insertWidget(0, self.mode_bar)
+        # Below the main toolbar row (index 0 in the base viewer's layout).
+        self.layout().insertWidget(self.layout().indexOf(self.toolbar) + 1,
+                                   self.mode_bar)
         # The main row is full here; the Camera menu rides with the modes.
         from PyQt6.QtWidgets import QToolButton, QSizePolicy, QWidget
         self.toolbar.removeAction(self.camera_action)

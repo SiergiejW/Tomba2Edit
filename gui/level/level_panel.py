@@ -370,14 +370,19 @@ class LevelEditorPanel(QWidget):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         # Area on the left, Progress in the middle, Rooms on the right.
-        top.addWidget(QLabel("Area", self))
-        top.addWidget(self.area_box, 3)
-        top.addStretch(1)
-        top.addWidget(QLabel("Progress", self))
-        top.addWidget(self.progress_box, 1)
-        top.addStretch(1)
-        top.addWidget(QLabel("Rooms", self))
-        top.addWidget(self.view_box, 3)
+        # Styled by gui/theme.py: these choose what the whole tab shows,
+        # so they read as controls rather than as part of the status text.
+        for box, text, stretch in ((self.area_box, "Area", 3),
+                                   (self.progress_box, "Progress", 1),
+                                   (self.view_box, "Rooms", 3)):
+            label = QLabel(text, self)
+            label.setObjectName("prominentPickerLabel")
+            box.setObjectName("prominentPicker")
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            if top.count():
+                top.addStretch(1)
+            top.addWidget(label)
+            top.addWidget(box, stretch)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
@@ -710,7 +715,7 @@ class LevelEditorPanel(QWidget):
         print(f"stage '{title}' applied in {marks[-1][1] - marks[0][1]:.2f}s: "
               + ", ".join(f"{name} {t - marks[n][1]:.2f}s"
                           for n, (name, t) in enumerate(marks[1:])))
-        has_motion = self.viewer.animating or len(phases) > 1
+        has_motion = self.viewer.animating or len(phases) > 1 or self.chunk == 8
         self.viewer.animate_action.setEnabled(
             self.viewer.animate_action.isEnabled() or has_motion)
         if has_motion and self.viewer.animate_wanted:
@@ -772,6 +777,12 @@ class LevelEditorPanel(QWidget):
 
     def _sync_motion_animation(self, checked):
         """Make Animate the master switch for every kind of level motion."""
+        # The cursed Kujara Ranch's own snow (area effect 0x500, chunk 8) - see gui/level/native_snow.py.
+        if self.chunk == 8 or getattr(self.viewer, "native_snow", None) is not None:
+            from gui.level.native_snow import SnowOverlay
+            if getattr(self.viewer, "native_snow", None) is None:
+                self.viewer.native_snow = SnowOverlay(self.viewer)
+            self.viewer.native_snow.run(bool(checked) and self.chunk == 8)
         if checked:
             if self.viewer.animating:
                 self._sprite_timer.start(max(20, round(1000 / TICK_HZ)))

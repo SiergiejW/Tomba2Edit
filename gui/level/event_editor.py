@@ -1541,8 +1541,10 @@ class EventEditor(QDialog):
         for key,value in (('script',binding and f'0x{binding.script:08X}'),
                           ('caller',binding and (f'table slot 0x{binding.caller:08X}' if binding.table else f'0x{binding.caller:08X}')),
                           ('count',None),('handler',self.native_handler and f'0x{self.native_handler:08X}'),('music',self.native_music_text())):
-            self.page_fields[key].setText(value or '—');self.page_fields[key].setCursorPosition(0)
+            self.page_fields[key].setText(value or 'None');self.page_fields[key].setCursorPosition(0)
             if key=='music':self.music_player_button.setEnabled(bool(value))     # no cue to hear or change
+        self.logic_button.setEnabled(bool(self.bindings))                  # nothing to show without pages
+        self.handler_code_button.setEnabled(bool(self.native_handler))
         if self.active is None:
             if self.native_handler:
                 from game.event_preview import native_code_at
@@ -1834,6 +1836,7 @@ class EventEditor(QDialog):
         if chosen is not None:
             quiet={n for n,found in masters.items() if found and chosen not in found}
         for n in range(self.pages.count()):self.pages.setTabVisible(n,(show or n not in hidden) and n not in quiet)
+        self._renumber_tabs()
         hidden=hidden|quiet
         self.show_others.setEnabled(bool(hidden))
         self.show_others.setText('Show hidden pages'+(f' ({len(hidden)} hidden)' if hidden and not show else ''))
@@ -1846,6 +1849,18 @@ class EventEditor(QDialog):
             first=next((n for n in range(self.pages.count()) if n not in hidden),current)
             self.pages.blockSignals(initial)
             self.pages.setCurrentIndex(first);self.pages.blockSignals(False)
+
+    def _renumber_tabs(self):
+        """Number the tabs you can see 1, 2, 3 ... : a page keeps its place in the handler's whole list internally, but
+        counting in that list showed a tab strip starting at 29 once the other NPCs' pages were hidden."""
+        import re
+        count=0
+        for n in range(self.pages.count()):
+            if not self.pages.isTabVisible(n):continue
+            text=self.pages.tabText(n)
+            match=re.match(r'^\d+(.*)$',text)
+            if match:
+                count+=1;self.pages.setTabText(n,f'{count}{match.group(1)}')
 
     def _item_summary(self):
         """One line on the items this NPC's handler checks, gives and takes ('' if none)."""
@@ -2567,7 +2582,7 @@ class EventEditor(QDialog):
         if QMessageBox.question(dialog,'Conversation music',f'Make cue {cue} the conversation music for {who}? ({len(changes)} instruction(s) in the area file.)')!=QMessageBox.StandardButton.Yes:return
         if not self._apply_code(changes):return
         self._music_text=False
-        self.page_fields['music'].setText(self.native_music_text() or '—')
+        self.page_fields['music'].setText(self.native_music_text() or 'None')
         self.music_player_button.setEnabled(bool(self.native_music_text()))
         self.status.setText(f'Conversation music cue is now {cue} for {who}.')
         dialog.close()
@@ -2607,7 +2622,7 @@ class EventEditor(QDialog):
                                 f'({len(changes)} instruction(s) in the area file.)')!=QMessageBox.StandardButton.Yes:return
         if not self._apply_code(changes):return
         self._music_text=False
-        self.page_fields['music'].setText(self.native_music_text() or '—')
+        self.page_fields['music'].setText(self.native_music_text() or 'None')
         self.music_player_button.setEnabled(bool(self.native_music_text()))
         self.status.setText(f'Conversation music cue is now {cue}.')
 
