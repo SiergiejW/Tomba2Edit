@@ -33,6 +33,17 @@ Every other SMST on the disc is checked to still read the same texels; one that 
   - Vertex colours on this tool's `T2_` materials read back as exported. Other materials follow the PS1-tool rule, where white means unshaded.
 - A body on a rig whose joints don't sit where its limbs bend shows gaps when animated. Pick the closest rig.
 
+## A body per costume, and editing what is installed
+
+- Each costume row has its own **Body**: "Leave as is", or any body loaded in the dialog. Every body remembers its own skeleton and bone map. **Give every costume this body** fills all rows.
+- **Tomba slot as installed** is the costume as the project has it now: Tomba on a retail disc, or the swapped body after an install. To make a costume variant, export it, edit it in Blender, import it and give it to one row.
+- On import, a face keeps reading art that is already loaded when two things hold:
+  - its `T2_` material's picture matches the resident VRAM at that page and palette, texel for texel over the face's UV box;
+  - the page and palette are claimed by chunks 0–2.
+
+  Everything else (repainted pictures, new materials) is copied. The install moves only those packets, places each body's art in turn from one shared pool, and treats reused packets as readers that must not change.
+- **Tested:** a pig snout with its own 32×32 picture was added in Blender to the installed Tabby and given to the Pig Suits only. 326 of 374 faces reused loaded art, and only 272 halfwords of VRAM were used (2,428 → 2,156 free in every area). In the emulator, all 11 costumes passed, and the Pig Suits draw the snout.
+
 ## Verified in an emulator (2026-11-24)
 
 A disc with Tabby on all 11 costumes was booted from scratch in the headless Beetle core (`work/blender_geometry/emulator/run_core.py`). It played 9,600 frames: the opening, walking around Town and the scripted dialogues, with no crash. Read back from the emulator's memory:
@@ -43,4 +54,14 @@ A disc with Tabby on all 11 costumes was booted from scratch in the headless Bee
 - All 2,886 halfwords she samples in live VRAM match the install.
 - All 1,281 texel reads and 10 palettes are identical to Tabby in her own area.
 
-Not yet run in the game: changing costume (suits, robes, the Wing Suit's wings) and bodies imported from Blender. Runtime VRAM uploads other than the pants palettes are only known from savestates you add.
+**Costume changes.** All 11 costumes were also changed in the emulator through the game's own action 0x3A, the way A06's Invisible Clothes event triggers it: Tomba's state word is saved to `0x1F80023C`, the clothes byte is set at `0x800E7EEF`, and the state word is set to action 0x3A, phase 0. The test patches main RAM and scratchpad inside a serialized state. It also has to run under lifecycle 1 (the action dispatcher), because 5 and 6 are the OPN.BIN opening. For every costume:
+
+- The buffer holds that costume's model.
+- That costume's bone table is in place.
+- Each part draws its intended group, including the Wing Suit's 19 parts.
+- Invisible Clothes hides parts 0, 2, 3, 5, 6, 10 and 13.
+- Live VRAM has 0 differences.
+
+**Blender body.** A Tabby edited in Blender (joined into one mesh, renamed, 5% bigger, exported as GLB) passed the same checks on its own disc.
+
+Runtime VRAM uploads other than the pants palettes are only known from savestates you add. Areas other than Town of the Fishermen were not booted.

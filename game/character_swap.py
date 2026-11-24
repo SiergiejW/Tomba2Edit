@@ -116,6 +116,7 @@ class Source:
     note: str = ""
     vram: bytes = None      # a file body's own staged art
     path: str = None        # the file it came from
+    keep: frozenset = frozenset()   # packets already reading resident art
 
 
 @dataclass
@@ -126,12 +127,20 @@ class Skeleton:
     reference: bytes = None     # a body on it (group i = bone i), for cutting files
 
 
+# US retail 0x800A3FA8 - kept here because an install overwrites it.
+TOMBA_ROWS = [(-1, -10, 23, 0), (0, 5, -51, 0), (0, 2, -41, 37), (2, -2, 0, 41), (3, -2, 0, 41),
+              (0, 2, -41, -37), (5, -2, 0, -41), (6, -2, 0, -41), (-1, -10, 23, 0), (8, 0, 13, 19),
+              (9, 1, 52, 2), (10, -7, 37, 0), (8, 0, 13, -19), (12, 1, 52, -2), (13, -7, 37, 0),
+              (1, -47, -10, 0), (15, -2, 35, 0)]
+
+
 def tomba_skeleton(exe, dat, idx):
+    """Tomba's own rig; his model is its reference only while it is still installed."""
     from formats.archive import repacker
-    rows = skeleton_tree.read_table(exe, skeleton_tree.exe_offset(0x800A3FA8), 17)
+    rows = [tuple(r) for r in skeleton_tree.read_table(exe, skeleton_tree.exe_offset(0x800A3FA8), 17)]
     start, end = repacker.parse_idx_bytes(idx)[SYSTEM_CHUNK]['trail_ranges'][0]
-    return Skeleton("Tomba", [tuple(r) for r in rows], "his own bone lengths",
-                    bytes(dat[start:end]))
+    reference = bytes(dat[start:end]) if rows == TOMBA_ROWS else None
+    return Skeleton("Tomba", list(TOMBA_ROWS), "his own bone lengths", reference)
 
 
 def skeleton_of(source):
@@ -141,7 +150,28 @@ def skeleton_of(source):
 def on_skeleton(body, skeleton):
     """A disc body on another rig: group i still rides bone i."""
     return Source(body.name, body.model, list(skeleton.bones), body.chunk,
-                  body.note, body.vram, body.path)
+                  body.note, body.vram, body.path, body.keep)
+
+
+def installed(exe, dat, idx, slot=0):
+    """A costume as the project has it now - Tomba on a retail disc, the
+    swapped body after an install. Its art is resident, so editing it in
+    Blender and bringing it back costs only what was repainted or added."""
+    from formats.archive import repacker
+    c = COSTUMES[slot]
+    start, end = repacker.parse_idx_bytes(idx)[SYSTEM_CHUNK]['trail_ranges'][slot]
+    rows = skeleton_tree.read_table(exe, skeleton_tree.exe_offset(c.table), 17)
+    return Source(f"{c.name} slot as installed", bytes(dat[start:end]), [tuple(r) for r in rows],
+                  SYSTEM_CHUNK, f"costume slot {slot} as it is in this project")
+
+
+def resident(idx_path, img_path):
+    """(VRAM, claimed map) of what is loaded in every area: chunks 0-2."""
+    from psx import vram_map
+    idx, img = Path(idx_path).read_bytes(), Path(img_path).read_bytes()
+    shards = vram_map.chunk_shards(str(idx_path), str(img_path))
+    vram = vram_map.loaded_vram(shards, _vram_reader(idx, img), SYSTEM_CHUNK)
+    return bytes(vram), vram_map.claims_of(shards, vram_map.ALWAYS_RESIDENT)
 
 
 def _chunk_file(dat, chunks, chunk, file_id):
@@ -341,37 +371,108 @@ def obj_textures_flat():
     return obj_textures.Source("flat", images={})
 
 
-def body_from_file(path, skeleton, texture_source=None, faces=None):
-    """A Source cut from an OBJ/GLB onto `skeleton`, with its own art."""
+def _resident_materials(faces, source, resident_art):
+    """Materials whose pictures are, texel for texel over every face's UV
+    box, what the resident VRAM already shows at their page and palette -
+    art exported from an installed body and not repainted."""
+    from collections import defaultdict
     from formats.models import obj_textures
-    from formats.models.obj_exchange import _body, records
+    from formats.models.obj_exchange import MATERIAL
+    from formats.models.gltf_export import index_atlas, palette
+    if resident_art is None or source.kind != "images":
+        return set()
+    vram, claimed = resident_art
+    atlas = index_atlas(vram)
+    index = obj_textures._index(source.images or {})
+    by = defaultdict(list)
+    for f in faces:
+        by[f.material].append(f)
+    out = set()
+    for name, members in by.items():
+        m = MATERIAL.fullmatch(name)
+        entry = obj_textures._lookup(index, name)
+        if not m or entry is None or any(None in f.uvs for f in members):
+            continue
+        picture = obj_textures._picture(name, entry)
+        if picture is None or picture.shape[:2] != (256, 256):
+            continue
+        code, _flags, clut, page = (int(v, 16) for v in m.groups())
+        page &= 31
+        address = (clut & 63) * 32 + ((clut >> 6) & 511) * 2048
+        cx, cy = psx_vram.clut_address_xy(address)
+        if not claimed[cy, cx:cx + 16].all():
+            continue
+        top, left = page // 16 * 256, page % 16 * 256
+        expected = palette(vram, address, bool(code & 2))[atlas[top:top + 256, left:left + 256]]
+        ok = True
+        for f in members:
+            us, vs = [u for u, _v in f.uvs], [v for _u, v in f.uvs]
+            u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+            hx0, hx1 = page % 16 * 64 + u0 // 4, page % 16 * 64 + u1 // 4
+            if not claimed[page // 16 * 256 + v0:page // 16 * 256 + v1 + 1, hx0:hx1 + 1].all():
+                ok = False
+                break
+            a = picture[v0:v1 + 1, u0:u1 + 1]
+            b = expected[v0:v1 + 1, u0:u1 + 1]
+            if not (np.array_equal(a[..., :3], b[..., :3])
+                    and np.array_equal(a[..., 3] >= 128, b[..., 3] >= 128)):
+                ok = False
+                break
+        if ok:
+            out.add(name)
+    return out
+
+
+def body_from_file(path, skeleton, texture_source=None, faces=None, resident_art=None):
+    """A Source cut from an OBJ/GLB onto `skeleton`. Faces whose art is
+    already resident and unchanged (`resident_art` = resident()) keep
+    reading it; the rest bring their own pictures."""
+    from dataclasses import replace
+    from formats.models import obj_textures
+    from formats.models.obj_exchange import _body, _encode, records
     from psx import gpu_packet as packet
     faces = list(faces) if faces is not None else read_body_faces(path)
     names = {f.material for f in faces}
     source = texture_source or obj_textures.discover(path, names)
-    missing = {n for n in names if not obj_textures.untextured(n)} - source.textured(names)
-    if missing and source.kind != "flat":
-        raise SwapError(f"No picture for material(s) {', '.join(sorted(missing))}. Export a .glb "
-                        f"(it carries its images) or keep the PNGs beside the OBJ.")
-    staged, vram, summary, order = obj_textures.build(faces, source)
-    staged = _fold_palettes(staged, vram)
+    live = _resident_materials(faces, source, resident_art)
     bones = assign(faces, skeleton)
     joints = _joints(skeleton.bones)
     parts = [[] for _ in skeleton.bones]
-    for n, record in enumerate(records(staged, "SMST", 0)):
-        bone = bones[order[n]]
-        raw = bytearray(record.raw)
+    keep = set()
+
+    def local(raw, bone):
         kind = "tri" if len(raw) == 36 else "quad"
         jx, jy, jz = joints[bone]
-        local = [(round(x - jx), round(y - jy), round(z - jz))
-                 for x, y, z in packet.read_vertices(raw, 0, kind)]
-        packet.write_vertices(raw, 0, kind, local)
-        parts[bone].append(bytes(raw))
+        packet.write_vertices(raw, 0, kind, [(round(x - jx), round(y - jy), round(z - jz))
+                                             for x, y, z in packet.read_vertices(raw, 0, kind)])
+        return bytes(raw)
+
+    reused = [n for n, f in enumerate(faces) if f.material in live]
+    for n in reused:
+        raw = local(bytearray(_encode(faces[n], {})), bones[n])
+        parts[bones[n]].append(raw)
+        keep.add(raw)
+    rest = [n for n, f in enumerate(faces) if f.material not in live]
+    vram = None
+    summary = {"copied": 0, "reduced": 0, "flat": 0}
+    if rest:
+        own = [faces[n] for n in rest]
+        wanted = {f.material for f in own}
+        missing = {n for n in wanted if not obj_textures.untextured(n)} - source.textured(wanted)
+        if missing and source.kind != "flat":
+            raise SwapError(f"No picture for material(s) {', '.join(sorted(missing))}. Export a .glb "
+                            f"(it carries its images) or keep the PNGs beside the OBJ.")
+        staged, vram, summary, order = obj_textures.build(own, source)
+        staged = _fold_palettes(staged, vram)
+        for k, record in enumerate(records(staged, "SMST", 0)):
+            n = rest[order[k]]
+            parts[bones[n]].append(local(bytearray(record.raw), bones[n]))
     model = smst_edit.rebuild(None, [_body(p, bytes(16)) for p in parts])
     note = (f"{Path(path).name}: {len(faces)} faces on {skeleton.name}'s rig; "
-            f"{summary['copied']} material(s) copied, {summary['reduced']} reduced to 16 colours, "
-            f"{summary['flat']} plain")
-    return Source(Path(path).stem, model, list(skeleton.bones), None, note, vram, str(path))
+            f"{len(reused)} reuse art already loaded, {summary['copied']} material(s) copied, "
+            f"{summary['reduced']} reduced to 16 colours, {summary['flat']} plain")
+    return Source(Path(path).stem, model, list(skeleton.bones), None, note, vram, str(path),
+                  frozenset(keep))
 
 
 # --- skeletons --------------------------------------------------------
@@ -524,6 +625,17 @@ def _joined(a, b):
     head = bytearray(a[:h])
     struct.pack_into("<HH", head, 0, ta + tb, qa + qb)
     return bytes(head) + tri_a + tri_b + quad_a + quad_b
+
+
+def _split(body, keep):
+    """(packets in `keep`, the rest) of a group body, each as a body.
+    `keep` None: everything is kept."""
+    from formats.models.obj_exchange import _body
+    head = body[:smst_edit.GROUP_HEADER]
+    packets = [body[at:at + size] for _k, at, size in smst_edit.packet_slots(body)]
+    kept = packets if keep is None else [p for p in packets if p in keep]
+    rest = [] if keep is None else [p for p in packets if p not in keep]
+    return _body(kept, head), _body(rest, head)
 
 
 def _faces_only(body):
@@ -705,8 +817,9 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
             state_paths=(), progress=print):
     """Everything a swap writes, verified, without writing it.
 
-    `slots` are costume slot numbers; every slot sharing a bone table with
-    one of them must be in it too. `plans` is {slot: Plan}."""
+    `source` is one Source for every slot, or {slot: Source} - a body per
+    costume. `slots` are costume slot numbers; every slot sharing a bone
+    table with one of them must be in it too. `plans` is {slot: Plan}."""
     from formats.archive import repacker
     from formats.images import img_writer
     from psx import state_vram, vram_map
@@ -715,6 +828,7 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
     originals = {p: p.read_bytes() for p in paths}
     exe, dat, idx, img = (originals[p] for p in paths)
     chosen = [c for c in COSTUMES if c.slot in set(slots)]
+    sources = source if isinstance(source, dict) else {c.slot: source for c in chosen}
     if not chosen:
         raise SwapError("Pick at least one costume.")
     for group in table_groups():
@@ -734,25 +848,34 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
         return [tuple(r) for r in skeleton_tree.read_table(
             exe, skeleton_tree.exe_offset(c.table), c.bones)]
 
-    # 1. bodies, one texture move for all of them
-    progress("Composing the new body…")
+    # 1. bodies: each costume's own source; a body's packets split into the
+    # ones already reading resident art (kept) and the ones whose art moves
+    progress("Composing the new bodies…")
     per_slot = {}
-    union = {}
+    groups = {}
     for c in chosen:
-        bodies, merged = source_bodies(source, plans[c.slot])
-        per_slot[c.slot] = (bodies, merged)
-        for bone, body in bodies.items():
-            union.setdefault(body, None)
-    order = list(union)
-    packed = smst_edit.rebuild(None, order) if order else None
-    if packed is None:
+        src = sources[c.slot]
+        bodies, merged = source_bodies(src, plans[c.slot])
+        per_slot[c.slot] = (src, bodies, merged)
+        g = groups.setdefault(id(src), dict(source=src, order=[]))
+        for body in bodies.values():
+            if body not in g["order"]:
+                g["order"].append(body)
+    if not any(g["order"] for g in groups.values()):
         raise SwapError("Nothing of the new body is used.")
 
     shards = vram_map.chunk_shards(idx_path, img_path)
     chunk_vram = _vram_reader(idx, img)
-    source_vram = (bytes(source.vram) if source.vram is not None
-                   else vram_map.loaded_vram(shards, chunk_vram, source.chunk))
     resident_before = vram_map.loaded_vram(shards, chunk_vram, SYSTEM_CHUNK)
+    for g in groups.values():
+        src = g["source"]
+        all_live = src.vram is None and src.chunk in vram_map.ALWAYS_RESIDENT
+        g["vram"] = (bytes(src.vram) if src.vram is not None
+                     else bytes(vram_map.loaded_vram(shards, chunk_vram, src.chunk)))
+        g["split"] = [_split(body, None if all_live else src.keep) for body in g["order"]]
+        g["staged"] = smst_edit.rebuild(None, [st for _k, st in g["split"]])
+        g["kept"] = smst_edit.rebuild(None, [k for k, _st in g["split"]])
+        g["moving"] = any(struct.unpack_from("<HH", st, 0) != (0, 0) for _k, st in g["split"])
 
     # 2. where its art can go
     progress("Finding room in VRAM…")
@@ -791,6 +914,9 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
                     keepers.append((name, _trim(data)))
                 except Exception:
                     pass
+    for g in groups.values():
+        if any(struct.unpack_from("<HH", k, 0) != (0, 0) for k, _st in g["split"]):
+            keepers.append((f"{g['source'].name} (art it reuses)", g["kept"]))
     for _name, blob in keepers:
         try:
             sampled(blob, kept)
@@ -811,31 +937,51 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
         reclaim &= ~occupied
     free = vram_map.free_for(shards, list(shards), occupied)
 
-    if source.vram is None and source.chunk in vram_map.ALWAYS_RESIDENT:
-        moves = None
-        moved = packed
-        additions = []
-        lines.append("Textures: already resident everywhere, nothing moved.")
-    else:
+    def place_all(space):
+        space = space.copy()
+        out = {}
+        for key, g in groups.items():
+            if not g["moving"]:
+                continue
+            found = texture_migrate.plan(g["staged"], space, pages=vram_map.USABLE_PAGES)
+            for move in found.moves:
+                x, y, w, h = move.dest_rect
+                space[y:y + h, x:x + w] = False
+            for new in found.cluts.values():
+                x, y = psx_vram.clut_address_xy(new)
+                space[y, x:x + 16] = False
+            out[key] = found
+        return out
+    try:
+        placed = place_all(reclaim)
+        where = "into the art of the replaced costumes"
+    except texture_migrate.MigrationError:
         try:
-            moves = texture_migrate.plan(packed, reclaim, pages=vram_map.USABLE_PAGES)
-            where = "into the art of the replaced costumes"
-        except texture_migrate.MigrationError:
-            moves = texture_migrate.plan(packed, (reclaim | free) & ~kept,
-                                         pages=vram_map.USABLE_PAGES)
-            where = "into the replaced costumes' art and free VRAM"
-        moved = texture_migrate.retarget(packed, moves)
-        additions = texture_migrate.shards_for(moves, source_vram)
-        lines.append(f"Textures: {len(moves.moves)} patch(es) and {len(moves.cluts)} "
-                     f"palette(s) copied {where}.")
-        if not state_paths:
-            lines.append("No savestate given: what the game uploads at runtime is "
-                         "not accounted for beyond the pants palettes.")
+            placed = place_all((reclaim | free) & ~kept)
+        except texture_migrate.MigrationError as error:
+            raise SwapError(f"The new art does not fit in the VRAM every area leaves free: {error}. "
+                            f"Reuse more of the existing textures, or paint smaller.") from error
+        where = "into the replaced costumes' art and free VRAM"
+    additions = []
+    for key, g in groups.items():
+        found = placed.get(key)
+        g["moved"] = texture_migrate.retarget(g["staged"], found) if found else g["staged"]
+        if found:
+            additions += texture_migrate.shards_for(found, g["vram"])
+        reused = sum(len(smst_edit.packet_slots(k)) for k, _st in g["split"])
+        lines.append(f"{g['source'].name}: " + (
+            f"{len(found.moves)} texture patch(es) and {len(found.cluts)} palette(s) copied {where}"
+            if found else "no art to copy") + (f"; {reused} face(s) reuse art already loaded" if reused else "") + ".")
+    if additions and not state_paths:
+        lines.append("No savestate given: what the game uploads at runtime is "
+                     "not accounted for beyond the pants palettes.")
 
     resident_after = texture_migrate.patch(resident_before, additions)
-    _n, bad = texture_migrate.verify(packed, moved, source_vram, bytes(resident_after))
-    if bad:
-        raise SwapError(f"{len(bad)} texel reads of the new body would change - not safe.")
+    for g in groups.values():
+        if g["moving"]:
+            _n, bad = texture_migrate.verify(g["staged"], g["moved"], g["vram"], bytes(resident_after))
+            if bad:
+                raise SwapError(f"{len(bad)} texel reads of {g['source'].name} would change - not safe.")
     for name, blob in keepers:
         try:
             _n, bad = texture_migrate.verify(blob, blob, resident_before, bytes(resident_after))
@@ -843,8 +989,11 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
             continue
         if bad:
             raise SwapError(f"{name} would lose {len(bad)} texels it still draws.")
-    moved_bodies = smst_edit.bodies_of(moved)
-    renamed = {body: moved_bodies[n] for n, body in enumerate(order)}
+    renamed = {}
+    for g in groups.values():
+        moved = smst_edit.bodies_of(g["moved"])
+        for n, body in enumerate(g["order"]):
+            renamed[(id(g["source"]), body)] = _joined(g["split"][n][0], moved[n])
 
     # 3. models and skeletons
     progress("Building the costumes…")
@@ -852,13 +1001,13 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
     edit_chunks = repacker.parse_idx_bytes(idx)
     models, tables = {}, {}
     for c in sorted(chosen, key=lambda c: -trail[c.slot][0]):
-        bodies, merged = per_slot[c.slot]
-        bodies = {b: renamed[body] for b, body in bodies.items()}
+        src, bodies, merged = per_slot[c.slot]
+        bodies = {b: renamed[(id(src), body)] for b, body in bodies.items()}
         model = compose(c, costume_model(c), plans[c.slot], bodies)
         if len(model) > MAX_MODEL:
             raise SwapError(f"{c.name}: {len(model)} bytes, over the {MAX_MODEL} the "
                             f"game is known to load.")
-        rows, lift = bone_table(c, costume_bones(c), costume_model(c), source,
+        rows, lift = bone_table(c, costume_bones(c), costume_model(c), src,
                                 plans[c.slot], bodies)
         if c.table in tables and tables[c.table] != rows:
             raise SwapError(f"{c.name} wants a different skeleton from the costume it shares one with. "
@@ -867,7 +1016,7 @@ def prepare(exe_path, dat_path, idx_path, img_path, source, slots, plans,
         models[c.slot] = model
         new_dat = repacker._apply_trail_replacement(new_dat, edit_chunks, trail[c.slot][0], model)
         extra = f", {len(merged)} extra part(s) merged" if merged else ""
-        lines.append(f"{c.name}: {len(model)} bytes, feet lifted {lift:+d}{extra}.")
+        lines.append(f"{c.name} <- {src.name}: {len(model)} bytes, feet lifted {lift:+d}{extra}.")
     new_idx = repacker._idx_bytes_from_chunks(edit_chunks, idx)
     new_exe = bytearray(exe)
     for address, rows in tables.items():
@@ -926,6 +1075,20 @@ def draft(source, costume, costume_model, costume_bones, plan):
     model = compose(costume, costume_model, plan, bodies)
     rows, _lift = bone_table(costume, costume_bones, costume_model, source, plan, bodies)
     return model, rows
+
+
+def preview_vram(source, resident_vram):
+    """What a body that mixes reused and new art draws against: the
+    resident VRAM, with the new art's staged cells laid over it."""
+    if source.vram is None or not source.keep:
+        return source.vram
+    staged = smst_edit.rebuild(None, [_split(_faces_only(b), source.keep)[1]
+                                      for b in smst_edit.bodies_of(source.model)])
+    cells = sampled(staged)
+    out = np.frombuffer(bytes(resident_vram), "<u2").reshape(512, 1024).copy()
+    new = np.frombuffer(bytes(source.vram), "<u2").reshape(512, 1024)
+    out[cells] = new[cells]
+    return out.astype("<u2").tobytes()
 
 
 def tomba_animations(exe, dat, idx):

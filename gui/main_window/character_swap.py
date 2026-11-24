@@ -30,8 +30,11 @@ class CharacterSwapMixin:
                 return
             paths = self._swap_paths()
             dat, idx = paths["dat"].read_bytes(), paths["idx"].read_bytes()
-            sources = []
-            skeletons = [character_swap.tomba_skeleton(paths["exe"].read_bytes(), dat, idx)]
+            exe = paths["exe"].read_bytes()
+            current = character_swap.installed(exe, dat, idx, 0)
+            current.name = "Tomba slot as installed"
+            sources = [current]
+            skeletons = [character_swap.tomba_skeleton(exe, dat, idx)]
             if paths["a0f"] is not None and paths["a0f"].name.upper() == "A0F.BIN":
                 try:
                     tabby = character_swap.tabby(dat, idx, paths["a0f"].read_bytes())
@@ -39,6 +42,8 @@ class CharacterSwapMixin:
                     skeletons.append(character_swap.skeleton_of(tabby))
                 except character_swap.SwapError as error:
                     print(f"Tabby unavailable: {error}")
+            if current.bones != skeletons[0].bones:     # a swapped body's own rig
+                skeletons.append(character_swap.skeleton_of(current))
             dialog = CharacterSwapDialog(self, paths, sources, skeletons)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Play as another character", str(error))

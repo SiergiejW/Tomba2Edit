@@ -37,6 +37,8 @@ class CharacterSwapDialog(QDialog):
         self.sources = list(sources)
         self.skeletons = list(skeletons)
         self._cuts = {}
+        self._setups = {}           # id(body) -> (skeleton index, bone keys, merge)
+        self._resident = None
         self.states = []
         self.installed = False
         self.setWindowTitle("Play as another character")
@@ -53,7 +55,7 @@ class CharacterSwapDialog(QDialog):
 
         # --- body and skeleton ---
         self.source_box = QComboBox()
-        self.source_box.currentIndexChanged.connect(self._source_changed)
+        self.source_box.currentIndexChanged.connect(self._body_changed)
         self.skeleton_box = QComboBox()
         self.skeleton_box.addItem("Its own (a file: the best fit)", None)
         for skeleton in self.skeletons:
@@ -91,20 +93,28 @@ class CharacterSwapDialog(QDialog):
         self.source_note.setWordWrap(True)
 
         # --- costumes ---
-        self.costumes = QListWidget()
-        for group in cs.table_groups():
-            item = QListWidgetItem(" + ".join(c.name for c in group))
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
+        groups = cs.table_groups()
+        self.costumes = QTableWidget(len(groups), 2)
+        self.costumes.setHorizontalHeaderLabels(["Costume", "Body"])
+        self.costumes.verticalHeader().setVisible(False)
+        self.costumes.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.costumes.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        for row, group in enumerate(groups):
+            item = _read_only(" + ".join(c.name for c in group))
             item.setData(Qt.ItemDataRole.UserRole, [c.slot for c in group])
             if len(group) > 1:
                 item.setToolTip("These share one skeleton in MAIN.EXE, so they change together.")
-            self.costumes.addItem(item)
-        self.costumes.setMaximumHeight(150)
+            self.costumes.setItem(row, 0, item)
+            combo = QComboBox()
+            combo.addItem("Leave as is", None)
+            self.costumes.setCellWidget(row, 1, combo)
+        self.costumes.setMaximumHeight(240)
+        everyone = QPushButton("Give every costume this body")
+        everyone.clicked.connect(self._assign_all)
         costumes_note = QLabel(
-            "Tomba shares most of his art with the suits, so the body's textures "
-            "only fit when the costumes go together. Abilities stay with each "
-            "costume either way.")
+            "Each costume can have its own body - plain Tabby on most, a Blender edit "
+            "on the Pig Suits. A body edited from one that is already installed only "
+            "costs VRAM for what was repainted or added. Abilities stay with each costume.")
         costumes_note.setWordWrap(True)
 
         # --- bones ---
@@ -117,11 +127,11 @@ class CharacterSwapDialog(QDialog):
             label = _read_only(f"{bone}  {cs.BONE_NAMES[bone]}")
             self.bones.setItem(bone, 0, label)
             combo = QComboBox()
-            combo.currentIndexChanged.connect(self._refresh_preview)
+            combo.currentIndexChanged.connect(self._bones_edited)
             self.bones.setCellWidget(bone, 1, combo)
         self.merge = QCheckBox("Carry unmapped parts (tails, ears…) on their parent bone")
         self.merge.setChecked(True)
-        self.merge.toggled.connect(self._refresh_preview)
+        self.merge.toggled.connect(self._bones_edited)
 
         # --- savestates ---
         states = QPushButton("Add savestate(s)…")
@@ -141,12 +151,13 @@ class CharacterSwapDialog(QDialog):
         form.addRow("From an area", more)
         lay.addLayout(form)
         lay.addWidget(self.source_note)
-        box = QGroupBox("Costumes it replaces")
+        box = QGroupBox("Which body each costume gets")
         bl = QVBoxLayout(box)
         bl.addWidget(self.costumes)
+        bl.addWidget(everyone)
         bl.addWidget(costumes_note)
         lay.addWidget(box)
-        box = QGroupBox("Bone map")
+        box = QGroupBox("Bone map of the body above")
         bl = QVBoxLayout(box)
         bl.addWidget(self.bones, 1)
         bl.addWidget(self.merge)
@@ -218,7 +229,7 @@ class CharacterSwapDialog(QDialog):
         layout.addLayout(buttons)
 
         for source in self.sources:
-            self.source_box.addItem(source.name, source)
+            self._add_body(source, source.name)
         if not self.sources:
             self.source_note.setText("Import a body from Blender, or find characters in an area.")
 
@@ -226,17 +237,77 @@ class CharacterSwapDialog(QDialog):
 
     def source(self):
         """The chosen body on the chosen skeleton, as one Source."""
-        body = self.source_box.currentData()
-        skeleton = self.skeleton_box.currentData()
+        return self._resolve(self.source_box.currentData(), self.skeleton_box.currentData())
+
+    def _resolve(self, body, skeleton):
         if isinstance(body, FileBody):
             skeleton = skeleton or body.best
             key = (str(body.path), skeleton.name, id(skeleton))
             if key not in self._cuts:
-                self._cuts[key] = cs.body_from_file(body.path, skeleton, faces=body.faces)
+                self._cuts[key] = cs.body_from_file(body.path, skeleton, faces=body.faces,
+                                                    resident_art=self.resident_art())
             return self._cuts[key]
         if body is None or skeleton is None:
             return body
         return cs.on_skeleton(body, skeleton)
+
+    def resident_art(self):
+        if self._resident is None:
+            self._resident = cs.resident(self.paths["idx"], self.paths["img"])
+        return self._resident
+
+    def _add_body(self, body, label):
+        self.source_box.addItem(label, body)
+        for row in range(self.costumes.rowCount()):
+            self.costumes.cellWidget(row, 1).addItem(label, body)
+
+    def _assign_all(self):
+        body = self.source_box.currentData()
+        for row in range(self.costumes.rowCount()):
+            combo = self.costumes.cellWidget(row, 1)
+            combo.setCurrentIndex(max(combo.findData(body), 0))
+
+    def assignments(self):
+        """[(slots, body)] for every costume row given a body."""
+        out = []
+        for row in range(self.costumes.rowCount()):
+            body = self.costumes.cellWidget(row, 1).currentData()
+            if body is not None:
+                out.append((self.costumes.item(row, 0).data(Qt.ItemDataRole.UserRole), body))
+        return out
+
+    def _save_setup(self):
+        body = self.source_box.currentData()
+        if body is None or self.bones.cellWidget(0, 1).count() == 0:
+            return
+        keys = [self.bones.cellWidget(b, 1).currentData() for b in range(17)]
+        self._setups[id(body)] = (self.skeleton_box.currentIndex(), keys, self.merge.isChecked())
+
+    def _setup_for(self, body):
+        """(Source, keys or None, merge) for a body as last set up."""
+        index, keys, merge = self._setups.get(id(body), (0, None, True))
+        return self._resolve(body, self.skeleton_box.itemData(index)), keys, merge
+
+    def _plan(self, source, keys, merge, costume):
+        if keys is None:
+            plan = cs.default_plan(source, costume)
+            plan.merge_extras = merge
+            return plan
+        return cs.Plan([_choice(k) for k in keys] + [(cs.KEEP,)] * (costume.bones - 17), merge)
+
+    def _body_changed(self):
+        body = self.source_box.currentData()
+        index, keys, merge = self._setups.get(id(body), (0, None, True))
+        for widget, call in ((self.skeleton_box, lambda: self.skeleton_box.setCurrentIndex(index)),
+                             (self.merge, lambda: self.merge.setChecked(merge))):
+            widget.blockSignals(True)
+            call()
+            widget.blockSignals(False)
+        self._source_changed(keys)
+
+    def _bones_edited(self, *_args):
+        self._save_setup()
+        self._refresh_preview()
 
     def _add_skeleton(self, skeleton):
         if any(s.bones == skeleton.bones for s in self.skeletons):
@@ -245,12 +316,7 @@ class CharacterSwapDialog(QDialog):
         self.skeleton_box.addItem(skeleton.name, skeleton)
 
     def slots(self):
-        out = []
-        for row in range(self.costumes.count()):
-            item = self.costumes.item(row)
-            if item.checkState() == Qt.CheckState.Checked:
-                out += item.data(Qt.ItemDataRole.UserRole)
-        return out
+        return [slot for slots, _body in self.assignments() for slot in slots]
 
     def plan_for(self, costume):
         choices = [_choice(self.bones.cellWidget(b, 1).currentData()) for b in range(17)]
@@ -264,7 +330,9 @@ class CharacterSwapDialog(QDialog):
 
     # --- body -------------------------------------------------------------
 
-    def _source_changed(self):
+    def _source_changed(self, keys=None):
+        if not isinstance(keys, list):
+            keys = None             # a signal's index, not saved keys
         try:
             source = self.source()
         except Exception as error:
@@ -282,7 +350,8 @@ class CharacterSwapDialog(QDialog):
                 combo.addItem(f"{source.name}: {k}  {name.replace('_', ' ')}", _key((cs.SOURCE, k)))
             combo.addItem(KEEP_LABEL, _key((cs.KEEP,)))
             combo.addItem(HIDE_LABEL, _key((cs.EMPTY,)))
-            combo.setCurrentIndex(max(combo.findData(_key(default.choices[bone])), 0))
+            wanted = keys[bone] if keys else _key(default.choices[bone])
+            combo.setCurrentIndex(max(combo.findData(wanted), 0))
             combo.blockSignals(False)
         mapped = sum(1 for c in default.choices if c[0] == cs.SOURCE)
         body = self.source_box.currentData()
@@ -293,6 +362,7 @@ class CharacterSwapDialog(QDialog):
         self.source_note.setText(
             f"{source.note}. {len(source.bones)} bones; {mapped} map onto Tomba's "
             f"17 automatically - check the table, every row can be changed.{rig}")
+        self._save_setup()
         self._refresh_preview()
 
     def _find_characters(self):
@@ -311,7 +381,7 @@ class CharacterSwapDialog(QDialog):
                    for s in self.sources):
                 continue
             self.sources.append(source)
-            self.source_box.addItem(source.name, source)
+            self._add_body(source, source.name)
             self._add_skeleton(cs.skeleton_of(source))
             added += 1
         self.source_note.setText(f"{added} character(s) added from {self.area_box.currentText()}.")
@@ -331,12 +401,13 @@ class CharacterSwapDialog(QDialog):
             fits = {s.name: cs.fit(faces, s) for s in self.skeletons}
             best = min(self.skeletons, key=lambda s: fits[s.name])
             body = FileBody(Path(path), faces, best, fits)
-            cs.body_from_file(body.path, best, faces=faces)        # errors now, not later
+            cs.body_from_file(body.path, best, faces=faces,        # errors now, not later
+                              resident_art=self.resident_art())
         except Exception as error:
             QMessageBox.warning(self, "Import from Blender", str(error))
             return
         self.sources.append(body)
-        self.source_box.addItem(f"{Path(path).name} (file)", body)
+        self._add_body(body, f"{Path(path).name} (file)")
         self.skeleton_box.setCurrentIndex(0)
         self.source_box.setCurrentIndex(self.source_box.count() - 1)
 
@@ -372,9 +443,11 @@ class CharacterSwapDialog(QDialog):
     def _source_vram(self, source):
         if source.vram is not None:
             from psx.vram_viewer import vram_index_image
-            key = id(source.vram)
+            key = (id(source.vram), source.keep)
             if key not in self._vram:
-                self._vram[key] = (bytes(source.vram), vram_index_image(bytes(source.vram)))
+                vram = (cs.preview_vram(source, self.resident_art()[0]) if source.keep
+                        else bytes(source.vram))
+                self._vram[key] = (bytes(vram), vram_index_image(bytes(vram)))
             return self._vram[key]
         chunk = source.chunk
         if chunk not in self._vram:
@@ -436,16 +509,30 @@ class CharacterSwapDialog(QDialog):
     # --- install ----------------------------------------------------------
 
     def _prepare(self, install):
-        source = self.source()
-        if source is None:
+        self._save_setup()
+        assigned = self.assignments()
+        if not assigned:
+            self.report.setPlainText("No costume has a body yet - pick one in the Body column, "
+                                     "or use Give every costume this body.")
             return
-        slots = self.slots()
-        plans = {c.slot: self.plan_for(c) for c in cs.COSTUMES}
+        sources, plans, slots = {}, {}, []
+        try:
+            for group, body in assigned:
+                source, keys, merge = self._setup_for(body)
+                for slot in group:
+                    c = cs.COSTUMES[slot]
+                    sources[slot] = source
+                    plans[slot] = self._plan(source, keys, merge, c)
+                    slots.append(slot)
+        except Exception as error:
+            self.report.setPlainText(f"Not possible as set up: {error}\n\nNothing was written.")
+            return
         paths, states = self.paths, list(self.states)
+        names = sorted({s.name for s in sources.values()})
 
         def task(progress, cancelled):
             return cs.prepare(paths["exe"], paths["dat"], paths["idx"], paths["img"],
-                              source, slots, plans, state_paths=states, progress=progress)
+                              sources, slots, plans, state_paths=states, progress=progress)
         try:
             prepared = run_import(task, self, reporting=True)
         except Exception as error:
@@ -456,7 +543,7 @@ class CharacterSwapDialog(QDialog):
             return
         answer = QMessageBox.question(
             self, "Install?",
-            f"{source.name} replaces {len(slots)} costume(s) in the working project:\n\n"
+            f"{', '.join(names)} replace {len(slots)} costume(s) in the working project:\n\n"
             f"{prepared.report}\n\nTOMBA2.DAT, .IDX, .IMG and MAIN.EXE are rewritten. "
             f"Save the project afterwards to keep it.")
         if answer != QMessageBox.StandardButton.Yes:
